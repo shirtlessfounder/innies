@@ -1,0 +1,15 @@
+{
+  "name": "innies-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "innies": "bin/innies.js",
+    "headroom": "bin/headroom.js"
+  },
+  "scripts": {
+    "build": "echo 'No build step required (plain Node.js ESM)'",
+    "test:smoke": "bash scripts/smoke.sh",
+    "test:smoke:real": "HEADROOM_SMOKE_REAL_PROXY=1 bash scripts/smoke.sh"
+  }
+}
