@@ -219,7 +219,7 @@ describe('proxy token-mode route behavior', () => {
       monthlyContributionUsedUnits: 0,
       monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
-    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'markExpired').mockResolvedValue(true as any);
+    const markExpiredSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'markExpired').mockResolvedValue(true as any);
 
     const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'bad token' } }), {
@@ -258,6 +258,7 @@ describe('proxy token-mode route behavior', () => {
     expect(headers.authorization).toBe('Bearer sk-ant-oat01-test-token');
     expect(headers['anthropic-beta']).toContain('oauth-2025-04-20');
     expect(headers['anthropic-beta']).toContain('claude-code-20250219');
+    expect(markExpiredSpy).not.toHaveBeenCalled();
 
     upstreamSpy.mockRestore();
   });
