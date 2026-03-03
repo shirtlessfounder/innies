@@ -79,7 +79,7 @@ Notes:
 - Thinking compatibility guardrails:
   - If `thinking.type = "enabled"` and `thinking.budget_tokens` is missing, API normalizes to `1024`.
   - If `thinking.type = "enabled"` and `thinking.budget_tokens` is provided, it must be a positive integer.
-  - If `thinking.type = "enabled"` and `thinking.budget_tokens < 1024`, API returns deterministic `400` (`invalid_request`).
+  - If `thinking.type = "enabled"` and `thinking.budget_tokens < 1024`, API normalizes it up to `1024`.
   - If `thinking.type = "enabled"` and `max_tokens`/`max_output_tokens` is `<= thinking.budget_tokens`, API returns deterministic `400` (`invalid_request`) with a clear validation message.
 - Optional operational debug tracing:
   - `INNIES_COMPAT_TRACE=true` enables redacted request/response logs for `/v1/messages` only.

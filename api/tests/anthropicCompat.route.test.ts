@@ -572,8 +572,13 @@ describe('anthropic compat route', () => {
     upstreamSpy.mockRestore();
   });
 
-  it('returns deterministic 400 when thinking budget_tokens is below 1024', async () => {
-    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+  it('normalizes thinking budget_tokens below 1024 up to 1024', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_thinking_2', usage: { input_tokens: 4, output_tokens: 6 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
     const req = createMockReq({
       method: 'POST',
       path: '/v1/messages',
@@ -594,10 +599,11 @@ describe('anthropic compat route', () => {
     await invoke(handlers[1], req, res);
     await invoke(handlers[2], req, res);
 
-    expect(res.statusCode).toBe(400);
-    expect((res.body as any).code).toBe('invalid_request');
-    expect(String((res.body as any).message)).toContain('budget_tokens >= 1024');
-    expect(upstreamSpy).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(200);
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    const fetchArgs = upstreamSpy.mock.calls[0];
+    const body = JSON.parse(String((fetchArgs?.[1] as RequestInit)?.body ?? '{}'));
+    expect(body.thinking?.budget_tokens).toBe(1024);
 
     upstreamSpy.mockRestore();
   });

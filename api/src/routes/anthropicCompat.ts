@@ -56,12 +56,8 @@ function normalizeThinkingForCompat(payload: Record<string, unknown>): Record<st
   }
 
   if (budgetTokens < 1024) {
-    throw new AppError(
-      'invalid_request',
-      400,
-      'thinking.enabled requires thinking.budget_tokens >= 1024',
-      { budgetTokens }
-    );
+    budgetTokens = 1024;
+    thinking.budget_tokens = budgetTokens;
   }
 
   const maxTokensRaw = normalized.max_tokens ?? normalized.max_output_tokens;
