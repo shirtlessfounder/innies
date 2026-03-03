@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { requireApiKey } from '../middleware/auth.js';
 import { proxyPostHandler } from './proxy.js';
 import { runtime } from '../services/runtime.js';
+import { AppError } from '../utils/errors.js';
 
 const router = Router();
 
@@ -26,6 +27,61 @@ function isCompatEndpointEnabled(): boolean {
   return process.env.ANTHROPIC_COMPAT_ENDPOINT_ENABLED === 'true';
 }
 
+function normalizeThinkingForCompat(payload: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...payload };
+  const thinkingRaw = normalized.thinking;
+  if (!thinkingRaw || typeof thinkingRaw !== 'object') {
+    return normalized;
+  }
+
+  const thinking = { ...(thinkingRaw as Record<string, unknown>) };
+  if (thinking.type !== 'enabled') {
+    normalized.thinking = thinking;
+    return normalized;
+  }
+
+  let budgetTokens: number;
+  if (thinking.budget_tokens == null) {
+    budgetTokens = 1024;
+    thinking.budget_tokens = budgetTokens;
+  } else if (typeof thinking.budget_tokens === 'number' && Number.isInteger(thinking.budget_tokens) && thinking.budget_tokens > 0) {
+    budgetTokens = thinking.budget_tokens;
+  } else {
+    throw new AppError(
+      'invalid_request',
+      400,
+      'thinking.enabled requires thinking.budget_tokens to be a positive integer',
+      { budgetTokens: thinking.budget_tokens }
+    );
+  }
+
+  if (budgetTokens < 1024) {
+    throw new AppError(
+      'invalid_request',
+      400,
+      'thinking.enabled requires thinking.budget_tokens >= 1024',
+      { budgetTokens }
+    );
+  }
+
+  const maxTokensRaw = normalized.max_tokens ?? normalized.max_output_tokens;
+  const maxTokens = typeof maxTokensRaw === 'number' && Number.isFinite(maxTokensRaw)
+    ? maxTokensRaw
+    : null;
+
+  if (maxTokens !== null && maxTokens <= budgetTokens) {
+    throw new AppError(
+      'invalid_request',
+      400,
+      'thinking.enabled requires max_tokens (or max_output_tokens) greater than thinking.budget_tokens',
+      { maxTokens, budgetTokens }
+    );
+  }
+
+  normalized.thinking = thinking;
+  return normalized;
+}
+
 router.post(
   '/v1/messages',
   (req, res, next) => {
@@ -39,6 +95,7 @@ router.post(
   async (req, res, next) => {
     try {
       const parsed = anthropicMessagesSchema.parse(req.body);
+      const normalizedPayload = normalizeThinkingForCompat(parsed as Record<string, unknown>);
 
       (req as any).inniesCompatMode = true;
       (req as any).inniesProxiedPath = '/v1/messages';
@@ -46,7 +103,7 @@ router.post(
         provider: 'anthropic',
         model: parsed.model,
         streaming: parsed.stream === true,
-        payload: req.body
+        payload: normalizedPayload
       };
 
       await proxyPostHandler(req as any, res, next as any);

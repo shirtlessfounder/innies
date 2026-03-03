@@ -503,4 +503,162 @@ describe('anthropic compat route', () => {
 
     upstreamSpy.mockRestore();
   });
+
+  it('normalizes thinking.enabled budget_tokens to 1024 when missing', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_thinking_1', usage: { input_tokens: 5, output_tokens: 5 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 2048,
+        messages: [{ role: 'user', content: 'hi' }],
+        thinking: { type: 'enabled' }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    const fetchArgs = upstreamSpy.mock.calls[0];
+    const body = JSON.parse(String((fetchArgs?.[1] as RequestInit)?.body ?? '{}'));
+    expect(body.thinking?.type).toBe('enabled');
+    expect(body.thinking?.budget_tokens).toBe(1024);
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('returns deterministic 400 when thinking budget_tokens is >= max_tokens', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'hi' }],
+        thinking: { type: 'enabled', budget_tokens: 1024 }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any).code).toBe('invalid_request');
+    expect(String((res.body as any).message)).toContain('thinking.enabled requires max_tokens');
+    expect(upstreamSpy).not.toHaveBeenCalled();
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('returns deterministic 400 when thinking budget_tokens is below 1024', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 4096,
+        messages: [{ role: 'user', content: 'hi' }],
+        thinking: { type: 'enabled', budget_tokens: 32 }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any).code).toBe('invalid_request');
+    expect(String((res.body as any).message)).toContain('budget_tokens >= 1024');
+    expect(upstreamSpy).not.toHaveBeenCalled();
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('returns deterministic 400 when thinking budget_tokens is not a positive integer', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 4096,
+        messages: [{ role: 'user', content: 'hi' }],
+        thinking: { type: 'enabled', budget_tokens: 1024.5 }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any).code).toBe('invalid_request');
+    expect(String((res.body as any).message)).toContain('positive integer');
+    expect(upstreamSpy).not.toHaveBeenCalled();
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('returns deterministic 400 when thinking budget_tokens is >= max_output_tokens', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_output_tokens: 1024,
+        messages: [{ role: 'user', content: 'hi' }],
+        thinking: { type: 'enabled', budget_tokens: 1024 }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any).code).toBe('invalid_request');
+    expect(String((res.body as any).message)).toContain('max_tokens');
+    expect(upstreamSpy).not.toHaveBeenCalled();
+
+    upstreamSpy.mockRestore();
+  });
 });

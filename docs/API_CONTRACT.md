@@ -76,6 +76,14 @@ Notes:
 - If `x-request-id` is missing, API generates and returns one.
 - `stream=true` is supported; streaming passthrough is used when upstream returns `text/event-stream`.
 - When `ANTHROPIC_COMPAT_ENDPOINT_ENABLED=false`, endpoint returns deterministic `404`.
+- Thinking compatibility guardrails:
+  - If `thinking.type = "enabled"` and `thinking.budget_tokens` is missing, API normalizes to `1024`.
+  - If `thinking.type = "enabled"` and `thinking.budget_tokens` is provided, it must be a positive integer.
+  - If `thinking.type = "enabled"` and `thinking.budget_tokens < 1024`, API returns deterministic `400` (`invalid_request`).
+  - If `thinking.type = "enabled"` and `max_tokens`/`max_output_tokens` is `<= thinking.budget_tokens`, API returns deterministic `400` (`invalid_request`) with a clear validation message.
+- Optional operational debug tracing:
+  - `INNIES_COMPAT_TRACE=true` enables redacted request/response logs for `/v1/messages` only.
+  - Keep disabled in normal production operation due to log volume.
 
 ### `POST /v1/seller-keys`
 Create seller key (admin only).

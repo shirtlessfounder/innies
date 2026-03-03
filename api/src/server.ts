@@ -14,6 +14,60 @@ export function createApp(): express.Express {
   const jsonBodyLimit = process.env.JSON_BODY_LIMIT || '20mb';
   app.use(express.json({ limit: jsonBodyLimit }));
 
+  app.use((req, res, next) => {
+    if (process.env.INNIES_COMPAT_TRACE !== 'true' || req.path !== '/v1/messages') {
+      next();
+      return;
+    }
+
+    const startedAt = Date.now();
+    const headers = req.headers;
+    const body = req.body as Record<string, unknown> | undefined;
+    const messages = body?.messages;
+    const messageCount = Array.isArray(messages) ? messages.length : 0;
+
+    // Redacted trace for compat debugging: no auth values, no raw prompts/tool payloads.
+    // eslint-disable-next-line no-console
+    console.log('[/v1/messages] request', {
+      method: req.method,
+      path: req.path,
+      requestIdHeader: headers['x-request-id'],
+      contentType: headers['content-type'],
+      anthropicVersion: headers['anthropic-version'],
+      anthropicBeta: headers['anthropic-beta'],
+      hasAuthorization: Boolean(headers.authorization),
+      hasApiKey: Boolean(headers['x-api-key']),
+      bodyShape: {
+        model: body?.model,
+        stream: body?.stream,
+        hasMessages: Array.isArray(messages),
+        messageCount,
+        hasSystem: body?.system != null,
+        hasTools: Array.isArray(body?.tools),
+        hasToolChoice: body?.tool_choice != null,
+        hasThinking: body?.thinking != null,
+        hasMetadata: body?.metadata != null
+      }
+    });
+
+    res.on('finish', () => {
+      // eslint-disable-next-line no-console
+      console.log('[/v1/messages] response', {
+        method: req.method,
+        path: req.path,
+        status: res.statusCode,
+        durationMs: Date.now() - startedAt,
+        responseRequestId: res.getHeader('x-request-id'),
+        responseContentType: res.getHeader('content-type'),
+        attemptNo: res.getHeader('x-innies-attempt-no'),
+        tokenCredentialId: res.getHeader('x-innies-token-credential-id'),
+        upstreamKeyId: res.getHeader('x-innies-upstream-key-id')
+      });
+    });
+
+    next();
+  });
+
   app.get('/healthz', (_req, res) => {
     res.json({ ok: true });
   });

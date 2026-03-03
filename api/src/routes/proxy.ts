@@ -325,7 +325,9 @@ async function executeTokenModeNonStreaming(input: {
             credential = next;
             continue;
           }
-          await runtime.repos.tokenCredentials.markExpired(credential.id);
+          if (status === 401) {
+            await runtime.repos.tokenCredentials.markExpired(credential.id);
+          }
         }
         sawAuthFailure = true;
         lastAuthStatus = status;
@@ -563,7 +565,9 @@ async function executeTokenModeStreaming(input: {
             credential = next;
             continue;
           }
-          await runtime.repos.tokenCredentials.markExpired(credential.id);
+          if (status === 401) {
+            await runtime.repos.tokenCredentials.markExpired(credential.id);
+          }
         }
         sawAuthFailure = true;
         lastAuthStatus = status;

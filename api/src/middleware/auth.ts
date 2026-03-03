@@ -4,8 +4,11 @@ import { sha256Hex } from '../utils/hash.js';
 
 function readToken(req: Request): string | null {
   const auth = req.header('authorization');
-  if (auth?.startsWith('Bearer ')) {
-    return auth.slice('Bearer '.length).trim();
+  if (auth) {
+    const match = auth.match(/^\s*bearer\s+(.+)\s*$/i);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
   }
 
   const xApiKey = req.header('x-api-key');
