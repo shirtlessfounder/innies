@@ -14,11 +14,24 @@ const anthropicMessagesSchema = z.object({
   max_output_tokens: z.number().int().positive().optional(),
   stream: z.boolean().optional()
 }).passthrough().superRefine((value, ctx) => {
+  const maxMessageCountRaw = Number(process.env.ANTHROPIC_COMPAT_MAX_MESSAGE_COUNT || 1000);
+  const maxMessageCount = Number.isFinite(maxMessageCountRaw) && maxMessageCountRaw > 0
+    ? Math.floor(maxMessageCountRaw)
+    : 1000;
+
   if (value.max_tokens == null && value.max_output_tokens == null) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['max_tokens'],
       message: 'Either max_tokens or max_output_tokens is required'
+    });
+  }
+
+  if (value.messages.length > maxMessageCount) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['messages'],
+      message: `messages exceeds max allowed count (${maxMessageCount})`
     });
   }
 });
@@ -87,6 +100,40 @@ function normalizeToolChoiceForCompat(payload: Record<string, unknown>): Record<
   return normalized;
 }
 
+function getMaxCompatRequestBytes(): number {
+  const maxRequestBytesRaw = Number(process.env.ANTHROPIC_COMPAT_MAX_REQUEST_BYTES || 5_000_000);
+  return Number.isFinite(maxRequestBytesRaw) && maxRequestBytesRaw > 0
+    ? Math.floor(maxRequestBytesRaw)
+    : 5_000_000;
+}
+
+function enforceCompatRequestBytesGuardrail(req: { header: (name: string) => string | undefined; body: unknown }): void {
+  const maxRequestBytes = getMaxCompatRequestBytes();
+  const declaredLengthRaw = req.header('content-length');
+  const declaredLength = declaredLengthRaw ? Number(declaredLengthRaw) : NaN;
+
+  if (Number.isFinite(declaredLength) && declaredLength > maxRequestBytes) {
+    throw new AppError(
+      'invalid_request',
+      400,
+      `request payload exceeds max allowed bytes (${maxRequestBytes})`,
+      { maxRequestBytes, contentLength: declaredLength }
+    );
+  }
+
+  if (!Number.isFinite(declaredLength)) {
+    const payloadBytes = Buffer.byteLength(JSON.stringify(req.body ?? {}), 'utf8');
+    if (payloadBytes > maxRequestBytes) {
+      throw new AppError(
+        'invalid_request',
+        400,
+        `request payload exceeds max allowed bytes (${maxRequestBytes})`,
+        { maxRequestBytes, payloadBytes }
+      );
+    }
+  }
+}
+
 router.post(
   '/v1/messages',
   (req, res, next) => {
@@ -99,6 +146,7 @@ router.post(
   requireApiKey(runtime.repos.apiKeys, ['buyer_proxy', 'admin']),
   async (req, res, next) => {
     try {
+      enforceCompatRequestBytesGuardrail(req as any);
       const parsed = anthropicMessagesSchema.parse(req.body);
       const withThinking = normalizeThinkingForCompat(parsed as Record<string, unknown>);
       const normalizedPayload = normalizeToolChoiceForCompat(withThinking);

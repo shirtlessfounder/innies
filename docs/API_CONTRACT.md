@@ -83,6 +83,12 @@ Notes:
   - If `thinking.type = "enabled"` and `max_tokens`/`max_output_tokens` is `<= thinking.budget_tokens`, API returns deterministic `400` (`invalid_request`) with a clear validation message.
 - Tool-choice compatibility guardrail:
   - If `tool_choice` is a string (`auto|none|any`), API normalizes it to object form (`{"type":"..."}`).
+- Request-size guardrails (deterministic `400 invalid_request`):
+  - `ANTHROPIC_COMPAT_MAX_MESSAGE_COUNT` (default `1000`): if `messages.length` exceeds limit, request is rejected.
+  - `ANTHROPIC_COMPAT_MAX_REQUEST_BYTES` (default `5000000`): if request payload bytes exceed limit, request is rejected.
+  - Byte check behavior:
+    - prefers inbound `Content-Length` when present
+    - falls back to serialized payload byte-size check when `Content-Length` is missing
 - OAuth credential header behavior:
   - For Anthropic OAuth access tokens (`sk-ant-oat*`), upstream auth is always sent as `Authorization: Bearer <token>` even if stored credential `authScheme` is `x_api_key`.
 - 403 policy-block fallback (compat mode):

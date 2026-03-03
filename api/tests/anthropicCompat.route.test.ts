@@ -147,6 +147,8 @@ describe('anthropic compat route', () => {
     delete process.env.TOKEN_REFRESH_ENDPOINT;
     process.env.ANTHROPIC_COMPAT_ENDPOINT_ENABLED = 'true';
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.ANTHROPIC_COMPAT_MAX_MESSAGE_COUNT = '1000';
+    process.env.ANTHROPIC_COMPAT_MAX_REQUEST_BYTES = '5000000';
 
     vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
       id: '11111111-1111-4111-8111-111111111111',
@@ -197,6 +199,8 @@ describe('anthropic compat route', () => {
   afterEach(() => {
     delete process.env.ANTHROPIC_COMPAT_ENDPOINT_ENABLED;
     delete process.env.TOKEN_MODE_ENABLED_ORGS;
+    delete process.env.ANTHROPIC_COMPAT_MAX_MESSAGE_COUNT;
+    delete process.env.ANTHROPIC_COMPAT_MAX_REQUEST_BYTES;
     vi.restoreAllMocks();
   });
 
@@ -267,10 +271,15 @@ describe('anthropic compat route', () => {
     expect(idemStartSpy).not.toHaveBeenCalled();
     expect(upstreamSpy).toHaveBeenCalledTimes(1);
     expect(meteringSpy).toHaveBeenCalledTimes(1);
+    const meteringArgs = meteringSpy.mock.calls[0]?.[0] as any;
+    expect(String(meteringArgs?.note ?? '')).toContain('metering_source=payload_usage');
+    expect(String(meteringArgs?.note ?? '')).toContain('stream_mode=synthetic_bridge');
     upstreamSpy.mockRestore();
   });
 
   it('passes through SSE stream chunks on compat route', async () => {
+    const meteringSpy = vi.spyOn(runtimeModule.runtime.services.metering, 'recordUsage');
+    const streamLatencySpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const encoder = new TextEncoder();
     const sseBody = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -306,6 +315,52 @@ describe('anthropic compat route', () => {
     expect(String(res.body)).toContain(': keepalive');
     expect(String(res.body)).toContain('event: message_start');
     expect(String(res.body)).toContain('event: message_stop');
+    expect(meteringSpy).toHaveBeenCalledTimes(1);
+    const meteringArgs = meteringSpy.mock.calls[0]?.[0] as any;
+    expect(String(meteringArgs?.note ?? '')).toContain('metering_source=stream_estimate');
+    const latencyCalls = streamLatencySpy.mock.calls.filter((c) => c[0] === '[stream-latency]');
+    expect(latencyCalls.length).toBeGreaterThan(0);
+    const lastLatency = latencyCalls[latencyCalls.length - 1]?.[1] as any;
+    expect(lastLatency?.stream_mode).toBe('passthrough');
+    expect(lastLatency?.bridge_build_ms).toBeNull();
+    upstreamSpy.mockRestore();
+    streamLatencySpy.mockRestore();
+  });
+
+  it('records metering_source=stream_usage when SSE usage frames are present', async () => {
+    const meteringSpy = vi.spyOn(runtimeModule.runtime.services.metering, 'recordUsage');
+    const encoder = new TextEncoder();
+    const sseBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: message_start\ndata: {"type":"message_start"}\n\n'));
+        controller.enqueue(encoder.encode('event: message_delta\ndata: {"type":"message_delta","usage":{"input_tokens":11,"output_tokens":7}}\n\n'));
+        controller.enqueue(encoder.encode('event: message_stop\ndata: {"type":"message_stop"}\n\n'));
+        controller.close();
+      }
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(sseBody, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: { authorization: 'Bearer in_test_token', 'content-type': 'application/json' },
+      body: { model: 'claude-opus-4-6', stream: true, max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(meteringSpy).toHaveBeenCalledTimes(1);
+    const meteringArgs = meteringSpy.mock.calls[0]?.[0] as any;
+    expect(String(meteringArgs?.note ?? '')).toContain('metering_source=stream_usage');
     upstreamSpy.mockRestore();
   });
 
@@ -324,6 +379,92 @@ describe('anthropic compat route', () => {
 
     expect(res.statusCode).toBe(400);
     expect((res.body as any).code).toBe('invalid_request');
+  });
+
+  it('rejects deterministic when messages exceed configured max count', async () => {
+    process.env.ANTHROPIC_COMPAT_MAX_MESSAGE_COUNT = '2';
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: { authorization: 'Bearer in_test_token', 'content-type': 'application/json' },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 8,
+        messages: [
+          { role: 'user', content: '1' },
+          { role: 'user', content: '2' },
+          { role: 'user', content: '3' }
+        ]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any).code).toBe('invalid_request');
+    expect(JSON.stringify((res.body as any).issues ?? [])).toContain('messages exceeds max allowed count');
+    expect(upstreamSpy).not.toHaveBeenCalled();
+    upstreamSpy.mockRestore();
+  });
+
+  it('rejects deterministic when request payload exceeds configured max bytes', async () => {
+    process.env.ANTHROPIC_COMPAT_MAX_REQUEST_BYTES = '200';
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: { authorization: 'Bearer in_test_token', 'content-type': 'application/json' },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 8,
+        messages: [{ role: 'user', content: 'x'.repeat(400) }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any).code).toBe('invalid_request');
+    expect(String((res.body as any).message ?? '')).toContain('request payload exceeds max allowed bytes');
+    expect(upstreamSpy).not.toHaveBeenCalled();
+    upstreamSpy.mockRestore();
+  });
+
+  it('rejects by content-length fast-path when declared size exceeds max bytes', async () => {
+    process.env.ANTHROPIC_COMPAT_MAX_REQUEST_BYTES = '200';
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'content-length': '999999'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 8,
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any).code).toBe('invalid_request');
+    expect(String((res.body as any).message)).toContain('request payload exceeds max allowed bytes');
+    expect(upstreamSpy).not.toHaveBeenCalled();
+    upstreamSpy.mockRestore();
   });
 
   it('rejects when both max_tokens and max_output_tokens are missing', async () => {
@@ -369,6 +510,66 @@ describe('anthropic compat route', () => {
     expect(upstreamSpy).toHaveBeenCalledTimes(1);
 
     upstreamSpy.mockRestore();
+  });
+
+  it('supports missing idempotency key in stream mode with no persistence', async () => {
+    const idemStartSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'start');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_stream_nokey', usage: { input_tokens: 3, output_tokens: 2 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: { authorization: 'Bearer in_test_token', 'content-type': 'application/json' },
+      body: { model: 'claude-opus-4-6', stream: true, max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(String(res.body)).toContain('event: message_start');
+    expect(String(res.body)).toContain('event: message_stop');
+    expect(idemStartSpy).not.toHaveBeenCalled();
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('keeps 200 SSE response when synthetic-bridge post-end bookkeeping fails', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(runtimeModule.runtime.services.metering, 'recordUsage').mockRejectedValue(new Error('metering failed'));
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_stream_1', usage: { input_tokens: 10, output_tokens: 10 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: { authorization: 'Bearer in_test_token', 'content-type': 'application/json' },
+      body: { model: 'claude-opus-4-6', stream: true, max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(String(res.body)).toContain('event: message_start');
+    expect(String(res.body)).toContain('event: message_stop');
+    expect(warnSpy).toHaveBeenCalled();
+    upstreamSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 
   it('returns 409 replay-not-supported on duplicate when idempotency key is provided', async () => {

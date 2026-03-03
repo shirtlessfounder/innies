@@ -37,6 +37,8 @@ type ProxyRouteResult = {
   alreadyRecorded: boolean;
 };
 
+type MeteringSource = 'payload_usage' | 'stream_usage' | 'stream_estimate';
+
 function requestSeed(requestId: string): number {
   let seed = 0;
   for (let i = 0; i < requestId.length; i += 1) {
@@ -411,6 +413,26 @@ function extractAnthropicTextContent(data: unknown): string {
     .filter((item) => item && typeof item === 'object' && item.type === 'text')
     .map((item) => String(item.text ?? ''))
     .join('');
+}
+
+function resolveSyntheticUsageFromPayload(data: unknown): {
+  inputTokens: number;
+  outputTokens: number;
+  usageUnits: number;
+  meteringSource: MeteringSource;
+} {
+  const inputTokens = Number((data as any)?.usage?.input_tokens ?? 0);
+  const outputTokens = Number((data as any)?.usage?.output_tokens ?? 0);
+  const usageUnits = Math.max(0, inputTokens + outputTokens);
+  if (usageUnits > 0) {
+    return { inputTokens, outputTokens, usageUnits, meteringSource: 'payload_usage' };
+  }
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    usageUnits: 1,
+    meteringSource: 'stream_estimate'
+  };
 }
 
 function buildSyntheticAnthropicSse(data: unknown, model: string): string {
@@ -884,11 +906,22 @@ async function executeTokenModeStreaming(input: {
     let compat = createCompatNormalizationState(payload, anthropicBeta);
 
     while (true) {
+      const attemptStartedAt = Date.now();
       const baseUrl = upstreamBaseUrl(provider);
       const targetUrl = new URL(proxiedPath, baseUrl);
       const timeoutMs = upstreamTimeoutMs();
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const upstreamHeaders = buildTokenModeUpstreamHeaders({
+        requestId,
+        anthropicVersion,
+        anthropicBeta: compat.anthropicBeta,
+        provider,
+        credential,
+        skipOauthDefaultBetas: compat.blockedRetryApplied
+      });
+      const upstreamBody = JSON.stringify(compat.payload ?? {});
+      const dispatchStartedAt = Date.now();
 
       const logAttemptFailure = async (failure: AttemptFailure) => {
         await runtime.repos.routingEvents.insert({
@@ -913,15 +946,8 @@ async function executeTokenModeStreaming(input: {
 
       const upstreamResponse = await fetch(targetUrl, {
         method: 'POST',
-        headers: buildTokenModeUpstreamHeaders({
-          requestId,
-          anthropicVersion,
-          anthropicBeta: compat.anthropicBeta,
-          provider,
-          credential,
-          skipOauthDefaultBetas: compat.blockedRetryApplied
-        }),
-        body: JSON.stringify(compat.payload ?? {}),
+        headers: upstreamHeaders,
+        body: upstreamBody,
         signal: controller.signal
       })
         .catch(async (error: unknown) => {
@@ -934,6 +960,7 @@ async function executeTokenModeStreaming(input: {
       if (!upstreamResponse) break;
 
       const status = upstreamResponse.status;
+      const upstreamHeadersAt = Date.now();
       if (status === 403 && strictUpstreamPassthrough) {
         const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
         const data = contentType.includes('application/json')
@@ -1082,9 +1109,10 @@ async function executeTokenModeStreaming(input: {
             errorMessage
           });
         }
-        const inputTokens = Number((data as any)?.usage?.input_tokens ?? 0);
-        const outputTokens = Number((data as any)?.usage?.output_tokens ?? 0);
-        const usageUnits = Math.max(0, inputTokens + outputTokens);
+        const usage = resolveSyntheticUsageFromPayload(data);
+        const { inputTokens, outputTokens, usageUnits, meteringSource } = usage;
+        let firstDownstreamWriteAt: number | null = null;
+        let streamEndedAt: number | null = null;
 
         await runtime.repos.routingEvents.insert({
           requestId,
@@ -1104,33 +1132,6 @@ async function executeTokenModeStreaming(input: {
           errorCode: status >= 500 ? 'upstream_5xx_passthrough' : undefined,
           latencyMs: Date.now() - startedAt
         });
-
-        if (status < 500) {
-          await runtime.services.metering.recordUsage({
-            requestId,
-            attemptNo,
-            orgId,
-            apiKeyId,
-            sellerKeyId: undefined,
-            provider,
-            model,
-            inputTokens,
-            outputTokens,
-            usageUnits,
-            retailEquivalentMinor: usageUnits
-          });
-
-          const monthlyUsageRecorded = await runtime.repos.tokenCredentials.addMonthlyContributionUsage(
-            credential.id,
-            usageUnits
-          );
-          if (!monthlyUsageRecorded) {
-            await logAttemptFailure({
-              kind: 'metering_degraded',
-              message: 'monthly contribution increment could not be recorded after successful upstream non-stream response'
-            });
-          }
-        }
 
         // Maintain stream contract for compat callers: if client requested stream=true,
         // do not downgrade a successful response to JSON.
@@ -1157,6 +1158,7 @@ async function executeTokenModeStreaming(input: {
           }
 
           const syntheticPayload = `: keepalive\n\n${buildSyntheticAnthropicSse(data, model)}`;
+          firstDownstreamWriteAt = Date.now();
           (res as any).write(syntheticPayload);
           if ((res as any).body === undefined) {
             (res as any).body = syntheticPayload;
@@ -1164,22 +1166,77 @@ async function executeTokenModeStreaming(input: {
           if (typeof (res as any).flush === 'function') {
             (res as any).flush();
           }
-          if (idempotencySession && !idempotencySession.replay) {
-            await commitProxyMetadataIdempotency(
-              idempotencySession,
+          (res as any).end();
+          streamEndedAt = Date.now();
+
+          try {
+            if (status < 500) {
+              await runtime.services.metering.recordUsage({
+                requestId,
+                attemptNo,
+                orgId,
+                apiKeyId,
+                sellerKeyId: undefined,
+                provider,
+                model,
+                inputTokens,
+                outputTokens,
+                usageUnits,
+                retailEquivalentMinor: usageUnits,
+                note: `metering_source=${meteringSource} stream_mode=synthetic_bridge`
+              });
+
+              const monthlyUsageRecorded = await runtime.repos.tokenCredentials.addMonthlyContributionUsage(
+                credential.id,
+                usageUnits
+              );
+              if (!monthlyUsageRecorded) {
+                await logAttemptFailure({
+                  kind: 'metering_degraded',
+                  message: 'monthly contribution increment could not be recorded after successful upstream non-stream response'
+                });
+              }
+            }
+
+            if (idempotencySession && !idempotencySession.replay) {
+              await commitProxyMetadataIdempotency(
+                idempotencySession,
+                requestId,
+                { type: 'stream_non_replayable', requestId, usageUnits }
+              );
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.warn('[post-stream-bookkeeping] synthetic_bridge_failed', {
               requestId,
-              { type: 'stream_non_replayable', requestId, usageUnits }
-            );
+              attemptNo,
+              credential_id: credential.id,
+              message
+            });
           }
           console.info('[stream-first-byte]', {
             requestId,
             attemptNo,
             provider,
             model,
-            first_byte_ms: Date.now() - startedAt,
+            first_byte_ms: (firstDownstreamWriteAt ?? Date.now()) - startedAt,
             synthetic_stream_bridge: true
           });
-          (res as any).end();
+          console.info('[stream-latency]', {
+            requestId,
+            attemptNo,
+            credential_id: credential.id,
+            upstream_status: status,
+            stream_mode: 'synthetic_bridge',
+            synthetic_stream_bridge: true,
+            metering_source: meteringSource,
+            pre_upstream_ms: dispatchStartedAt - attemptStartedAt,
+            upstream_ttfb_ms: upstreamHeadersAt - dispatchStartedAt,
+            bridge_build_ms: firstDownstreamWriteAt ? (firstDownstreamWriteAt - upstreamHeadersAt) : null,
+            post_stream_write_ms: firstDownstreamWriteAt && streamEndedAt
+              ? Math.max(0, streamEndedAt - firstDownstreamWriteAt)
+              : null
+          });
           return {
             requestId,
             keyId: credential.id,
@@ -1227,14 +1284,36 @@ async function executeTokenModeStreaming(input: {
         await logAttemptFailure({ kind: 'network', message: 'upstream stream missing body' });
         break;
       }
+      await runtime.repos.routingEvents.insert({
+        requestId,
+        attemptNo,
+        orgId,
+        apiKeyId,
+        sellerKeyId: undefined,
+        provider,
+        model,
+        streaming: true,
+        routeDecision: {
+          reason: 'token_mode_round_robin',
+          tokenCredentialId: credential.id,
+          tokenAuthScheme: credential.authScheme
+        },
+        upstreamStatus: status,
+        latencyMs: Date.now() - startedAt
+      });
 
       let totalBytes = 0;
       let totalChunks = 0;
       let sampled = '';
       let firstByteAt: number | null = null;
+      let firstDownstreamWriteAt: number | null = null;
+      let streamEndedAt: number | null = null;
       const heartbeatMs = sseHeartbeatIntervalMs();
       const writeKeepalive = () => {
         if ((res as any).writableEnded || (res as any).destroyed) return;
+        if (firstDownstreamWriteAt === null) {
+          firstDownstreamWriteAt = Date.now();
+        }
         (res as any).write(': keepalive\n\n');
         if (typeof (res as any).flush === 'function') {
           (res as any).flush();
@@ -1269,6 +1348,7 @@ async function executeTokenModeStreaming(input: {
         // Client disconnects are expected sometimes; continue with best-effort metering.
       } finally {
         clearInterval(keepaliveTimer);
+        streamEndedAt = Date.now();
       }
 
       const parsedInputTokens = extractLastTokenCount(sampled, 'input_tokens');
@@ -1281,59 +1361,67 @@ async function executeTokenModeStreaming(input: {
       const inputTokens = parsedInputTokens ?? Math.floor(usageUnits * 0.4);
       const outputTokens = parsedOutputTokens ?? Math.max(0, usageUnits - inputTokens);
       const usedEstimate = parsedInputTokens === null || parsedOutputTokens === null;
+      const meteringSource: MeteringSource = usedEstimate ? 'stream_estimate' : 'stream_usage';
 
-      if (idempotencySession && !idempotencySession.replay) {
-        await commitProxyMetadataIdempotency(
-          idempotencySession,
-          requestId,
-          { type: 'stream_non_replayable', requestId, usageUnits }
+      try {
+        if (idempotencySession && !idempotencySession.replay) {
+          await commitProxyMetadataIdempotency(
+            idempotencySession,
+            requestId,
+            { type: 'stream_non_replayable', requestId, usageUnits }
+          );
+        }
+
+        const monthlyUsageRecorded = await runtime.repos.tokenCredentials.addMonthlyContributionUsage(
+          credential.id,
+          usageUnits
         );
-      }
+        if (!monthlyUsageRecorded) {
+          await logAttemptFailure({
+            kind: 'metering_degraded',
+            message: 'monthly contribution increment could not be recorded after successful upstream stream'
+          });
+        }
 
-      const monthlyUsageRecorded = await runtime.repos.tokenCredentials.addMonthlyContributionUsage(
-        credential.id,
-        usageUnits
-      );
-      if (!monthlyUsageRecorded) {
-        await logAttemptFailure({
-          kind: 'metering_degraded',
-          message: 'monthly contribution increment could not be recorded after successful upstream stream'
+        await runtime.services.metering.recordUsage({
+          requestId,
+          attemptNo,
+          orgId,
+          apiKeyId,
+          sellerKeyId: undefined,
+          provider,
+          model,
+          inputTokens,
+          outputTokens,
+          usageUnits,
+          retailEquivalentMinor: usageUnits,
+          note: usedEstimate
+            ? `metering_source=${meteringSource} estimate=stream_bytes_v1 bytes=${totalBytes} chunks=${totalChunks} reconcile_pending=true`
+            : `metering_source=${meteringSource} source=stream_usage_payload bytes=${totalBytes} chunks=${totalChunks}`
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn('[post-stream-bookkeeping] passthrough_failed', {
+          requestId,
+          attemptNo,
+          credential_id: credential.id,
+          message
         });
       }
-
-      await runtime.repos.routingEvents.insert({
+      console.info('[stream-latency]', {
         requestId,
         attemptNo,
-        orgId,
-        apiKeyId,
-        sellerKeyId: undefined,
-        provider,
-        model,
-        streaming: true,
-        routeDecision: {
-          reason: 'token_mode_round_robin',
-          tokenCredentialId: credential.id,
-          tokenAuthScheme: credential.authScheme
-        },
-        upstreamStatus: status,
-        latencyMs: Date.now() - startedAt
-      });
-
-      await runtime.services.metering.recordUsage({
-        requestId,
-        attemptNo,
-        orgId,
-        apiKeyId,
-        sellerKeyId: undefined,
-        provider,
-        model,
-        inputTokens,
-        outputTokens,
-        usageUnits,
-        retailEquivalentMinor: usageUnits,
-        note: usedEstimate
-          ? `estimate=stream_bytes_v1 bytes=${totalBytes} chunks=${totalChunks} reconcile_pending=true`
-          : `source=stream_usage_payload bytes=${totalBytes} chunks=${totalChunks}`
+        credential_id: credential.id,
+        upstream_status: status,
+        stream_mode: 'passthrough',
+        synthetic_stream_bridge: false,
+        metering_source: meteringSource,
+        pre_upstream_ms: dispatchStartedAt - attemptStartedAt,
+        upstream_ttfb_ms: firstByteAt !== null ? (firstByteAt - dispatchStartedAt) : (upstreamHeadersAt - dispatchStartedAt),
+        bridge_build_ms: null,
+        post_stream_write_ms: firstDownstreamWriteAt && streamEndedAt
+          ? Math.max(0, streamEndedAt - firstDownstreamWriteAt)
+          : null
       });
 
       return null;
