@@ -199,6 +199,11 @@ function sendProxyReplayNotSupported(res: Response, requestId: string): void {
   });
 }
 
+function generateCompatIdempotencyKey(requestId: string): string {
+  const raw = `compat_${requestId}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  return raw.padEnd(32, '0').slice(0, 128);
+}
+
 async function commitProxyMetadataIdempotency(
   session: IdempotencySession,
   responseRef: string,
@@ -222,6 +227,7 @@ async function executeTokenModeNonStreaming(input: {
   proxiedPath: string;
   anthropicVersion: string;
   startedAt: number;
+  strictUpstreamPassthrough?: boolean;
 }): Promise<ProxyRouteResult> {
   const {
     requestId,
@@ -232,7 +238,8 @@ async function executeTokenModeNonStreaming(input: {
     payload,
     proxiedPath,
     anthropicVersion,
-    startedAt
+    startedAt,
+    strictUpstreamPassthrough
   } = input;
   const credentials = orderCredentialsForRequest(
     await runtime.repos.tokenCredentials.listActiveForRouting(orgId, provider),
@@ -323,6 +330,44 @@ async function executeTokenModeNonStreaming(input: {
       }
 
       if (status >= 500) {
+        if (strictUpstreamPassthrough) {
+          const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+          const data = contentType.includes('application/json')
+            ? await upstreamResponse.json().catch(() => ({}))
+            : await upstreamResponse.text();
+
+          await runtime.repos.routingEvents.insert({
+            requestId,
+            attemptNo,
+            orgId,
+            apiKeyId,
+            sellerKeyId: undefined,
+            provider,
+            model,
+            streaming: false,
+            routeDecision: {
+              reason: 'token_mode_round_robin',
+              tokenCredentialId: credential.id,
+              tokenAuthScheme: credential.authScheme
+            },
+            upstreamStatus: status,
+            errorCode: 'upstream_5xx_passthrough',
+            latencyMs: Date.now() - startedAt
+          });
+
+          return {
+            requestId,
+            keyId: credential.id,
+            attemptNo,
+            upstreamStatus: status,
+            usageUnits: 0,
+            contentType,
+            data,
+            routeKind: 'token_credential',
+            alreadyRecorded: true
+          };
+        }
+
         await logAttemptFailure({ kind: 'server_error', statusCode: status, message: 'upstream server error' });
         break;
       }
@@ -401,11 +446,12 @@ async function executeTokenModeNonStreaming(input: {
   throw new AppError('capacity_unavailable', 429, 'All token credential attempts exhausted', { provider, model });
 }
 
-router.post('/v1/proxy/*', requireApiKey(runtime.repos.apiKeys, ['buyer_proxy', 'admin']), async (req, res, next) => {
+export async function proxyPostHandler(req: any, res: Response, next: any): Promise<void> {
   const startedAt = Date.now();
   let observedInputTokens = 0;
   let observedOutputTokens = 0;
   try {
+    const compatMode = Boolean(req.inniesCompatMode);
     const auth = req.auth;
     if (!auth?.orgId) {
       throw new AppError('forbidden', 403, 'API key is not associated with an org');
@@ -414,7 +460,11 @@ router.post('/v1/proxy/*', requireApiKey(runtime.repos.apiKeys, ['buyer_proxy', 
 
     const parsed = proxyRequestSchema.parse(req.body);
     const requestId = buildRequestId(req.header('x-request-id') ?? undefined);
-    const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
+    const rawIdempotencyKey = req.header('idempotency-key') ?? undefined;
+    const shouldPersistIdempotency = !compatMode || Boolean(rawIdempotencyKey);
+    const idempotencyKey = shouldPersistIdempotency
+      ? readAndValidateIdempotencyKey(rawIdempotencyKey)
+      : generateCompatIdempotencyKey(requestId);
 
     if (await runtime.repos.killSwitch.isDisabled('global', '*')) {
       throw new AppError('suspended', 423, 'Proxy is globally disabled');
@@ -450,24 +500,29 @@ router.post('/v1/proxy/*', requireApiKey(runtime.repos.apiKeys, ['buyer_proxy', 
       })
     );
 
-    const idemStart = await runtime.services.idempotency.start({
-      scope: idempotencyScope,
-      tenantScope: orgId,
-      idempotencyKey,
-      requestHash
-    });
+    const idemStart = shouldPersistIdempotency
+      ? await runtime.services.idempotency.start({
+        scope: idempotencyScope,
+        tenantScope: orgId,
+        idempotencyKey,
+        requestHash
+      })
+      : null;
 
-    if (idemStart.replay) {
+    if (idemStart?.replay) {
       sendProxyReplayNotSupported(res, requestId);
       return;
     }
 
     const tokenModeEnabled = isTokenModeEnabledForOrg(orgId);
+    if (compatMode && !tokenModeEnabled) {
+      throw new AppError('forbidden', 403, 'Token mode not enabled for org', { orgId });
+    }
     if (isTokenModePolicyActive() && !tokenModeEnabled) {
       throw new AppError('forbidden', 403, 'Token mode not enabled for org', { orgId });
     }
 
-    const proxiedPath = extractProxyPath(req.originalUrl);
+    const proxiedPath = req.inniesProxiedPath ?? extractProxyPath(req.originalUrl);
     let result: ProxyRouteResult;
     if (tokenModeEnabled) {
       if (parsed.streaming) {
@@ -482,7 +537,8 @@ router.post('/v1/proxy/*', requireApiKey(runtime.repos.apiKeys, ['buyer_proxy', 
         payload: parsed.payload ?? {},
         proxiedPath,
         anthropicVersion: req.header('anthropic-version') ?? '2023-06-01',
-        startedAt
+        startedAt,
+        strictUpstreamPassthrough: compatMode
       });
     } else {
       const keys = await runtime.repos.sellerKeys.listActiveForRouting(parsed.provider, parsed.model, parsed.streaming);
@@ -603,11 +659,13 @@ router.post('/v1/proxy/*', requireApiKey(runtime.repos.apiKeys, ['buyer_proxy', 
             const outputTokens = parsedOutputTokens ?? Math.max(0, usageUnits - inputTokens);
             const usedEstimate = parsedInputTokens === null || parsedOutputTokens === null;
 
-            await commitProxyMetadataIdempotency(
-              idemStart,
-              requestId,
-              { type: 'stream_non_replayable', requestId, usageUnits }
-            );
+            if (idemStart && !idemStart.replay) {
+              await commitProxyMetadataIdempotency(
+                idemStart,
+                requestId,
+                { type: 'stream_non_replayable', requestId, usageUnits }
+              );
+            }
 
             await runtime.repos.sellerKeys.addCapacityUsage(decision.sellerKeyId, usageUnits);
             await runtime.repos.routingEvents.insert({
@@ -716,12 +774,14 @@ router.post('/v1/proxy/*', requireApiKey(runtime.repos.apiKeys, ['buyer_proxy', 
       });
     }
 
-    await commitProxyMetadataIdempotency(idemStart, result.requestId, {
-      type: 'non_stream_non_replayable',
-      requestId: result.requestId,
-      attemptNo: result.attemptNo,
-      upstreamStatus: result.upstreamStatus
-    });
+    if (idemStart && !idemStart.replay) {
+      await commitProxyMetadataIdempotency(idemStart, result.requestId, {
+        type: 'non_stream_non_replayable',
+        requestId: result.requestId,
+        attemptNo: result.attemptNo,
+        upstreamStatus: result.upstreamStatus
+      });
+    }
 
     res.setHeader('x-request-id', requestId);
     if (result.routeKind === 'seller_key' && result.keyId) {
@@ -744,6 +804,8 @@ router.post('/v1/proxy/*', requireApiKey(runtime.repos.apiKeys, ['buyer_proxy', 
   } catch (err) {
     next(err);
   }
-});
+}
+
+router.post('/v1/proxy/*', requireApiKey(runtime.repos.apiKeys, ['buyer_proxy', 'admin']), proxyPostHandler);
 
 export default router;

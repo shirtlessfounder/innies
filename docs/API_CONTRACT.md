@@ -23,6 +23,10 @@
 - Header: `Idempotency-Key`
 - Format: UUIDv7 or opaque token length >= 32.
 - C1 proxy policy: proxy requests are metadata-only idempotent; duplicate proxy calls return deterministic `409` (`proxy_replay_not_supported`).
+- Compat endpoint (`POST /v1/messages`): `Idempotency-Key` is optional.
+- C1 compat policy (`POST /v1/messages`):
+  - If `Idempotency-Key` is provided, duplicate replay returns deterministic `409` (`proxy_replay_not_supported`).
+  - If header is missing, request proceeds with no idempotency persistence/replay contract.
 
 ## Correlation
 - Clients should send `x-request-id`.
@@ -50,6 +54,28 @@ Notes:
 - Non-streaming responses mirror upstream HTTP status/body.
 - Streaming responses are pass-through when upstream returns `text/event-stream`.
 - Replay idempotency policy for proxy paths: deterministic non-replayable (`409` with `proxy_replay_not_supported` payload).
+
+### `POST /v1/messages`
+Anthropic-compatible passthrough endpoint (feature-flagged by `ANTHROPIC_COMPAT_ENDPOINT_ENABLED=true`).
+
+Request body:
+- Anthropic-native message payload (no wrapper), e.g.:
+```json
+{
+  "model": "claude-opus-4-6",
+  "max_tokens": 32,
+  "messages": [{"role":"user","content":"hi"}],
+  "stream": false
+}
+```
+
+Notes:
+- Auth/scoping matches proxy routes (buyer/admin API key required).
+- `provider` is fixed to `anthropic`; internal mapping reuses proxy execution path.
+- If `anthropic-version` is missing, default is `2023-06-01`.
+- If `x-request-id` is missing, API generates and returns one.
+- C1 streaming policy: `stream=true` is rejected deterministically (`400`, `model_invalid`).
+- When `ANTHROPIC_COMPAT_ENDPOINT_ENABLED=false`, endpoint returns deterministic `404`.
 
 ### `POST /v1/seller-keys`
 Create seller key (admin only).
