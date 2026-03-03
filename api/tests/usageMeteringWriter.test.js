@@ -22,7 +22,7 @@ describe('UsageMeteringWriter', () => {
         const writer = new UsageMeteringWriter(repo);
         await writer.recordUsage(sampleEvent);
         expect(db.queries).toHaveLength(1);
-        expect(db.queries[0].sql).toContain('insert into hr_usage_ledger');
+        expect(db.queries[0].sql).toContain('insert into in_usage_ledger');
         expect(db.queries[0].params?.[1]).toBe('usage');
     });
     it('writes correction and reversal rows with source_event_id', async () => {

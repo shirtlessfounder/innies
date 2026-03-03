@@ -19,6 +19,9 @@ type TokenCredentialRow = {
   created_at: string | Date;
   updated_at: string | Date;
   revoked_at: string | Date | null;
+  monthly_contribution_limit_units: number | null;
+  monthly_contribution_used_units: number;
+  monthly_window_start_at: string | Date;
 };
 
 export type TokenCredential = {
@@ -34,6 +37,9 @@ export type TokenCredential = {
   createdAt: Date;
   updatedAt: Date;
   revokedAt: Date | null;
+  monthlyContributionLimitUnits: number | null;
+  monthlyContributionUsedUnits: number;
+  monthlyWindowStartAt: Date;
 };
 
 export type CreateTokenCredentialInput = {
@@ -43,6 +49,7 @@ export type CreateTokenCredentialInput = {
   accessToken: string;
   refreshToken?: string | null;
   expiresAt: Date;
+  monthlyContributionLimitUnits?: number | null;
   createdBy?: string | null;
 };
 
@@ -53,8 +60,13 @@ export type RotateTokenCredentialInput = {
   accessToken: string;
   refreshToken?: string | null;
   expiresAt: Date;
+  monthlyContributionLimitUnits?: number | null;
   createdBy?: string | null;
 };
+
+function currentUtcMonthStartExpr(): string {
+  return "date_trunc('month', now() at time zone 'utc') at time zone 'utc'";
+}
 
 function mapRow(row: TokenCredentialRow): TokenCredential {
   return {
@@ -69,56 +81,68 @@ function mapRow(row: TokenCredentialRow): TokenCredential {
     rotationVersion: Number(row.rotation_version),
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
-    revokedAt: row.revoked_at ? new Date(row.revoked_at) : null
+    revokedAt: row.revoked_at ? new Date(row.revoked_at) : null,
+    monthlyContributionLimitUnits: row.monthly_contribution_limit_units === null ? null : Number(row.monthly_contribution_limit_units),
+    monthlyContributionUsedUnits: Number(row.monthly_contribution_used_units),
+    monthlyWindowStartAt: new Date(row.monthly_window_start_at)
   };
 }
 
 export class TokenCredentialRepository {
   constructor(private readonly db: SqlClient) {}
 
-  async existsForOrgProvider(orgId: string, provider: string): Promise<boolean> {
-    const sql = `
-      select 1
-      from ${TABLES.tokenCredentials}
-      where org_id = $1 and provider = $2
-      limit 1
-    `;
-    const result = await this.db.query(sql, [orgId, provider]);
-    return result.rowCount > 0;
-  }
-
   async create(input: CreateTokenCredentialInput): Promise<{ id: string; rotationVersion: number }> {
-    const id = newId();
-    const sql = `
-      insert into ${TABLES.tokenCredentials} (
+    return this.db.transaction(async (tx) => {
+      const latestSql = `
+        select rotation_version
+        from ${TABLES.tokenCredentials}
+        where org_id = $1 and provider = $2
+        order by rotation_version desc
+        limit 1
+        for update
+      `;
+      const latest = await tx.query<{ rotation_version: number }>(latestSql, [input.orgId, input.provider]);
+      const nextRotationVersion = (latest.rowCount === 1 ? latest.rows[0].rotation_version : 0) + 1;
+
+      const id = newId();
+      const insertSql = `
+        insert into ${TABLES.tokenCredentials} (
+          id,
+          org_id,
+          provider,
+          auth_scheme,
+          encrypted_access_token,
+          encrypted_refresh_token,
+          expires_at,
+          monthly_contribution_limit_units,
+          monthly_contribution_used_units,
+          monthly_window_start_at,
+          status,
+          rotation_version,
+          created_by,
+          created_at,
+          updated_at
+        ) values ($1,$2,$3,$4,$5,$6,$7,$8,0,${currentUtcMonthStartExpr()},'active',$9,$10,now(),now())
+        returning id, rotation_version
+      `;
+
+      const params: SqlValue[] = [
         id,
-        org_id,
-        provider,
-        auth_scheme,
-        encrypted_access_token,
-        encrypted_refresh_token,
-        expires_at,
-        status,
-        rotation_version,
-        created_by,
-        created_at,
-        updated_at
-      ) values ($1,$2,$3,$4,$5,$6,$7,'active',1,$8,now(),now())
-      returning id, rotation_version
-    `;
-    const params: SqlValue[] = [
-      id,
-      input.orgId,
-      input.provider,
-      input.authScheme,
-      encryptSecret(input.accessToken),
-      input.refreshToken ? encryptSecret(input.refreshToken) : null,
-      input.expiresAt,
-      input.createdBy ?? null
-    ];
-    const result = await this.db.query<{ id: string; rotation_version: number }>(sql, params);
-    if (result.rowCount !== 1) throw new Error('expected one token credential row');
-    return { id: result.rows[0].id, rotationVersion: result.rows[0].rotation_version };
+        input.orgId,
+        input.provider,
+        input.authScheme,
+        encryptSecret(input.accessToken),
+        input.refreshToken ? encryptSecret(input.refreshToken) : null,
+        input.expiresAt,
+        input.monthlyContributionLimitUnits ?? null,
+        nextRotationVersion,
+        input.createdBy ?? null
+      ];
+
+      const result = await tx.query<{ id: string; rotation_version: number }>(insertSql, params);
+      if (result.rowCount !== 1) throw new Error('expected one token credential row');
+      return { id: result.rows[0].id, rotationVersion: result.rows[0].rotation_version };
+    });
   }
 
   async listActiveForRouting(orgId: string, provider: string): Promise<TokenCredential[]> {
@@ -135,22 +159,30 @@ export class TokenCredentialRepository {
         rotation_version,
         created_at,
         revoked_at,
-        updated_at
+        updated_at,
+        monthly_contribution_limit_units,
+        monthly_contribution_used_units,
+        monthly_window_start_at
       from ${TABLES.tokenCredentials}
       where org_id = $1
         and provider = $2
         and status = 'active'
         and expires_at > now()
+        and (
+          monthly_contribution_limit_units is null
+          or (
+            case
+              when monthly_window_start_at < ${currentUtcMonthStartExpr()}
+              then 0
+              else monthly_contribution_used_units
+            end
+          ) < monthly_contribution_limit_units
+        )
       order by rotation_version desc, updated_at desc
     `;
 
     const result = await this.db.query<TokenCredentialRow>(sql, [orgId, provider]);
     return result.rows.map(mapRow);
-  }
-
-  async selectActive(orgId: string, provider: string): Promise<TokenCredential | null> {
-    const list = await this.listActiveForRouting(orgId, provider);
-    return list[0] ?? null;
   }
 
   async getById(id: string): Promise<TokenCredential | null> {
@@ -167,7 +199,10 @@ export class TokenCredentialRepository {
         rotation_version,
         created_at,
         updated_at,
-        revoked_at
+        revoked_at,
+        monthly_contribution_limit_units,
+        monthly_contribution_used_units,
+        monthly_window_start_at
       from ${TABLES.tokenCredentials}
       where id = $1
       limit 1
@@ -201,6 +236,16 @@ export class TokenCredentialRepository {
         encrypted_access_token = $2,
         encrypted_refresh_token = $3,
         expires_at = $4,
+        monthly_contribution_used_units = case
+          when monthly_window_start_at < ${currentUtcMonthStartExpr()}
+          then 0
+          else monthly_contribution_used_units
+        end,
+        monthly_window_start_at = case
+          when monthly_window_start_at < ${currentUtcMonthStartExpr()}
+          then ${currentUtcMonthStartExpr()}
+          else monthly_window_start_at
+        end,
         status = 'active',
         rotation_version = rotation_version + 1,
         rotated_at = now(),
@@ -218,7 +263,10 @@ export class TokenCredentialRepository {
         rotation_version,
         created_at,
         revoked_at,
-        updated_at
+        updated_at,
+        monthly_contribution_limit_units,
+        monthly_contribution_used_units,
+        monthly_window_start_at
     `;
 
     const params: SqlValue[] = [
@@ -279,12 +327,15 @@ export class TokenCredentialRepository {
           encrypted_access_token,
           encrypted_refresh_token,
           expires_at,
+          monthly_contribution_limit_units,
+          monthly_contribution_used_units,
+          monthly_window_start_at,
           status,
           rotation_version,
           created_by,
           created_at,
           updated_at
-        ) values ($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,now(),now())
+        ) values ($1,$2,$3,$4,$5,$6,$7,$8,0,${currentUtcMonthStartExpr()},'active',$9,$10,now(),now())
       `;
 
       const insertParams: SqlValue[] = [
@@ -295,6 +346,7 @@ export class TokenCredentialRepository {
         encryptSecret(input.accessToken),
         input.refreshToken ? encryptSecret(input.refreshToken) : null,
         input.expiresAt,
+        input.monthlyContributionLimitUnits ?? null,
         nextRotationVersion,
         input.createdBy ?? null
       ];
@@ -313,6 +365,38 @@ export class TokenCredentialRepository {
 
       return { id: nextId, rotationVersion: nextRotationVersion, previousId: previousActive?.id ?? null };
     });
+  }
+
+  async addMonthlyContributionUsage(id: string, usageUnits: number): Promise<boolean> {
+    const sql = `
+      update ${TABLES.tokenCredentials}
+      set
+        monthly_contribution_used_units = case
+          when monthly_window_start_at < ${currentUtcMonthStartExpr()}
+          then $2
+          else monthly_contribution_used_units + $2
+        end,
+        monthly_window_start_at = case
+          when monthly_window_start_at < ${currentUtcMonthStartExpr()}
+          then ${currentUtcMonthStartExpr()}
+          else monthly_window_start_at
+        end,
+        updated_at = now()
+      where id = $1
+        and status = 'active'
+        and (
+          monthly_contribution_limit_units is null
+          or (
+            case
+              when monthly_window_start_at < ${currentUtcMonthStartExpr()}
+              then 0
+              else monthly_contribution_used_units
+            end
+          ) + $2 <= monthly_contribution_limit_units
+        )
+    `;
+    const result = await this.db.query(sql, [id, usageUnits]);
+    return result.rowCount === 1;
   }
 
   async revoke(id: string): Promise<boolean> {

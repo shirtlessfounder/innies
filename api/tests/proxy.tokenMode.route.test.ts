@@ -121,7 +121,7 @@ describe('proxy token-mode route behavior', () => {
   let handlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
 
   beforeAll(async () => {
-    process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@127.0.0.1:5432/headroom_test';
+    process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@127.0.0.1:5432/innies_test';
     process.env.SELLER_SECRET_ENC_KEY_B64 = process.env.SELLER_SECRET_ENC_KEY_B64 || Buffer.alloc(32, 7).toString('base64');
     runtimeModule = await import('../src/services/runtime.js');
     const proxyMod = await import('../src/routes/proxy.js') as ProxyRouteModule;
@@ -141,10 +141,6 @@ describe('proxy token-mode route behavior', () => {
     } as any);
     vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'touchLastUsed').mockResolvedValue(undefined);
     vi.spyOn(runtimeModule.runtime.repos.killSwitch, 'isDisabled').mockResolvedValue(false);
-    vi.spyOn(runtimeModule.runtime.repos.usageQuery, 'getOrgCapState').mockResolvedValue({
-      spendCapMinor: null,
-      monthToDateRetailEquivalentMinor: 0
-    });
     vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
       provider: 'anthropic',
       model: 'claude-3-5-sonnet-latest',
@@ -161,6 +157,7 @@ describe('proxy token-mode route behavior', () => {
     } as any);
     vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
     vi.spyOn(runtimeModule.runtime.repos.routingEvents, 'insert').mockResolvedValue(undefined);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'addMonthlyContributionUsage').mockResolvedValue(true);
     vi.spyOn(runtimeModule.runtime.services.metering, 'recordUsage').mockResolvedValue({
       id: 'usage_1',
       entry_type: 'usage'
@@ -180,7 +177,7 @@ describe('proxy token-mode route behavior', () => {
       method: 'POST',
       path: '/v1/proxy/v1/messages',
       headers: {
-        authorization: 'Bearer hr_test_token',
+        authorization: 'Bearer in_test_token',
         'content-type': 'application/json',
         'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
         'anthropic-version': '2023-06-01'
@@ -217,7 +214,10 @@ describe('proxy token-mode route behavior', () => {
       rotationVersion: 1,
       createdAt: new Date('2026-03-01T00:00:00Z'),
       updatedAt: new Date('2026-03-01T00:00:00Z'),
-      revokedAt: null
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'markExpired').mockResolvedValue(true as any);
 
@@ -232,7 +232,7 @@ describe('proxy token-mode route behavior', () => {
       method: 'POST',
       path: '/v1/proxy/v1/messages',
       headers: {
-        authorization: 'Bearer hr_test_token',
+        authorization: 'Bearer in_test_token',
         'content-type': 'application/json',
         'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
         'anthropic-version': '2023-06-01'
@@ -258,6 +258,67 @@ describe('proxy token-mode route behavior', () => {
     expect(headers.authorization).toBe('Bearer sk-ant-oat01-test-token');
     expect(headers['anthropic-beta']).toContain('oauth-2025-04-20');
     expect(headers['anthropic-beta']).toContain('claude-code-20250219');
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('preserves upstream success when monthly contribution increment cannot be recorded', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: '33333333-3333-4333-8333-333333333333',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'x_api_key',
+      accessToken: 'sk-ant-api-test',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: 100,
+      monthlyContributionUsedUnits: 95,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'addMonthlyContributionUsage').mockResolvedValue(false);
+
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        id: 'msg_1',
+        usage: { input_tokens: 10, output_tokens: 10 },
+        content: [{ type: 'text', text: 'ok' }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-3-5-sonnet-latest',
+        streaming: false,
+        payload: { model: 'claude-3-5-sonnet-latest', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res); // auth middleware
+    await invoke(handlers[1], req, res); // route handler
+
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('msg_1');
+    expect((res.body as any).content?.[0]?.text).toBe('ok');
 
     upstreamSpy.mockRestore();
   });

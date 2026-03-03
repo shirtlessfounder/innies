@@ -12,7 +12,6 @@ import { TokenCredentialRepository } from '../repos/tokenCredentialRepository.js
 import { buildDefaultJobs } from '../jobs/registry.js';
 import { JobScheduler } from '../jobs/scheduler.js';
 import { KeyPool } from './keyPool.js';
-import { OrgQueueManager } from './orgQueue.js';
 import { RouterEngine } from './routerEngine.js';
 import { RoutingService } from './routingService.js';
 import { IdempotencyService } from './idempotencyService.js';
@@ -42,7 +41,6 @@ export const runtime = {
     jobs: undefined as unknown as JobScheduler,
     keyPool: new KeyPool(),
     metering: undefined as unknown as UsageMeteringWriter,
-    queueManager: new OrgQueueManager(20, 3, 8_000),
     routerEngine: new RouterEngine(),
     routingService: undefined as unknown as RoutingService,
     tokenCredentials: undefined as unknown as TokenCredentialService
@@ -63,8 +61,7 @@ runtime.services.jobs = new JobScheduler({
 runtime.services.metering = new UsageMeteringWriter(runtime.repos.usageLedger);
 runtime.services.routingService = new RoutingService(
   runtime.services.keyPool,
-  runtime.services.routerEngine,
-  runtime.services.queueManager
+  runtime.services.routerEngine
 );
 runtime.services.tokenCredentials = new TokenCredentialService(
   runtime.repos.tokenCredentials,

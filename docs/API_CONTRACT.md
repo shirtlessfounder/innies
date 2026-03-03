@@ -45,7 +45,6 @@ Request body:
 
 Notes:
 - `orgId` is derived from authenticated API key; request body org fields are ignored.
-- Per-buyer spend cap is enforced only when org cap is configured.
 - Token mode is org-gated by `TOKEN_MODE_ENABLED_ORGS` allowlist.
 - For C1 token mode: non-streaming is supported; streaming validation is C1.5.
 - Non-streaming responses mirror upstream HTTP status/body.
@@ -67,7 +66,7 @@ Replay metering writes (usage/correction/reversal) for recovery operations (admi
 
 ### `POST /v1/admin/token-credentials`
 Create token credential for an org/provider (admin only).
-Contract: first credential only for a given `(org, provider)`; if any credential history exists, use rotate endpoint.
+Contract: appends an additional credential for the same `(org, provider)` token pool.
 
 ### `POST /v1/admin/token-credentials/rotate`
 Rotate token credential for an org/provider (admin only).
@@ -80,10 +79,10 @@ Revoke a token credential by id (admin only).
 Return usage summary for authenticated org.
 
 ### `GET /v1/admin/pool-health`
-Returns key status totals and queue summary.
+Returns key status totals.
 
 ## Error Codes (C1)
-- `invalid_request` (400; 409 for deterministic contract conflicts such as token-credential create-first-only)
+- `invalid_request` (400; 409 for deterministic contract conflicts such as token-credential write conflicts)
 - `unauthorized` (401)
 - `forbidden` (403)
 - `capacity_unavailable` (429)
@@ -97,8 +96,7 @@ Returns key status totals and queue summary.
 
 ## Routing Policy (C1)
 - Key selection: weighted round-robin over eligible active keys.
-- Token mode credential selection: newest active credential by rotation metadata (org + provider scoped).
-- Queue policy: max pending per org = 20, wait timeout = 8s, concurrency per org = 3.
+- Token mode credential selection: request-distributed across eligible active credentials (org + provider scoped).
 - Retry/failover:
   - 429 rate limit -> backoff + failover
   - 5xx/network -> failover

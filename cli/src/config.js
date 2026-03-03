@@ -21,7 +21,7 @@ export async function loadConfig(required = true) {
       const parsed = JSON.parse(raw);
 
       if (parsed.version !== 1 || !parsed.token || !parsed.apiBaseUrl || !parsed.defaultModel) {
-        fail(`Invalid config at ${file}. Run: innies login --token <hr_token>`);
+        fail(`Invalid config at ${file}. Run: innies login --token <in_token>`);
       }
 
       return {

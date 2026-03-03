@@ -123,7 +123,7 @@ describe('admin token credential routes idempotent replay', () => {
   let revokeHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
 
   beforeAll(async () => {
-    process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@127.0.0.1:5432/headroom_test';
+    process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@127.0.0.1:5432/innies_test';
     process.env.SELLER_SECRET_ENC_KEY_B64 = process.env.SELLER_SECRET_ENC_KEY_B64 || Buffer.alloc(32, 7).toString('base64');
     runtimeModule = await import('../src/services/runtime.js');
     const mod = await import('../src/routes/admin.js') as AdminRouteModule;
@@ -171,7 +171,7 @@ describe('admin token credential routes idempotent replay', () => {
 
   it('replays create/rotate/revoke deterministically without executing mutations', async () => {
     const headers = {
-      authorization: 'Bearer hr_admin_token',
+      authorization: 'Bearer in_admin_token',
       'content-type': 'application/json',
       'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456'
     };
@@ -233,7 +233,7 @@ describe('admin token credential routes idempotent replay', () => {
     expect(runtimeModule.runtime.repos.tokenCredentials.getById).not.toHaveBeenCalled();
   });
 
-  it('enforces create as first-only contract for org/provider', async () => {
+  it('allows creating additional credentials for same org/provider', async () => {
     vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
       replay: false,
       input: {
@@ -243,14 +243,17 @@ describe('admin token credential routes idempotent replay', () => {
         requestHash: 'h'
       }
     } as any);
-    const existsSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'existsForOrgProvider').mockResolvedValue(true);
+    const createSpy = vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'create').mockResolvedValue({
+      id: 'new_cred_1',
+      rotationVersion: 4
+    } as any);
     const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
 
     const req = createMockReq({
       method: 'POST',
       path: '/v1/admin/token-credentials',
       headers: {
-        authorization: 'Bearer hr_admin_token',
+        authorization: 'Bearer in_admin_token',
         'content-type': 'application/json',
         'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456'
       },
@@ -267,12 +270,10 @@ describe('admin token credential routes idempotent replay', () => {
     await invoke(createHandlers[0], req, res);
     await invoke(createHandlers[1], req, res);
 
-    expect(res.statusCode).toBe(409);
-    expect((res.body as any).code).toBe('invalid_request');
-    expect(String((res.body as any).message)).toContain('Use rotate endpoint');
-    expect(existsSpy).toHaveBeenCalledTimes(1);
-    expect(runtimeModule.runtime.services.tokenCredentials.create).not.toHaveBeenCalled();
-    expect(commitSpy).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).ok).toBe(true);
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(commitSpy).toHaveBeenCalledTimes(1);
   });
 
   it('maps create unique-constraint race to deterministic 409 contract', async () => {
@@ -285,7 +286,6 @@ describe('admin token credential routes idempotent replay', () => {
         requestHash: 'h'
       }
     } as any);
-    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'existsForOrgProvider').mockResolvedValue(false);
     const createSpy = vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'create').mockRejectedValue({ code: '23505' });
     const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
 
@@ -293,7 +293,7 @@ describe('admin token credential routes idempotent replay', () => {
       method: 'POST',
       path: '/v1/admin/token-credentials',
       headers: {
-        authorization: 'Bearer hr_admin_token',
+        authorization: 'Bearer in_admin_token',
         'content-type': 'application/json',
         'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456'
       },
@@ -312,7 +312,7 @@ describe('admin token credential routes idempotent replay', () => {
 
     expect(res.statusCode).toBe(409);
     expect((res.body as any).code).toBe('invalid_request');
-    expect(String((res.body as any).message)).toContain('Use rotate endpoint');
+    expect(String((res.body as any).message)).toContain('write conflict');
     expect(createSpy).toHaveBeenCalledTimes(1);
     expect(commitSpy).not.toHaveBeenCalled();
   });

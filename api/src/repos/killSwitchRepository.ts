@@ -17,7 +17,7 @@ export class KillSwitchRepository {
   async createEvent(input: KillSwitchInput): Promise<{ id: string }> {
     const id = newId();
     const sql = `
-      insert into hr_kill_switch_events (
+      insert into in_kill_switch_events (
         id,
         scope,
         target_id,
@@ -44,7 +44,7 @@ export class KillSwitchRepository {
   async isDisabled(scope: DisableScope, targetId: string): Promise<boolean> {
     const sql = `
       select is_disabled
-      from hr_kill_switch_current
+      from in_kill_switch_current
       where scope = $1 and target_id = $2
       limit 1
     `;

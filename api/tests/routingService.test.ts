@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { KeyPool } from '../src/services/keyPool.js';
-import { OrgQueueManager } from '../src/services/orgQueue.js';
 import { RouterEngine } from '../src/services/routerEngine.js';
 import { RoutingService } from '../src/services/routingService.js';
 
@@ -30,7 +29,7 @@ function makeService() {
   ]);
 
   return {
-    service: new RoutingService(pool, new RouterEngine(), new OrgQueueManager(20, 3, 8_000)),
+    service: new RoutingService(pool, new RouterEngine()),
   };
 }
 
@@ -78,7 +77,7 @@ describe('RoutingService', () => {
       },
     ]);
 
-    const service = new RoutingService(pool, new RouterEngine(), new OrgQueueManager(20, 3, 8_000));
+    const service = new RoutingService(pool, new RouterEngine());
 
     await expect(
       service.execute({

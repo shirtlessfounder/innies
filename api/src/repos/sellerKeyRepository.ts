@@ -47,7 +47,7 @@ export class SellerKeyRepository {
   async create(input: CreateSellerKeyInput): Promise<{ id: string }> {
     const id = newId();
     const sql = `
-      insert into hr_seller_keys (
+      insert into in_seller_keys (
         id,
         org_id,
         provider,
@@ -102,7 +102,7 @@ export class SellerKeyRepository {
 
     params.push(id);
     const sql = `
-      update hr_seller_keys
+      update in_seller_keys
       set ${sets.join(', ')}, updated_at = now()
       where id = $${params.length}
     `;
@@ -121,17 +121,17 @@ export class SellerKeyRepository {
         sk.priority_weight,
         sk.monthly_capacity_limit_units,
         sk.monthly_capacity_used_units
-      from hr_seller_keys sk
+      from in_seller_keys sk
       where sk.provider = $1
         and sk.status = 'active'
         and (sk.monthly_capacity_limit_units is null or sk.monthly_capacity_used_units < sk.monthly_capacity_limit_units)
         and not exists (
-          select 1 from hr_kill_switch_current k
+          select 1 from in_kill_switch_current k
           where k.scope = 'seller_key' and k.target_id = sk.id::text and k.is_disabled = true
         )
         and exists (
           select 1
-          from hr_model_compatibility_rules m
+          from in_model_compatibility_rules m
           where m.provider = $1
             and m.model = $2
             and m.is_enabled = true
@@ -156,7 +156,7 @@ export class SellerKeyRepository {
   }
 
   async getSecret(id: string): Promise<SellerKeySecret | null> {
-    const sql = `select id, encrypted_secret from hr_seller_keys where id = $1 limit 1`;
+    const sql = `select id, encrypted_secret from in_seller_keys where id = $1 limit 1`;
     const result = await this.db.query<{ id: string; encrypted_secret: Buffer | string }>(sql, [id]);
     if (result.rowCount !== 1) return null;
     const row = result.rows[0];
@@ -167,7 +167,7 @@ export class SellerKeyRepository {
 
   async addCapacityUsage(id: string, usageUnits: number): Promise<void> {
     const sql = `
-      update hr_seller_keys
+      update in_seller_keys
       set monthly_capacity_used_units = monthly_capacity_used_units + $2,
           last_used_at = now(),
           updated_at = now()
@@ -179,7 +179,7 @@ export class SellerKeyRepository {
   async statusCounts(): Promise<Record<SellerKeyStatus, number>> {
     const sql = `
       select status, count(*)::int as count
-      from hr_seller_keys
+      from in_seller_keys
       group by status
     `;
 
@@ -199,7 +199,7 @@ export class SellerKeyRepository {
   async listHealthCheckCandidates(limit: number): Promise<SellerKeyHealthCandidate[]> {
     const sql = `
       select id, provider, failure_count
-      from hr_seller_keys
+      from in_seller_keys
       where status = 'active'
       order by coalesce(last_health_at, to_timestamp(0)) asc
       limit $1
@@ -210,7 +210,7 @@ export class SellerKeyRepository {
 
   async markHealthCheckSuccess(id: string): Promise<void> {
     const sql = `
-      update hr_seller_keys
+      update in_seller_keys
       set failure_count = 0,
           last_health_at = now(),
           updated_at = now()
@@ -221,10 +221,10 @@ export class SellerKeyRepository {
 
   async markHealthCheckFailure(id: string, quarantineThreshold: number): Promise<{ status: SellerKeyStatus; failureCount: number } | null> {
     const sql = `
-      update hr_seller_keys
+      update in_seller_keys
       set failure_count = failure_count + 1,
           status = case
-            when (failure_count + 1) >= $2 then 'quarantined'::hr_seller_key_status
+            when (failure_count + 1) >= $2 then 'quarantined'::in_seller_key_status
             else status
           end,
           last_health_at = now(),

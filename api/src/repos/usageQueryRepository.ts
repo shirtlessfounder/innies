@@ -20,7 +20,7 @@ export class UsageQueryRepository {
         count(*)::bigint as total_requests,
         coalesce(sum(usage_units), 0)::bigint as total_usage_units,
         coalesce(sum(retail_equivalent_minor), 0)::bigint as total_retail_equivalent_minor
-      from hr_usage_ledger
+      from in_usage_ledger
       where org_id = $1
         and entry_type = 'usage'
         and created_at >= now() - ($2::text || ' days')::interval
@@ -45,8 +45,8 @@ export class UsageQueryRepository {
       select
         o.spend_cap_minor,
         coalesce(sum(u.retail_equivalent_minor), 0)::bigint as month_to_date_retail_equivalent_minor
-      from hr_orgs o
-      left join hr_usage_ledger u
+      from in_orgs o
+      left join in_usage_ledger u
         on u.org_id = o.id
         and u.entry_type = 'usage'
         and date_trunc('month', u.created_at) = date_trunc('month', now())

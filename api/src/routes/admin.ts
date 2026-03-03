@@ -67,7 +67,8 @@ const tokenCredentialCreateSchema = z.object({
   authScheme: z.enum(['x_api_key', 'bearer']).default('x_api_key'),
   accessToken: z.string().min(1),
   refreshToken: z.string().min(1).optional(),
-  expiresAt: z.string().datetime({ offset: true })
+  expiresAt: z.string().datetime({ offset: true }),
+  monthlyContributionLimitUnits: z.number().int().nonnegative().optional()
 });
 
 const tokenCredentialRotateSchema = z.object({
@@ -76,7 +77,8 @@ const tokenCredentialRotateSchema = z.object({
   authScheme: z.enum(['x_api_key', 'bearer']).default('x_api_key'),
   accessToken: z.string().min(1),
   refreshToken: z.string().min(1).optional(),
-  expiresAt: z.string().datetime({ offset: true })
+  expiresAt: z.string().datetime({ offset: true }),
+  monthlyContributionLimitUnits: z.number().int().nonnegative().optional()
 });
 
 function isUniqueViolation(error: unknown): boolean {
@@ -87,15 +89,13 @@ function isUniqueViolation(error: unknown): boolean {
 router.get('/v1/admin/pool-health', requireApiKey(runtime.repos.apiKeys, ['admin']), async (_req, res, next) => {
   try {
     const byStatus = await runtime.repos.sellerKeys.statusCounts();
-    const queueSnapshot = runtime.services.queueManager.snapshot();
     const totalKeys = Object.values(byStatus).reduce((sum, value) => sum + value, 0);
-    const totalQueueDepth = Object.values(queueSnapshot).reduce((sum, q) => sum + q.pending, 0);
 
     res.json({
       totalKeys,
       byStatus,
-      totalQueueDepth,
-      orgQueues: queueSnapshot
+      totalQueueDepth: 0,
+      orgQueues: {}
     });
   } catch (error) {
     next(error);
@@ -252,15 +252,6 @@ router.post('/v1/admin/token-credentials', requireApiKey(runtime.repos.apiKeys, 
       return;
     }
 
-    const existingAny = await runtime.repos.tokenCredentials.existsForOrgProvider(parsed.orgId, parsed.provider);
-    if (existingAny) {
-      throw new AppError(
-        'invalid_request',
-        409,
-        'Token credential already exists for org/provider. Use rotate endpoint instead.'
-      );
-    }
-
     let created;
     try {
       created = await runtime.services.tokenCredentials.create({
@@ -269,7 +260,8 @@ router.post('/v1/admin/token-credentials', requireApiKey(runtime.repos.apiKeys, 
         authScheme: parsed.authScheme,
         accessToken: parsed.accessToken,
         refreshToken: parsed.refreshToken ?? null,
-        expiresAt: new Date(parsed.expiresAt)
+        expiresAt: new Date(parsed.expiresAt),
+        monthlyContributionLimitUnits: parsed.monthlyContributionLimitUnits ?? null
       }, {
         actorApiKeyId: req.auth?.apiKeyId ?? null
       });
@@ -278,7 +270,7 @@ router.post('/v1/admin/token-credentials', requireApiKey(runtime.repos.apiKeys, 
         throw new AppError(
           'invalid_request',
           409,
-          'Token credential already exists for org/provider. Use rotate endpoint instead.'
+          'Token credential write conflict. Retry with a new Idempotency-Key.'
         );
       }
       throw error;
@@ -332,7 +324,8 @@ router.post('/v1/admin/token-credentials/rotate', requireApiKey(runtime.repos.ap
       authScheme: parsed.authScheme,
       accessToken: parsed.accessToken,
       refreshToken: parsed.refreshToken ?? null,
-      expiresAt: new Date(parsed.expiresAt)
+      expiresAt: new Date(parsed.expiresAt),
+      monthlyContributionLimitUnits: parsed.monthlyContributionLimitUnits ?? null
     }, {
       actorApiKeyId: req.auth?.apiKeyId ?? null
     });

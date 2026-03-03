@@ -9,7 +9,7 @@ const WRAPPER_PATH = `${homedir()}/.local/bin/claude`;
 export async function runLinkClaude() {
   const config = await loadConfig(true);
   if (!config) {
-    fail('Not logged in. Run: innies login --token <hr_token>');
+    fail('Not logged in. Run: innies login --token <in_token>');
   }
 
   await mkdir(dirname(WRAPPER_PATH), { recursive: true });
@@ -20,7 +20,7 @@ export async function runLinkClaude() {
     'if command -v innies >/dev/null 2>&1; then',
     '  exec innies claude "$@"',
     'fi',
-    'exec headroom claude "$@"'
+    'exec innies claude "$@"'
   ].join('\n');
 
   await writeFile(WRAPPER_PATH, `${script}\n`, { mode: 0o755 });

@@ -26,7 +26,7 @@ describe('UsageMeteringWriter', () => {
     await writer.recordUsage(sampleEvent);
 
     expect(db.queries).toHaveLength(1);
-    expect(db.queries[0].sql).toContain('insert into hr_usage_ledger');
+    expect(db.queries[0].sql).toContain('insert into in_usage_ledger');
     expect(db.queries[0].params?.[1]).toBe('usage');
   });
 

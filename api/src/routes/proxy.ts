@@ -37,6 +37,20 @@ type ProxyRouteResult = {
   alreadyRecorded: boolean;
 };
 
+function requestSeed(requestId: string): number {
+  let seed = 0;
+  for (let i = 0; i < requestId.length; i += 1) {
+    seed = (seed * 31 + requestId.charCodeAt(i)) >>> 0;
+  }
+  return seed;
+}
+
+function orderCredentialsForRequest(credentials: TokenCredential[], requestId: string): TokenCredential[] {
+  if (credentials.length <= 1) return credentials;
+  const offset = requestSeed(requestId) % credentials.length;
+  return [...credentials.slice(offset), ...credentials.slice(0, offset)];
+}
+
 function buildRequestId(headerValue: string | undefined): string {
   return headerValue || `req_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 }
@@ -220,7 +234,10 @@ async function executeTokenModeNonStreaming(input: {
     anthropicVersion,
     startedAt
   } = input;
-  const credentials = await runtime.repos.tokenCredentials.listActiveForRouting(orgId, provider);
+  const credentials = orderCredentialsForRequest(
+    await runtime.repos.tokenCredentials.listActiveForRouting(orgId, provider),
+    requestId
+  );
   if (credentials.length === 0) {
     throw new AppError('capacity_unavailable', 429, 'No eligible token credentials available', { provider, model });
   }
@@ -348,6 +365,16 @@ async function executeTokenModeNonStreaming(input: {
         usageUnits,
         retailEquivalentMinor: usageUnits
       });
+      const monthlyUsageRecorded = await runtime.repos.tokenCredentials.addMonthlyContributionUsage(
+        credential.id,
+        usageUnits
+      );
+      if (!monthlyUsageRecorded) {
+        await logAttemptFailure({
+          kind: 'metering_degraded',
+          message: 'monthly contribution increment could not be recorded after successful upstream response'
+        });
+      }
 
       return {
         requestId,
@@ -401,21 +428,6 @@ router.post('/v1/proxy/*', requireApiKey(runtime.repos.apiKeys, ['buyer_proxy', 
       throw new AppError('suspended', 423, 'Model is disabled');
     }
 
-    const capState = await runtime.repos.usageQuery.getOrgCapState(orgId);
-    if (!capState) {
-      throw new AppError('forbidden', 403, 'Org not found');
-    }
-    if (
-      capState.spendCapMinor !== null
-      && capState.monthToDateRetailEquivalentMinor >= capState.spendCapMinor
-    ) {
-      throw new AppError('capacity_unavailable', 429, 'Org spend cap exceeded', {
-        orgId,
-        spendCapMinor: capState.spendCapMinor,
-        monthToDateRetailEquivalentMinor: capState.monthToDateRetailEquivalentMinor
-      });
-    }
-
     const compatible = await runtime.repos.modelCompatibility.findActive(parsed.provider, parsed.model);
     if (!compatible) {
       throw new AppError('model_invalid', 400, 'No active compatibility rule for provider/model');
@@ -461,7 +473,7 @@ router.post('/v1/proxy/*', requireApiKey(runtime.repos.apiKeys, ['buyer_proxy', 
       if (parsed.streaming) {
         throw new AppError('model_invalid', 400, 'Streaming token-mode validation is C1.5; C1 supports non-streaming only');
       }
-      result = await runtime.services.queueManager.run(orgId, () => executeTokenModeNonStreaming({
+      result = await executeTokenModeNonStreaming({
         requestId,
         orgId,
         apiKeyId: auth.apiKeyId,
@@ -471,7 +483,7 @@ router.post('/v1/proxy/*', requireApiKey(runtime.repos.apiKeys, ['buyer_proxy', 
         proxiedPath,
         anthropicVersion: req.header('anthropic-version') ?? '2023-06-01',
         startedAt
-      }));
+      });
     } else {
       const keys = await runtime.repos.sellerKeys.listActiveForRouting(parsed.provider, parsed.model, parsed.streaming);
       runtime.services.keyPool.setKeys(keys);
@@ -714,14 +726,11 @@ router.post('/v1/proxy/*', requireApiKey(runtime.repos.apiKeys, ['buyer_proxy', 
     res.setHeader('x-request-id', requestId);
     if (result.routeKind === 'seller_key' && result.keyId) {
       res.setHeader('x-innies-upstream-key-id', result.keyId);
-      res.setHeader('x-headroom-upstream-key-id', result.keyId);
     }
     if (result.routeKind === 'token_credential' && result.keyId) {
       res.setHeader('x-innies-token-credential-id', result.keyId);
-      res.setHeader('x-headroom-token-credential-id', result.keyId);
     }
     res.setHeader('x-innies-attempt-no', String(result.attemptNo));
-    res.setHeader('x-headroom-attempt-no', String(result.attemptNo));
     if (result.contentType) {
       res.setHeader('content-type', result.contentType);
     }

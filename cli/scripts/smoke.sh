@@ -8,7 +8,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 export HOME="$TMP_DIR/home"
 mkdir -p "$HOME/bin" "$HOME/.local/bin"
-MOCK_BASE_URL="https://gateway.headroom.ai"
+MOCK_BASE_URL="https://gateway.innies.ai"
 
 FAKE_CLAUDE_LOG="$TMP_DIR/fake_claude.log"
 cat > "$HOME/bin/claude" << 'SH'
@@ -16,11 +16,11 @@ cat > "$HOME/bin/claude" << 'SH'
 set -euo pipefail
 {
   echo "args:$*"
-  echo "HEADROOM_ROUTE_MODE:${HEADROOM_ROUTE_MODE:-}"
-  echo "HEADROOM_API_BASE_URL:${HEADROOM_API_BASE_URL:-}"
-  echo "HEADROOM_PROXY_URL:${HEADROOM_PROXY_URL:-}"
-  echo "HEADROOM_TOKEN:${HEADROOM_TOKEN:-}"
-  echo "HEADROOM_CORRELATION_ID:${HEADROOM_CORRELATION_ID:-}"
+  echo "INNIES_ROUTE_MODE:${INNIES_ROUTE_MODE:-}"
+  echo "INNIES_API_BASE_URL:${INNIES_API_BASE_URL:-}"
+  echo "INNIES_PROXY_URL:${INNIES_PROXY_URL:-}"
+  echo "INNIES_TOKEN:${INNIES_TOKEN:-}"
+  echo "INNIES_CORRELATION_ID:${INNIES_CORRELATION_ID:-}"
 } >> "$FAKE_CLAUDE_LOG"
 
 if [[ "${1:-}" == "--check-pass-through" ]]; then
@@ -66,9 +66,9 @@ chmod +x "$HOME/bin/claude"
 export PATH="$HOME/bin:$PATH"
 export FAKE_CLAUDE_LOG
 export TMP_DIR
-export HEADROOM_CAPTURE_CLAUDE_OUTPUT=1
+export INNIES_CAPTURE_CLAUDE_OUTPUT=1
 
-node "$ROOT_DIR/src/index.js" login --token hr_live_test --base-url "$MOCK_BASE_URL"
+node "$ROOT_DIR/src/index.js" login --token in_live_test --base-url "$MOCK_BASE_URL"
 node "$ROOT_DIR/src/index.js" doctor
 node "$ROOT_DIR/src/index.js" link claude
 node "$ROOT_DIR/src/index.js" claude -- --version --foo bar
@@ -97,7 +97,7 @@ SH
 chmod +x "$HOME/bin/innies"
 
 export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
-unset HEADROOM_CLAUDE_WRAPPED
+unset INNIES_CLAUDE_WRAPPED
 "$HOME/.local/bin/claude" --via-wrapper
 
 if ! grep -q 'args:--version --foo bar' "$FAKE_CLAUDE_LOG"; then
@@ -110,18 +110,18 @@ if ! grep -q 'args:--via-wrapper' "$FAKE_CLAUDE_LOG"; then
   exit 1
 fi
 
-if ! grep -q "HEADROOM_PROXY_URL:$MOCK_BASE_URL/v1/proxy" "$FAKE_CLAUDE_LOG"; then
-  echo "smoke: missing HEADROOM_PROXY_URL wiring"
+if ! grep -q "INNIES_PROXY_URL:$MOCK_BASE_URL/v1/proxy" "$FAKE_CLAUDE_LOG"; then
+  echo "smoke: missing INNIES_PROXY_URL wiring"
   exit 1
 fi
 
-if ! grep -q 'HEADROOM_ROUTE_MODE:token' "$FAKE_CLAUDE_LOG"; then
+if ! grep -q 'INNIES_ROUTE_MODE:token' "$FAKE_CLAUDE_LOG"; then
   echo "smoke: missing explicit token route mode wiring"
   exit 1
 fi
 
-if ! grep -q 'HEADROOM_TOKEN:hr_live_test' "$FAKE_CLAUDE_LOG"; then
-  echo "smoke: missing HEADROOM_TOKEN wiring"
+if ! grep -q 'INNIES_TOKEN:in_live_test' "$FAKE_CLAUDE_LOG"; then
+  echo "smoke: missing INNIES_TOKEN wiring"
   exit 1
 fi
 
@@ -140,18 +140,18 @@ if ! grep -q 'Innies hint: Token auth failed: token mode is not enabled for this
   exit 1
 fi
 
-if [[ "${HEADROOM_SMOKE_REAL_PROXY:-0}" == "1" ]]; then
-  if [[ -z "${HEADROOM_SMOKE_API_URL:-}" || -z "${HEADROOM_SMOKE_API_KEY:-}" || -z "${HEADROOM_SMOKE_IDEMPOTENCY_KEY:-}" ]]; then
-    echo "smoke: HEADROOM_SMOKE_REAL_PROXY=1 requires HEADROOM_SMOKE_API_URL, HEADROOM_SMOKE_API_KEY, HEADROOM_SMOKE_IDEMPOTENCY_KEY"
+if [[ "${INNIES_SMOKE_REAL_PROXY:-0}" == "1" ]]; then
+  if [[ -z "${INNIES_SMOKE_API_URL:-}" || -z "${INNIES_SMOKE_API_KEY:-}" || -z "${INNIES_SMOKE_IDEMPOTENCY_KEY:-}" ]]; then
+    echo "smoke: INNIES_SMOKE_REAL_PROXY=1 requires INNIES_SMOKE_API_URL, INNIES_SMOKE_API_KEY, INNIES_SMOKE_IDEMPOTENCY_KEY"
     exit 1
   fi
 
   REAL_HEADERS="$TMP_DIR/real_proxy_headers.txt"
   REAL_BODY="$TMP_DIR/real_proxy_body.json"
   REAL_STATUS=$(curl -sS -D "$REAL_HEADERS" -o "$REAL_BODY" -w "%{http_code}" \
-    -X POST "${HEADROOM_SMOKE_API_URL%/}/v1/proxy/v1/messages" \
-    -H "Authorization: Bearer $HEADROOM_SMOKE_API_KEY" \
-    -H "Idempotency-Key: $HEADROOM_SMOKE_IDEMPOTENCY_KEY" \
+    -X POST "${INNIES_SMOKE_API_URL%/}/v1/proxy/v1/messages" \
+    -H "Authorization: Bearer $INNIES_SMOKE_API_KEY" \
+    -H "Idempotency-Key: $INNIES_SMOKE_IDEMPOTENCY_KEY" \
     -H "Content-Type: application/json" \
     -d '{"provider":"anthropic","model":"claude-code","streaming":false,"payload":{"messages":[{"role":"user","content":"smoke"}]}}')
 

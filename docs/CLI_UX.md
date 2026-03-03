@@ -2,10 +2,10 @@
 
 ## Commands
 
-### `innies login --token <hr_token> [--base-url <url>] [--model <id>]`
+### `innies login --token <in_token> [--base-url <url>] [--model <id>]`
 Persists local Innies config in `~/.innies/config.json`.
 
-- validates token format (`hr_...`)
+- validates token format (`in_...`)
 - stores token + API base URL + default model
 - file mode target: user-only (`0600`)
 
@@ -22,11 +22,11 @@ Checks:
 Wraps Claude CLI execution and injects Innies env wiring.
 
 Injected environment:
-- `HEADROOM_TOKEN`
-- `HEADROOM_API_BASE_URL`
-- `HEADROOM_PROXY_URL`
-- `HEADROOM_MODEL`
-- `HEADROOM_CORRELATION_ID`
+- `INNIES_TOKEN`
+- `INNIES_API_BASE_URL`
+- `INNIES_PROXY_URL`
+- `INNIES_MODEL`
+- `INNIES_CORRELATION_ID`
 - `ANTHROPIC_API_KEY`
 - `ANTHROPIC_BASE_URL`
 - `OPENAI_API_KEY`
@@ -38,8 +38,8 @@ Behavior:
 - prints actionable error if `claude` cannot start
 - loop-safe binary resolution:
   - prefers non-wrapper Claude binary from `which -a claude`
-  - supports `HEADROOM_CLAUDE_BIN` override
-  - recursion guard via `HEADROOM_CLAUDE_WRAPPED`
+  - supports `INNIES_CLAUDE_BIN` override
+  - recursion guard via `INNIES_CLAUDE_WRAPPED`
 - prints one-line runtime status (model/proxy/request-id)
 
 ### `innies link claude`
@@ -49,9 +49,9 @@ Creates wrapper shim at `~/.local/bin/claude`:
 This allows normal `claude` usage to route through Innies if `~/.local/bin` appears before other Claude paths in `PATH`.
 
 ## Error UX
-- Missing login: `Run: innies login --token <hr_token>`
+- Missing login: `Run: innies login --token <in_token>`
 - Missing token flag: `Missing --token`
-- Invalid token format: `Token must start with hr_`
+- Invalid token format: `Token must start with in_`
 - Missing/invalid config: points user to login
 
 ## Smoke Test
@@ -67,7 +67,7 @@ Smoke test validates:
 - doctor reports OK with fake claude binary
 - claude wrapper forwards args and injects env
 - link command writes wrapper shim
-- token-mode route marker is injected (`HEADROOM_ROUTE_MODE=token`)
+- token-mode route marker is injected (`INNIES_ROUTE_MODE=token`)
 - non-streaming proxy compatibility check validates provider-native 2xx/4xx pass-through semantics
 - idempotency policy compatibility check validates deterministic non-envelope replay error contract
 - token auth failure class emits actionable CLI hint (`not-enabled` case)
@@ -79,9 +79,9 @@ Run in pilot/staging env with valid API credentials:
 
 ```bash
 cd cli
-HEADROOM_SMOKE_API_URL=https://gateway.headroom.ai \
-HEADROOM_SMOKE_API_KEY=hr_live_<api_key> \
-HEADROOM_SMOKE_IDEMPOTENCY_KEY=11111111-1111-7111-8111-111111111111 \
+INNIES_SMOKE_API_URL=https://gateway.innies.ai \
+INNIES_SMOKE_API_KEY=in_live_<api_key> \
+INNIES_SMOKE_IDEMPOTENCY_KEY=11111111-1111-7111-8111-111111111111 \
 npm run test:smoke:real
 ```
 
@@ -91,7 +91,7 @@ Expected proof: response includes `x-innies-token-credential-id` header.
 Daily path for internal pilot users:
 
 ```bash
-innies login --token hr_live_<redacted> --base-url https://gateway.headroom.ai
+innies login --token in_live_<redacted> --base-url https://gateway.innies.ai
 innies doctor
 innies claude -- --version
 innies claude -- "summarize this repo"

@@ -1,11 +1,11 @@
 export const TABLES = {
-  auditLogEvents: 'hr_audit_log_events',
-  idempotencyKeys: 'hr_idempotency_keys',
-  orgs: 'hr_orgs',
-  sellerKeys: 'hr_seller_keys',
-  tokenCredentials: 'hr_token_credentials',
-  usageLedger: 'hr_usage_ledger',
-  dailyAggregates: 'hr_daily_aggregates',
-  reconciliationRuns: 'hr_reconciliation_runs',
-  routingEvents: 'hr_routing_events'
+  auditLogEvents: 'in_audit_log_events',
+  idempotencyKeys: 'in_idempotency_keys',
+  orgs: 'in_orgs',
+  sellerKeys: 'in_seller_keys',
+  tokenCredentials: 'in_token_credentials',
+  usageLedger: 'in_usage_ledger',
+  dailyAggregates: 'in_daily_aggregates',
+  reconciliationRuns: 'in_reconciliation_runs',
+  routingEvents: 'in_routing_events'
 } as const;

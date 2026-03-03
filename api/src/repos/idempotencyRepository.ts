@@ -46,7 +46,7 @@ export class IdempotencyRepository {
         response_digest,
         response_ref,
         expires_at
-      from hr_idempotency_keys
+      from in_idempotency_keys
       where scope = $1 and tenant_scope = $2 and idempotency_key = $3
       limit 1
     `;
@@ -56,7 +56,7 @@ export class IdempotencyRepository {
 
   async store(input: IdempotencyStoreInput): Promise<IdempotencyRecord> {
     const sql = `
-      insert into hr_idempotency_keys (
+      insert into in_idempotency_keys (
         id,
         scope,
         tenant_scope,
@@ -101,7 +101,7 @@ export class IdempotencyRepository {
   }
 
   async purgeExpired(before: Date): Promise<IdempotencyPurgeResult> {
-    const sql = `delete from hr_idempotency_keys where expires_at <= $1`;
+    const sql = `delete from in_idempotency_keys where expires_at <= $1`;
     const params: SqlValue[] = [before];
     const result = await this.db.query(sql, params);
     return { deletedCount: result.rowCount };

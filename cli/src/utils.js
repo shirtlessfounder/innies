@@ -8,7 +8,7 @@ export function printUsage() {
       'Innies CLI',
       '',
       'Usage:',
-      '  innies login --token <hr_token> [--base-url <url>] [--model <id>]',
+      '  innies login --token <in_token> [--base-url <url>] [--model <id>]',
       '  innies doctor',
       '  innies claude [-- <claude args...>]',
       '  innies link claude',
@@ -23,7 +23,7 @@ export function fail(message) {
 }
 
 export function normalizeBaseUrl(input) {
-  const value = (input ?? 'https://gateway.headroom.ai').trim();
+  const value = (input ?? 'https://gateway.innies.ai').trim();
   if (!value) {
     fail('Base URL cannot be empty.');
   }

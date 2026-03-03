@@ -16,7 +16,7 @@ export class ApiKeyRepository {
   async findActiveByHash(keyHash: string): Promise<ApiKeyRecord | null> {
     const sql = `
       select id, org_id, scope, is_active, expires_at
-      from hr_api_keys
+      from in_api_keys
       where key_hash = $1
       limit 1
     `;
@@ -30,7 +30,7 @@ export class ApiKeyRepository {
   }
 
   async touchLastUsed(id: string): Promise<void> {
-    const sql = `update hr_api_keys set last_used_at = now() where id = $1`;
+    const sql = `update in_api_keys set last_used_at = now() where id = $1`;
     const params: SqlValue[] = [id];
     await this.db.query(sql, params);
   }

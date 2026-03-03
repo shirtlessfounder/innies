@@ -22,7 +22,10 @@ class SequenceSqlClient implements SqlClient {
 describe('tokenCredentialRepository', () => {
   it('creates encrypted token credential row', async () => {
     process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 7).toString('base64');
-    const db = new SequenceSqlClient([{ rows: [{ id: 'cred_1', rotation_version: 1 }], rowCount: 1 }]);
+    const db = new SequenceSqlClient([
+      { rows: [], rowCount: 0 },
+      { rows: [{ id: 'cred_1', rotation_version: 1 }], rowCount: 1 }
+    ]);
     const repo = new TokenCredentialRepository(db);
 
     const saved = await repo.create({
@@ -36,10 +39,10 @@ describe('tokenCredentialRepository', () => {
 
     expect(saved.id).toBe('cred_1');
     expect(saved.rotationVersion).toBe(1);
-    expect(db.queries[0].sql).toContain('insert into hr_token_credentials');
-    expect(Buffer.isBuffer(db.queries[0].params?.[4])).toBe(true);
-    expect(Buffer.isBuffer(db.queries[0].params?.[5])).toBe(true);
-    expect(String(db.queries[0].params?.[4])).not.toContain('access-secret');
+    expect(db.queries[1].sql).toContain('insert into in_token_credentials');
+    expect(Buffer.isBuffer(db.queries[1].params?.[4])).toBe(true);
+    expect(Buffer.isBuffer(db.queries[1].params?.[5])).toBe(true);
+    expect(String(db.queries[1].params?.[4])).not.toContain('access-secret');
   });
 
   it('selects and decrypts active credential', async () => {
@@ -59,13 +62,16 @@ describe('tokenCredentialRepository', () => {
         rotation_version: 1,
         created_at: '2026-03-01T00:00:00Z',
         updated_at: '2026-03-01T00:00:00Z',
-        revoked_at: null
+        revoked_at: null,
+        monthly_contribution_limit_units: null,
+        monthly_contribution_used_units: 0,
+        monthly_window_start_at: '2026-03-01T00:00:00Z'
       }],
       rowCount: 1
     }]);
     const repo = new TokenCredentialRepository(db);
 
-    const found = await repo.selectActive('00000000-0000-0000-0000-000000000001', 'anthropic');
+    const [found] = await repo.listActiveForRouting('00000000-0000-0000-0000-000000000001', 'anthropic');
     expect(found?.accessToken).toBe('access-live');
     expect(found?.refreshToken).toBe('refresh-live');
     expect(db.queries[0].sql).toContain("and expires_at > now()");
@@ -95,5 +101,14 @@ describe('tokenCredentialRepository', () => {
     expect(rotated.previousId).toBe('old_1');
     expect(db.queries[2].sql).toContain("set status = 'rotating'");
     expect(db.queries[4].sql).toContain("set status = 'revoked'");
+  });
+
+  it('increments monthly contribution usage when under cap', async () => {
+    const db = new SequenceSqlClient([{ rows: [], rowCount: 1 }]);
+    const repo = new TokenCredentialRepository(db);
+
+    const ok = await repo.addMonthlyContributionUsage('cred_1', 120);
+    expect(ok).toBe(true);
+    expect(db.queries[0].sql).toContain('monthly_contribution_used_units');
   });
 });

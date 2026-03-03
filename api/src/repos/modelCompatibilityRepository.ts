@@ -15,7 +15,7 @@ export class ModelCompatibilityRepository {
   async findActive(provider: string, model: string, now: Date = new Date()): Promise<ModelCompatibilityRule | null> {
     const sql = `
       select id, provider, model, supports_streaming, supports_tools, is_enabled
-      from hr_model_compatibility_rules
+      from in_model_compatibility_rules
       where provider = $1
         and model = $2
         and is_enabled = true

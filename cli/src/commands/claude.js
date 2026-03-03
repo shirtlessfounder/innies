@@ -11,8 +11,8 @@ function proxyBase(configBaseUrl) {
 function resolveClaudeBinary() {
   const wrapperPath = `${homedir()}/.local/bin/claude`;
 
-  if (process.env.HEADROOM_CLAUDE_BIN && process.env.HEADROOM_CLAUDE_BIN.trim()) {
-    return process.env.HEADROOM_CLAUDE_BIN.trim();
+  if (process.env.INNIES_CLAUDE_BIN && process.env.INNIES_CLAUDE_BIN.trim()) {
+    return process.env.INNIES_CLAUDE_BIN.trim();
   }
 
   const whichAll = spawnSync('sh', ['-lc', 'which -a claude'], { encoding: 'utf8' });
@@ -31,7 +31,7 @@ function resolveClaudeBinary() {
   }
 
   fail(
-    'Claude binary resolution failed (only wrapper found). Set HEADROOM_CLAUDE_BIN to the real Claude binary path.'
+    'Claude binary resolution failed (only wrapper found). Set INNIES_CLAUDE_BIN to the real Claude binary path.'
   );
 }
 
@@ -69,17 +69,17 @@ function printTokenAuthGuidance(failureClass) {
 }
 
 function shouldCaptureClaudeOutput() {
-  return process.env.HEADROOM_CAPTURE_CLAUDE_OUTPUT === '1';
+  return process.env.INNIES_CAPTURE_CLAUDE_OUTPUT === '1';
 }
 
 export async function runClaude(args) {
   const config = await loadConfig(true);
   if (!config) {
-    fail('Not logged in. Run: innies login --token <hr_token>');
+    fail('Not logged in. Run: innies login --token <in_token>');
   }
 
-  if (process.env.HEADROOM_CLAUDE_WRAPPED === '1') {
-    fail('Detected wrapper recursion. Set HEADROOM_CLAUDE_BIN to the real Claude binary path.');
+  if (process.env.INNIES_CLAUDE_WRAPPED === '1') {
+    fail('Detected wrapper recursion. Set INNIES_CLAUDE_BIN to the real Claude binary path.');
   }
 
   const proxyUrl = proxyBase(config.apiBaseUrl);
@@ -92,13 +92,13 @@ export async function runClaude(args) {
 
   const env = {
     ...process.env,
-    HEADROOM_CLAUDE_WRAPPED: '1',
-    HEADROOM_TOKEN: config.token,
-    HEADROOM_API_BASE_URL: config.apiBaseUrl,
-    HEADROOM_PROXY_URL: proxyUrl,
-    HEADROOM_MODEL: config.defaultModel,
-    HEADROOM_ROUTE_MODE: 'token',
-    HEADROOM_CORRELATION_ID: correlationId,
+    INNIES_CLAUDE_WRAPPED: '1',
+    INNIES_TOKEN: config.token,
+    INNIES_API_BASE_URL: config.apiBaseUrl,
+    INNIES_PROXY_URL: proxyUrl,
+    INNIES_MODEL: config.defaultModel,
+    INNIES_ROUTE_MODE: 'token',
+    INNIES_CORRELATION_ID: correlationId,
     ANTHROPIC_API_KEY: config.token,
     ANTHROPIC_BASE_URL: proxyUrl,
     OPENAI_API_KEY: config.token,
