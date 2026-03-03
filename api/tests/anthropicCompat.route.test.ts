@@ -298,6 +298,8 @@ describe('anthropic compat route', () => {
     expect(upstreamSpy).toHaveBeenCalledTimes(1);
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toContain('text/event-stream');
+    expect(res.headers['cache-control']).toBe('no-cache, no-transform');
+    expect(res.headers['x-accel-buffering']).toBe('no');
     expect(String(res.body)).toContain(': keepalive');
     expect(String(res.body)).toContain('event: message_start');
     expect(String(res.body)).toContain('event: message_stop');

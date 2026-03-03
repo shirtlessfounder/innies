@@ -98,11 +98,20 @@ export function createApp(): express.Express {
 
 export function startServer(port = Number(process.env.PORT || 4010)): void {
   const app = createApp();
-  app.listen(port, () => {
+  const server = app.listen(port, () => {
     startBackgroundJobs();
     // eslint-disable-next-line no-console
     console.log(`innies api listening on :${port}`);
   });
+
+  const keepAliveTimeoutMs = Number(process.env.SERVER_KEEPALIVE_TIMEOUT_MS || 75_000);
+  const headersTimeoutMs = Number(process.env.SERVER_HEADERS_TIMEOUT_MS || (keepAliveTimeoutMs + 1_000));
+  const requestTimeoutMs = Number(process.env.SERVER_REQUEST_TIMEOUT_MS || 0);
+
+  // Keep streaming connections stable and deterministic across Node versions.
+  server.keepAliveTimeout = Math.max(1_000, keepAliveTimeoutMs);
+  server.headersTimeout = Math.max(server.keepAliveTimeout + 1_000, headersTimeoutMs);
+  server.requestTimeout = Math.max(0, requestTimeoutMs);
 }
 
 startServer();

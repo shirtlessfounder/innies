@@ -1093,9 +1093,17 @@ async function executeTokenModeStreaming(input: {
       res.setHeader('x-innies-token-credential-id', credential.id);
       res.setHeader('x-innies-attempt-no', String(attemptNo));
       res.setHeader('content-type', contentType);
+      // Force pass-through semantics for SSE across reverse proxies.
+      res.setHeader('cache-control', 'no-cache, no-transform');
+      res.setHeader('connection', 'keep-alive');
+      res.setHeader('x-accel-buffering', 'no');
       res.status(status);
       if (typeof (res as any).flushHeaders === 'function') {
         (res as any).flushHeaders();
+      }
+      if ((res as any).socket) {
+        (res as any).socket.setKeepAlive?.(true);
+        (res as any).socket.setNoDelay?.(true);
       }
 
       if (!upstreamResponse.body) {
@@ -1111,6 +1119,9 @@ async function executeTokenModeStreaming(input: {
       const writeKeepalive = () => {
         if ((res as any).writableEnded || (res as any).destroyed) return;
         (res as any).write(': keepalive\n\n');
+        if (typeof (res as any).flush === 'function') {
+          (res as any).flush();
+        }
       };
       // Emit one frame immediately so clients with short first-byte deadlines do not timeout.
       writeKeepalive();
@@ -1120,7 +1131,6 @@ async function executeTokenModeStreaming(input: {
           const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
           if (firstByteAt === null) {
             firstByteAt = Date.now();
-            clearInterval(keepaliveTimer);
             console.info('[stream-first-byte]', {
               requestId,
               attemptNo,
