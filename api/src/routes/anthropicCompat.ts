@@ -78,6 +78,15 @@ function normalizeThinkingForCompat(payload: Record<string, unknown>): Record<st
   return normalized;
 }
 
+function normalizeToolChoiceForCompat(payload: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...payload };
+  const toolChoice = normalized.tool_choice;
+  if (toolChoice === 'auto' || toolChoice === 'none' || toolChoice === 'any') {
+    normalized.tool_choice = { type: toolChoice };
+  }
+  return normalized;
+}
+
 router.post(
   '/v1/messages',
   (req, res, next) => {
@@ -91,7 +100,8 @@ router.post(
   async (req, res, next) => {
     try {
       const parsed = anthropicMessagesSchema.parse(req.body);
-      const normalizedPayload = normalizeThinkingForCompat(parsed as Record<string, unknown>);
+      const withThinking = normalizeThinkingForCompat(parsed as Record<string, unknown>);
+      const normalizedPayload = normalizeToolChoiceForCompat(withThinking);
 
       (req as any).inniesCompatMode = true;
       (req as any).inniesProxiedPath = '/v1/messages';

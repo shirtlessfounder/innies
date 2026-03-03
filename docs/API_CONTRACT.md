@@ -81,6 +81,14 @@ Notes:
   - If `thinking.type = "enabled"` and `thinking.budget_tokens` is provided, it must be a positive integer.
   - If `thinking.type = "enabled"` and `thinking.budget_tokens < 1024`, API normalizes it up to `1024`.
   - If `thinking.type = "enabled"` and `max_tokens`/`max_output_tokens` is `<= thinking.budget_tokens`, API returns deterministic `400` (`invalid_request`) with a clear validation message.
+- Tool-choice compatibility guardrail:
+  - If `tool_choice` is a string (`auto|none|any`), API normalizes it to object form (`{"type":"..."}`).
+- 403 policy-block fallback (compat mode):
+  - On upstream `403` with `"Your request was blocked."`, API retries once with sanitized beta headers and with `thinking` removed from payload.
+  - If retry succeeds, response is returned normally.
+  - If retry is also blocked, API passes through upstream `403` (does not remap to `401`).
+- Compat audit logging:
+  - `/v1/messages` upstream 4xx/403 outcomes emit structured `[compat-audit]` log line with `requestId`, `credentialId`, `attemptNo`, `upstreamStatus`, and upstream error type/message (if available).
 - Optional operational debug tracing:
   - `INNIES_COMPAT_TRACE=true` enables redacted request/response logs for `/v1/messages` only.
   - Keep disabled in normal production operation due to log volume.

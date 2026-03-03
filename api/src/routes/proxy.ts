@@ -130,8 +130,16 @@ function buildTokenModeUpstreamHeaders(input: {
   anthropicBeta?: string;
   provider: string;
   credential: TokenCredential;
+  skipOauthDefaultBetas?: boolean;
 }): Record<string, string> {
-  const { requestId, anthropicVersion, anthropicBeta, provider, credential } = input;
+  const {
+    requestId,
+    anthropicVersion,
+    anthropicBeta,
+    provider,
+    credential,
+    skipOauthDefaultBetas
+  } = input;
   const headers: Record<string, string> = {
     'content-type': 'application/json',
     'x-request-id': requestId,
@@ -141,11 +149,53 @@ function buildTokenModeUpstreamHeaders(input: {
 
   if (anthropicBeta) {
     headers['anthropic-beta'] = anthropicBeta;
-  } else if (isAnthropicOauthToken(credential, provider)) {
+  } else if (!skipOauthDefaultBetas && isAnthropicOauthToken(credential, provider)) {
     headers['anthropic-beta'] = ANTHROPIC_OAUTH_BETAS.join(',');
   }
 
   return headers;
+}
+
+function isUpstreamBlockedResponse(status: number, data: unknown): boolean {
+  if (status !== 403 || !data || typeof data !== 'object') return false;
+  const message = String((data as any)?.error?.message ?? '').toLowerCase();
+  return message.includes('your request was blocked');
+}
+
+function sanitizeAnthropicBetaForCompatRetry(_anthropicBeta: string | undefined): string | undefined {
+  // On policy-block retry we intentionally drop all betas to maximize compatibility.
+  return undefined;
+}
+
+function sanitizeCompatPayloadForBlockedRetry(payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return payload;
+  }
+  const next = { ...(payload as Record<string, unknown>) };
+  // Compatibility fallback: remove extended-thinking block on blocked-policy retry.
+  delete next.thinking;
+  return next;
+}
+
+function extractUpstreamErrorDetails(data: unknown): { errorType?: string; errorMessage?: string } {
+  if (!data || typeof data !== 'object') return {};
+  const error = (data as any).error;
+  if (!error || typeof error !== 'object') return {};
+  const errorType = typeof error.type === 'string' ? error.type : undefined;
+  const errorMessage = typeof error.message === 'string' ? error.message : undefined;
+  return { errorType, errorMessage };
+}
+
+function logCompatAudit(input: {
+  requestId: string;
+  credentialId: string;
+  attemptNo: number;
+  upstreamStatus: number;
+  errorType?: string;
+  errorMessage?: string;
+}): void {
+  // Keep this concise and machine-parsable for incident correlation.
+  console.info('[compat-audit] attempt', input);
 }
 
 function mapAuthHeader(authScheme: TokenCredential['authScheme'], accessToken: string): Record<string, string> {
@@ -266,6 +316,8 @@ async function executeTokenModeNonStreaming(input: {
     attemptNo += 1;
     let credential = initialCredential;
     let refreshed = false;
+    let compatBlockedRetried = false;
+    let effectivePayload = payload;
 
     while (true) {
       const baseUrl = upstreamBaseUrl(provider);
@@ -300,11 +352,15 @@ async function executeTokenModeNonStreaming(input: {
         headers: buildTokenModeUpstreamHeaders({
           requestId,
           anthropicVersion,
-          anthropicBeta,
+          anthropicBeta: compatBlockedRetried
+            ? sanitizeAnthropicBetaForCompatRetry(anthropicBeta)
+            : anthropicBeta,
           provider,
-          credential
+          credential,
+          skipOauthDefaultBetas: compatBlockedRetried
         }),
-        body: JSON.stringify(payload ?? {}),
+        // Use effective payload so blocked-policy fallback can remove risky fields once.
+        body: JSON.stringify(effectivePayload ?? {}),
         signal: controller.signal
       })
         .catch(async (error: unknown) => {
@@ -317,7 +373,72 @@ async function executeTokenModeNonStreaming(input: {
       if (!upstreamResponse) break;
 
       const status = upstreamResponse.status;
+      if (status === 403 && strictUpstreamPassthrough) {
+        const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+        const data = contentType.includes('application/json')
+          ? await upstreamResponse.json().catch(() => ({}))
+          : await upstreamResponse.text();
+        const blocked = isUpstreamBlockedResponse(status, data);
+        if (blocked && !compatBlockedRetried) {
+          compatBlockedRetried = true;
+          effectivePayload = sanitizeCompatPayloadForBlockedRetry(payload);
+          continue;
+        }
+        if (blocked) {
+          const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
+          await runtime.repos.routingEvents.insert({
+            requestId,
+            attemptNo,
+            orgId,
+            apiKeyId,
+            sellerKeyId: undefined,
+            provider,
+            model,
+            streaming: false,
+            routeDecision: {
+              reason: 'token_mode_round_robin',
+              tokenCredentialId: credential.id,
+              tokenAuthScheme: credential.authScheme
+            },
+            upstreamStatus: status,
+            errorCode: 'upstream_403_blocked_passthrough',
+            latencyMs: Date.now() - startedAt
+          });
+          logCompatAudit({
+            requestId,
+            credentialId: credential.id,
+            attemptNo,
+            upstreamStatus: status,
+            errorType,
+            errorMessage
+          });
+
+          return {
+            requestId,
+            keyId: credential.id,
+            attemptNo,
+            upstreamStatus: status,
+            usageUnits: 0,
+            contentType,
+            data,
+            routeKind: 'token_credential',
+            alreadyRecorded: true
+          };
+        }
+      }
+
       if (status === 401 || status === 403) {
+        let statusErrorType: string | undefined;
+        let statusErrorMessage: string | undefined;
+        if (strictUpstreamPassthrough) {
+          const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+          const statusData = contentType.includes('application/json')
+            ? await upstreamResponse.json().catch(() => ({}))
+            : await upstreamResponse.text();
+          const details = extractUpstreamErrorDetails(statusData);
+          statusErrorType = details.errorType;
+          statusErrorMessage = details.errorMessage;
+        }
         if (!refreshed) {
           const next = await attemptCredentialRefresh(credential);
           refreshed = true;
@@ -332,6 +453,16 @@ async function executeTokenModeNonStreaming(input: {
         sawAuthFailure = true;
         lastAuthStatus = status;
         await logAttemptFailure({ kind: 'auth', statusCode: status, message: 'token auth failed' });
+        if (strictUpstreamPassthrough) {
+          logCompatAudit({
+            requestId,
+            credentialId: credential.id,
+            attemptNo,
+            upstreamStatus: status,
+            errorType: statusErrorType,
+            errorMessage: statusErrorMessage
+          });
+        }
         break;
       }
 
@@ -389,6 +520,17 @@ async function executeTokenModeNonStreaming(input: {
       const data = contentType.includes('application/json')
         ? await upstreamResponse.json().catch(() => ({}))
         : await upstreamResponse.text();
+      if (strictUpstreamPassthrough && status >= 400) {
+        const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
+        logCompatAudit({
+          requestId,
+          credentialId: credential.id,
+          attemptNo,
+          upstreamStatus: status,
+          errorType,
+          errorMessage
+        });
+      }
       const inputTokens = Number((data as any)?.usage?.input_tokens ?? 0);
       const outputTokens = Number((data as any)?.usage?.output_tokens ?? 0);
       const usageUnits = Math.max(0, inputTokens + outputTokens);
@@ -506,6 +648,8 @@ async function executeTokenModeStreaming(input: {
     attemptNo += 1;
     let credential = initialCredential;
     let refreshed = false;
+    let compatBlockedRetried = false;
+    let effectivePayload = payload;
 
     while (true) {
       const baseUrl = upstreamBaseUrl(provider);
@@ -540,11 +684,14 @@ async function executeTokenModeStreaming(input: {
         headers: buildTokenModeUpstreamHeaders({
           requestId,
           anthropicVersion,
-          anthropicBeta,
+          anthropicBeta: compatBlockedRetried
+            ? sanitizeAnthropicBetaForCompatRetry(anthropicBeta)
+            : anthropicBeta,
           provider,
-          credential
+          credential,
+          skipOauthDefaultBetas: compatBlockedRetried
         }),
-        body: JSON.stringify(payload ?? {}),
+        body: JSON.stringify(effectivePayload ?? {}),
         signal: controller.signal
       })
         .catch(async (error: unknown) => {
@@ -557,7 +704,72 @@ async function executeTokenModeStreaming(input: {
       if (!upstreamResponse) break;
 
       const status = upstreamResponse.status;
+      if (status === 403 && strictUpstreamPassthrough) {
+        const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+        const data = contentType.includes('application/json')
+          ? await upstreamResponse.json().catch(() => ({}))
+          : await upstreamResponse.text();
+        const blocked = isUpstreamBlockedResponse(status, data);
+        if (blocked && !compatBlockedRetried) {
+          compatBlockedRetried = true;
+          effectivePayload = sanitizeCompatPayloadForBlockedRetry(payload);
+          continue;
+        }
+        if (blocked) {
+          const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
+          await runtime.repos.routingEvents.insert({
+            requestId,
+            attemptNo,
+            orgId,
+            apiKeyId,
+            sellerKeyId: undefined,
+            provider,
+            model,
+            streaming: true,
+            routeDecision: {
+              reason: 'token_mode_round_robin',
+              tokenCredentialId: credential.id,
+              tokenAuthScheme: credential.authScheme
+            },
+            upstreamStatus: status,
+            errorCode: 'upstream_403_blocked_passthrough',
+            latencyMs: Date.now() - startedAt
+          });
+          logCompatAudit({
+            requestId,
+            credentialId: credential.id,
+            attemptNo,
+            upstreamStatus: status,
+            errorType,
+            errorMessage
+          });
+
+          return {
+            requestId,
+            keyId: credential.id,
+            attemptNo,
+            upstreamStatus: status,
+            usageUnits: 0,
+            contentType,
+            data,
+            routeKind: 'token_credential',
+            alreadyRecorded: true
+          };
+        }
+      }
+
       if (status === 401 || status === 403) {
+        let statusErrorType: string | undefined;
+        let statusErrorMessage: string | undefined;
+        if (strictUpstreamPassthrough) {
+          const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+          const statusData = contentType.includes('application/json')
+            ? await upstreamResponse.json().catch(() => ({}))
+            : await upstreamResponse.text();
+          const details = extractUpstreamErrorDetails(statusData);
+          statusErrorType = details.errorType;
+          statusErrorMessage = details.errorMessage;
+        }
         if (!refreshed) {
           const next = await attemptCredentialRefresh(credential);
           refreshed = true;
@@ -572,6 +784,16 @@ async function executeTokenModeStreaming(input: {
         sawAuthFailure = true;
         lastAuthStatus = status;
         await logAttemptFailure({ kind: 'auth', statusCode: status, message: 'token auth failed' });
+        if (strictUpstreamPassthrough) {
+          logCompatAudit({
+            requestId,
+            credentialId: credential.id,
+            attemptNo,
+            upstreamStatus: status,
+            errorType: statusErrorType,
+            errorMessage: statusErrorMessage
+          });
+        }
         break;
       }
 
@@ -593,6 +815,17 @@ async function executeTokenModeStreaming(input: {
         const data = contentType.includes('application/json')
           ? await upstreamResponse.json().catch(() => ({}))
           : await upstreamResponse.text();
+        if (strictUpstreamPassthrough && status >= 400) {
+          const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
+          logCompatAudit({
+            requestId,
+            credentialId: credential.id,
+            attemptNo,
+            upstreamStatus: status,
+            errorType,
+            errorMessage
+          });
+        }
         const inputTokens = Number((data as any)?.usage?.input_tokens ?? 0);
         const outputTokens = Number((data as any)?.usage?.output_tokens ?? 0);
         const usageUnits = Math.max(0, inputTokens + outputTokens);

@@ -667,4 +667,185 @@ describe('anthropic compat route', () => {
 
     upstreamSpy.mockRestore();
   });
+
+  it('normalizes tool_choice string to object for compat requests', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_tool_choice_1', usage: { input_tokens: 3, output_tokens: 4 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 256,
+        messages: [{ role: 'user', content: 'hi' }],
+        tool_choice: 'auto'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    const fetchArgs = upstreamSpy.mock.calls[0];
+    const body = JSON.parse(String((fetchArgs?.[1] as RequestInit)?.body ?? '{}'));
+    expect(body.tool_choice).toEqual({ type: 'auto' });
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('retries once with sanitized beta headers when upstream returns policy-blocked 403', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'invalid_request_error', message: 'Your request was blocked.' }
+      }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_retry_ok',
+        usage: { input_tokens: 5, output_tokens: 6 }
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'anthropic-beta': 'oauth-2025-04-20,claude-code-20250219'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 2048,
+        messages: [{ role: 'user', content: 'hi' }],
+        thinking: { type: 'enabled', budget_tokens: 1024 }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+    const firstHeaders = (upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.headers as Record<string, string>;
+    const secondHeaders = (upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.headers as Record<string, string>;
+    const firstBody = JSON.parse(String((upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.body ?? '{}'));
+    const secondBody = JSON.parse(String((upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.body ?? '{}'));
+    expect(firstHeaders['anthropic-beta']).toBe('oauth-2025-04-20,claude-code-20250219');
+    expect(secondHeaders['anthropic-beta']).toBeUndefined();
+    expect(firstBody.thinking).toEqual({ type: 'enabled', budget_tokens: 1024 });
+    expect(secondBody.thinking).toBeUndefined();
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('passes through blocked 403 when compat retry is still blocked', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'invalid_request_error', message: 'Your request was blocked.' }
+      }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'invalid_request_error', message: 'Your request was blocked.' }
+      }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'anthropic-beta': 'oauth-2025-04-20,claude-code-20250219'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+    expect(res.statusCode).toBe(403);
+    expect((res.body as any).error?.message).toContain('blocked');
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('retries blocked 403 once in stream mode with thinking stripped', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'invalid_request_error', message: 'Your request was blocked.' }
+      }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_stream_retry_ok',
+        usage: { input_tokens: 9, output_tokens: 8 }
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'anthropic-beta': 'oauth-2025-04-20,claude-code-20250219'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        stream: true,
+        max_tokens: 2048,
+        messages: [{ role: 'user', content: 'hi' }],
+        thinking: { type: 'enabled', budget_tokens: 1024 }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+    const firstBody = JSON.parse(String((upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.body ?? '{}'));
+    const secondBody = JSON.parse(String((upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.body ?? '{}'));
+    expect(firstBody.thinking).toEqual({ type: 'enabled', budget_tokens: 1024 });
+    expect(secondBody.thinking).toBeUndefined();
+
+    upstreamSpy.mockRestore();
+  });
 });
