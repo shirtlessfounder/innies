@@ -8,6 +8,10 @@ Primary success condition:
 - Canonical OpenClaw Anthropic base URL guidance: `https://api.innies.computer` (no trailing `/v1`).
 - Compatibility note: clients that provide `/v1` may still work if normalized; document and test this explicitly.
 
+Scope boundary note:
+- This scope is technical compatibility only.
+- Policy/legal/provider-terms analysis is explicitly out of scope for this document.
+
 ## Why this matters
 Innies is only valuable if it is a drop-in path for existing agent workflows. OpenClaw is your live control point. If protocol compatibility is partial, adoption friction kills throughput and invalidates the pooling thesis.
 
@@ -54,6 +58,19 @@ Required:
 - If `Idempotency-Key` provided and duplicate detected: deterministic `409 proxy_replay_not_supported`.
 - If missing key: no replay persistence contract.
 
+6. OAuth compat profile (request-contract invariant).
+- For Anthropic OAuth-backed token credentials, compatibility shaping must be deterministic and code-defined.
+- Retry-driven OAuth compatibility is acceptable if deterministic and covered by route-level tests.
+- If OAuth compatibility mode is required, normalize request shape on an explicit OAuth auth-error branch and retry once.
+
+7. OAuth beta-header invariant.
+- Required OAuth Anthropic beta headers must not be dropped on fallback/retry paths.
+- Fallback logic may remove incompatible extras, but must preserve auth-critical betas for OAuth credentials.
+
+8. No-silent-mutation invariant.
+- Any compatibility normalization/mutation must be observable in logs.
+- Compatibility path activation must emit deterministic machine-readable markers for incident correlation.
+
 ## C1.6 (Hardening before broader team rollout)
 
 Required:
@@ -71,11 +88,30 @@ Required:
   - `x-innies-token-credential-id` or `x-innies-upstream-key-id`
   - `x-innies-attempt-no`
 - Log structured stream outcomes (success, disconnect, upstream error).
+- Add structured per-attempt compat diagnostics for `/v1/messages`:
+  - `requestId`, `attemptNo`, `credentialId`, `authScheme`
+  - normalization flags (e.g. dropped tools/tool_choice, dropped thinking, forced non-stream)
+  - effective outbound Anthropic beta header set
+  - upstream `status`, upstream error `type`/`message` when present
 
 4. Metering policy for stream mode documented.
 - Best-effort usage extraction from stream usage frames.
 - Fallback estimate policy if usage frames absent.
 - Reconciliation note for later corrections.
+
+5. Deterministic fallback matrix (fixed contract).
+- `401` with OAuth-incompatible auth error signature:
+  - apply OAuth-safe normalization and retry once on same credential.
+- `401` other auth failures:
+  - credential refresh once; if still failing, failover to next credential.
+- `403` blocked-policy signature:
+  - apply blocked-policy fallback branch per compat rules.
+- `429`:
+  - bounded backoff + failover.
+- `5xx`/network/timeout:
+  - failover to next credential.
+- if all attempts fail:
+  - return deterministic terminal error with preserved upstream semantics where applicable.
 
 ## C2 (Optional enhancements)
 
@@ -112,6 +148,18 @@ Required:
 - Provided key: duplicate -> `409 proxy_replay_not_supported`.
 - Missing key: request proceeds with no replay guarantee.
 
+5. OAuth fallback semantics
+- For OAuth-backed Anthropic credentials, payload-shape normalization is applied on explicit OAuth auth-error retry (`401` oauth-incompatible/authentication_error).
+- Retry/fallback branches must preserve required OAuth auth headers while applying payload compatibility shaping.
+- Error matching for OAuth-incompatible request mode must be robust to minor upstream message variations (not exact-string brittle).
+
+6. Streaming/non-stream parity
+- Any compatibility rule added for `/v1/messages` must be implemented identically for both streaming and non-streaming execution paths.
+
+7. Shared normalizer implementation rule
+- Compatibility normalization logic must live in one shared function/module consumed by both streaming and non-streaming execution paths.
+- Duplicated branch-local normalization logic is out of scope for C1.6 acceptance.
+
 ## Test plan
 
 ## Required automated tests
@@ -132,6 +180,20 @@ Required:
 - inbound `anthropic-version` is preserved to upstream.
 - inbound `anthropic-beta` is preserved to upstream.
 - server does not overwrite client-provided values for either header.
+12. OAuth incompatibility regression (`/v1/messages` route-level, not proxy-only simulation):
+- first upstream response: `401` auth error for OAuth-incompatible request mode.
+- second attempt (or preflight-normalized first attempt, depending implementation) uses OAuth-safe payload shape.
+- required OAuth beta headers remain present on the successful OAuth path (no auth-beta regression).
+13. Streaming/non-stream parity regression:
+- run equivalent OAuth-compat scenarios in both branches and assert same normalization + header behavior.
+14. Fallback matrix contract tests:
+- one test per matrix branch (`401 oauth-incompat`, `401 auth`, `403 blocked`, `429`, `5xx/network/timeout`) asserting deterministic branch behavior.
+15. Failure-attribution logging tests:
+- verify structured per-attempt fields are emitted for compat failures and retries.
+16. No-silent-mutation test:
+- when compat normalization is applied, assert deterministic marker/header/log field indicating normalization occurred.
+17. Shared-normalizer parity test:
+- assert both stream and non-stream handlers call the same normalization routine and produce identical normalized payload/header decisions for equivalent input.
 
 ## Manual OpenClaw smoke
 1. Configure OpenClaw base URL = `https://api.innies.computer` (canonical Anthropic compat setting).
@@ -161,11 +223,15 @@ Required:
 C1.5 exit:
 - OpenClaw can run both non-streaming and streaming requests through Innies without protocol-level failures.
 - Anthropic payload features (system/tools/images/metadata) pass through unchanged.
+- OAuth-backed OpenClaw traffic passes through deterministic compatibility handling without beta-header regressions.
 
 C1.6 exit:
 - No known high-severity incompatibility in staging/prod smoke.
 - 429/5xx/error behavior predictable and documented.
 - Observability sufficient to debug failed OpenClaw runs.
+- Prod-like canary gate passed:
+  - 4-case matrix (`tools on/off` x `stream on/off`) succeeds via `/v1/messages`.
+  - no unresolved auth-class regressions (`401`/`403`) in canary run logs.
 
 ## Implementation order recommendation
 

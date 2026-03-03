@@ -848,4 +848,70 @@ describe('anthropic compat route', () => {
 
     upstreamSpy.mockRestore();
   });
+
+  it('retries once on oauth-incompatible 401 with oauth-safe payload on /v1/messages', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'authentication_error', message: 'OAuth authentication is currently not supported.' }
+      }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_oauth_retry_ok',
+        usage: { input_tokens: 7, output_tokens: 9 }
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        stream: true,
+        max_tokens: 256,
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [{ name: 'x', description: 'x', input_schema: { type: 'object', properties: {} } }],
+        tool_choice: 'auto'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('msg_oauth_retry_ok');
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+
+    const firstHeaders = (upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.headers as Record<string, string>;
+    const secondHeaders = (upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.headers as Record<string, string>;
+    const firstBody = JSON.parse(String((upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.body ?? '{}'));
+    const secondBody = JSON.parse(String((upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.body ?? '{}'));
+
+    expect(firstHeaders.authorization).toBe('Bearer sk-ant-oat01-test-token');
+    expect(firstHeaders['anthropic-beta']).toBe('fine-grained-tool-streaming-2025-05-14');
+    expect(firstBody.stream).toBe(true);
+    expect(firstBody.tools).toBeDefined();
+    expect(firstBody.tool_choice).toEqual({ type: 'auto' });
+
+    expect(secondHeaders.authorization).toBe('Bearer sk-ant-oat01-test-token');
+    expect(secondHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
+    expect(secondHeaders['anthropic-beta']).toContain('claude-code-20250219');
+    expect(secondBody.stream).toBe(false);
+    expect(secondBody.tools).toBeUndefined();
+    expect(secondBody.tool_choice).toBeUndefined();
+    expect(secondBody.thinking).toBeUndefined();
+
+    upstreamSpy.mockRestore();
+  });
 });

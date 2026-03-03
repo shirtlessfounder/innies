@@ -118,10 +118,19 @@ const ANTHROPIC_OAUTH_BETAS = [
   ...ANTHROPIC_DEFAULT_BETAS
 ] as const;
 
+function parseAnthropicBetaHeader(value: string): string[] {
+  return value
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function isAnthropicOauthAccessToken(provider: string, accessToken: string): boolean {
+  return provider === 'anthropic' && accessToken.includes('sk-ant-oat');
+}
+
 function isAnthropicOauthToken(credential: TokenCredential, provider: string): boolean {
-  return provider === 'anthropic'
-    && credential.authScheme === 'bearer'
-    && credential.accessToken.includes('sk-ant-oat');
+  return isAnthropicOauthAccessToken(provider, credential.accessToken);
 }
 
 function buildTokenModeUpstreamHeaders(input: {
@@ -140,16 +149,20 @@ function buildTokenModeUpstreamHeaders(input: {
     credential,
     skipOauthDefaultBetas
   } = input;
+  const authHeaders = isAnthropicOauthAccessToken(provider, credential.accessToken)
+    ? { authorization: `Bearer ${credential.accessToken}` }
+    : mapAuthHeader(credential.authScheme, credential.accessToken);
   const headers: Record<string, string> = {
     'content-type': 'application/json',
     'x-request-id': requestId,
     'anthropic-version': anthropicVersion,
-    ...mapAuthHeader(credential.authScheme, credential.accessToken)
+    ...authHeaders
   };
 
+  const shouldIncludeOauthBetas = !skipOauthDefaultBetas && isAnthropicOauthToken(credential, provider);
   if (anthropicBeta) {
     headers['anthropic-beta'] = anthropicBeta;
-  } else if (!skipOauthDefaultBetas && isAnthropicOauthToken(credential, provider)) {
+  } else if (shouldIncludeOauthBetas) {
     headers['anthropic-beta'] = ANTHROPIC_OAUTH_BETAS.join(',');
   }
 
@@ -162,11 +175,6 @@ function isUpstreamBlockedResponse(status: number, data: unknown): boolean {
   return message.includes('your request was blocked');
 }
 
-function sanitizeAnthropicBetaForCompatRetry(_anthropicBeta: string | undefined): string | undefined {
-  // On policy-block retry we intentionally drop all betas to maximize compatibility.
-  return undefined;
-}
-
 function sanitizeCompatPayloadForBlockedRetry(payload: unknown): unknown {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return payload;
@@ -175,6 +183,148 @@ function sanitizeCompatPayloadForBlockedRetry(payload: unknown): unknown {
   // Compatibility fallback: remove extended-thinking block on blocked-policy retry.
   delete next.thinking;
   return next;
+}
+
+type CompatNormalizationReason =
+  | 'retry_blocked_403'
+  | 'retry_oauth_401';
+
+type CompatNormalizationState = {
+  payload: unknown;
+  anthropicBeta?: string;
+  blockedRetryApplied: boolean;
+  oauthRetryApplied: boolean;
+};
+
+function createCompatNormalizationState(payload: unknown, anthropicBeta?: string): CompatNormalizationState {
+  return {
+    payload,
+    anthropicBeta,
+    blockedRetryApplied: false,
+    oauthRetryApplied: false
+  };
+}
+
+function applyCompatNormalization(input: {
+  requestId: string;
+  attemptNo: number;
+  credentialId: string;
+  provider: string;
+  credential: TokenCredential;
+  state: CompatNormalizationState;
+  reason: CompatNormalizationReason;
+}): CompatNormalizationState {
+  const { requestId, attemptNo, credentialId, provider, credential, state, reason } = input;
+  const nextState: CompatNormalizationState = { ...state };
+  const beforeShape = payloadLooksLikeToolStreaming(state.payload);
+  const beforeBeta = state.anthropicBeta;
+
+  if (reason === 'retry_oauth_401') {
+    nextState.payload = sanitizeCompatPayloadForOauthAuthRetry(nextState.payload);
+    nextState.oauthRetryApplied = true;
+  } else if (reason === 'retry_blocked_403') {
+    nextState.payload = sanitizeCompatPayloadForBlockedRetry(nextState.payload);
+    nextState.anthropicBeta = undefined;
+    nextState.blockedRetryApplied = true;
+  }
+
+  if (reason === 'retry_oauth_401' && isAnthropicOauthToken(credential, provider)) {
+    const merged = new Set<string>([
+      ...parseAnthropicBetaHeader(nextState.anthropicBeta ?? ''),
+      ...ANTHROPIC_OAUTH_BETAS
+    ]);
+    nextState.anthropicBeta = [...merged].join(',');
+  }
+
+  if (process.env.COMPAT_NORMALIZATION_LOG === '1') {
+    console.info('[compat-normalization] applied', {
+      requestId,
+      attemptNo,
+      credentialId,
+      reason,
+      flags: {
+        blockedRetryApplied: nextState.blockedRetryApplied,
+        oauthRetryApplied: nextState.oauthRetryApplied
+      },
+      before: {
+        payloadLooksToolStreaming: beforeShape,
+        anthropicBeta: beforeBeta
+      },
+      after: {
+        payloadLooksToolStreaming: payloadLooksLikeToolStreaming(nextState.payload),
+        anthropicBeta: nextState.anthropicBeta
+      }
+    });
+  }
+
+  return nextState;
+}
+
+function sanitizeCompatPayloadForOauthAuthRetry(payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return payload;
+  }
+  const next = { ...(payload as Record<string, unknown>) };
+  // OAuth token-mode fallback for compat clients:
+  // drop tool-streaming shape and force plain non-stream messages.
+  delete next.tools;
+  delete next.tool_choice;
+  delete next.thinking;
+  next.stream = false;
+  return next;
+}
+
+function isOauthUnsupportedAuthError(status: number, errorMessage?: string): boolean {
+  if (status !== 401) return false;
+  if (!errorMessage) return false;
+  return errorMessage.toLowerCase().includes('oauth authentication is currently not supported');
+}
+
+function payloadLooksLikeToolStreaming(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const p = payload as Record<string, unknown>;
+  return (
+    p.stream === true
+    || Array.isArray(p.tools)
+    || p.tool_choice != null
+  );
+}
+
+function shouldRetryWithOauthSafeCompatPayload(input: {
+  status: number;
+  strictUpstreamPassthrough?: boolean;
+  provider: string;
+  credential: TokenCredential;
+  alreadyRetried: boolean;
+  payload: unknown;
+  anthropicBeta?: string;
+  errorType?: string;
+  errorMessage?: string;
+}): boolean {
+  const {
+    status,
+    strictUpstreamPassthrough,
+    provider,
+    credential,
+    alreadyRetried,
+    payload,
+    anthropicBeta,
+    errorType,
+    errorMessage
+  } = input;
+  if (!strictUpstreamPassthrough) return false;
+  if (alreadyRetried) return false;
+  if (!isAnthropicOauthToken(credential, provider)) return false;
+  if (status !== 401) return false;
+
+  if (isOauthUnsupportedAuthError(status, errorMessage)) return true;
+
+  const isAuthErrorType = (errorType ?? '').toLowerCase() === 'authentication_error';
+  const betaIncludesToolStreaming = String(anthropicBeta ?? '')
+    .toLowerCase()
+    .includes('fine-grained-tool-streaming');
+
+  return isAuthErrorType && (payloadLooksLikeToolStreaming(payload) || betaIncludesToolStreaming);
 }
 
 function extractUpstreamErrorDetails(data: unknown): { errorType?: string; errorMessage?: string } {
@@ -316,8 +466,7 @@ async function executeTokenModeNonStreaming(input: {
     attemptNo += 1;
     let credential = initialCredential;
     let refreshed = false;
-    let compatBlockedRetried = false;
-    let effectivePayload = payload;
+    let compat = createCompatNormalizationState(payload, anthropicBeta);
 
     while (true) {
       const baseUrl = upstreamBaseUrl(provider);
@@ -352,15 +501,12 @@ async function executeTokenModeNonStreaming(input: {
         headers: buildTokenModeUpstreamHeaders({
           requestId,
           anthropicVersion,
-          anthropicBeta: compatBlockedRetried
-            ? sanitizeAnthropicBetaForCompatRetry(anthropicBeta)
-            : anthropicBeta,
+          anthropicBeta: compat.anthropicBeta,
           provider,
           credential,
-          skipOauthDefaultBetas: compatBlockedRetried
+          skipOauthDefaultBetas: compat.blockedRetryApplied
         }),
-        // Use effective payload so blocked-policy fallback can remove risky fields once.
-        body: JSON.stringify(effectivePayload ?? {}),
+        body: JSON.stringify(compat.payload ?? {}),
         signal: controller.signal
       })
         .catch(async (error: unknown) => {
@@ -379,9 +525,16 @@ async function executeTokenModeNonStreaming(input: {
           ? await upstreamResponse.json().catch(() => ({}))
           : await upstreamResponse.text();
         const blocked = isUpstreamBlockedResponse(status, data);
-        if (blocked && !compatBlockedRetried) {
-          compatBlockedRetried = true;
-          effectivePayload = sanitizeCompatPayloadForBlockedRetry(payload);
+        if (blocked && !compat.blockedRetryApplied) {
+          compat = applyCompatNormalization({
+            requestId,
+            attemptNo,
+            credentialId: credential.id,
+            provider,
+            credential,
+            state: compat,
+            reason: 'retry_blocked_403'
+          });
           continue;
         }
         if (blocked) {
@@ -438,6 +591,28 @@ async function executeTokenModeNonStreaming(input: {
           const details = extractUpstreamErrorDetails(statusData);
           statusErrorType = details.errorType;
           statusErrorMessage = details.errorMessage;
+        }
+        if (shouldRetryWithOauthSafeCompatPayload({
+          status,
+          strictUpstreamPassthrough,
+          provider,
+          credential,
+          alreadyRetried: compat.oauthRetryApplied,
+          payload: compat.payload,
+          anthropicBeta: compat.anthropicBeta,
+          errorType: statusErrorType,
+          errorMessage: statusErrorMessage
+        })) {
+          compat = applyCompatNormalization({
+            requestId,
+            attemptNo,
+            credentialId: credential.id,
+            provider,
+            credential,
+            state: compat,
+            reason: 'retry_oauth_401'
+          });
+          continue;
         }
         if (!refreshed) {
           const next = await attemptCredentialRefresh(credential);
@@ -645,8 +820,7 @@ async function executeTokenModeStreaming(input: {
     attemptNo += 1;
     let credential = initialCredential;
     let refreshed = false;
-    let compatBlockedRetried = false;
-    let effectivePayload = payload;
+    let compat = createCompatNormalizationState(payload, anthropicBeta);
 
     while (true) {
       const baseUrl = upstreamBaseUrl(provider);
@@ -681,14 +855,12 @@ async function executeTokenModeStreaming(input: {
         headers: buildTokenModeUpstreamHeaders({
           requestId,
           anthropicVersion,
-          anthropicBeta: compatBlockedRetried
-            ? sanitizeAnthropicBetaForCompatRetry(anthropicBeta)
-            : anthropicBeta,
+          anthropicBeta: compat.anthropicBeta,
           provider,
           credential,
-          skipOauthDefaultBetas: compatBlockedRetried
+          skipOauthDefaultBetas: compat.blockedRetryApplied
         }),
-        body: JSON.stringify(effectivePayload ?? {}),
+        body: JSON.stringify(compat.payload ?? {}),
         signal: controller.signal
       })
         .catch(async (error: unknown) => {
@@ -707,9 +879,16 @@ async function executeTokenModeStreaming(input: {
           ? await upstreamResponse.json().catch(() => ({}))
           : await upstreamResponse.text();
         const blocked = isUpstreamBlockedResponse(status, data);
-        if (blocked && !compatBlockedRetried) {
-          compatBlockedRetried = true;
-          effectivePayload = sanitizeCompatPayloadForBlockedRetry(payload);
+        if (blocked && !compat.blockedRetryApplied) {
+          compat = applyCompatNormalization({
+            requestId,
+            attemptNo,
+            credentialId: credential.id,
+            provider,
+            credential,
+            state: compat,
+            reason: 'retry_blocked_403'
+          });
           continue;
         }
         if (blocked) {
@@ -766,6 +945,28 @@ async function executeTokenModeStreaming(input: {
           const details = extractUpstreamErrorDetails(statusData);
           statusErrorType = details.errorType;
           statusErrorMessage = details.errorMessage;
+        }
+        if (shouldRetryWithOauthSafeCompatPayload({
+          status,
+          strictUpstreamPassthrough,
+          provider,
+          credential,
+          alreadyRetried: compat.oauthRetryApplied,
+          payload: compat.payload,
+          anthropicBeta: compat.anthropicBeta,
+          errorType: statusErrorType,
+          errorMessage: statusErrorMessage
+        })) {
+          compat = applyCompatNormalization({
+            requestId,
+            attemptNo,
+            credentialId: credential.id,
+            provider,
+            credential,
+            state: compat,
+            reason: 'retry_oauth_401'
+          });
+          continue;
         }
         if (!refreshed) {
           const next = await attemptCredentialRefresh(credential);

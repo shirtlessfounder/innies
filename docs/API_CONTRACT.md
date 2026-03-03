@@ -83,10 +83,14 @@ Notes:
   - If `thinking.type = "enabled"` and `max_tokens`/`max_output_tokens` is `<= thinking.budget_tokens`, API returns deterministic `400` (`invalid_request`) with a clear validation message.
 - Tool-choice compatibility guardrail:
   - If `tool_choice` is a string (`auto|none|any`), API normalizes it to object form (`{"type":"..."}`).
+- OAuth credential header behavior:
+  - For Anthropic OAuth access tokens (`sk-ant-oat*`), upstream auth is always sent as `Authorization: Bearer <token>` even if stored credential `authScheme` is `x_api_key`.
 - 403 policy-block fallback (compat mode):
   - On upstream `403` with `"Your request was blocked."`, API retries once with sanitized beta headers and with `thinking` removed from payload.
   - If retry succeeds, response is returned normally.
   - If retry is also blocked, API passes through upstream `403` (does not remap to `401`).
+- OAuth auth-error fallback (compat mode):
+  - On upstream `401` auth error indicating OAuth-incompatible request mode, API retries once on the same credential with OAuth-safe payload shape (drops `tools`/`tool_choice`/`thinking`, forces non-stream) and preserves required OAuth betas.
 - Compat audit logging:
   - `/v1/messages` upstream 4xx/403 outcomes emit structured `[compat-audit]` log line with `requestId`, `credentialId`, `attemptNo`, `upstreamStatus`, and upstream error type/message (if available).
 - Optional operational debug tracing:

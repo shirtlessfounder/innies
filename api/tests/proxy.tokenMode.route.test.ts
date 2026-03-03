@@ -341,11 +341,339 @@ describe('proxy token-mode route behavior', () => {
     await invoke(handlers[0], req, res); // auth middleware
     await invoke(handlers[1], req, res); // route handler
 
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
     expect((res.body as any).id).toBe('msg_ok');
     expect(upstreamSpy).toHaveBeenCalledTimes(2);
     expect(markExpiredSpy).not.toHaveBeenCalled();
 
+    upstreamSpy.mockRestore();
+  });
+
+  it('retries once with oauth-safe payload when compat mode gets oauth-unsupported 401', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'eeee6666-6666-4666-8666-666666666666',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'sk-ant-oat01-compat-test',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'authentication_error', message: 'OAuth authentication is currently not supported.' }
+      }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_compat_ok',
+        usage: { input_tokens: 7, output_tokens: 9 },
+        content: [{ type: 'text', text: 'ok' }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-3-5-sonnet-latest',
+        streaming: true,
+        payload: {
+          model: 'claude-3-5-sonnet-latest',
+          stream: true,
+          max_tokens: 16,
+          tools: [{ name: 'x', description: 'x', input_schema: { type: 'object', properties: {} } }],
+          tool_choice: { type: 'auto' },
+          messages: [{ role: 'user', content: 'hi' }]
+        }
+      }
+    });
+    (req as any).inniesCompatMode = true;
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect((res.body as any).id).toBe('msg_compat_ok');
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+
+    const firstHeaders = (upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.headers as Record<string, string>;
+    const secondHeaders = (upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.headers as Record<string, string>;
+    const firstBody = JSON.parse(String((upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.body ?? '{}'));
+    const secondBody = JSON.parse(String((upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.body ?? '{}'));
+
+    expect(firstHeaders['anthropic-beta']).toBe('fine-grained-tool-streaming-2025-05-14');
+    expect(secondHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
+    expect(secondHeaders['anthropic-beta']).toContain('claude-code-20250219');
+    expect(firstBody.stream).toBe(true);
+    expect(firstBody.tools).toBeDefined();
+    expect(firstBody.tool_choice).toEqual({ type: 'auto' });
+    expect(secondBody.stream).toBe(false);
+    expect(secondBody.tools).toBeUndefined();
+    expect(secondBody.tool_choice).toBeUndefined();
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('retries once with oauth-safe payload when compat mode gets authentication_error 401 on tool-stream payload', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'ffff7777-7777-4777-8777-777777777777',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'sk-ant-oat01-compat-test-2',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'authentication_error', message: 'invalid auth mode' }
+      }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_compat_ok_2',
+        usage: { input_tokens: 3, output_tokens: 5 },
+        content: [{ type: 'text', text: 'ok' }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-3-5-sonnet-latest',
+        streaming: true,
+        payload: {
+          model: 'claude-3-5-sonnet-latest',
+          stream: true,
+          max_tokens: 16,
+          tools: [{ name: 'x', description: 'x', input_schema: { type: 'object', properties: {} } }],
+          tool_choice: { type: 'auto' },
+          messages: [{ role: 'user', content: 'hi' }]
+        }
+      }
+    });
+    (req as any).inniesCompatMode = true;
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('msg_compat_ok_2');
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+    upstreamSpy.mockRestore();
+  });
+
+  it('normalizes on oauth auth-error retry for OpenClaw-shaped api-key+stream payload', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'abab7777-7777-4777-8777-777777777777',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'x_api_key',
+      accessToken: 'sk-ant-oat01-openclaw-shaped',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'authentication_error', message: 'OAuth authentication is currently not supported.' }
+      }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_preflight_ok',
+        usage: { input_tokens: 3, output_tokens: 4 },
+        content: [{ type: 'text', text: 'ok' }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-3-5-sonnet-latest',
+        streaming: true,
+        payload: {
+          model: 'claude-3-5-sonnet-latest',
+          stream: true,
+          max_tokens: 16,
+          tools: [{ name: 'x', description: 'x', input_schema: { type: 'object', properties: {} } }],
+          tool_choice: { type: 'auto' },
+          messages: [{ role: 'user', content: 'hi' }]
+        }
+      }
+    });
+    (req as any).inniesCompatMode = true;
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect((res.body as any).id).toBe('msg_preflight_ok');
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+
+    const firstHeaders = (upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.headers as Record<string, string>;
+    const secondHeaders = (upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.headers as Record<string, string>;
+    const firstBody = JSON.parse(String((upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.body ?? '{}'));
+    const secondBody = JSON.parse(String((upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.body ?? '{}'));
+
+    expect(firstHeaders.authorization).toBe('Bearer sk-ant-oat01-openclaw-shaped');
+    expect(firstHeaders['x-api-key']).toBeUndefined();
+    expect(firstHeaders['anthropic-beta']).toBe('fine-grained-tool-streaming-2025-05-14');
+    expect(firstBody.stream).toBe(true);
+    expect(firstBody.tools).toBeDefined();
+
+    expect(secondHeaders.authorization).toBe('Bearer sk-ant-oat01-openclaw-shaped');
+    expect(secondHeaders['x-api-key']).toBeUndefined();
+    expect(secondHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
+    expect(secondHeaders['anthropic-beta']).toContain('claude-code-20250219');
+    expect(secondBody.stream).toBe(false);
+    expect(secondBody.tools).toBeUndefined();
+    expect(secondBody.tool_choice).toBeUndefined();
+    upstreamSpy.mockRestore();
+  });
+
+  it('drops beta headers on blocked-403 compat retry', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'acac7777-7777-4777-8777-777777777777',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'sk-ant-oat01-blocked-compat',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'permission_error', message: 'Your request was blocked.' }
+      }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_blocked_ok',
+        usage: { input_tokens: 2, output_tokens: 2 },
+        content: [{ type: 'text', text: 'ok' }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-3-5-sonnet-latest',
+        streaming: false,
+        payload: {
+          model: 'claude-3-5-sonnet-latest',
+          max_tokens: 16,
+          messages: [{ role: 'user', content: 'hi' }]
+        }
+      }
+    });
+    (req as any).inniesCompatMode = true;
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect((res.body as any).id).toBe('msg_blocked_ok');
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+
+    const firstHeaders = (upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.headers as Record<string, string>;
+    const secondHeaders = (upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.headers as Record<string, string>;
+    expect(firstHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
+    expect(firstHeaders['anthropic-beta']).toContain('claude-code-20250219');
+    expect(secondHeaders['anthropic-beta']).toBeUndefined();
     upstreamSpy.mockRestore();
   });
 
