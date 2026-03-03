@@ -102,6 +102,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function upstreamTimeoutMs(): number {
+  const parsed = Number(process.env.UPSTREAM_TIMEOUT_MS || 300000);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 300000;
+}
+
 const ANTHROPIC_DEFAULT_BETAS = [
   'fine-grained-tool-streaming-2025-05-14',
   'interleaved-thinking-2025-05-14'
@@ -122,10 +127,11 @@ function isAnthropicOauthToken(credential: TokenCredential, provider: string): b
 function buildTokenModeUpstreamHeaders(input: {
   requestId: string;
   anthropicVersion: string;
+  anthropicBeta?: string;
   provider: string;
   credential: TokenCredential;
 }): Record<string, string> {
-  const { requestId, anthropicVersion, provider, credential } = input;
+  const { requestId, anthropicVersion, anthropicBeta, provider, credential } = input;
   const headers: Record<string, string> = {
     'content-type': 'application/json',
     'x-request-id': requestId,
@@ -133,7 +139,9 @@ function buildTokenModeUpstreamHeaders(input: {
     ...mapAuthHeader(credential.authScheme, credential.accessToken)
   };
 
-  if (isAnthropicOauthToken(credential, provider)) {
+  if (anthropicBeta) {
+    headers['anthropic-beta'] = anthropicBeta;
+  } else if (isAnthropicOauthToken(credential, provider)) {
     headers['anthropic-beta'] = ANTHROPIC_OAUTH_BETAS.join(',');
   }
 
@@ -226,6 +234,7 @@ async function executeTokenModeNonStreaming(input: {
   payload: unknown;
   proxiedPath: string;
   anthropicVersion: string;
+  anthropicBeta?: string;
   startedAt: number;
   strictUpstreamPassthrough?: boolean;
 }): Promise<ProxyRouteResult> {
@@ -238,6 +247,7 @@ async function executeTokenModeNonStreaming(input: {
     payload,
     proxiedPath,
     anthropicVersion,
+    anthropicBeta,
     startedAt,
     strictUpstreamPassthrough
   } = input;
@@ -260,7 +270,7 @@ async function executeTokenModeNonStreaming(input: {
     while (true) {
       const baseUrl = upstreamBaseUrl(provider);
       const targetUrl = new URL(proxiedPath, baseUrl);
-      const timeoutMs = Number(process.env.UPSTREAM_TIMEOUT_MS || 120000);
+      const timeoutMs = upstreamTimeoutMs();
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -290,6 +300,7 @@ async function executeTokenModeNonStreaming(input: {
         headers: buildTokenModeUpstreamHeaders({
           requestId,
           anthropicVersion,
+          anthropicBeta,
           provider,
           credential
         }),
@@ -446,6 +457,311 @@ async function executeTokenModeNonStreaming(input: {
   throw new AppError('capacity_unavailable', 429, 'All token credential attempts exhausted', { provider, model });
 }
 
+async function executeTokenModeStreaming(input: {
+  requestId: string;
+  orgId: string;
+  apiKeyId: string;
+  provider: string;
+  model: string;
+  payload: unknown;
+  proxiedPath: string;
+  anthropicVersion: string;
+  anthropicBeta?: string;
+  startedAt: number;
+  res: Response;
+  idempotencySession: IdempotencySession | null;
+  strictUpstreamPassthrough?: boolean;
+}): Promise<ProxyRouteResult | null> {
+  const {
+    requestId,
+    orgId,
+    apiKeyId,
+    provider,
+    model,
+    payload,
+    proxiedPath,
+    anthropicVersion,
+    anthropicBeta,
+    startedAt,
+    res,
+    idempotencySession,
+    strictUpstreamPassthrough
+  } = input;
+
+  const credentials = orderCredentialsForRequest(
+    await runtime.repos.tokenCredentials.listActiveForRouting(orgId, provider),
+    requestId
+  );
+  if (credentials.length === 0) {
+    throw new AppError('capacity_unavailable', 429, 'No eligible token credentials available', { provider, model });
+  }
+
+  let attemptNo = 0;
+  let sawAuthFailure = false;
+  let lastAuthStatus: number | null = null;
+
+  for (const initialCredential of credentials) {
+    attemptNo += 1;
+    let credential = initialCredential;
+    let refreshed = false;
+
+    while (true) {
+      const baseUrl = upstreamBaseUrl(provider);
+      const targetUrl = new URL(proxiedPath, baseUrl);
+      const timeoutMs = upstreamTimeoutMs();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      const logAttemptFailure = async (failure: AttemptFailure) => {
+        await runtime.repos.routingEvents.insert({
+          requestId,
+          attemptNo,
+          orgId,
+          apiKeyId,
+          sellerKeyId: undefined,
+          provider,
+          model,
+          streaming: true,
+          routeDecision: {
+            reason: 'token_mode_round_robin',
+            tokenCredentialId: credential.id,
+            tokenAuthScheme: credential.authScheme
+          },
+          upstreamStatus: failure.statusCode,
+          errorCode: inferErrorCode(failure),
+          latencyMs: Date.now() - startedAt
+        });
+      };
+
+      const upstreamResponse = await fetch(targetUrl, {
+        method: 'POST',
+        headers: buildTokenModeUpstreamHeaders({
+          requestId,
+          anthropicVersion,
+          anthropicBeta,
+          provider,
+          credential
+        }),
+        body: JSON.stringify(payload ?? {}),
+        signal: controller.signal
+      })
+        .catch(async (error: unknown) => {
+          const message = error instanceof Error ? error.message : 'network error';
+          await logAttemptFailure({ kind: 'network', message });
+          return null;
+        })
+        .finally(() => clearTimeout(timer));
+
+      if (!upstreamResponse) break;
+
+      const status = upstreamResponse.status;
+      if (status === 401 || status === 403) {
+        if (!refreshed) {
+          const next = await attemptCredentialRefresh(credential);
+          refreshed = true;
+          if (next) {
+            credential = next;
+            continue;
+          }
+          await runtime.repos.tokenCredentials.markExpired(credential.id);
+        }
+        sawAuthFailure = true;
+        lastAuthStatus = status;
+        await logAttemptFailure({ kind: 'auth', statusCode: status, message: 'token auth failed' });
+        break;
+      }
+
+      if (status === 429) {
+        await logAttemptFailure({ kind: 'rate_limited', statusCode: 429, message: 'rate limited' });
+        const backoffMs = 200 * (2 ** (attemptNo - 1)) + Math.floor(Math.random() * 100);
+        await sleep(backoffMs);
+        break;
+      }
+
+      if (status >= 500 && !strictUpstreamPassthrough) {
+        await logAttemptFailure({ kind: 'server_error', statusCode: status, message: 'upstream server error' });
+        break;
+      }
+
+      const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+      const isStreaming = contentType.includes('text/event-stream');
+      if (!isStreaming) {
+        const data = contentType.includes('application/json')
+          ? await upstreamResponse.json().catch(() => ({}))
+          : await upstreamResponse.text();
+        const inputTokens = Number((data as any)?.usage?.input_tokens ?? 0);
+        const outputTokens = Number((data as any)?.usage?.output_tokens ?? 0);
+        const usageUnits = Math.max(0, inputTokens + outputTokens);
+
+        await runtime.repos.routingEvents.insert({
+          requestId,
+          attemptNo,
+          orgId,
+          apiKeyId,
+          sellerKeyId: undefined,
+          provider,
+          model,
+          streaming: true,
+          routeDecision: {
+            reason: 'token_mode_round_robin',
+            tokenCredentialId: credential.id,
+            tokenAuthScheme: credential.authScheme
+          },
+          upstreamStatus: status,
+          errorCode: status >= 500 ? 'upstream_5xx_passthrough' : undefined,
+          latencyMs: Date.now() - startedAt
+        });
+
+        if (status < 500) {
+          await runtime.services.metering.recordUsage({
+            requestId,
+            attemptNo,
+            orgId,
+            apiKeyId,
+            sellerKeyId: undefined,
+            provider,
+            model,
+            inputTokens,
+            outputTokens,
+            usageUnits,
+            retailEquivalentMinor: usageUnits
+          });
+
+          const monthlyUsageRecorded = await runtime.repos.tokenCredentials.addMonthlyContributionUsage(
+            credential.id,
+            usageUnits
+          );
+          if (!monthlyUsageRecorded) {
+            await logAttemptFailure({
+              kind: 'metering_degraded',
+              message: 'monthly contribution increment could not be recorded after successful upstream non-stream response'
+            });
+          }
+        }
+
+        return {
+          requestId,
+          keyId: credential.id,
+          attemptNo,
+          upstreamStatus: status,
+          usageUnits,
+          contentType,
+          data,
+          routeKind: 'token_credential',
+          alreadyRecorded: true
+        };
+      }
+
+      res.setHeader('x-request-id', requestId);
+      res.setHeader('x-innies-token-credential-id', credential.id);
+      res.setHeader('x-innies-attempt-no', String(attemptNo));
+      res.setHeader('content-type', contentType);
+      res.status(status);
+
+      if (!upstreamResponse.body) {
+        await logAttemptFailure({ kind: 'network', message: 'upstream stream missing body' });
+        break;
+      }
+
+      let totalBytes = 0;
+      let totalChunks = 0;
+      let sampled = '';
+      const meter = new Transform({
+        transform(chunk, _encoding, callback) {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          totalBytes += buffer.length;
+          totalChunks += 1;
+          sampled = (sampled + buffer.toString('utf8')).slice(-200_000);
+          callback(null, chunk);
+        }
+      });
+
+      try {
+        await pipeline(Readable.fromWeb(upstreamResponse.body as any), meter, res as any);
+      } catch {
+        // Client disconnects are expected sometimes; continue with best-effort metering.
+      }
+
+      const parsedInputTokens = extractLastTokenCount(sampled, 'input_tokens');
+      const parsedOutputTokens = extractLastTokenCount(sampled, 'output_tokens');
+      const estimatedUnits = Math.max(1, Math.ceil(totalBytes / 4));
+      const usageUnits = Math.max(
+        0,
+        (parsedInputTokens ?? 0) + (parsedOutputTokens ?? 0)
+      ) || estimatedUnits;
+      const inputTokens = parsedInputTokens ?? Math.floor(usageUnits * 0.4);
+      const outputTokens = parsedOutputTokens ?? Math.max(0, usageUnits - inputTokens);
+      const usedEstimate = parsedInputTokens === null || parsedOutputTokens === null;
+
+      if (idempotencySession && !idempotencySession.replay) {
+        await commitProxyMetadataIdempotency(
+          idempotencySession,
+          requestId,
+          { type: 'stream_non_replayable', requestId, usageUnits }
+        );
+      }
+
+      const monthlyUsageRecorded = await runtime.repos.tokenCredentials.addMonthlyContributionUsage(
+        credential.id,
+        usageUnits
+      );
+      if (!monthlyUsageRecorded) {
+        await logAttemptFailure({
+          kind: 'metering_degraded',
+          message: 'monthly contribution increment could not be recorded after successful upstream stream'
+        });
+      }
+
+      await runtime.repos.routingEvents.insert({
+        requestId,
+        attemptNo,
+        orgId,
+        apiKeyId,
+        sellerKeyId: undefined,
+        provider,
+        model,
+        streaming: true,
+        routeDecision: {
+          reason: 'token_mode_round_robin',
+          tokenCredentialId: credential.id,
+          tokenAuthScheme: credential.authScheme
+        },
+        upstreamStatus: status,
+        latencyMs: Date.now() - startedAt
+      });
+
+      await runtime.services.metering.recordUsage({
+        requestId,
+        attemptNo,
+        orgId,
+        apiKeyId,
+        sellerKeyId: undefined,
+        provider,
+        model,
+        inputTokens,
+        outputTokens,
+        usageUnits,
+        retailEquivalentMinor: usageUnits,
+        note: usedEstimate
+          ? `estimate=stream_bytes_v1 bytes=${totalBytes} chunks=${totalChunks} reconcile_pending=true`
+          : `source=stream_usage_payload bytes=${totalBytes} chunks=${totalChunks}`
+      });
+
+      return null;
+    }
+  }
+
+  if (sawAuthFailure) {
+    throw new AppError('unauthorized', 401, 'All token credentials unauthorized or expired', {
+      provider,
+      model,
+      lastAuthStatus
+    });
+  }
+
+  throw new AppError('capacity_unavailable', 429, 'All token credential attempts exhausted', { provider, model });
+}
+
 export async function proxyPostHandler(req: any, res: Response, next: any): Promise<void> {
   const startedAt = Date.now();
   let observedInputTokens = 0;
@@ -523,23 +839,43 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
     }
 
     const proxiedPath = req.inniesProxiedPath ?? extractProxyPath(req.originalUrl);
+    const anthropicVersion = req.header('anthropic-version') ?? '2023-06-01';
+    const anthropicBeta = req.header('anthropic-beta') ?? undefined;
     let result: ProxyRouteResult;
     if (tokenModeEnabled) {
       if (parsed.streaming) {
-        throw new AppError('model_invalid', 400, 'Streaming token-mode validation is C1.5; C1 supports non-streaming only');
+        const streamedResult = await executeTokenModeStreaming({
+          requestId,
+          orgId,
+          apiKeyId: auth.apiKeyId,
+          provider: parsed.provider,
+          model: parsed.model,
+          payload: parsed.payload ?? {},
+          proxiedPath,
+          anthropicVersion,
+          anthropicBeta,
+          startedAt,
+          res,
+          idempotencySession: idemStart,
+          strictUpstreamPassthrough: compatMode
+        });
+        if (streamedResult === null || res.headersSent || res.writableEnded) return;
+        result = streamedResult;
+      } else {
+        result = await executeTokenModeNonStreaming({
+          requestId,
+          orgId,
+          apiKeyId: auth.apiKeyId,
+          provider: parsed.provider,
+          model: parsed.model,
+          payload: parsed.payload ?? {},
+          proxiedPath,
+          anthropicVersion,
+          anthropicBeta,
+          startedAt,
+          strictUpstreamPassthrough: compatMode
+        });
       }
-      result = await executeTokenModeNonStreaming({
-        requestId,
-        orgId,
-        apiKeyId: auth.apiKeyId,
-        provider: parsed.provider,
-        model: parsed.model,
-        payload: parsed.payload ?? {},
-        proxiedPath,
-        anthropicVersion: req.header('anthropic-version') ?? '2023-06-01',
-        startedAt,
-        strictUpstreamPassthrough: compatMode
-      });
     } else {
       const keys = await runtime.repos.sellerKeys.listActiveForRouting(parsed.provider, parsed.model, parsed.streaming);
       runtime.services.keyPool.setKeys(keys);
@@ -578,7 +914,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
 
           const baseUrl = upstreamBaseUrl(parsed.provider);
           const targetUrl = new URL(proxiedPath, baseUrl);
-          const timeoutMs = Number(process.env.UPSTREAM_TIMEOUT_MS || 120000);
+          const timeoutMs = upstreamTimeoutMs();
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), timeoutMs);
 

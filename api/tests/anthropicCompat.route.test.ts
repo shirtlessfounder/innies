@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import { PassThrough } from 'node:stream';
 import { z } from 'zod';
 import { AppError } from '../src/utils/errors.js';
 
@@ -21,12 +22,11 @@ type MockReq = {
   inniesProxiedPath?: string;
 };
 
-type MockRes = {
+type MockRes = PassThrough & {
   statusCode: number;
   headers: Record<string, string>;
   body: unknown;
   headersSent: boolean;
-  writableEnded: boolean;
   setHeader: (name: string, value: string) => void;
   status: (code: number) => MockRes;
   json: (payload: unknown) => void;
@@ -54,30 +54,42 @@ function createMockReq(input: {
 }
 
 function createMockRes(): MockRes {
-  return {
-    statusCode: 200,
-    headers: {},
-    body: undefined,
-    headersSent: false,
-    writableEnded: false,
-    setHeader(name: string, value: string) {
-      this.headers[name.toLowerCase()] = value;
-    },
-    status(code: number) {
-      this.statusCode = code;
-      return this;
-    },
-    json(payload: unknown) {
-      this.body = payload;
-      this.headersSent = true;
-      this.writableEnded = true;
-    },
-    send(payload: unknown) {
-      this.body = payload;
-      this.headersSent = true;
-      this.writableEnded = true;
+  const stream = new PassThrough() as MockRes;
+  stream.statusCode = 200;
+  stream.headers = {};
+  stream.body = undefined;
+  stream.headersSent = false;
+  let rawBody = '';
+
+  stream.on('data', (chunk) => {
+    rawBody += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+  });
+  stream.on('finish', () => {
+    stream.headersSent = true;
+    if (stream.body === undefined && rawBody.length > 0) {
+      stream.body = rawBody;
     }
+  });
+
+  stream.setHeader = function setHeader(name: string, value: string) {
+    this.headers[name.toLowerCase()] = value;
   };
+  stream.status = function status(code: number) {
+    this.statusCode = code;
+    return this;
+  };
+  stream.json = function json(payload: unknown) {
+    this.body = payload;
+    this.headersSent = true;
+    this.end();
+  };
+  stream.send = function send(payload: unknown) {
+    this.body = payload;
+    this.headersSent = true;
+    this.end(typeof payload === 'string' ? payload : JSON.stringify(payload));
+  };
+
+  return stream;
 }
 
 function applyError(err: unknown, res: MockRes): void {
@@ -226,7 +238,16 @@ describe('anthropic compat route', () => {
     expect(String((res.body as any).message)).toContain('Token mode not enabled');
   });
 
-  it('rejects stream=true deterministically for C1', async () => {
+  it('supports stream=true requests on compat route', async () => {
+    const idemStartSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'start');
+    const meteringSpy = vi.spyOn(runtimeModule.runtime.services.metering, 'recordUsage');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_stream_1', usage: { input_tokens: 10, output_tokens: 10 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
     const req = createMockReq({
       method: 'POST',
       path: '/v1/messages',
@@ -239,8 +260,47 @@ describe('anthropic compat route', () => {
     await invoke(handlers[1], req, res);
     await invoke(handlers[2], req, res);
 
-    expect(res.statusCode).toBe(400);
-    expect((res.body as any).code).toBe('model_invalid');
+    expect(res.statusCode).toBe(200);
+    expect(idemStartSpy).not.toHaveBeenCalled();
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    expect(meteringSpy).toHaveBeenCalledTimes(1);
+    upstreamSpy.mockRestore();
+  });
+
+  it('passes through SSE stream chunks on compat route', async () => {
+    const encoder = new TextEncoder();
+    const sseBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: message_start\ndata: {"type":"message_start"}\n\n'));
+        controller.enqueue(encoder.encode('event: message_stop\ndata: {"type":"message_stop"}\n\n'));
+        controller.close();
+      }
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(sseBody, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: { authorization: 'Bearer in_test_token', 'content-type': 'application/json' },
+      body: { model: 'claude-opus-4-6', stream: true, max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/event-stream');
+    expect(String(res.body)).toContain('event: message_start');
+    expect(String(res.body)).toContain('event: message_stop');
+    upstreamSpy.mockRestore();
   });
 
   it('rejects missing messages validation for compat request', async () => {
@@ -365,6 +425,44 @@ describe('anthropic compat route', () => {
     expect(upstreamSpy).toHaveBeenCalledTimes(1);
     expect(res.statusCode).toBe(400);
     expect((res.body as any).error?.type).toBe('invalid_request_error');
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('preserves inbound anthropic-version and anthropic-beta headers to upstream', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_headers_1', usage: { input_tokens: 5, output_tokens: 5 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'anthropic-version': '2024-10-22',
+        'anthropic-beta': 'foo-2026-01-01,bar-2026-02-02'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    const fetchArgs = upstreamSpy.mock.calls[0];
+    const headers = (fetchArgs?.[1] as RequestInit)?.headers as Record<string, string>;
+    expect(headers['anthropic-version']).toBe('2024-10-22');
+    expect(headers['anthropic-beta']).toBe('foo-2026-01-01,bar-2026-02-02');
+    expect(res.statusCode).toBe(200);
 
     upstreamSpy.mockRestore();
   });

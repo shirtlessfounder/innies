@@ -11,7 +11,8 @@ import { AppError } from './utils/errors.js';
 
 export function createApp(): express.Express {
   const app = express();
-  app.use(express.json({ limit: '2mb' }));
+  const jsonBodyLimit = process.env.JSON_BODY_LIMIT || '20mb';
+  app.use(express.json({ limit: jsonBodyLimit }));
 
   app.get('/healthz', (_req, res) => {
     res.json({ ok: true });

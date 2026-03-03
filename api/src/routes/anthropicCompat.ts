@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { requireApiKey } from '../middleware/auth.js';
 import { proxyPostHandler } from './proxy.js';
 import { runtime } from '../services/runtime.js';
-import { AppError } from '../utils/errors.js';
 
 const router = Router();
 
@@ -41,16 +40,12 @@ router.post(
     try {
       const parsed = anthropicMessagesSchema.parse(req.body);
 
-      if (parsed.stream === true) {
-        throw new AppError('model_invalid', 400, 'Streaming token-mode validation is C1.5; C1 supports non-streaming only');
-      }
-
       (req as any).inniesCompatMode = true;
       (req as any).inniesProxiedPath = '/v1/messages';
       req.body = {
         provider: 'anthropic',
         model: parsed.model,
-        streaming: false,
+        streaming: parsed.stream === true,
         payload: req.body
       };
 

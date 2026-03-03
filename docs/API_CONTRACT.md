@@ -50,7 +50,7 @@ Request body:
 Notes:
 - `orgId` is derived from authenticated API key; request body org fields are ignored.
 - Token mode is org-gated by `TOKEN_MODE_ENABLED_ORGS` allowlist.
-- For C1 token mode: non-streaming is supported; streaming validation is C1.5.
+- Token mode supports both non-streaming and streaming execution.
 - Non-streaming responses mirror upstream HTTP status/body.
 - Streaming responses are pass-through when upstream returns `text/event-stream`.
 - Replay idempotency policy for proxy paths: deterministic non-replayable (`409` with `proxy_replay_not_supported` payload).
@@ -74,7 +74,7 @@ Notes:
 - `provider` is fixed to `anthropic`; internal mapping reuses proxy execution path.
 - If `anthropic-version` is missing, default is `2023-06-01`.
 - If `x-request-id` is missing, API generates and returns one.
-- C1 streaming policy: `stream=true` is rejected deterministically (`400`, `model_invalid`).
+- `stream=true` is supported; streaming passthrough is used when upstream returns `text/event-stream`.
 - When `ANTHROPIC_COMPAT_ENDPOINT_ENABLED=false`, endpoint returns deterministic `404`.
 
 ### `POST /v1/seller-keys`
