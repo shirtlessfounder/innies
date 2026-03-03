@@ -261,6 +261,9 @@ describe('anthropic compat route', () => {
     await invoke(handlers[2], req, res);
 
     expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/event-stream');
+    expect(String(res.body)).toContain('event: message_start');
+    expect(String(res.body)).toContain('event: message_stop');
     expect(idemStartSpy).not.toHaveBeenCalled();
     expect(upstreamSpy).toHaveBeenCalledTimes(1);
     expect(meteringSpy).toHaveBeenCalledTimes(1);
@@ -893,7 +896,9 @@ describe('anthropic compat route', () => {
     await invoke(handlers[2], req, res);
 
     expect(res.statusCode).toBe(200);
-    expect((res.body as any).id).toBe('msg_oauth_retry_ok');
+    expect(res.headers['content-type']).toContain('text/event-stream');
+    expect(String(res.body)).toContain('event: message_start');
+    expect(String(res.body)).toContain('event: message_stop');
     expect(upstreamSpy).toHaveBeenCalledTimes(2);
 
     const firstHeaders = (upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.headers as Record<string, string>;

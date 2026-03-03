@@ -403,6 +403,62 @@ function extractLastTokenCount(raw: string, field: 'input_tokens' | 'output_toke
   return found;
 }
 
+function extractAnthropicTextContent(data: unknown): string {
+  if (!data || typeof data !== 'object') return '';
+  const content = (data as any).content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((item) => item && typeof item === 'object' && item.type === 'text')
+    .map((item) => String(item.text ?? ''))
+    .join('');
+}
+
+function buildSyntheticAnthropicSse(data: unknown, model: string): string {
+  const message = data && typeof data === 'object' ? (data as any) : {};
+  const id = String(message.id ?? `msg_${Date.now()}`);
+  const text = extractAnthropicTextContent(message);
+  const inputTokens = Number(message?.usage?.input_tokens ?? 0);
+  const outputTokens = Number(message?.usage?.output_tokens ?? 0);
+  const stopReason = String(message.stop_reason ?? 'end_turn');
+
+  const events = [
+    `event: message_start\ndata: ${JSON.stringify({
+      type: 'message_start',
+      message: {
+        id,
+        type: 'message',
+        role: 'assistant',
+        model,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: inputTokens, output_tokens: 0 }
+      }
+    })}\n\n`,
+    `event: content_block_start\ndata: ${JSON.stringify({
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'text', text: '' }
+    })}\n\n`,
+    `event: content_block_delta\ndata: ${JSON.stringify({
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'text_delta', text }
+    })}\n\n`,
+    `event: content_block_stop\ndata: ${JSON.stringify({
+      type: 'content_block_stop',
+      index: 0
+    })}\n\n`,
+    `event: message_delta\ndata: ${JSON.stringify({
+      type: 'message_delta',
+      delta: { stop_reason: stopReason, stop_sequence: null },
+      usage: { input_tokens: inputTokens, output_tokens: outputTokens }
+    })}\n\n`,
+    `event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`
+  ];
+  return events.join('');
+}
+
 function sendProxyReplayNotSupported(res: Response, requestId: string): void {
   res.setHeader('x-request-id', requestId);
   res.setHeader('x-idempotent-replay', 'true');
@@ -1074,6 +1130,67 @@ async function executeTokenModeStreaming(input: {
               message: 'monthly contribution increment could not be recorded after successful upstream non-stream response'
             });
           }
+        }
+
+        // Maintain stream contract for compat callers: if client requested stream=true,
+        // do not downgrade a successful response to JSON.
+        if (
+          status >= 200 &&
+          status < 300 &&
+          typeof (res as any).write === 'function' &&
+          typeof (res as any).end === 'function'
+        ) {
+          res.setHeader('x-request-id', requestId);
+          res.setHeader('x-innies-token-credential-id', credential.id);
+          res.setHeader('x-innies-attempt-no', String(attemptNo));
+          res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+          res.setHeader('cache-control', 'no-cache, no-transform');
+          res.setHeader('connection', 'keep-alive');
+          res.setHeader('x-accel-buffering', 'no');
+          res.status(status);
+          if (typeof (res as any).flushHeaders === 'function') {
+            (res as any).flushHeaders();
+          }
+          if ((res as any).socket) {
+            (res as any).socket.setKeepAlive?.(true);
+            (res as any).socket.setNoDelay?.(true);
+          }
+
+          const syntheticPayload = `: keepalive\n\n${buildSyntheticAnthropicSse(data, model)}`;
+          (res as any).write(syntheticPayload);
+          if ((res as any).body === undefined) {
+            (res as any).body = syntheticPayload;
+          }
+          if (typeof (res as any).flush === 'function') {
+            (res as any).flush();
+          }
+          if (idempotencySession && !idempotencySession.replay) {
+            await commitProxyMetadataIdempotency(
+              idempotencySession,
+              requestId,
+              { type: 'stream_non_replayable', requestId, usageUnits }
+            );
+          }
+          console.info('[stream-first-byte]', {
+            requestId,
+            attemptNo,
+            provider,
+            model,
+            first_byte_ms: Date.now() - startedAt,
+            synthetic_stream_bridge: true
+          });
+          (res as any).end();
+          return {
+            requestId,
+            keyId: credential.id,
+            attemptNo,
+            upstreamStatus: status,
+            usageUnits,
+            contentType: 'text/event-stream; charset=utf-8',
+            data: null,
+            routeKind: 'token_credential',
+            alreadyRecorded: true
+          };
         }
 
         return {
