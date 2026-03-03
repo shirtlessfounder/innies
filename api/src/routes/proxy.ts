@@ -107,6 +107,11 @@ function upstreamTimeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 300000;
 }
 
+function sseHeartbeatIntervalMs(): number {
+  const parsed = Number(process.env.SSE_HEARTBEAT_INTERVAL_MS || 1500);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1500;
+}
+
 const ANTHROPIC_DEFAULT_BETAS = [
   'fine-grained-tool-streaming-2025-05-14',
   'interleaved-thinking-2025-05-14'
@@ -1089,6 +1094,9 @@ async function executeTokenModeStreaming(input: {
       res.setHeader('x-innies-attempt-no', String(attemptNo));
       res.setHeader('content-type', contentType);
       res.status(status);
+      if (typeof (res as any).flushHeaders === 'function') {
+        (res as any).flushHeaders();
+      }
 
       if (!upstreamResponse.body) {
         await logAttemptFailure({ kind: 'network', message: 'upstream stream missing body' });
@@ -1098,9 +1106,29 @@ async function executeTokenModeStreaming(input: {
       let totalBytes = 0;
       let totalChunks = 0;
       let sampled = '';
+      let firstByteAt: number | null = null;
+      const heartbeatMs = sseHeartbeatIntervalMs();
+      const writeKeepalive = () => {
+        if ((res as any).writableEnded || (res as any).destroyed) return;
+        (res as any).write(': keepalive\n\n');
+      };
+      // Emit one frame immediately so clients with short first-byte deadlines do not timeout.
+      writeKeepalive();
+      const keepaliveTimer = setInterval(writeKeepalive, heartbeatMs);
       const meter = new Transform({
         transform(chunk, _encoding, callback) {
           const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          if (firstByteAt === null) {
+            firstByteAt = Date.now();
+            clearInterval(keepaliveTimer);
+            console.info('[stream-first-byte]', {
+              requestId,
+              attemptNo,
+              provider,
+              model,
+              first_byte_ms: firstByteAt - startedAt
+            });
+          }
           totalBytes += buffer.length;
           totalChunks += 1;
           sampled = (sampled + buffer.toString('utf8')).slice(-200_000);
@@ -1112,6 +1140,8 @@ async function executeTokenModeStreaming(input: {
         await pipeline(Readable.fromWeb(upstreamResponse.body as any), meter, res as any);
       } catch {
         // Client disconnects are expected sometimes; continue with best-effort metering.
+      } finally {
+        clearInterval(keepaliveTimer);
       }
 
       const parsedInputTokens = extractLastTokenCount(sampled, 'input_tokens');
