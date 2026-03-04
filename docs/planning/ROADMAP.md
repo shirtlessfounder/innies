@@ -18,6 +18,10 @@
   - clear API auth + endpoint docs with concrete request/response examples
   - at minimum, one concise markdown page suitable for first-time integration.
 - Internal performance + usage dashboard.
+- Per-token analytics gathering:
+  - usage measurement by token
+  - token yield tracking (how many successful requests/tokens a credential handles before becoming `maxed`)
+  - daily/weekly efficiency views for pool tuning.
 - Easy new token onboarding into the shared pool.
 - Easy per-buyer-key provider preference:
   - e.g. prefer Codex first, fallback to Claude when Codex pool is unavailable/depleted.
@@ -46,6 +50,9 @@
   - interactive setup flow to reduce reliance on stale external docs
   - keep docs as fallback, but CLI helper is primary path.
 - Define working economics and Innies fee rake that is sustainable/economical for all participants.
+- Contribution + spend (usage) capping:
+  - cap how much usage a contributor can supply into pool
+  - cap buyer-side spend/usage to control risk and burn.
 - Define basic billing-failure behavior (minimum viable):
   - what happens immediately on failed charge/payment method issues
   - whether usage pauses immediately or short grace is allowed.
