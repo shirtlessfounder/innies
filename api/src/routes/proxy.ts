@@ -210,10 +210,13 @@ function buildTokenModeUpstreamHeaders(input: {
   }
 
   const shouldIncludeOauthBetas = !skipOauthDefaultBetas && isAnthropicOauthToken(credential, provider);
-  if (anthropicBeta) {
-    headers['anthropic-beta'] = anthropicBeta;
-  } else if (shouldIncludeOauthBetas) {
-    headers['anthropic-beta'] = ANTHROPIC_OAUTH_BETAS.join(',');
+  const inboundBetas = parseAnthropicBetaHeader(anthropicBeta ?? '');
+  if (inboundBetas.length > 0 || shouldIncludeOauthBetas) {
+    const mergedBetas = new Set<string>(inboundBetas);
+    if (shouldIncludeOauthBetas) {
+      for (const beta of ANTHROPIC_OAUTH_BETAS) mergedBetas.add(beta);
+    }
+    headers['anthropic-beta'] = [...mergedBetas].join(',');
   }
 
   return headers;
@@ -311,17 +314,8 @@ function applyCompatNormalization(input: {
 }
 
 function sanitizeCompatPayloadForOauthAuthRetry(payload: unknown): unknown {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return payload;
-  }
-  const next = { ...(payload as Record<string, unknown>) };
-  // OAuth token-mode fallback for compat clients:
-  // drop tool-streaming shape and force plain non-stream messages.
-  delete next.tools;
-  delete next.tool_choice;
-  delete next.thinking;
-  next.stream = false;
-  return next;
+  // Parity behavior: keep original OpenClaw payload shape for oauth retries.
+  return payload;
 }
 
 function isOauthUnsupportedAuthError(status: number, errorMessage?: string): boolean {

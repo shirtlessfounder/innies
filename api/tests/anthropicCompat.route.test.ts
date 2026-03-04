@@ -743,7 +743,8 @@ describe('anthropic compat route', () => {
     const fetchArgs = upstreamSpy.mock.calls[0];
     const headers = (fetchArgs?.[1] as RequestInit)?.headers as Record<string, string>;
     expect(headers['anthropic-version']).toBe('2024-10-22');
-    expect(headers['anthropic-beta']).toBe('foo-2026-01-01,bar-2026-02-02');
+    expect(headers['anthropic-beta']).toContain('foo-2026-01-01');
+    expect(headers['anthropic-beta']).toContain('bar-2026-02-02');
     expect(res.statusCode).toBe(200);
 
     upstreamSpy.mockRestore();
@@ -1030,7 +1031,8 @@ describe('anthropic compat route', () => {
     const secondHeaders = (upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.headers as Record<string, string>;
     const firstBody = JSON.parse(String((upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.body ?? '{}'));
     const secondBody = JSON.parse(String((upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.body ?? '{}'));
-    expect(firstHeaders['anthropic-beta']).toBe('oauth-2025-04-20,claude-code-20250219');
+    expect(firstHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
+    expect(firstHeaders['anthropic-beta']).toContain('claude-code-20250219');
     expect(secondHeaders['anthropic-beta']).toBeUndefined();
     expect(firstBody.thinking).toEqual({ type: 'enabled', budget_tokens: 1024 });
     expect(secondBody.thinking).toBeUndefined();
@@ -1184,7 +1186,7 @@ describe('anthropic compat route', () => {
     const secondBody = JSON.parse(String((upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.body ?? '{}'));
 
     expect(firstHeaders.authorization).toBe('Bearer sk-ant-oat01-test-token');
-    expect(firstHeaders['anthropic-beta']).toBe('fine-grained-tool-streaming-2025-05-14');
+    expect(firstHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
     expect(firstBody.stream).toBe(true);
     expect(firstBody.tools).toBeDefined();
     expect(firstBody.tool_choice).toEqual({ type: 'auto' });
@@ -1192,10 +1194,9 @@ describe('anthropic compat route', () => {
     expect(secondHeaders.authorization).toBe('Bearer sk-ant-oat01-test-token');
     expect(secondHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
     expect(secondHeaders['anthropic-beta']).toContain('claude-code-20250219');
-    expect(secondBody.stream).toBe(false);
-    expect(secondBody.tools).toBeUndefined();
-    expect(secondBody.tool_choice).toBeUndefined();
-    expect(secondBody.thinking).toBeUndefined();
+    expect(secondBody.stream).toBe(true);
+    expect(secondBody.tools).toBeDefined();
+    expect(secondBody.tool_choice).toEqual({ type: 'auto' });
     const retryCalls = retryAuditSpy.mock.calls.filter((c) => c[0] === '[retry-audit] attempt');
     expect(retryCalls.length).toBeGreaterThan(0);
     const retryAudit = retryCalls[0]?.[1] as any;

@@ -439,15 +439,15 @@ describe('proxy token-mode route behavior', () => {
     const firstBody = JSON.parse(String((upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.body ?? '{}'));
     const secondBody = JSON.parse(String((upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.body ?? '{}'));
 
-    expect(firstHeaders['anthropic-beta']).toBe('fine-grained-tool-streaming-2025-05-14');
+    expect(firstHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
     expect(secondHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
     expect(secondHeaders['anthropic-beta']).toContain('claude-code-20250219');
     expect(firstBody.stream).toBe(true);
     expect(firstBody.tools).toBeDefined();
     expect(firstBody.tool_choice).toEqual({ type: 'auto' });
-    expect(secondBody.stream).toBe(false);
-    expect(secondBody.tools).toBeUndefined();
-    expect(secondBody.tool_choice).toBeUndefined();
+    expect(secondBody.stream).toBe(true);
+    expect(secondBody.tools).toBeDefined();
+    expect(secondBody.tool_choice).toEqual({ type: 'auto' });
 
     upstreamSpy.mockRestore();
   });
@@ -602,7 +602,7 @@ describe('proxy token-mode route behavior', () => {
 
     expect(firstHeaders.authorization).toBe('Bearer sk-ant-oat01-openclaw-shaped');
     expect(firstHeaders['x-api-key']).toBeUndefined();
-    expect(firstHeaders['anthropic-beta']).toBe('fine-grained-tool-streaming-2025-05-14');
+    expect(firstHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
     expect(firstBody.stream).toBe(true);
     expect(firstBody.tools).toBeDefined();
 
@@ -610,9 +610,9 @@ describe('proxy token-mode route behavior', () => {
     expect(secondHeaders['x-api-key']).toBeUndefined();
     expect(secondHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
     expect(secondHeaders['anthropic-beta']).toContain('claude-code-20250219');
-    expect(secondBody.stream).toBe(false);
-    expect(secondBody.tools).toBeUndefined();
-    expect(secondBody.tool_choice).toBeUndefined();
+    expect(secondBody.stream).toBe(true);
+    expect(secondBody.tools).toBeDefined();
+    expect(secondBody.tool_choice).toEqual({ type: 'auto' });
     upstreamSpy.mockRestore();
   });
 

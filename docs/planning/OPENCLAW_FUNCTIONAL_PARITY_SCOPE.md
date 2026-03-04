@@ -75,6 +75,21 @@ Requirement:
 
 Inference: end-user silence is not solely model latency. Parity gaps likely involve stream/tool execution flow before/around upstream calls.
 
+## Confirmed Divergence (March 3, 2026)
+1. In token-mode streaming path, Innies always builds upstream headers with `Accept: text/event-stream` (including retries).
+2. On `oauth_401_compat_retry`, Innies applies `sanitizeCompatPayloadForOauthAuthRetry(...)` which:
+   - removes `tools`
+   - removes `tool_choice`
+   - removes `thinking`
+   - forces `stream=false`
+3. Therefore retry attempts can legitimately return `upstream_content_type=application/json`, which triggers `stream_mode=synthetic_bridge`.
+4. This is currently an intentional compat fallback, but it is a parity divergence from vanilla OpenClaw tool/stream behavior and must be treated as a first-class blocker for parity.
+
+Code references for audit:
+- `api/src/routes/proxy.ts` (`executeTokenModeStreaming`, `applyCompatNormalization`, `sanitizeCompatPayloadForOauthAuthRetry`)
+- retry reason: `oauth_401_compat_retry`
+- telemetry fields: `upstream_content_type`, `stream_mode`, `attemptNo`
+
 ## Scope
 
 ## Execution Snapshot (March 3, 2026)
@@ -100,9 +115,14 @@ Required:
    - `synthetic_stream_bridge=true|false`
    - `metering_source`
 5. Track bridge ratio per cohort (OpenClaw API-key traffic).
+6. Add cohort split in reports:
+   - happy-path (no compat fallback)
+   - oauth compat fallback branch
+7. Treat oauth compat fallback bridge as parity debt, not happy-path success.
 
 Acceptance target:
 - `synthetic_stream_bridge <= 1%` on non-retry happy-path (OpenClaw API-key cohort).
+- `upstream_content_type=application/json` on `stream=true` should be `0%` for parity cohort (except explicitly tagged compat fallback runs).
 
 ### C2: Tool Execution Parity
 Eliminate "silent fetch" behavior by matching direct-Anthropic tool orchestration semantics.
@@ -198,6 +218,10 @@ Tasks:
 1. Gate bridge usage to explicit fallback branches.
 2. Keep passthrough as default for OpenClaw API-key stream traffic.
 3. Add assertions for event ordering/types parity on passthrough.
+4. Add regression assertions for retry branch classification:
+   - when fallback mutates payload to `stream=false`, telemetry must tag compat fallback branch explicitly.
+   - parity dashboards must exclude fallback-tagged runs from happy-path SLO.
+5. Evaluate and implement parity-safe replacement for oauth 401 fallback branch so tool-use stream semantics are preserved where possible.
 
 ### Workstream 2: Tool Lifecycle Observability
 Files:
@@ -222,6 +246,8 @@ Tasks:
 1. Attach request-level token decision data to compat audit logs.
 2. Add queries/dashboard snippets for rapid incident triage.
 3. Verify revocation/expiry transitions against observed 401 windows.
+4. Classify each active credential as OAuth (`sk-ant-oat`) vs non-OAuth and track per-class success/401/429 rates.
+5. Add alert/report when parity cohorts are dominated by OAuth fallback branch.
 
 ### Workstream 4: Retry/Rate-Limit Parity
 Files:
@@ -276,6 +302,7 @@ Sample size requirement:
 3. Silent tool window `>30s`: `<= 1%` on matched tool/link turns in canary; target `0` for full rollout.
 4. Unexplained auth-failure rate (401 class) in canary: `<= 1 per 100 matched turns`; full rollout target: `0`.
 5. Retry latency tax from first-attempt 429: P95 `<= +500ms` versus direct baseline for matched cohorts.
+6. OAuth compat fallback incidence (on parity cohorts): target `0` for full parity gate; canary must be explicitly reported.
 
 Computation rules (mandatory for all SLOs above):
 1. Use one fixed canary batch of `N=100` matched turns (as defined in Manual test plan), not rolling windows.
