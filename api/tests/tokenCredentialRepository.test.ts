@@ -111,4 +111,34 @@ describe('tokenCredentialRepository', () => {
     expect(ok).toBe(true);
     expect(db.queries[0].sql).toContain('monthly_contribution_used_units');
   });
+
+  it('records failure and marks credential maxed when threshold is reached', async () => {
+    const db = new SequenceSqlClient([{
+      rows: [{ status: 'maxed', consecutive_failures: 10 }],
+      rowCount: 1
+    }]);
+    const repo = new TokenCredentialRepository(db);
+
+    const result = await repo.recordFailureAndMaybeMax({
+      id: 'cred_1',
+      statusCode: 401,
+      threshold: 10,
+      nextProbeAt: new Date('2026-03-04T00:00:00Z'),
+      reason: 'upstream_401_consecutive_failure'
+    });
+
+    expect(result).toEqual({ status: 'maxed', consecutiveFailures: 10 });
+    expect(db.queries[0].sql).toContain("then 'maxed'");
+  });
+
+  it('reactivates maxed credential and clears probe/failure fields', async () => {
+    const db = new SequenceSqlClient([{ rows: [], rowCount: 1 }]);
+    const repo = new TokenCredentialRepository(db);
+
+    const ok = await repo.reactivateFromMaxed('cred_1');
+    expect(ok).toBe(true);
+    expect(db.queries[0].sql).toContain("status = 'active'");
+    expect(db.queries[0].sql).toContain('consecutive_failure_count = 0');
+    expect(db.queries[0].sql).toContain('next_probe_at = null');
+  });
 });

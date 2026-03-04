@@ -96,7 +96,7 @@ Notes:
   - If retry succeeds, response is returned normally.
   - If retry is also blocked, API passes through upstream `403` (does not remap to `401`).
 - OAuth auth-error fallback (compat mode):
-  - On upstream `401` auth error indicating OAuth-incompatible request mode, API retries once on the same credential with OAuth-safe payload shape (drops `tools`/`tool_choice`/`thinking`, forces non-stream) and preserves required OAuth betas.
+  - On upstream `401` auth error indicating OAuth-incompatible request mode, API retries once on the same credential while preserving original payload shape (`stream`/`tools`/`tool_choice`), and merges required OAuth betas.
 - Compat audit logging:
   - `/v1/messages` upstream 4xx/403 outcomes emit structured `[compat-audit]` log line with `requestId`, `credentialId`, `attemptNo`, `upstreamStatus`, and upstream error type/message (if available).
 - Optional operational debug tracing:
@@ -119,10 +119,14 @@ Replay metering writes (usage/correction/reversal) for recovery operations (admi
 ### `POST /v1/admin/token-credentials`
 Create token credential for an org/provider (admin only).
 Contract: appends an additional credential for the same `(org, provider)` token pool.
+Optional field:
+- `debugLabel` (1-64 chars): human-readable label stored with credential and emitted in routing/debug telemetry.
 
 ### `POST /v1/admin/token-credentials/rotate`
 Rotate token credential for an org/provider (admin only).
 Contract: primary path for replacing existing credential material.
+Optional field:
+- `debugLabel` (1-64 chars): human-readable label stored with credential and emitted in routing/debug telemetry.
 
 ### `POST /v1/admin/token-credentials/:id/revoke`
 Revoke a token credential by id (admin only).
@@ -158,6 +162,20 @@ Returns key status totals.
   - 429 -> backoff + failover
   - 5xx/network timeout -> failover
   - model/request-invalid -> hard-fail (no failover loop)
+- Token credential maxing/quarantine:
+  - Credentials can be auto-marked `maxed` after repeated upstream auth-like failures.
+  - Default maxing statuses are `401` only (`TOKEN_CREDENTIAL_MAX_ON_STATUSES=401`).
+  - Default threshold is `10` consecutive matching failures (`TOKEN_CREDENTIAL_MAXED_CONSECUTIVE_FAILURES=10`).
+  - Auto-maxed credentials are removed from active routing pool until probe reactivation.
+  - Successful routed request on an active/rotating credential resets consecutive failure count.
+- Token credential probe/reactivation:
+  - Background job: `token-credential-healthcheck-hourly`.
+  - Enabled by default (`TOKEN_CREDENTIAL_PROBE_ENABLED=true`).
+  - Schedule default: hourly (`TOKEN_CREDENTIAL_PROBE_SCHEDULE_MS=3600000`).
+  - Probe timeout default: `10000ms` (`TOKEN_CREDENTIAL_PROBE_TIMEOUT_MS=10000`).
+  - Probe batch default: `20` creds (`TOKEN_CREDENTIAL_PROBE_MAX_KEYS=20`).
+  - Next probe interval default: 24h (`TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS=24`).
+  - Probe model default: `claude-opus-4-6` (`TOKEN_CREDENTIAL_PROBE_MODEL` override).
 - Token-mode policy guard:
   - when `TOKEN_MODE_ENABLED_ORGS` is configured, non-allowlisted orgs are blocked deterministically (no legacy fallback)
 - Routing telemetry writes include failed attempts with error metadata.

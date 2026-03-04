@@ -4,7 +4,7 @@ import { newId } from '../utils/ids.js';
 import { decryptSecret, encryptSecret } from '../utils/crypto.js';
 
 export type TokenAuthScheme = 'x_api_key' | 'bearer';
-export type TokenCredentialStatus = 'active' | 'rotating' | 'expired' | 'revoked';
+export type TokenCredentialStatus = 'active' | 'rotating' | 'maxed' | 'expired' | 'revoked';
 
 type TokenCredentialRow = {
   id: string;
@@ -22,6 +22,13 @@ type TokenCredentialRow = {
   monthly_contribution_limit_units: number | null;
   monthly_contribution_used_units: number;
   monthly_window_start_at: string | Date;
+  debug_label: string | null;
+  consecutive_failure_count?: number | null;
+  last_failed_status?: number | null;
+  last_failed_at?: string | Date | null;
+  maxed_at?: string | Date | null;
+  next_probe_at?: string | Date | null;
+  last_probe_at?: string | Date | null;
 };
 
 export type TokenCredential = {
@@ -40,6 +47,13 @@ export type TokenCredential = {
   monthlyContributionLimitUnits: number | null;
   monthlyContributionUsedUnits: number;
   monthlyWindowStartAt: Date;
+  debugLabel: string | null;
+  consecutiveFailureCount: number;
+  lastFailedStatus: number | null;
+  lastFailedAt: Date | null;
+  maxedAt: Date | null;
+  nextProbeAt: Date | null;
+  lastProbeAt: Date | null;
 };
 
 export type CreateTokenCredentialInput = {
@@ -50,6 +64,7 @@ export type CreateTokenCredentialInput = {
   refreshToken?: string | null;
   expiresAt: Date;
   monthlyContributionLimitUnits?: number | null;
+  debugLabel?: string | null;
   createdBy?: string | null;
 };
 
@@ -61,6 +76,7 @@ export type RotateTokenCredentialInput = {
   refreshToken?: string | null;
   expiresAt: Date;
   monthlyContributionLimitUnits?: number | null;
+  debugLabel?: string | null;
   createdBy?: string | null;
 };
 
@@ -84,7 +100,14 @@ function mapRow(row: TokenCredentialRow): TokenCredential {
     revokedAt: row.revoked_at ? new Date(row.revoked_at) : null,
     monthlyContributionLimitUnits: row.monthly_contribution_limit_units === null ? null : Number(row.monthly_contribution_limit_units),
     monthlyContributionUsedUnits: Number(row.monthly_contribution_used_units),
-    monthlyWindowStartAt: new Date(row.monthly_window_start_at)
+    monthlyWindowStartAt: new Date(row.monthly_window_start_at),
+    debugLabel: row.debug_label,
+    consecutiveFailureCount: Number(row.consecutive_failure_count ?? 0),
+    lastFailedStatus: row.last_failed_status === null || row.last_failed_status === undefined ? null : Number(row.last_failed_status),
+    lastFailedAt: row.last_failed_at ? new Date(row.last_failed_at) : null,
+    maxedAt: row.maxed_at ? new Date(row.maxed_at) : null,
+    nextProbeAt: row.next_probe_at ? new Date(row.next_probe_at) : null,
+    lastProbeAt: row.last_probe_at ? new Date(row.last_probe_at) : null
   };
 }
 
@@ -117,12 +140,13 @@ export class TokenCredentialRepository {
           monthly_contribution_limit_units,
           monthly_contribution_used_units,
           monthly_window_start_at,
+          debug_label,
           status,
           rotation_version,
           created_by,
           created_at,
           updated_at
-        ) values ($1,$2,$3,$4,$5,$6,$7,$8,0,${currentUtcMonthStartExpr()},'active',$9,$10,now(),now())
+        ) values ($1,$2,$3,$4,$5,$6,$7,$8,0,${currentUtcMonthStartExpr()},$9,'active',$10,$11,now(),now())
         returning id, rotation_version
       `;
 
@@ -135,6 +159,7 @@ export class TokenCredentialRepository {
         input.refreshToken ? encryptSecret(input.refreshToken) : null,
         input.expiresAt,
         input.monthlyContributionLimitUnits ?? null,
+        input.debugLabel ?? null,
         nextRotationVersion,
         input.createdBy ?? null
       ];
@@ -162,7 +187,14 @@ export class TokenCredentialRepository {
         updated_at,
         monthly_contribution_limit_units,
         monthly_contribution_used_units,
-        monthly_window_start_at
+        monthly_window_start_at,
+        debug_label,
+        consecutive_failure_count,
+        last_failed_status,
+        last_failed_at,
+        maxed_at,
+        next_probe_at,
+        last_probe_at
       from ${TABLES.tokenCredentials}
       where org_id = $1
         and provider = $2
@@ -202,7 +234,14 @@ export class TokenCredentialRepository {
         revoked_at,
         monthly_contribution_limit_units,
         monthly_contribution_used_units,
-        monthly_window_start_at
+        monthly_window_start_at,
+        debug_label,
+        consecutive_failure_count,
+        last_failed_status,
+        last_failed_at,
+        maxed_at,
+        next_probe_at,
+        last_probe_at
       from ${TABLES.tokenCredentials}
       where id = $1
       limit 1
@@ -266,7 +305,14 @@ export class TokenCredentialRepository {
         updated_at,
         monthly_contribution_limit_units,
         monthly_contribution_used_units,
-        monthly_window_start_at
+        monthly_window_start_at,
+        debug_label,
+        consecutive_failure_count,
+        last_failed_status,
+        last_failed_at,
+        maxed_at,
+        next_probe_at,
+        last_probe_at
     `;
 
     const params: SqlValue[] = [
@@ -330,12 +376,13 @@ export class TokenCredentialRepository {
           monthly_contribution_limit_units,
           monthly_contribution_used_units,
           monthly_window_start_at,
+          debug_label,
           status,
           rotation_version,
           created_by,
           created_at,
           updated_at
-        ) values ($1,$2,$3,$4,$5,$6,$7,$8,0,${currentUtcMonthStartExpr()},'active',$9,$10,now(),now())
+        ) values ($1,$2,$3,$4,$5,$6,$7,$8,0,${currentUtcMonthStartExpr()},$9,'active',$10,$11,now(),now())
       `;
 
       const insertParams: SqlValue[] = [
@@ -347,6 +394,7 @@ export class TokenCredentialRepository {
         input.refreshToken ? encryptSecret(input.refreshToken) : null,
         input.expiresAt,
         input.monthlyContributionLimitUnits ?? null,
+        input.debugLabel ?? null,
         nextRotationVersion,
         input.createdBy ?? null
       ];
@@ -406,6 +454,147 @@ export class TokenCredentialRepository {
           revoked_at = now(),
           updated_at = now()
       where id = $1 and status <> 'revoked'
+    `;
+    const result = await this.db.query(sql, [id]);
+    return result.rowCount === 1;
+  }
+
+  async recordFailureAndMaybeMax(input: {
+    id: string;
+    statusCode: number;
+    threshold: number;
+    nextProbeAt: Date;
+    reason?: string;
+  }): Promise<{ status: TokenCredentialStatus; consecutiveFailures: number } | null> {
+    const sql = `
+      update ${TABLES.tokenCredentials}
+      set
+        consecutive_failure_count = coalesce(consecutive_failure_count, 0) + 1,
+        last_failed_status = $2,
+        last_failed_at = now(),
+        status = case
+          when status in ('active', 'rotating')
+            and coalesce(consecutive_failure_count, 0) + 1 >= $3
+          then 'maxed'
+          else status
+        end,
+        maxed_at = case
+          when status in ('active', 'rotating')
+            and coalesce(consecutive_failure_count, 0) + 1 >= $3
+          then now()
+          else maxed_at
+        end,
+        next_probe_at = case
+          when status in ('active', 'rotating')
+            and coalesce(consecutive_failure_count, 0) + 1 >= $3
+          then $4
+          else next_probe_at
+        end,
+        last_refresh_error = case
+          when $5::text is not null then $5
+          else last_refresh_error
+        end,
+        updated_at = now()
+      where id = $1
+        and status in ('active', 'rotating', 'maxed')
+      returning status, coalesce(consecutive_failure_count, 0) as consecutive_failures
+    `;
+    const result = await this.db.query<{ status: TokenCredentialStatus; consecutive_failures: number }>(sql, [
+      input.id,
+      input.statusCode,
+      input.threshold,
+      input.nextProbeAt,
+      input.reason ?? null
+    ]);
+    if (result.rowCount !== 1) return null;
+    return {
+      status: result.rows[0].status,
+      consecutiveFailures: Number(result.rows[0].consecutive_failures)
+    };
+  }
+
+  async recordSuccess(id: string): Promise<boolean> {
+    const sql = `
+      update ${TABLES.tokenCredentials}
+      set
+        consecutive_failure_count = 0,
+        last_failed_status = null,
+        last_failed_at = null,
+        updated_at = now()
+      where id = $1
+        and status in ('active', 'rotating')
+    `;
+    const result = await this.db.query(sql, [id]);
+    return result.rowCount === 1;
+  }
+
+  async listMaxedForProbe(limit: number): Promise<TokenCredential[]> {
+    const sql = `
+      select
+        id,
+        org_id,
+        provider,
+        auth_scheme,
+        encrypted_access_token,
+        encrypted_refresh_token,
+        expires_at,
+        status,
+        rotation_version,
+        created_at,
+        revoked_at,
+        updated_at,
+        monthly_contribution_limit_units,
+        monthly_contribution_used_units,
+        monthly_window_start_at,
+        debug_label,
+        consecutive_failure_count,
+        last_failed_status,
+        last_failed_at,
+        maxed_at,
+        next_probe_at,
+        last_probe_at
+      from ${TABLES.tokenCredentials}
+      where status = 'maxed'
+        and expires_at > now()
+        and (next_probe_at is null or next_probe_at <= now())
+      order by coalesce(next_probe_at, maxed_at, updated_at) asc
+      limit $1
+    `;
+    const result = await this.db.query<TokenCredentialRow>(sql, [limit]);
+    return result.rows.map(mapRow);
+  }
+
+  async markProbeFailure(id: string, nextProbeAt: Date, reason?: string): Promise<boolean> {
+    const sql = `
+      update ${TABLES.tokenCredentials}
+      set
+        last_probe_at = now(),
+        next_probe_at = $2,
+        last_refresh_error = case
+          when $3::text is not null then $3
+          else last_refresh_error
+        end,
+        updated_at = now()
+      where id = $1
+        and status = 'maxed'
+    `;
+    const result = await this.db.query(sql, [id, nextProbeAt, reason ?? null]);
+    return result.rowCount === 1;
+  }
+
+  async reactivateFromMaxed(id: string): Promise<boolean> {
+    const sql = `
+      update ${TABLES.tokenCredentials}
+      set
+        status = 'active',
+        consecutive_failure_count = 0,
+        last_failed_status = null,
+        last_failed_at = null,
+        next_probe_at = null,
+        last_probe_at = now(),
+        updated_at = now()
+      where id = $1
+        and status = 'maxed'
     `;
     const result = await this.db.query(sql, [id]);
     return result.rowCount === 1;

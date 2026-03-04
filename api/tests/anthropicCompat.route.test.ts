@@ -184,6 +184,11 @@ describe('anthropic compat route', () => {
       monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'addMonthlyContributionUsage').mockResolvedValue(true);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'recordSuccess').mockResolvedValue(true);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'recordFailureAndMaybeMax').mockResolvedValue({
+      status: 'active',
+      consecutiveFailures: 1
+    } as any);
     vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
       replay: false,
       input: {

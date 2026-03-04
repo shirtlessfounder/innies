@@ -28,6 +28,7 @@ export class TokenCredentialService {
       metadata: {
         provider: input.provider,
         authScheme: input.authScheme,
+        debugLabel: input.debugLabel ?? null,
         rotationVersion: created.rotationVersion
       }
     });
@@ -46,6 +47,7 @@ export class TokenCredentialService {
       metadata: {
         provider: input.provider,
         authScheme: input.authScheme,
+        debugLabel: input.debugLabel ?? null,
         rotationVersion: rotated.rotationVersion,
         previousId: rotated.previousId
       }

@@ -67,6 +67,7 @@ const tokenCredentialCreateSchema = z.object({
   authScheme: z.enum(['x_api_key', 'bearer']).default('x_api_key'),
   accessToken: z.string().min(1),
   refreshToken: z.string().min(1).optional(),
+  debugLabel: z.string().trim().min(1).max(64).optional(),
   expiresAt: z.string().datetime({ offset: true }),
   monthlyContributionLimitUnits: z.number().int().nonnegative().optional()
 });
@@ -77,6 +78,7 @@ const tokenCredentialRotateSchema = z.object({
   authScheme: z.enum(['x_api_key', 'bearer']).default('x_api_key'),
   accessToken: z.string().min(1),
   refreshToken: z.string().min(1).optional(),
+  debugLabel: z.string().trim().min(1).max(64).optional(),
   expiresAt: z.string().datetime({ offset: true }),
   monthlyContributionLimitUnits: z.number().int().nonnegative().optional()
 });
@@ -260,6 +262,7 @@ router.post('/v1/admin/token-credentials', requireApiKey(runtime.repos.apiKeys, 
         authScheme: parsed.authScheme,
         accessToken: parsed.accessToken,
         refreshToken: parsed.refreshToken ?? null,
+        debugLabel: parsed.debugLabel ?? null,
         expiresAt: new Date(parsed.expiresAt),
         monthlyContributionLimitUnits: parsed.monthlyContributionLimitUnits ?? null
       }, {
@@ -322,10 +325,11 @@ router.post('/v1/admin/token-credentials/rotate', requireApiKey(runtime.repos.ap
       orgId: parsed.orgId,
       provider: parsed.provider,
       authScheme: parsed.authScheme,
-      accessToken: parsed.accessToken,
-      refreshToken: parsed.refreshToken ?? null,
-      expiresAt: new Date(parsed.expiresAt),
-      monthlyContributionLimitUnits: parsed.monthlyContributionLimitUnits ?? null
+        accessToken: parsed.accessToken,
+        refreshToken: parsed.refreshToken ?? null,
+        debugLabel: parsed.debugLabel ?? null,
+        expiresAt: new Date(parsed.expiresAt),
+        monthlyContributionLimitUnits: parsed.monthlyContributionLimitUnits ?? null
     }, {
       actorApiKeyId: req.auth?.apiKeyId ?? null
     });
