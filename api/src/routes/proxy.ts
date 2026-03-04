@@ -588,6 +588,31 @@ function extractAnthropicTextContent(data: unknown): string {
     .join('');
 }
 
+function normalizeSyntheticContentBlocks(message: Record<string, unknown>): Array<Record<string, unknown>> {
+  const content = (message as any).content;
+  if (Array.isArray(content)) {
+    return content.filter((item) => item && typeof item === 'object') as Array<Record<string, unknown>>;
+  }
+  const fallbackText = extractAnthropicTextContent(message);
+  if (fallbackText.length > 0) {
+    return [{ type: 'text', text: fallbackText }];
+  }
+  return [];
+}
+
+function summarizeSyntheticContentBlocks(message: Record<string, unknown>): { count: number; types: string } {
+  const blocks = normalizeSyntheticContentBlocks(message);
+  const uniqueTypes = new Set<string>();
+  for (const block of blocks) {
+    const type = typeof block.type === 'string' ? block.type : 'unknown';
+    uniqueTypes.add(type);
+  }
+  return {
+    count: blocks.length,
+    types: Array.from(uniqueTypes).join(',')
+  };
+}
+
 function resolveSyntheticUsageFromPayload(data: unknown): {
   inputTokens: number;
   outputTokens: number;
@@ -611,7 +636,7 @@ function resolveSyntheticUsageFromPayload(data: unknown): {
 function buildSyntheticAnthropicSse(data: unknown, model: string): string {
   const message = data && typeof data === 'object' ? (data as any) : {};
   const id = String(message.id ?? `msg_${Date.now()}`);
-  const text = extractAnthropicTextContent(message);
+  const blocks = normalizeSyntheticContentBlocks(message);
   const inputTokens = Number(message?.usage?.input_tokens ?? 0);
   const outputTokens = Number(message?.usage?.output_tokens ?? 0);
   const stopReason = String(message.stop_reason ?? 'end_turn');
@@ -629,28 +654,86 @@ function buildSyntheticAnthropicSse(data: unknown, model: string): string {
         stop_sequence: null,
         usage: { input_tokens: inputTokens, output_tokens: 0 }
       }
-    })}\n\n`,
-    `event: content_block_start\ndata: ${JSON.stringify({
-      type: 'content_block_start',
-      index: 0,
-      content_block: { type: 'text', text: '' }
-    })}\n\n`,
-    `event: content_block_delta\ndata: ${JSON.stringify({
-      type: 'content_block_delta',
-      index: 0,
-      delta: { type: 'text_delta', text }
-    })}\n\n`,
-    `event: content_block_stop\ndata: ${JSON.stringify({
-      type: 'content_block_stop',
-      index: 0
-    })}\n\n`,
+    })}\n\n`
+  ];
+
+  blocks.forEach((block, index) => {
+    const blockType = typeof block.type === 'string' ? block.type : 'unknown';
+    if (blockType === 'text') {
+      const text = String((block as any).text ?? '');
+      events.push(
+        `event: content_block_start\ndata: ${JSON.stringify({
+          type: 'content_block_start',
+          index,
+          content_block: { type: 'text', text: '' }
+        })}\n\n`
+      );
+      events.push(
+        `event: content_block_delta\ndata: ${JSON.stringify({
+          type: 'content_block_delta',
+          index,
+          delta: { type: 'text_delta', text }
+        })}\n\n`
+      );
+      events.push(
+        `event: content_block_stop\ndata: ${JSON.stringify({
+          type: 'content_block_stop',
+          index
+        })}\n\n`
+      );
+      return;
+    }
+
+    if (blockType === 'tool_use') {
+      const toolUseId = String((block as any).id ?? `tool_${index}`);
+      const toolName = String((block as any).name ?? 'tool');
+      const inputPayload = (block as any).input ?? {};
+      events.push(
+        `event: content_block_start\ndata: ${JSON.stringify({
+          type: 'content_block_start',
+          index,
+          content_block: { type: 'tool_use', id: toolUseId, name: toolName, input: {} }
+        })}\n\n`
+      );
+      events.push(
+        `event: content_block_delta\ndata: ${JSON.stringify({
+          type: 'content_block_delta',
+          index,
+          delta: { type: 'input_json_delta', partial_json: JSON.stringify(inputPayload) }
+        })}\n\n`
+      );
+      events.push(
+        `event: content_block_stop\ndata: ${JSON.stringify({
+          type: 'content_block_stop',
+          index
+        })}\n\n`
+      );
+      return;
+    }
+
+    events.push(
+      `event: content_block_start\ndata: ${JSON.stringify({
+        type: 'content_block_start',
+        index,
+        content_block: block
+      })}\n\n`
+    );
+    events.push(
+      `event: content_block_stop\ndata: ${JSON.stringify({
+        type: 'content_block_stop',
+        index
+      })}\n\n`
+    );
+  });
+
+  events.push(
     `event: message_delta\ndata: ${JSON.stringify({
       type: 'message_delta',
       delta: { stop_reason: stopReason, stop_sequence: null },
       usage: { input_tokens: inputTokens, output_tokens: outputTokens }
-    })}\n\n`,
-    `event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`
-  ];
+    })}\n\n`
+  );
+  events.push(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
   return events.join('');
 }
 
@@ -1558,7 +1641,9 @@ async function executeTokenModeStreaming(input: {
             (res as any).socket.setNoDelay?.(true);
           }
 
-          const syntheticPayload = `: keepalive\n\n${buildSyntheticAnthropicSse(data, model)}`;
+          const syntheticMessage = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+          const syntheticSummary = summarizeSyntheticContentBlocks(syntheticMessage);
+          const syntheticPayload = `: keepalive\n\n${buildSyntheticAnthropicSse(syntheticMessage, model)}`;
           firstDownstreamWriteAt = Date.now();
           (res as any).write(syntheticPayload);
           if ((res as any).body === undefined) {
@@ -1638,6 +1723,8 @@ async function executeTokenModeStreaming(input: {
             pre_upstream_ms: dispatchStartedAt - attemptStartedAt,
             upstream_ttfb_ms: upstreamHeadersAt - dispatchStartedAt,
             bridge_build_ms: firstDownstreamWriteAt ? (firstDownstreamWriteAt - upstreamHeadersAt) : null,
+            synthetic_content_block_count: syntheticSummary.count,
+            synthetic_content_block_types: syntheticSummary.types,
             post_stream_write_ms: firstDownstreamWriteAt && streamEndedAt
               ? Math.max(0, streamEndedAt - firstDownstreamWriteAt)
               : null

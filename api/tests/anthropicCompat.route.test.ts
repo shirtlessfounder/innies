@@ -282,6 +282,76 @@ describe('anthropic compat route', () => {
     upstreamSpy.mockRestore();
   });
 
+  it('preserves tool_use blocks in synthetic bridge with input_json_delta', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        id: 'msg_tool_1',
+        usage: { input_tokens: 20, output_tokens: 10 },
+        content: [
+          { type: 'text', text: 'working on it' },
+          { type: 'tool_use', id: 'toolu_123', name: 'gh_read_repo', input: { repo: 'shirtlessfounder/innies' } }
+        ]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: { authorization: 'Bearer in_test_token', 'content-type': 'application/json' },
+      body: { model: 'claude-opus-4-6', stream: true, max_tokens: 32, messages: [{ role: 'user', content: 'read repo' }] }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    const body = String(res.body ?? '');
+    expect(res.statusCode).toBe(200);
+    expect(body).toContain('event: content_block_start');
+    expect(body).toContain('"type":"tool_use"');
+    expect(body).toContain('"id":"toolu_123"');
+    expect(body).toContain('"name":"gh_read_repo"');
+    expect(body).toContain('"type":"input_json_delta"');
+    expect(body).toContain('"partial_json":"{\\"repo\\":\\"shirtlessfounder/innies\\"}"');
+    upstreamSpy.mockRestore();
+  });
+
+  it('preserves unknown non-text content blocks in synthetic bridge', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        id: 'msg_unknown_block',
+        usage: { input_tokens: 6, output_tokens: 4 },
+        content: [{ type: 'citations', source: 'repo', value: 'README.md' }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: { authorization: 'Bearer in_test_token', 'content-type': 'application/json' },
+      body: { model: 'claude-opus-4-6', stream: true, max_tokens: 16, messages: [{ role: 'user', content: 'cite sources' }] }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    const body = String(res.body ?? '');
+    expect(res.statusCode).toBe(200);
+    expect(body).toContain('"type":"citations"');
+    expect(body).toContain('"source":"repo"');
+    expect(body).toContain('event: content_block_stop');
+    upstreamSpy.mockRestore();
+  });
+
   it('passes through SSE stream chunks on compat route', async () => {
     const meteringSpy = vi.spyOn(runtimeModule.runtime.services.metering, 'recordUsage');
     const routingSpy = vi.spyOn(runtimeModule.runtime.repos.routingEvents, 'insert');
