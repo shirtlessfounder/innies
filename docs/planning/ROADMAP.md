@@ -1,0 +1,107 @@
+# Innies Roadmap
+
+## Phase 0: MVP Scope ✅
+- Token-pool routing for Anthropic/OpenClaw is running.
+- OAuth credential lifecycle includes:
+  - `maxed` quarantine
+  - automatic reprobe/reactivation.
+- Synthetic stream bridge preserves structured blocks including `tool_use` + `input_json_delta`.
+- Debug labels exist on token credentials for routing/health visibility.
+
+## Phase 1: Internal PMF Scope
+- Codex token support.
+- CLI support:
+  - `innie claude`
+  - `innie codex`
+  - wrappers for internal coding-tool workflows through Innies.
+- Developer docs baseline:
+  - clear API auth + endpoint docs with concrete request/response examples
+  - at minimum, one concise markdown page suitable for first-time integration.
+- Internal performance + usage dashboard.
+- Easy new token onboarding into the shared pool.
+- Easy per-buyer-key provider preference:
+  - e.g. prefer Codex first, fallback to Claude when Codex pool is unavailable/depleted.
+  - not applicable to CLI coding session/tool-loop routing.
+
+## Phase 2: Friends & Family PMF Scope
+- Set up isolation between internal team tokens and F&F tokens for free internal team usage, while still allowing cross-pool purchasing:
+  - F&F can buy usage from internal team tokens.
+  - Internal team can buy usage from F&F tokens.
+- Operationally combine internal team + F&F into one shared network/org for key sharing, with isolated exception rules for internal free-usage treatment.
+- Provide extremely simple instructions for obtaining OAuth credentials from Claude and Codex.
+- Build simple dashboard flows for:
+  - inserting OAuth tokens
+  - setting up payment rails (Stripe)
+  - onboarding instructions for OpenClaw + CLI coding
+  - unified buyer + seller dashboard:
+    - seller: usage + earnings by token
+    - buyer: latency, success rates, and credential/provider attribution for served requests
+  - contributing more keys
+  - offboarding keys
+- Add seller earnings transparency for contributed tokens:
+  - per-token usage visibility
+  - per-token earnings visibility
+  - clear attribution so contributors can see passive-income performance from unused capacity.
+- Add helper CLI for OAuth onboarding (`innie auth setup`) for Claude/Codex:
+  - interactive setup flow to reduce reliance on stale external docs
+  - keep docs as fallback, but CLI helper is primary path.
+- Define working economics and Innies fee rake that is sustainable/economical for all participants.
+- Define basic billing-failure behavior (minimum viable):
+  - what happens immediately on failed charge/payment method issues
+  - whether usage pauses immediately or short grace is allowed.
+- Enforce key-quality guardrails in PMF operation:
+  - auto-quarantine consistently failing keys
+  - automatic reprobe/reactivation path
+  - keep bad keys from degrading pool UX
+  - define corresponding payment/billing behavior when keys are quarantined (e.g., reroute billing source, pause seller-side earning accrual for quarantined keys).
+- Define pool-exhaustion user experience (small-pool safety):
+  - deterministic behavior when all credentials are unavailable/quarantined/rate-limited
+  - explicit user-facing outcome (e.g., graceful error and retry guidance; optional queue/fallback policy if adopted)
+  - no silent ambiguous failure mode.
+- Ship a simple landing page.
+- Build private community channel for F&F users (Telegram and/or Discord) for support, feedback loops, and release updates.
+
+## Phase 3: External PMF Scope
+- Permissionless org creation + user onboarding.
+- Permissionless org spin-up with Phase 2-style isolation controls:
+  - org controls external usage access for its token pool (on/off policy).
+- Bolstered org and individual analytics dashboards.
+- Policy/control plane for orgs:
+  - org-level external access policy
+  - buyer/seller permission scopes
+  - per-org routing/fallback/allowlist controls
+  - org kill-switches and emergency controls.
+- Onboarding + auth productization:
+  - self-serve org creation
+  - invite/member management
+  - role-based access (owner/admin/member).
+- Payments and settlement productization:
+  - org-level billing settings
+  - seller earnings/payout views
+  - key quarantine-aware billing/earnings handling.
+- Risk/abuse controls:
+  - basic anti-abuse/rate limits
+  - suspicious usage flags
+  - operational moderation controls.
+- Launch public community channels (Telegram/Discord) tied to permissionless onboarding and broader user support.
+- Fun live-Severance themed landing page:
+  - tokens represented as innies
+  - orgs/people represented as cubicles
+  - innies/tokens visibly move in/out as capacity is rented.
+
+## Cross-Phase Gaps (Hardening)
+- API/migration/version compatibility strategy:
+  - explicit client contract versioning policy
+  - deprecation windows and migration guidance
+  - rollout compatibility checks across CLI/OpenClaw/dashboard clients.
+- Incident operations layer:
+  - playbooks for provider outages
+  - playbooks for payment/Stripe outages
+  - playbooks for bad-key/failure-wave incidents
+  - ownership and escalation paths per incident type.
+- Economics experimentation framework:
+  - controlled testing for fee rake/economic parameters
+  - avoid ad-hoc production tuning without cohort analysis.
+- Data retention/privacy defaults by phase:
+  - clear storage/retention boundaries as external users onboard.
+  - define and publish baseline policy before F&F rollout (Phase 2 gate), since Innies sits in the request path.
