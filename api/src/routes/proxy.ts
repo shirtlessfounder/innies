@@ -38,6 +38,15 @@ type ProxyRouteResult = {
 };
 
 type MeteringSource = 'payload_usage' | 'stream_usage' | 'stream_estimate';
+type OpenClawCorrelation = {
+  openclawRunId: string;
+  openclawSessionId?: string;
+};
+type RetryReason =
+  | 'blocked_403_compat_retry'
+  | 'oauth_401_compat_retry'
+  | 'credential_refresh_retry'
+  | 'rate_limited_backoff';
 
 function requestSeed(requestId: string): number {
   let seed = 0;
@@ -55,6 +64,35 @@ function orderCredentialsForRequest(credentials: TokenCredential[], requestId: s
 
 function buildRequestId(headerValue: string | undefined): string {
   return headerValue || `req_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+}
+
+function readHeader(req: any, ...names: string[]): string | undefined {
+  for (const name of names) {
+    const raw = req.header(name);
+    if (typeof raw !== 'string') continue;
+    const trimmed = raw.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return undefined;
+}
+
+function resolveOpenClawCorrelation(req: any, requestId: string): OpenClawCorrelation {
+  const bodyObject = req.body && typeof req.body === 'object'
+    ? (req.body as any)
+    : undefined;
+  const metadata = bodyObject?.metadata ?? bodyObject?.payload?.metadata;
+  const metadataRunId = typeof metadata?.openclaw_run_id === 'string'
+    ? metadata.openclaw_run_id.trim()
+    : undefined;
+  const metadataSessionId = typeof metadata?.openclaw_session_id === 'string'
+    ? metadata.openclaw_session_id.trim()
+    : undefined;
+  const openclawRunId = readHeader(req, 'x-openclaw-run-id', 'openclaw-run-id', 'x-run-id')
+    ?? (metadataRunId && metadataRunId.length > 0 ? metadataRunId : undefined)
+    ?? `run_${requestId}`;
+  const openclawSessionId = readHeader(req, 'x-openclaw-session-id', 'openclaw-session-id', 'x-session-id')
+    ?? (metadataSessionId && metadataSessionId.length > 0 ? metadataSessionId : undefined);
+  return { openclawRunId, openclawSessionId };
 }
 
 function extractProxyPath(originalUrl: string): string {
@@ -147,6 +185,7 @@ function buildTokenModeUpstreamHeaders(input: {
   provider: string;
   credential: TokenCredential;
   skipOauthDefaultBetas?: boolean;
+  streaming?: boolean;
 }): Record<string, string> {
   const {
     requestId,
@@ -154,7 +193,8 @@ function buildTokenModeUpstreamHeaders(input: {
     anthropicBeta,
     provider,
     credential,
-    skipOauthDefaultBetas
+    skipOauthDefaultBetas,
+    streaming
   } = input;
   const authHeaders = isAnthropicOauthAccessToken(provider, credential.accessToken)
     ? { authorization: `Bearer ${credential.accessToken}` }
@@ -165,6 +205,9 @@ function buildTokenModeUpstreamHeaders(input: {
     'anthropic-version': anthropicVersion,
     ...authHeaders
   };
+  if (streaming) {
+    headers.accept = 'text/event-stream';
+  }
 
   const shouldIncludeOauthBetas = !skipOauthDefaultBetas && isAnthropicOauthToken(credential, provider);
   if (anthropicBeta) {
@@ -344,15 +387,84 @@ function extractUpstreamErrorDetails(data: unknown): { errorType?: string; error
 }
 
 function logCompatAudit(input: {
+  orgId: string;
+  provider: string;
+  model: string;
   requestId: string;
   credentialId: string;
   attemptNo: number;
   upstreamStatus: number;
+  openclawRunId: string;
+  openclawSessionId?: string;
   errorType?: string;
   errorMessage?: string;
 }): void {
   // Keep this concise and machine-parsable for incident correlation.
   console.info('[compat-audit] attempt', input);
+}
+
+function logRetryAudit(input: {
+  orgId: string;
+  provider: string;
+  model: string;
+  requestId: string;
+  openclawRunId: string;
+  openclawSessionId?: string;
+  attemptNo: number;
+  credentialId: string;
+  upstreamStatus: number;
+  retryReason: RetryReason;
+}): void {
+  console.info('[retry-audit] attempt', {
+    org_id: input.orgId,
+    provider: input.provider,
+    model: input.model,
+    request_id: input.requestId,
+    openclaw_run_id: input.openclawRunId,
+    openclaw_session_id: input.openclawSessionId,
+    attempt_no: input.attemptNo,
+    credential_id: input.credentialId,
+    upstream_status: input.upstreamStatus,
+    retry_reason: input.retryReason
+  });
+}
+
+function logAuthFailureAudit(input: {
+  orgId: string;
+  provider: string;
+  model: string;
+  requestId: string;
+  openclawRunId: string;
+  openclawSessionId?: string;
+  attemptNo: number;
+  credentialId: string;
+  upstreamStatus: number;
+  errorType?: string;
+  errorMessage?: string;
+}): void {
+  console.warn('[auth-failure-audit] attempt', {
+    org_id: input.orgId,
+    provider: input.provider,
+    model: input.model,
+    request_id: input.requestId,
+    openclaw_run_id: input.openclawRunId,
+    openclaw_session_id: input.openclawSessionId,
+    attempt_no: input.attemptNo,
+    credential_id: input.credentialId,
+    upstream_status: input.upstreamStatus,
+    error_type: input.errorType,
+    error_message: input.errorMessage
+  });
+}
+
+function buildTokenRouteDecision(credential: TokenCredential, correlation: OpenClawCorrelation): Record<string, unknown> {
+  return {
+    reason: 'token_mode_round_robin',
+    tokenCredentialId: credential.id,
+    tokenAuthScheme: credential.authScheme,
+    openclaw_run_id: correlation.openclawRunId,
+    openclaw_session_id: correlation.openclawSessionId ?? null
+  };
 }
 
 function mapAuthHeader(authScheme: TokenCredential['authScheme'], accessToken: string): Record<string, string> {
@@ -512,6 +624,7 @@ async function executeTokenModeNonStreaming(input: {
   requestId: string;
   orgId: string;
   apiKeyId: string;
+  correlation: OpenClawCorrelation;
   provider: string;
   model: string;
   payload: unknown;
@@ -525,6 +638,7 @@ async function executeTokenModeNonStreaming(input: {
     requestId,
     orgId,
     apiKeyId,
+    correlation,
     provider,
     model,
     payload,
@@ -545,6 +659,7 @@ async function executeTokenModeNonStreaming(input: {
   let attemptNo = 0;
   let sawAuthFailure = false;
   let lastAuthStatus: number | null = null;
+  let lastAuthFailure: { attemptNo: number; credentialId: string; status: number; errorType?: string; errorMessage?: string } | null = null;
   for (const initialCredential of credentials) {
     attemptNo += 1;
     let credential = initialCredential;
@@ -568,11 +683,7 @@ async function executeTokenModeNonStreaming(input: {
           provider,
           model,
           streaming: false,
-          routeDecision: {
-            reason: 'token_mode_round_robin',
-            tokenCredentialId: credential.id,
-            tokenAuthScheme: credential.authScheme
-          },
+          routeDecision: buildTokenRouteDecision(credential, correlation),
           upstreamStatus: failure.statusCode,
           errorCode: inferErrorCode(failure),
           latencyMs: Date.now() - startedAt
@@ -609,6 +720,18 @@ async function executeTokenModeNonStreaming(input: {
           : await upstreamResponse.text();
         const blocked = isUpstreamBlockedResponse(status, data);
         if (blocked && !compat.blockedRetryApplied) {
+          logRetryAudit({
+            orgId,
+            provider,
+            model,
+            requestId,
+            openclawRunId: correlation.openclawRunId,
+            openclawSessionId: correlation.openclawSessionId,
+            attemptNo,
+            credentialId: credential.id,
+            upstreamStatus: status,
+            retryReason: 'blocked_403_compat_retry'
+          });
           compat = applyCompatNormalization({
             requestId,
             attemptNo,
@@ -631,20 +754,21 @@ async function executeTokenModeNonStreaming(input: {
             provider,
             model,
             streaming: false,
-            routeDecision: {
-              reason: 'token_mode_round_robin',
-              tokenCredentialId: credential.id,
-              tokenAuthScheme: credential.authScheme
-            },
+            routeDecision: buildTokenRouteDecision(credential, correlation),
             upstreamStatus: status,
             errorCode: 'upstream_403_blocked_passthrough',
             latencyMs: Date.now() - startedAt
           });
           logCompatAudit({
+            orgId,
+            provider,
+            model,
             requestId,
             credentialId: credential.id,
             attemptNo,
             upstreamStatus: status,
+            openclawRunId: correlation.openclawRunId,
+            openclawSessionId: correlation.openclawSessionId,
             errorType,
             errorMessage
           });
@@ -686,6 +810,18 @@ async function executeTokenModeNonStreaming(input: {
           errorType: statusErrorType,
           errorMessage: statusErrorMessage
         })) {
+          logRetryAudit({
+            orgId,
+            provider,
+            model,
+            requestId,
+            openclawRunId: correlation.openclawRunId,
+            openclawSessionId: correlation.openclawSessionId,
+            attemptNo,
+            credentialId: credential.id,
+            upstreamStatus: status,
+            retryReason: 'oauth_401_compat_retry'
+          });
           compat = applyCompatNormalization({
             requestId,
             attemptNo,
@@ -701,19 +837,43 @@ async function executeTokenModeNonStreaming(input: {
           const next = await attemptCredentialRefresh(credential);
           refreshed = true;
           if (next) {
+            logRetryAudit({
+              orgId,
+              provider,
+              model,
+              requestId,
+              openclawRunId: correlation.openclawRunId,
+              openclawSessionId: correlation.openclawSessionId,
+              attemptNo,
+              credentialId: credential.id,
+              upstreamStatus: status,
+              retryReason: 'credential_refresh_retry'
+            });
             credential = next;
             continue;
           }
         }
         sawAuthFailure = true;
         lastAuthStatus = status;
+        lastAuthFailure = {
+          attemptNo,
+          credentialId: credential.id,
+          status,
+          errorType: statusErrorType,
+          errorMessage: statusErrorMessage
+        };
         await logAttemptFailure({ kind: 'auth', statusCode: status, message: 'token auth failed' });
         if (strictUpstreamPassthrough) {
           logCompatAudit({
+            orgId,
+            provider,
+            model,
             requestId,
             credentialId: credential.id,
             attemptNo,
             upstreamStatus: status,
+            openclawRunId: correlation.openclawRunId,
+            openclawSessionId: correlation.openclawSessionId,
             errorType: statusErrorType,
             errorMessage: statusErrorMessage
           });
@@ -723,6 +883,18 @@ async function executeTokenModeNonStreaming(input: {
 
       if (status === 429) {
         await logAttemptFailure({ kind: 'rate_limited', statusCode: 429, message: 'rate limited' });
+        logRetryAudit({
+          orgId,
+          provider,
+          model,
+          requestId,
+          openclawRunId: correlation.openclawRunId,
+          openclawSessionId: correlation.openclawSessionId,
+          attemptNo,
+          credentialId: credential.id,
+          upstreamStatus: status,
+          retryReason: 'rate_limited_backoff'
+        });
         const backoffMs = 200 * (2 ** (attemptNo - 1)) + Math.floor(Math.random() * 100);
         await sleep(backoffMs);
         break;
@@ -744,11 +916,7 @@ async function executeTokenModeNonStreaming(input: {
             provider,
             model,
             streaming: false,
-            routeDecision: {
-              reason: 'token_mode_round_robin',
-              tokenCredentialId: credential.id,
-              tokenAuthScheme: credential.authScheme
-            },
+            routeDecision: buildTokenRouteDecision(credential, correlation),
             upstreamStatus: status,
             errorCode: 'upstream_5xx_passthrough',
             latencyMs: Date.now() - startedAt
@@ -778,10 +946,15 @@ async function executeTokenModeNonStreaming(input: {
       if (strictUpstreamPassthrough && status >= 400) {
         const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
         logCompatAudit({
+          orgId,
+          provider,
+          model,
           requestId,
           credentialId: credential.id,
           attemptNo,
           upstreamStatus: status,
+          openclawRunId: correlation.openclawRunId,
+          openclawSessionId: correlation.openclawSessionId,
           errorType,
           errorMessage
         });
@@ -799,11 +972,7 @@ async function executeTokenModeNonStreaming(input: {
         provider,
         model,
         streaming: false,
-        routeDecision: {
-          reason: 'token_mode_round_robin',
-          tokenCredentialId: credential.id,
-          tokenAuthScheme: credential.authScheme
-        },
+        routeDecision: buildTokenRouteDecision(credential, correlation),
         upstreamStatus: status,
         latencyMs: Date.now() - startedAt
       });
@@ -846,6 +1015,21 @@ async function executeTokenModeNonStreaming(input: {
   }
 
   if (sawAuthFailure) {
+    if (lastAuthFailure) {
+      logAuthFailureAudit({
+        orgId,
+        provider,
+        model,
+        requestId,
+        openclawRunId: correlation.openclawRunId,
+        openclawSessionId: correlation.openclawSessionId,
+        attemptNo: lastAuthFailure.attemptNo,
+        credentialId: lastAuthFailure.credentialId,
+        upstreamStatus: lastAuthFailure.status,
+        errorType: lastAuthFailure.errorType,
+        errorMessage: lastAuthFailure.errorMessage
+      });
+    }
     throw new AppError('unauthorized', 401, 'All token credentials unauthorized or expired', {
       provider,
       model,
@@ -860,6 +1044,7 @@ async function executeTokenModeStreaming(input: {
   requestId: string;
   orgId: string;
   apiKeyId: string;
+  correlation: OpenClawCorrelation;
   provider: string;
   model: string;
   payload: unknown;
@@ -875,6 +1060,7 @@ async function executeTokenModeStreaming(input: {
     requestId,
     orgId,
     apiKeyId,
+    correlation,
     provider,
     model,
     payload,
@@ -898,6 +1084,7 @@ async function executeTokenModeStreaming(input: {
   let attemptNo = 0;
   let sawAuthFailure = false;
   let lastAuthStatus: number | null = null;
+  let lastAuthFailure: { attemptNo: number; credentialId: string; status: number; errorType?: string; errorMessage?: string } | null = null;
 
   for (const initialCredential of credentials) {
     attemptNo += 1;
@@ -918,7 +1105,8 @@ async function executeTokenModeStreaming(input: {
         anthropicBeta: compat.anthropicBeta,
         provider,
         credential,
-        skipOauthDefaultBetas: compat.blockedRetryApplied
+        skipOauthDefaultBetas: compat.blockedRetryApplied,
+        streaming: true
       });
       const upstreamBody = JSON.stringify(compat.payload ?? {});
       const dispatchStartedAt = Date.now();
@@ -933,11 +1121,7 @@ async function executeTokenModeStreaming(input: {
           provider,
           model,
           streaming: true,
-          routeDecision: {
-            reason: 'token_mode_round_robin',
-            tokenCredentialId: credential.id,
-            tokenAuthScheme: credential.authScheme
-          },
+          routeDecision: buildTokenRouteDecision(credential, correlation),
           upstreamStatus: failure.statusCode,
           errorCode: inferErrorCode(failure),
           latencyMs: Date.now() - startedAt
@@ -968,6 +1152,18 @@ async function executeTokenModeStreaming(input: {
           : await upstreamResponse.text();
         const blocked = isUpstreamBlockedResponse(status, data);
         if (blocked && !compat.blockedRetryApplied) {
+          logRetryAudit({
+            orgId,
+            provider,
+            model,
+            requestId,
+            openclawRunId: correlation.openclawRunId,
+            openclawSessionId: correlation.openclawSessionId,
+            attemptNo,
+            credentialId: credential.id,
+            upstreamStatus: status,
+            retryReason: 'blocked_403_compat_retry'
+          });
           compat = applyCompatNormalization({
             requestId,
             attemptNo,
@@ -990,20 +1186,21 @@ async function executeTokenModeStreaming(input: {
             provider,
             model,
             streaming: true,
-            routeDecision: {
-              reason: 'token_mode_round_robin',
-              tokenCredentialId: credential.id,
-              tokenAuthScheme: credential.authScheme
-            },
+            routeDecision: buildTokenRouteDecision(credential, correlation),
             upstreamStatus: status,
             errorCode: 'upstream_403_blocked_passthrough',
             latencyMs: Date.now() - startedAt
           });
           logCompatAudit({
+            orgId,
+            provider,
+            model,
             requestId,
             credentialId: credential.id,
             attemptNo,
             upstreamStatus: status,
+            openclawRunId: correlation.openclawRunId,
+            openclawSessionId: correlation.openclawSessionId,
             errorType,
             errorMessage
           });
@@ -1045,6 +1242,18 @@ async function executeTokenModeStreaming(input: {
           errorType: statusErrorType,
           errorMessage: statusErrorMessage
         })) {
+          logRetryAudit({
+            orgId,
+            provider,
+            model,
+            requestId,
+            openclawRunId: correlation.openclawRunId,
+            openclawSessionId: correlation.openclawSessionId,
+            attemptNo,
+            credentialId: credential.id,
+            upstreamStatus: status,
+            retryReason: 'oauth_401_compat_retry'
+          });
           compat = applyCompatNormalization({
             requestId,
             attemptNo,
@@ -1060,19 +1269,43 @@ async function executeTokenModeStreaming(input: {
           const next = await attemptCredentialRefresh(credential);
           refreshed = true;
           if (next) {
+            logRetryAudit({
+              orgId,
+              provider,
+              model,
+              requestId,
+              openclawRunId: correlation.openclawRunId,
+              openclawSessionId: correlation.openclawSessionId,
+              attemptNo,
+              credentialId: credential.id,
+              upstreamStatus: status,
+              retryReason: 'credential_refresh_retry'
+            });
             credential = next;
             continue;
           }
         }
         sawAuthFailure = true;
         lastAuthStatus = status;
+        lastAuthFailure = {
+          attemptNo,
+          credentialId: credential.id,
+          status,
+          errorType: statusErrorType,
+          errorMessage: statusErrorMessage
+        };
         await logAttemptFailure({ kind: 'auth', statusCode: status, message: 'token auth failed' });
         if (strictUpstreamPassthrough) {
           logCompatAudit({
+            orgId,
+            provider,
+            model,
             requestId,
             credentialId: credential.id,
             attemptNo,
             upstreamStatus: status,
+            openclawRunId: correlation.openclawRunId,
+            openclawSessionId: correlation.openclawSessionId,
             errorType: statusErrorType,
             errorMessage: statusErrorMessage
           });
@@ -1082,6 +1315,18 @@ async function executeTokenModeStreaming(input: {
 
       if (status === 429) {
         await logAttemptFailure({ kind: 'rate_limited', statusCode: 429, message: 'rate limited' });
+        logRetryAudit({
+          orgId,
+          provider,
+          model,
+          requestId,
+          openclawRunId: correlation.openclawRunId,
+          openclawSessionId: correlation.openclawSessionId,
+          attemptNo,
+          credentialId: credential.id,
+          upstreamStatus: status,
+          retryReason: 'rate_limited_backoff'
+        });
         const backoffMs = 200 * (2 ** (attemptNo - 1)) + Math.floor(Math.random() * 100);
         await sleep(backoffMs);
         break;
@@ -1101,10 +1346,15 @@ async function executeTokenModeStreaming(input: {
         if (strictUpstreamPassthrough && status >= 400) {
           const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
           logCompatAudit({
+            orgId,
+            provider,
+            model,
             requestId,
             credentialId: credential.id,
             attemptNo,
             upstreamStatus: status,
+            openclawRunId: correlation.openclawRunId,
+            openclawSessionId: correlation.openclawSessionId,
             errorType,
             errorMessage
           });
@@ -1123,11 +1373,7 @@ async function executeTokenModeStreaming(input: {
           provider,
           model,
           streaming: true,
-          routeDecision: {
-            reason: 'token_mode_round_robin',
-            tokenCredentialId: credential.id,
-            tokenAuthScheme: credential.authScheme
-          },
+          routeDecision: buildTokenRouteDecision(credential, correlation),
           upstreamStatus: status,
           errorCode: status >= 500 ? 'upstream_5xx_passthrough' : undefined,
           latencyMs: Date.now() - startedAt
@@ -1226,7 +1472,10 @@ async function executeTokenModeStreaming(input: {
             requestId,
             attemptNo,
             credential_id: credential.id,
+            openclaw_run_id: correlation.openclawRunId,
+            openclaw_session_id: correlation.openclawSessionId ?? null,
             upstream_status: status,
+            upstream_content_type: contentType,
             stream_mode: 'synthetic_bridge',
             synthetic_stream_bridge: true,
             metering_source: meteringSource,
@@ -1293,11 +1542,7 @@ async function executeTokenModeStreaming(input: {
         provider,
         model,
         streaming: true,
-        routeDecision: {
-          reason: 'token_mode_round_robin',
-          tokenCredentialId: credential.id,
-          tokenAuthScheme: credential.authScheme
-        },
+        routeDecision: buildTokenRouteDecision(credential, correlation),
         upstreamStatus: status,
         latencyMs: Date.now() - startedAt
       });
@@ -1412,7 +1657,10 @@ async function executeTokenModeStreaming(input: {
         requestId,
         attemptNo,
         credential_id: credential.id,
+        openclaw_run_id: correlation.openclawRunId,
+        openclaw_session_id: correlation.openclawSessionId ?? null,
         upstream_status: status,
+        upstream_content_type: contentType,
         stream_mode: 'passthrough',
         synthetic_stream_bridge: false,
         metering_source: meteringSource,
@@ -1429,6 +1677,21 @@ async function executeTokenModeStreaming(input: {
   }
 
   if (sawAuthFailure) {
+    if (lastAuthFailure) {
+      logAuthFailureAudit({
+        orgId,
+        provider,
+        model,
+        requestId,
+        openclawRunId: correlation.openclawRunId,
+        openclawSessionId: correlation.openclawSessionId,
+        attemptNo: lastAuthFailure.attemptNo,
+        credentialId: lastAuthFailure.credentialId,
+        upstreamStatus: lastAuthFailure.status,
+        errorType: lastAuthFailure.errorType,
+        errorMessage: lastAuthFailure.errorMessage
+      });
+    }
     throw new AppError('unauthorized', 401, 'All token credentials unauthorized or expired', {
       provider,
       model,
@@ -1453,6 +1716,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
 
     const parsed = proxyRequestSchema.parse(req.body);
     const requestId = buildRequestId(req.header('x-request-id') ?? undefined);
+    const correlation = resolveOpenClawCorrelation(req, requestId);
     const rawIdempotencyKey = req.header('idempotency-key') ?? undefined;
     const shouldPersistIdempotency = !compatMode || Boolean(rawIdempotencyKey);
     const idempotencyKey = shouldPersistIdempotency
@@ -1525,6 +1789,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
           requestId,
           orgId,
           apiKeyId: auth.apiKeyId,
+          correlation,
           provider: parsed.provider,
           model: parsed.model,
           payload: parsed.payload ?? {},
@@ -1543,6 +1808,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
           requestId,
           orgId,
           apiKeyId: auth.apiKeyId,
+          correlation,
           provider: parsed.provider,
           model: parsed.model,
           payload: parsed.payload ?? {},

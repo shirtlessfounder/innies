@@ -279,6 +279,7 @@ describe('anthropic compat route', () => {
 
   it('passes through SSE stream chunks on compat route', async () => {
     const meteringSpy = vi.spyOn(runtimeModule.runtime.services.metering, 'recordUsage');
+    const routingSpy = vi.spyOn(runtimeModule.runtime.repos.routingEvents, 'insert');
     const streamLatencySpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const encoder = new TextEncoder();
     const sseBody = new ReadableStream<Uint8Array>({
@@ -298,7 +299,12 @@ describe('anthropic compat route', () => {
     const req = createMockReq({
       method: 'POST',
       path: '/v1/messages',
-      headers: { authorization: 'Bearer in_test_token', 'content-type': 'application/json' },
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'x-openclaw-run-id': 'oc_run_123',
+        'x-openclaw-session-id': 'oc_sess_456'
+      },
       body: { model: 'claude-opus-4-6', stream: true, max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
     });
     const res = createMockRes();
@@ -323,8 +329,77 @@ describe('anthropic compat route', () => {
     const lastLatency = latencyCalls[latencyCalls.length - 1]?.[1] as any;
     expect(lastLatency?.stream_mode).toBe('passthrough');
     expect(lastLatency?.bridge_build_ms).toBeNull();
+    expect(lastLatency?.openclaw_run_id).toBe('oc_run_123');
+    expect(lastLatency?.openclaw_session_id).toBe('oc_sess_456');
+    const routingArgs = routingSpy.mock.calls[0]?.[0] as any;
+    expect(routingArgs?.routeDecision?.openclaw_run_id).toBe('oc_run_123');
+    expect(routingArgs?.routeDecision?.openclaw_session_id).toBe('oc_sess_456');
     upstreamSpy.mockRestore();
     streamLatencySpy.mockRestore();
+  });
+
+  it('derives run correlation id when compat request omits OpenClaw IDs', async () => {
+    const routingSpy = vi.spyOn(runtimeModule.runtime.repos.routingEvents, 'insert');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_derived_run', usage: { input_tokens: 4, output_tokens: 3 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: { authorization: 'Bearer in_test_token', 'content-type': 'application/json' },
+      body: { model: 'claude-opus-4-6', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    const routingArgs = routingSpy.mock.calls[0]?.[0] as any;
+    expect(String(routingArgs?.routeDecision?.openclaw_run_id ?? '')).toMatch(/^run_req_/);
+    expect(routingArgs?.routeDecision?.openclaw_session_id).toBeNull();
+    upstreamSpy.mockRestore();
+  });
+
+  it('uses metadata-based OpenClaw correlation ids when headers are absent', async () => {
+    const routingSpy = vi.spyOn(runtimeModule.runtime.repos.routingEvents, 'insert');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_meta_corr', usage: { input_tokens: 5, output_tokens: 2 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: { authorization: 'Bearer in_test_token', 'content-type': 'application/json' },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 8,
+        messages: [{ role: 'user', content: 'hi' }],
+        metadata: {
+          openclaw_run_id: 'meta_run_1',
+          openclaw_session_id: 'meta_sess_1'
+        }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    const routingArgs = routingSpy.mock.calls[0]?.[0] as any;
+    expect(routingArgs?.routeDecision?.openclaw_run_id).toBe('meta_run_1');
+    expect(routingArgs?.routeDecision?.openclaw_session_id).toBe('meta_sess_1');
+    upstreamSpy.mockRestore();
   });
 
   it('records metering_source=stream_usage when SSE usage frames are present', async () => {
@@ -1057,6 +1132,7 @@ describe('anthropic compat route', () => {
   });
 
   it('retries once on oauth-incompatible 401 with oauth-safe payload on /v1/messages', async () => {
+    const retryAuditSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const upstreamSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response(JSON.stringify({
         type: 'error',
@@ -1120,7 +1196,15 @@ describe('anthropic compat route', () => {
     expect(secondBody.tools).toBeUndefined();
     expect(secondBody.tool_choice).toBeUndefined();
     expect(secondBody.thinking).toBeUndefined();
+    const retryCalls = retryAuditSpy.mock.calls.filter((c) => c[0] === '[retry-audit] attempt');
+    expect(retryCalls.length).toBeGreaterThan(0);
+    const retryAudit = retryCalls[0]?.[1] as any;
+    expect(retryAudit?.retry_reason).toBe('oauth_401_compat_retry');
+    expect(retryAudit?.org_id).toBe('818d0cc7-7ed2-469f-b690-a977e72a921d');
+    expect(retryAudit?.model).toBe('claude-opus-4-6');
+    expect(String(retryAudit?.openclaw_run_id ?? '')).toMatch(/^run_req_/);
 
+    retryAuditSpy.mockRestore();
     upstreamSpy.mockRestore();
   });
 });

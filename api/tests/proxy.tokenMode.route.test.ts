@@ -220,6 +220,7 @@ describe('proxy token-mode route behavior', () => {
       monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
     const markExpiredSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'markExpired').mockResolvedValue(true as any);
+    const authFailureSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'bad token' } }), {
@@ -259,7 +260,16 @@ describe('proxy token-mode route behavior', () => {
     expect(headers['anthropic-beta']).toContain('oauth-2025-04-20');
     expect(headers['anthropic-beta']).toContain('claude-code-20250219');
     expect(markExpiredSpy).not.toHaveBeenCalled();
+    const authFailureCalls = authFailureSpy.mock.calls.filter((c) => c[0] === '[auth-failure-audit] attempt');
+    expect(authFailureCalls.length).toBeGreaterThan(0);
+    const authAudit = authFailureCalls[0]?.[1] as any;
+    expect(authAudit?.upstream_status).toBe(401);
+    expect(authAudit?.org_id).toBe('818d0cc7-7ed2-469f-b690-a977e72a921d');
+    expect(authAudit?.provider).toBe('anthropic');
+    expect(authAudit?.model).toBe('claude-3-5-sonnet-latest');
+    expect(String(authAudit?.openclaw_run_id ?? '')).toMatch(/^run_req_/);
 
+    authFailureSpy.mockRestore();
     upstreamSpy.mockRestore();
   });
 
@@ -302,6 +312,7 @@ describe('proxy token-mode route behavior', () => {
       } as any
     ]);
     const markExpiredSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'markExpired').mockResolvedValue(true as any);
+    const authFailureSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     const upstreamSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response(JSON.stringify({
@@ -345,7 +356,10 @@ describe('proxy token-mode route behavior', () => {
     expect((res.body as any).id).toBe('msg_ok');
     expect(upstreamSpy).toHaveBeenCalledTimes(2);
     expect(markExpiredSpy).not.toHaveBeenCalled();
+    const authFailureCalls = authFailureSpy.mock.calls.filter((c) => c[0] === '[auth-failure-audit] attempt');
+    expect(authFailureCalls).toHaveLength(0);
 
+    authFailureSpy.mockRestore();
     upstreamSpy.mockRestore();
   });
 
@@ -716,6 +730,7 @@ describe('proxy token-mode route behavior', () => {
       } as any
     ]);
     const markExpiredSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'markExpired').mockResolvedValue(true as any);
+    const authFailureSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     const upstreamSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response(JSON.stringify({
@@ -764,7 +779,10 @@ describe('proxy token-mode route behavior', () => {
     expect((res.body as any).id).toBe('msg_stream_ok');
     expect(upstreamSpy).toHaveBeenCalledTimes(2);
     expect(markExpiredSpy).not.toHaveBeenCalled();
+    const authFailureCalls = authFailureSpy.mock.calls.filter((c) => c[0] === '[auth-failure-audit] attempt');
+    expect(authFailureCalls).toHaveLength(0);
 
+    authFailureSpy.mockRestore();
     upstreamSpy.mockRestore();
   });
 
