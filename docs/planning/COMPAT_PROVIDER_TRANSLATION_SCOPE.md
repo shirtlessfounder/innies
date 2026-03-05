@@ -111,14 +111,30 @@ Translates an Anthropic Messages request into an OpenAI Responses request.
 
 #### Message content translation
 
-Anthropic content blocks → OpenAI input items:
+Anthropic messages → OpenAI input items. The key difference: Anthropic uses a flat `messages[]` array with `role` per message. OpenAI Responses uses an `input` array of typed items where conversation history is represented differently.
 
-| Anthropic block | OpenAI input item |
-|----------------|------------------|
-| `{type: "text", text}` | `{type: "message", role, content: [{type: "output_text", text}]}` |
-| `{type: "image", source: {type: "base64", media_type, data}}` | `{type: "message", role, content: [{type: "input_image", image_url: "data:{media_type};base64,{data}"}]}` |
-| `{type: "tool_use", id, name, input}` | `{type: "function_call", id, name, arguments: JSON.stringify(input)}` |
-| `{type: "tool_result", tool_use_id, content}` | `{type: "function_call_output", call_id: tool_use_id, output: stringify(content)}` |
+**User messages:**
+
+| Anthropic | OpenAI Responses |
+|-----------|-----------------|
+| `{role: "user", content: "text"}` | `{type: "message", role: "user", content: "text"}` |
+| `{role: "user", content: [{type: "text", text}]}` | `{type: "message", role: "user", content: "text"}` |
+| `{role: "user", content: [{type: "image", source: {type: "base64", media_type, data}}]}` | `{type: "message", role: "user", content: [{type: "input_image", image_url: "data:{media_type};base64,{data}"}]}` |
+
+**Assistant messages (conversation history):**
+
+| Anthropic | OpenAI Responses |
+|-----------|-----------------|
+| `{role: "assistant", content: [{type: "text", text}]}` | `{type: "message", role: "assistant", content: "text"}` |
+| `{role: "assistant", content: [{type: "tool_use", id, name, input}]}` | `{type: "function_call", id, name, arguments: JSON.stringify(input)}` |
+
+**Tool results:**
+
+| Anthropic | OpenAI Responses |
+|-----------|-----------------|
+| `{role: "user", content: [{type: "tool_result", tool_use_id, content}]}` | `{type: "function_call_output", call_id: tool_use_id, output: stringify(content)}` |
+
+**Important:** Anthropic packs tool_result inside a user message. OpenAI has it as a top-level input item. The translator must unwrap these.
 
 #### Tool schema translation
 
@@ -173,9 +189,11 @@ Output item translation:
 
 | OpenAI output item | Anthropic content block |
 |-------------------|----------------------|
-| `{type: "message", content: [{type: "output_text", text}]}` | `{type: "text", text}` |
+| `{type: "output_text", text}` (inside message output) | `{type: "text", text}` |
 | `{type: "function_call", id, name, arguments}` | `{type: "tool_use", id, name, input: JSON.parse(arguments)}` |
-| `{type: "reasoning", content}` | `{type: "thinking", thinking: content}` |
+| `{type: "reasoning", content: [{type: "text", text}]}` | `{type: "thinking", thinking: text}` |
+
+**Note:** OpenAI nests text inside `output[].content[]` as `output_text` items. Anthropic has flat `content[]` blocks. The translator needs to flatten the nesting.
 
 #### Streaming
 
@@ -218,7 +236,7 @@ OpenAI error responses need to map to Anthropic-shaped errors for OpenClaw:
 | `429` | `429` (rate_limit_error) — also triggers fallback |
 | `500+` | `500` (api_error) — also triggers fallback |
 
-### 5. Integration into proxy flow (small)
+### 5. Integration into proxy flow (medium)
 
 **File:** `api/src/routes/proxy.ts`
 
@@ -226,13 +244,15 @@ In the token-mode execution path, after provider selection resolves to `openai`:
 1. If `compatMode` is true and provider is `openai`:
    - Transform request payload via `anthropicToOpenai()`
    - Change `proxiedPath` to `/v1/responses`
-   - Execute against Codex upstream
-   - Transform response back via `openaiToAnthropic()`
-   - Return Anthropic-shaped response to caller
+   - For non-streaming: execute, then transform response via `openaiToAnthropic()`, return Anthropic-shaped JSON
+   - For streaming: execute, pipe through `OpenAiToAnthropicStreamTransformer`, return Anthropic-shaped SSE
+   - Return to caller — OpenClaw sees standard Anthropic response
 2. If `compatMode` is true and provider is `anthropic`:
    - Current behavior, no changes
 
-This should slot into the existing `executeTokenModeStreaming` / `executeTokenModeNonStreaming` calls, wrapping the payload before and response after.
+**Integration point:** This hooks into `executeTokenModeStreaming` / `executeTokenModeNonStreaming`. The tricky part is that `strictUpstreamPassthrough` is currently set to `true` for compat mode (meaning the response is passed through as-is). For translated requests, this must be `false` — the response needs transformation, not passthrough.
+
+**Existing precedent:** `normalizeTokenModeUpstreamPayload()` already modifies payloads per-provider before sending upstream. The request translation follows this same pattern. The response translation is new — there's no existing precedent for transforming responses in the return path.
 
 ## What does NOT need to change
 
@@ -254,7 +274,9 @@ This should slot into the existing `executeTokenModeStreaming` / `executeTokenMo
 | Proxy integration | S | Low — wrapper around existing flow |
 | Tests | L | Medium — need parity tests for all content types |
 
-**Total:** ~2-3 weeks of focused work
+**Total:** ~2-3 weeks of focused work (with agent parallelism, potentially faster)
+
+**Critical path:** Streaming response translation (Section 3 streaming). Everything else can proceed in parallel, but this is the hardest piece and the one most likely to surface edge cases.
 
 ## Edge cases to handle
 
