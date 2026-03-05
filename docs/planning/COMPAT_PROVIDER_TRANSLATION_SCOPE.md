@@ -1,13 +1,25 @@
 # Compat Provider Translation Scope
 
+## Product Contract
+
+**Innies presents an Anthropic-compatible interface to all clients, regardless of upstream provider.**
+
+The buyer experience:
+1. Buyer gets one API key
+2. Admin sets their provider preference (anthropic or openai/codex)
+3. Buyer configures their client (e.g. OpenClaw) once with `api: "anthropic-messages"` pointing at Innies
+4. Innies routes to the preferred provider, translating request/response formats as needed
+5. If the preferred provider's token pool is exhausted, Innies falls back to the other provider automatically and invisibly
+6. Buyer never changes their client config. Buyer never thinks about provider switching.
+
+**Codex execution under compat mode is not native Codex client behavior — it is translated execution.** This is an intentional product boundary. Innies is the compatibility and routing layer. The client is a stable Anthropic-shaped sender.
+
 ## Problem
 
-OpenClaw sends Anthropic-shaped requests to Innies via `POST /v1/messages` (compat mode).
+OpenClaw (and any Anthropic-compatible client) sends requests to Innies via `POST /v1/messages` (compat mode).
 Today, compat mode hardcodes `provider: 'anthropic'` and sets `compat_provider_pinned`, so buyer provider preference is ignored.
 
-The goal: when a buyer's preference is set to `openai`/`codex`, compat-mode requests should be translated to OpenAI Responses format, routed to Codex, and the response translated back to Anthropic format before returning to OpenClaw.
-
-This makes OpenClaw provider-agnostic through Innies, without any OpenClaw changes.
+The goal: honor buyer preference by translating between Anthropic Messages and OpenAI Responses formats at the Innies layer, with automatic fallback when a provider's pool is exhausted.
 
 ## OpenClaw Audit Findings (Critical Context)
 
@@ -56,23 +68,32 @@ The target UX is: buyer gets one API key, admin sets their preference, and it ju
 ### Recommendation:
 **Build the translation layer in Innies.** The buyer configures OpenClaw once with `api: "anthropic-messages"` pointing at Innies. Innies handles provider selection, translation, and fallback server-side. The buyer never thinks about it again.
 
-### Accepted tradeoff — transcript shaping gap:
+### Intentional contract — transcript shaping boundary:
 OpenClaw shapes conversation history differently per provider before sending (tool ID sanitization, reasoning block handling, function-call downgrades — see OpenClaw `transcript-policy.ts:34`, `attempt.ts:1215`, `attempt.ts:1240`). With server-side translation, Codex receives an Anthropic-shaped transcript that OpenClaw would NOT have sent natively to Codex.
 
-This is an accepted tradeoff. The models are capable enough to handle Anthropic-formatted message history. The result is "Codex execution with Anthropic-shaped prompts" — functional but not identical to native Codex behavior. For the target UX (transparent provider switching + automatic fallback), this is the right compromise.
+**This is not a gap — it is the product boundary.** Innies does not promise native Codex client behavior. It promises Codex execution behind an Anthropic-compatible facade. The parity bar is:
+- OpenClaw must continue to function correctly through Anthropic-shaped request/response semantics
+- Buyer preference must determine upstream provider
+- Fallback must be automatic and invisible to the buyer
 
-### OpenClaw-specific risks for the translation layer:
+The parity bar is NOT: "behave identically to OpenClaw natively configured with `openai-codex` provider." That is a different product (client-side switching) which is explicitly rejected for UX reasons.
+
+### Risks scoped to the parity bar:
+
+The parity bar (restated): OpenClaw functions correctly through Anthropic-shaped semantics, regardless of which upstream provider Innies selects. These risks are scoped to that bar — not to native Codex behavior parity.
 
 **Verified risks (repo-backed):**
-1. **Streaming fidelity:** OpenClaw's Anthropic SSE parser uses the official `@anthropic-ai/sdk` (bundled). Translated SSE events must be valid for this SDK to parse without errors.
+1. **Streaming fidelity:** OpenClaw's Anthropic SSE parser uses the official `@anthropic-ai/sdk` (bundled). Translated SSE events must be valid for this SDK to parse without errors. This is the hardest technical constraint.
 2. **Content block ordering:** OpenClaw relies on Anthropic's block ordering (thinking → text → tool_use). Translated responses must preserve this ordering.
-3. **Beta headers:** OpenClaw sends `anthropic-beta: fine-grained-tool-streaming-2025-05-14, interleaved-thinking-2025-05-14`. The compat endpoint already handles these, but translated responses must match what these betas enable.
+3. **Beta headers:** OpenClaw sends `anthropic-beta: fine-grained-tool-streaming-2025-05-14, interleaved-thinking-2025-05-14`. The compat endpoint already handles these, but translated responses must be consistent with what these betas enable.
 
 **Validation needed (may be risks, evidence inconclusive):**
-4. **Tool call IDs:** OpenClaw has tool ID sanitization logic (`tool-call-id.ts:15`, `tool-call-id.ts:216`), but this is primarily a Copilot-Claude workaround, not general Anthropic behavior. Need to verify if translated OpenAI tool IDs (`call_xxx`) cause issues in the Anthropic SDK path.
-5. **Thinking blocks:** OpenClaw has thinking block filtering (`transcript-policy.ts:99`) and tag scanning (`pi-embedded-subscribe.ts:24`), but these are generic output filters, not Anthropic-specific constraints. Need to verify translated reasoning content format requirements.
-6. **Cache control:** OpenClaw's `cache_control` usage appears limited to an OpenRouter-Anthropic wrapper (`extra-params.ts:468`), not broad Anthropic behavior. Innies should still strip `cache_control` blocks during translation (no OpenAI equivalent), but this is lower risk than initially stated.
-7. **Transcript shaping delta:** The biggest semantic risk. OpenClaw applies different transcript policies per provider (`transcript-policy.ts:34`, `transcript-policy.ts:78`). Compat-mode requests arrive with Anthropic transcript shaping applied. Codex models must handle this gracefully. See "Accepted tradeoff" above.
+4. **Tool call IDs:** OpenClaw has tool ID sanitization logic (`tool-call-id.ts:15`, `tool-call-id.ts:216`), primarily a Copilot-Claude workaround. Need to verify if translated OpenAI tool IDs (`call_xxx`) cause issues in the Anthropic SDK path.
+5. **Thinking blocks:** OpenClaw has thinking block filtering (`transcript-policy.ts:99`) and tag scanning (`pi-embedded-subscribe.ts:24`), generic output filters. Need to verify translated reasoning content format requirements.
+6. **Cache control:** OpenClaw's `cache_control` usage appears limited to an OpenRouter-Anthropic wrapper (`extra-params.ts:468`). Innies should strip `cache_control` blocks during translation (no OpenAI equivalent), but this is lower risk than initially scoped.
+
+**Not a risk (intentional boundary):**
+7. **Transcript shaping delta:** Codex receives Anthropic-shaped transcripts. This is the product contract, not a gap. See "Intentional contract" above.
 
 ## Architecture
 
@@ -311,22 +332,42 @@ In the token-mode execution path, after provider selection resolves to `openai`:
 4. OpenClaw canary: point a test OpenClaw instance at innies with codex preference, run tool-use loops
 5. Streaming fidelity: verify OpenClaw receives valid Anthropic SSE stream from translated Codex responses
 
-## Phasing suggestion
+## Phasing
 
-**Phase A (unblock basic text):**
-- Remove compat pin
-- Request/response translation for text-only messages (no tools, no thinking)
-- Non-streaming first, then streaming
+### Phase A — Minimum viable translation (unblocks OpenClaw on Codex)
 
-**Phase B (tool parity):**
-- Tool schema translation
-- tool_use/tool_result round-trip
-- Streaming tool call events
+**In scope:**
+- Remove compat provider pin
+- Request translation: text messages + tool schemas + tool_use/tool_result
+- Response translation (non-streaming): text + tool_use blocks
+- Response translation (streaming): text deltas + tool call deltas → Anthropic SSE
+- Error mapping
+- Automatic fallback when preferred provider pool is exhausted
 
-**Phase C (full parity):**
-- Thinking/reasoning translation
-- Image content
-- Edge cases + hardening
+**Explicitly out of scope for Phase A:**
+- Prompt caching parity (`cache_control` blocks — strip silently)
+- Perfect reasoning/thinking translation (map `budget_tokens` → `effort: "high"` as fixed default)
+- Exact native Codex transport behavior (WebSocket, warmup — not relevant for server-side translation)
+- Model-specific optimization (single default Codex model for all requests)
+- Image content translation
+
+**Exit criteria:**
+- OpenClaw completes a multi-turn tool-use conversation through Innies with buyer pref=codex
+- Automatic fallback to anthropic works when codex pool is exhausted
+- No OpenClaw-side errors from translated Anthropic SSE stream
+
+### Phase B — Full content type coverage
+
+- Image content (base64 format translation)
+- Thinking/reasoning translation (budget → effort mapping with granularity)
+- Streaming edge cases + hardening
 - Full canary validation with OpenClaw
+
+### Phase C — Operational maturity
+
+- Model mapping refinement (per-model mapping instead of single default)
+- Monitoring/alerting for translation failures
+- Performance optimization (translation overhead budget)
+- Documentation for internal operators
 
 This lets you validate the architecture with Phase A before committing to the full translation surface.
