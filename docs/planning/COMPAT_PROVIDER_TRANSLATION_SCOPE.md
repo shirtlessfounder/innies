@@ -62,8 +62,19 @@ A buyer could configure two provider entries in their OpenClaw `models.json` usi
 
 This path gives higher fidelity (OpenClaw shapes transcripts correctly per provider) but breaks the target UX:
 
-**Why this path is rejected:**
-The target UX is: buyer gets one API key, admin sets their preference, and it just works. The buyer's OpenClaw config is set once and never touched again. If we require client-side provider switching, every buyer has to reconfigure their OpenClaw to change providers, and there's no automatic fallback when one provider's token pool is exhausted.
+**Why this path is rejected (UX and control-plane reasons, not technical necessity):**
+
+OpenClaw CAN do native provider failover — it supports model fallback chains and auth profile rotation. The client-side path is technically viable.
+
+It is rejected because it leaks provider control to the client:
+- Buyer must configure both providers in their OpenClaw `models.json` and set up fallback chains correctly
+- Fallback order is baked into client config, not controlled by Innies admin
+- Admin cannot change a buyer's provider routing without touching the buyer's client config
+- Token pool exhaustion in Innies is invisible to OpenClaw — OpenClaw sees errors and triggers its own fallback, which may not align with Innies' pool state or admin intent
+
+The translation layer makes Innies server-authoritative for cross-provider routing. The admin sets preference, Innies handles pool-aware fallback, and the buyer's client config is a static one-time setup.
+
+**Direct `openai-responses` integration via OpenClaw is an intentional non-goal for this scope.** This scope is specifically about preserving the `POST /v1/messages` compat integration as the single client-facing contract while enabling server-side provider switching behind it.
 
 ### Recommendation:
 **Build the translation layer in Innies.** The buyer configures OpenClaw once with `api: "anthropic-messages"` pointing at Innies. Innies handles provider selection, translation, and fallback server-side. The buyer never thinks about it again.
@@ -83,14 +94,14 @@ The parity bar is NOT: "behave identically to OpenClaw natively configured with 
 The parity bar (restated): OpenClaw functions correctly through Anthropic-shaped semantics, regardless of which upstream provider Innies selects. These risks are scoped to that bar — not to native Codex behavior parity.
 
 **Verified risks (repo-backed):**
-1. **Streaming fidelity:** OpenClaw's Anthropic SSE parser uses the official `@anthropic-ai/sdk` (bundled). Translated SSE events must be valid for this SDK to parse without errors. This is the hardest technical constraint.
+1. **Streaming fidelity:** OpenClaw's Anthropic streaming uses pi-ai as the transport layer, which constructs `${baseUrl}/v1/messages` requests and parses the returned SSE stream (see `model-compat.ts:27-44`). Translated SSE events must be valid for OpenClaw/pi-ai's Anthropic stream parser. This is the hardest technical constraint.
 2. **Content block ordering:** OpenClaw relies on Anthropic's block ordering (thinking → text → tool_use). Translated responses must preserve this ordering.
 3. **Beta headers:** OpenClaw sends `anthropic-beta: fine-grained-tool-streaming-2025-05-14, interleaved-thinking-2025-05-14`. The compat endpoint already handles these, but translated responses must be consistent with what these betas enable.
 
 **Validation needed (may be risks, evidence inconclusive):**
-4. **Tool call IDs:** OpenClaw has tool ID sanitization logic (`tool-call-id.ts:15`, `tool-call-id.ts:216`), primarily a Copilot-Claude workaround. Need to verify if translated OpenAI tool IDs (`call_xxx`) cause issues in the Anthropic SDK path.
+4. **Tool call IDs:** OpenClaw's strict tool-ID sanitization (`sanitizeToolCallIdsForCloudCodeAssist`) applies to `openai-completions` path, not `openai-responses` or `openai-codex-responses` (see `transcript-policy.ts:88-133`). The more relevant risk for this scope is whether translated-back Anthropic responses with OpenAI-originated tool IDs (`call_xxx` format) pass OpenClaw's Anthropic turn validation/pairing. Need to verify.
 5. **Thinking blocks:** OpenClaw has thinking block filtering (`transcript-policy.ts:99`) and tag scanning (`pi-embedded-subscribe.ts:24`), generic output filters. Need to verify translated reasoning content format requirements.
-6. **Cache control:** OpenClaw's `cache_control` usage appears limited to an OpenRouter-Anthropic wrapper (`extra-params.ts:468`). Innies should strip `cache_control` blocks during translation (no OpenAI equivalent), but this is lower risk than initially scoped.
+6. **Cache control:** OpenClaw's `cache_control` block injection is scoped to the OpenRouter-Anthropic path (`extra-params.ts:468-509`), not general Anthropic behavior. Direct Anthropic uses `cacheRetention` semantics, not prompt-block rewriting (see `prompt-caching.md:89-105`). Innies should still strip any `cache_control` blocks during translation (no OpenAI equivalent), but this is an edge case, not a primary concern.
 
 **Not a risk (intentional boundary):**
 7. **Transcript shaping delta:** Codex receives Anthropic-shaped transcripts. This is the product contract, not a gap. See "Intentional contract" above.
