@@ -9,6 +9,58 @@ The goal: when a buyer's preference is set to `openai`/`codex`, compat-mode requ
 
 This makes OpenClaw provider-agnostic through Innies, without any OpenClaw changes.
 
+## OpenClaw Audit Findings (Critical Context)
+
+**OpenClaw natively supports both Anthropic and OpenAI/Codex providers.** This means there is an alternative path that avoids the translation layer entirely.
+
+### What OpenClaw supports today:
+- **API types:** `anthropic-messages`, `openai-responses`, `openai-codex-responses`, `openai-completions`
+- **Providers:** `anthropic`, `openai`, `openai-codex`, `openrouter`, `google-gemini-cli`, `opencode`, and more
+- **Custom providers:** `models.json` supports `baseUrl`, `apiKey`, `api` fields per provider
+- **Provider-specific wrappers:** `createCodexDefaultTransportWrapper()`, `createOpenAIDefaultTransportWrapper()` applied automatically based on provider type
+- **Streaming:** WebSocket transport for OpenAI (with warmup), SSE for Anthropic
+- **Internal event model:** OpenClaw uses an internal event model (`message_start`, `message_update`, `message_end`, `tool_execution_start/update/end`) that abstracts over both Anthropic SSE and OpenAI Responses streaming — the translation already exists inside OpenClaw
+
+### What this means for Innies:
+OpenClaw already knows how to speak both Anthropic and OpenAI formats natively. It translates between its internal event model and each provider's wire format.
+
+**Alternative path (no translation layer needed):**
+Instead of building Anthropic↔OpenAI translation in Innies, a buyer could configure two provider entries in their OpenClaw `models.json`:
+
+```json
+{
+  "providers": {
+    "innies-claude": {
+      "baseUrl": "https://api.innies.computer",
+      "apiKey": "in_live_...",
+      "api": "anthropic-messages",
+      "models": [{ "id": "claude-opus-4-6", "api": "anthropic-messages" }]
+    },
+    "innies-codex": {
+      "baseUrl": "https://api.innies.computer",
+      "apiKey": "in_live_...",
+      "api": "openai-responses",
+      "models": [{ "id": "gpt-5.4", "api": "openai-responses" }]
+    }
+  }
+}
+```
+
+OpenClaw would send the correct format for each provider, and Innies would receive OpenAI-shaped requests on `/v1/proxy/*` (not `/v1/messages`).
+
+**However, this approach has a UX problem:** the buyer must manually switch models (`/model innies-codex/gpt-5.4`) to change providers. Buyer preference in Innies becomes meaningless because the format decision is made client-side.
+
+### Recommendation:
+**Build the translation layer in Innies.** The alternative path works technically but defeats the purpose of buyer preference (transparent provider switching). The translation layer lets the buyer set preference once, and all their traffic — regardless of which client or format — honors it.
+
+### OpenClaw-specific risks for the translation layer:
+1. **Streaming fidelity:** OpenClaw's Anthropic SSE parser uses the official `@anthropic-ai/sdk` (bundled). The translated SSE events must be valid enough for the SDK to parse without errors.
+2. **Tool call IDs:** OpenClaw sanitizes tool call IDs for certain providers (`sanitizeToolCallIdsForCloudCodeAssist`). Translated tool IDs from OpenAI (`call_xxx`) must survive this sanitization.
+3. **Thinking blocks:** OpenClaw has explicit thinking block handling (`dropThinkingBlocks`, `THINKING_TAG_SCAN_RE`). Translated reasoning content must match Anthropic's thinking block format exactly.
+4. **Beta headers:** OpenClaw sends `anthropic-beta: fine-grained-tool-streaming-2025-05-14, interleaved-thinking-2025-05-14`. The compat endpoint already handles these, but translated responses must match what these betas enable.
+5. **Cache control:** OpenClaw uses Anthropic prompt caching (`cache_control` blocks in system prompts). These have no OpenAI equivalent and should be silently stripped during translation.
+6. **Content block ordering:** OpenClaw relies on Anthropic's block ordering (thinking → text → tool_use). Translated responses must preserve this ordering.
+
 ## Architecture
 
 ```
