@@ -9,6 +9,12 @@ import type { IdempotencySession } from '../services/idempotencyService.js';
 import { AppError } from '../utils/errors.js';
 import { sha256Hex, stableJson } from '../utils/hash.js';
 import { readAndValidateIdempotencyKey } from '../utils/idempotencyKey.js';
+import {
+  isOpenAiOauthAccessToken,
+  resolveOpenAiOauthAccountId,
+  resolveOpenAiOauthClientId,
+  resolveOpenAiOauthExpiresAt
+} from '../utils/openaiOauth.js';
 
 const router = Router();
 
@@ -47,6 +53,21 @@ type RetryReason =
   | 'oauth_401_compat_retry'
   | 'credential_refresh_retry'
   | 'rate_limited_backoff';
+
+type ProviderSelectionReason =
+  | 'preferred_provider_selected'
+  | 'fallback_provider_selected'
+  | 'cli_provider_pinned'
+  | 'compat_provider_pinned';
+
+type ProviderPreferenceMeta = {
+  preferredProvider: string;
+  effectiveProvider: string;
+  fallbackFromProvider?: string;
+  fallbackReason?: string;
+  providerPlan: string[];
+  selectionReason: ProviderSelectionReason;
+};
 
 function requestSeed(requestId: string): number {
   let seed = 0;
@@ -104,11 +125,15 @@ function extractProxyPath(originalUrl: string): string {
 }
 
 function upstreamBaseUrl(provider: string): string {
-  if (provider === 'anthropic') {
+  const normalizedProvider = canonicalizeProvider(provider);
+  if (normalizedProvider === 'anthropic') {
     return process.env.ANTHROPIC_UPSTREAM_BASE_URL || 'https://api.anthropic.com';
   }
+  if (normalizedProvider === 'openai') {
+    return process.env.OPENAI_UPSTREAM_BASE_URL || 'https://api.openai.com';
+  }
 
-  throw new AppError('model_invalid', 400, `Unsupported provider: ${provider}`);
+  throw new AppError('model_invalid', 400, `Unsupported provider: ${normalizedProvider}`);
 }
 
 function inferErrorCode(error: AttemptFailure): string {
@@ -136,6 +161,132 @@ function isTokenModePolicyActive(): boolean {
     .split(',')
     .map((v) => v.trim())
     .filter(Boolean).length > 0;
+}
+
+function canonicalizeProvider(provider: string): string {
+  const normalized = provider.trim().toLowerCase();
+  if (normalized === 'codex') return 'openai';
+  return normalized;
+}
+
+function resolveDefaultBuyerProvider(): string {
+  const raw = String(process.env.BUYER_PROVIDER_PREFERENCE_DEFAULT || 'anthropic')
+    .trim()
+    .toLowerCase();
+  const normalized = canonicalizeProvider(raw);
+  return normalized === 'openai' ? 'openai' : 'anthropic';
+}
+
+function isClaudeCliPinnedRequest(req: any, proxiedPath: string): boolean {
+  if (!proxiedPath.startsWith('/v1/messages')) return false;
+  const appHeader = readHeader(req, 'x-app');
+  if (!appHeader || appHeader.trim().toLowerCase() !== 'cli') return false;
+  const userAgent = readHeader(req, 'user-agent');
+  return Boolean(userAgent && userAgent.trim().toLowerCase().startsWith('claude-cli/'));
+}
+
+function parseProviderPreferencePlan(input: {
+  preferredProvider?: string | null;
+  requestProvider: string;
+  pinSelectionReason?: ProviderSelectionReason | null;
+}): {
+  providerPlan: string[];
+  preferredProvider: string;
+  pinSelectionReason?: ProviderSelectionReason;
+} {
+  const requestProvider = canonicalizeProvider(input.requestProvider);
+  if (input.pinSelectionReason) {
+    return {
+      providerPlan: [requestProvider],
+      preferredProvider: requestProvider,
+      pinSelectionReason: input.pinSelectionReason
+    };
+  }
+
+  const storedPreference = input.preferredProvider
+    ? [canonicalizeProvider(input.preferredProvider)]
+    : [];
+  if (storedPreference.length === 0) {
+    const defaultProvider = resolveDefaultBuyerProvider();
+    const deduped = Array.from(new Set([defaultProvider, requestProvider]));
+    return {
+      providerPlan: deduped,
+      preferredProvider: deduped[0]
+    };
+  }
+
+  const deduped = Array.from(new Set([...storedPreference, requestProvider]));
+  return {
+    providerPlan: deduped,
+    preferredProvider: deduped[0]
+  };
+}
+
+function resolveProviderSelectionReason(input: {
+  provider: string;
+  preferredProvider: string;
+  fallbackFromProvider?: string;
+  pinSelectionReason?: ProviderSelectionReason;
+}): ProviderSelectionReason {
+  if (input.pinSelectionReason) return input.pinSelectionReason;
+  if (input.fallbackFromProvider || input.provider !== input.preferredProvider) {
+    return 'fallback_provider_selected';
+  }
+  return 'preferred_provider_selected';
+}
+
+function readProviderPinSignal(req: any): boolean {
+  const headerValue = readHeader(req, 'x-innies-provider-pin', 'innies-provider-pin');
+  if (headerValue) {
+    const normalized = headerValue.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  }
+
+  const bodyObject = req.body && typeof req.body === 'object'
+    ? (req.body as Record<string, unknown>)
+    : undefined;
+  const metadata = (bodyObject?.metadata && typeof bodyObject.metadata === 'object'
+    ? bodyObject.metadata
+    : undefined)
+    ?? (
+      bodyObject?.payload
+      && typeof bodyObject.payload === 'object'
+      && (bodyObject.payload as any).metadata
+      && typeof (bodyObject.payload as any).metadata === 'object'
+        ? (bodyObject.payload as any).metadata
+        : undefined
+    );
+  const metadataValue = (metadata as Record<string, unknown> | undefined)?.innies_provider_pin;
+  return metadataValue === true || metadataValue === 'true' || metadataValue === 1;
+}
+
+async function assertTokenProviderEligible(input: {
+  provider: string;
+  model: string;
+  streaming: boolean;
+}): Promise<void> {
+  const { provider, model, streaming } = input;
+  if (await runtime.repos.killSwitch.isDisabled('model', `${provider}:${model}`)) {
+    throw new AppError('suspended', 423, 'Model is disabled', { provider, model });
+  }
+
+  const compatible = await runtime.repos.modelCompatibility.findActive(provider, model);
+  if (!compatible) {
+    throw new AppError('model_invalid', 400, 'No active compatibility rule for provider/model', { provider, model });
+  }
+  if (streaming && !compatible.supports_streaming) {
+    throw new AppError('model_invalid', 400, 'Streaming not supported for provider/model', { provider, model });
+  }
+}
+
+function providerFallbackReasonForError(error: unknown): string | null {
+  if (!(error instanceof AppError)) return null;
+  if (error.code === 'unauthorized') return 'auth_failure';
+  if (error.code === 'capacity_unavailable') return 'capacity_unavailable';
+  if (error.code === 'upstream_error') return 'upstream_error';
+  if (error.code === 'model_invalid') return 'model_invalid';
+  if (error.code === 'suspended') return 'provider_unavailable';
+  return null;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -195,6 +346,14 @@ function isAnthropicOauthAccessToken(provider: string, accessToken: string): boo
   return provider === 'anthropic' && accessToken.includes('sk-ant-oat');
 }
 
+function isOpenAiProvider(provider: string): boolean {
+  return canonicalizeProvider(provider) === 'openai';
+}
+
+function isOpenAiOauthToken(credential: TokenCredential, provider: string): boolean {
+  return isOpenAiProvider(provider) && isOpenAiOauthAccessToken(credential.accessToken);
+}
+
 function isAnthropicOauthToken(credential: TokenCredential, provider: string): boolean {
   return isAnthropicOauthAccessToken(provider, credential.accessToken);
 }
@@ -217,15 +376,23 @@ function buildTokenModeUpstreamHeaders(input: {
     skipOauthDefaultBetas,
     streaming
   } = input;
-  const authHeaders = isAnthropicOauthAccessToken(provider, credential.accessToken)
+  const authHeaders = isAnthropicOauthAccessToken(provider, credential.accessToken) || isOpenAiProvider(provider)
     ? { authorization: `Bearer ${credential.accessToken}` }
     : mapAuthHeader(credential.authScheme, credential.accessToken);
   const headers: Record<string, string> = {
     'content-type': 'application/json',
     'x-request-id': requestId,
-    'anthropic-version': anthropicVersion,
     ...authHeaders
   };
+  if (isOpenAiOauthToken(credential, provider)) {
+    const accountId = resolveOpenAiOauthAccountId(credential.accessToken);
+    if (accountId) {
+      headers['chatgpt-account-id'] = accountId;
+    }
+  }
+  if (provider === 'anthropic') {
+    headers['anthropic-version'] = anthropicVersion;
+  }
   if (streaming) {
     headers.accept = 'text/event-stream';
   }
@@ -476,15 +643,29 @@ function logAuthFailureAudit(input: {
   });
 }
 
-function buildTokenRouteDecision(credential: TokenCredential, correlation: OpenClawCorrelation): Record<string, unknown> {
-  return {
-    reason: 'token_mode_round_robin',
+function buildTokenRouteDecision(
+  credential: TokenCredential,
+  correlation: OpenClawCorrelation,
+  providerPreference?: ProviderPreferenceMeta
+): Record<string, unknown> {
+  const selectionReason = providerPreference?.selectionReason ?? 'preferred_provider_selected';
+  const decision: Record<string, unknown> = {
+    reason: selectionReason,
+    provider_selection_reason: selectionReason,
     tokenCredentialId: credential.id,
     tokenCredentialLabel: credential.debugLabel ?? null,
     tokenAuthScheme: credential.authScheme,
     openclaw_run_id: correlation.openclawRunId,
     openclaw_session_id: correlation.openclawSessionId ?? null
   };
+  if (providerPreference) {
+    decision.provider_preferred = providerPreference.preferredProvider;
+    decision.provider_effective = providerPreference.effectiveProvider;
+    decision.provider_plan = providerPreference.providerPlan;
+    decision.provider_fallback_from = providerPreference.fallbackFromProvider ?? null;
+    decision.provider_fallback_reason = providerPreference.fallbackReason ?? null;
+  }
+  return decision;
 }
 
 async function recordTokenCredentialOutcome(input: {
@@ -535,7 +716,99 @@ function mapAuthHeader(authScheme: TokenCredential['authScheme'], accessToken: s
   return { 'x-api-key': accessToken };
 }
 
+function parseRelativeProxyUrl(proxiedPath: string): URL {
+  return new URL(proxiedPath, 'https://innies.invalid');
+}
+
+function resolveTokenModeTargetUrl(input: {
+  provider: string;
+  credential: TokenCredential;
+  proxiedPath: string;
+}): URL {
+  const { provider, credential, proxiedPath } = input;
+  if (isOpenAiOauthToken(credential, provider)) {
+    const parsed = parseRelativeProxyUrl(proxiedPath);
+    const nextPath = parsed.pathname === '/v1/responses'
+      ? '/backend-api/codex/responses'
+      : parsed.pathname;
+    return new URL(`${nextPath}${parsed.search}`, 'https://chatgpt.com');
+  }
+
+  return new URL(proxiedPath, upstreamBaseUrl(provider));
+}
+
+function normalizeTokenModeUpstreamPayload(input: {
+  provider: string;
+  credential: TokenCredential;
+  proxiedPath: string;
+  payload: unknown;
+  streaming?: boolean;
+}): unknown {
+  const { provider, credential, proxiedPath, payload, streaming } = input;
+  if (!isOpenAiOauthToken(credential, provider)) return payload;
+
+  const parsed = parseRelativeProxyUrl(proxiedPath);
+  if (parsed.pathname !== '/v1/responses') return payload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+
+  return {
+    ...(payload as Record<string, unknown>),
+    // Codex ChatGPT backend rejects persisted Responses requests.
+    store: false,
+    ...(streaming ? { stream: true } : {})
+  };
+}
+
+async function attemptOpenAiOauthRefresh(credential: TokenCredential): Promise<TokenCredential | null> {
+  if (!credential.refreshToken) return null;
+  if (!isOpenAiOauthAccessToken(credential.accessToken)) return null;
+
+  const clientId = resolveOpenAiOauthClientId(credential.accessToken);
+  if (!clientId) return null;
+
+  const refreshUrl = process.env.OPENAI_OAUTH_TOKEN_ENDPOINT || 'https://auth.openai.com/oauth/token';
+  const form = new URLSearchParams({
+    grant_type: 'refresh_token',
+    client_id: clientId,
+    refresh_token: credential.refreshToken
+  });
+
+  const response = await fetch(refreshUrl, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      accept: 'application/json'
+    },
+    body: form.toString()
+  }).catch(() => null);
+
+  if (!response?.ok) return null;
+
+  const payload = await response.json().catch(() => ({} as Record<string, unknown>));
+  const accessToken = typeof payload.access_token === 'string' ? payload.access_token : null;
+  if (!accessToken) return null;
+
+  const refreshToken = typeof payload.refresh_token === 'string' && payload.refresh_token.trim().length > 0
+    ? payload.refresh_token
+    : credential.refreshToken;
+  const expiresAt = typeof payload.expires_at === 'string'
+    ? new Date(payload.expires_at)
+    : (typeof payload.expires_in === 'number'
+      ? new Date(Date.now() + (payload.expires_in * 1000))
+      : (resolveOpenAiOauthExpiresAt(accessToken) ?? credential.expiresAt));
+
+  return runtime.repos.tokenCredentials.refreshInPlace({
+    id: credential.id,
+    accessToken,
+    refreshToken,
+    expiresAt
+  });
+}
+
 async function attemptCredentialRefresh(credential: TokenCredential): Promise<TokenCredential | null> {
+  const openAiOauthCredential = await attemptOpenAiOauthRefresh(credential);
+  if (openAiOauthCredential) return openAiOauthCredential;
+
   if (!credential.refreshToken) return null;
   const refreshUrl = process.env.TOKEN_REFRESH_ENDPOINT;
   if (!refreshUrl) return null;
@@ -777,6 +1050,7 @@ async function executeTokenModeNonStreaming(input: {
   anthropicBeta?: string;
   startedAt: number;
   strictUpstreamPassthrough?: boolean;
+  providerPreference?: ProviderPreferenceMeta;
 }): Promise<ProxyRouteResult> {
   const {
     requestId,
@@ -790,7 +1064,8 @@ async function executeTokenModeNonStreaming(input: {
     anthropicVersion,
     anthropicBeta,
     startedAt,
-    strictUpstreamPassthrough
+    strictUpstreamPassthrough,
+    providerPreference
   } = input;
   const credentials = orderCredentialsForRequest(
     await runtime.repos.tokenCredentials.listActiveForRouting(orgId, provider),
@@ -811,11 +1086,21 @@ async function executeTokenModeNonStreaming(input: {
     let compat = createCompatNormalizationState(payload, anthropicBeta);
 
     while (true) {
-      const baseUrl = upstreamBaseUrl(provider);
-      const targetUrl = new URL(proxiedPath, baseUrl);
+      const targetUrl = resolveTokenModeTargetUrl({
+        provider,
+        credential,
+        proxiedPath
+      });
       const timeoutMs = upstreamTimeoutMs();
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const upstreamPayload = normalizeTokenModeUpstreamPayload({
+        provider,
+        credential,
+        proxiedPath,
+        payload: compat.payload ?? {},
+        streaming: false
+      });
 
       const logAttemptFailure = async (failure: AttemptFailure) => {
         await runtime.repos.routingEvents.insert({
@@ -827,7 +1112,7 @@ async function executeTokenModeNonStreaming(input: {
           provider,
           model,
           streaming: false,
-          routeDecision: buildTokenRouteDecision(credential, correlation),
+          routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference),
           upstreamStatus: failure.statusCode,
           errorCode: inferErrorCode(failure),
           latencyMs: Date.now() - startedAt
@@ -844,7 +1129,7 @@ async function executeTokenModeNonStreaming(input: {
           credential,
           skipOauthDefaultBetas: compat.blockedRetryApplied
         }),
-        body: JSON.stringify(compat.payload ?? {}),
+        body: JSON.stringify(upstreamPayload),
         signal: controller.signal
       })
         .catch(async (error: unknown) => {
@@ -915,7 +1200,7 @@ async function executeTokenModeNonStreaming(input: {
             provider,
             model,
             streaming: false,
-            routeDecision: buildTokenRouteDecision(credential, correlation),
+            routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference),
             upstreamStatus: status,
             errorCode: 'upstream_403_blocked_passthrough',
             latencyMs: Date.now() - startedAt
@@ -1097,7 +1382,7 @@ async function executeTokenModeNonStreaming(input: {
             provider,
             model,
             streaming: false,
-            routeDecision: buildTokenRouteDecision(credential, correlation),
+            routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference),
             upstreamStatus: status,
             errorCode: 'upstream_5xx_passthrough',
             latencyMs: Date.now() - startedAt
@@ -1164,7 +1449,7 @@ async function executeTokenModeNonStreaming(input: {
         provider,
         model,
         streaming: false,
-        routeDecision: buildTokenRouteDecision(credential, correlation),
+        routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference),
         upstreamStatus: status,
         latencyMs: Date.now() - startedAt
       });
@@ -1248,6 +1533,7 @@ async function executeTokenModeStreaming(input: {
   res: Response;
   idempotencySession: IdempotencySession | null;
   strictUpstreamPassthrough?: boolean;
+  providerPreference?: ProviderPreferenceMeta;
 }): Promise<ProxyRouteResult | null> {
   const {
     requestId,
@@ -1263,7 +1549,8 @@ async function executeTokenModeStreaming(input: {
     startedAt,
     res,
     idempotencySession,
-    strictUpstreamPassthrough
+    strictUpstreamPassthrough,
+    providerPreference
   } = input;
 
   const credentials = orderCredentialsForRequest(
@@ -1287,8 +1574,11 @@ async function executeTokenModeStreaming(input: {
 
     while (true) {
       const attemptStartedAt = Date.now();
-      const baseUrl = upstreamBaseUrl(provider);
-      const targetUrl = new URL(proxiedPath, baseUrl);
+      const targetUrl = resolveTokenModeTargetUrl({
+        provider,
+        credential,
+        proxiedPath
+      });
       const timeoutMs = upstreamTimeoutMs();
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -1297,11 +1587,17 @@ async function executeTokenModeStreaming(input: {
         anthropicVersion,
         anthropicBeta: compat.anthropicBeta,
         provider,
-        credential,
-        skipOauthDefaultBetas: compat.blockedRetryApplied,
-        streaming: true
+          credential,
+          skipOauthDefaultBetas: compat.blockedRetryApplied,
+          streaming: true
       });
-      const upstreamBody = JSON.stringify(compat.payload ?? {});
+      const upstreamBody = JSON.stringify(normalizeTokenModeUpstreamPayload({
+        provider,
+        credential,
+        proxiedPath,
+        payload: compat.payload ?? {},
+        streaming: true
+      }));
       const dispatchStartedAt = Date.now();
 
       const logAttemptFailure = async (failure: AttemptFailure) => {
@@ -1314,7 +1610,7 @@ async function executeTokenModeStreaming(input: {
           provider,
           model,
           streaming: true,
-          routeDecision: buildTokenRouteDecision(credential, correlation),
+          routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference),
           upstreamStatus: failure.statusCode,
           errorCode: inferErrorCode(failure),
           latencyMs: Date.now() - startedAt
@@ -1396,7 +1692,7 @@ async function executeTokenModeStreaming(input: {
             provider,
             model,
             streaming: true,
-            routeDecision: buildTokenRouteDecision(credential, correlation),
+            routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference),
             upstreamStatus: status,
             errorCode: 'upstream_403_blocked_passthrough',
             latencyMs: Date.now() - startedAt
@@ -1603,7 +1899,7 @@ async function executeTokenModeStreaming(input: {
           provider,
           model,
           streaming: true,
-          routeDecision: buildTokenRouteDecision(credential, correlation),
+            routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference),
           upstreamStatus: status,
           errorCode: status >= 500 ? 'upstream_5xx_passthrough' : undefined,
           latencyMs: Date.now() - startedAt
@@ -1785,7 +2081,7 @@ async function executeTokenModeStreaming(input: {
         provider,
         model,
         streaming: true,
-        routeDecision: buildTokenRouteDecision(credential, correlation),
+        routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference),
         upstreamStatus: status,
         latencyMs: Date.now() - startedAt
       });
@@ -1971,6 +2267,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
     const orgId = auth.orgId;
 
     const parsed = proxyRequestSchema.parse(req.body);
+    const requestProvider = canonicalizeProvider(parsed.provider);
     const requestId = buildRequestId(req.header('x-request-id') ?? undefined);
     const correlation = resolveOpenClawCorrelation(req, requestId);
     const rawIdempotencyKey = req.header('idempotency-key') ?? undefined;
@@ -1987,26 +2284,13 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
       throw new AppError('suspended', 423, 'Org is disabled');
     }
 
-    if (await runtime.repos.killSwitch.isDisabled('model', `${parsed.provider}:${parsed.model}`)) {
-      throw new AppError('suspended', 423, 'Model is disabled');
-    }
-
-    const compatible = await runtime.repos.modelCompatibility.findActive(parsed.provider, parsed.model);
-    if (!compatible) {
-      throw new AppError('model_invalid', 400, 'No active compatibility rule for provider/model');
-    }
-
-    if (parsed.streaming && !compatible.supports_streaming) {
-      throw new AppError('model_invalid', 400, 'Streaming not supported for provider/model');
-    }
-
     const idempotencyScope = 'proxy.v1';
     const requestHash = sha256Hex(
       stableJson({
         method: req.method,
         path: req.path,
         orgId,
-        provider: parsed.provider,
+        provider: requestProvider,
         model: parsed.model,
         streaming: parsed.streaming,
         payload: parsed.payload ?? null
@@ -2038,52 +2322,119 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
     const proxiedPath = req.inniesProxiedPath ?? extractProxyPath(req.originalUrl);
     const anthropicVersion = req.header('anthropic-version') ?? '2023-06-01';
     const anthropicBeta = req.header('anthropic-beta') ?? undefined;
-    let result: ProxyRouteResult;
+    let result: ProxyRouteResult | null = null;
     if (tokenModeEnabled) {
-      if (parsed.streaming) {
-        const streamedResult = await executeTokenModeStreaming({
-          requestId,
-          orgId,
-          apiKeyId: auth.apiKeyId,
-          correlation,
-          provider: parsed.provider,
-          model: parsed.model,
-          payload: parsed.payload ?? {},
-          proxiedPath,
-          anthropicVersion,
-          anthropicBeta,
-          startedAt,
-          res,
-          idempotencySession: idemStart,
-          strictUpstreamPassthrough: compatMode
-        });
-        if (streamedResult === null || res.headersSent || res.writableEnded) return;
-        result = streamedResult;
-      } else {
-        result = await executeTokenModeNonStreaming({
-          requestId,
-          orgId,
-          apiKeyId: auth.apiKeyId,
-          correlation,
-          provider: parsed.provider,
-          model: parsed.model,
-          payload: parsed.payload ?? {},
-          proxiedPath,
-          anthropicVersion,
-          anthropicBeta,
-          startedAt,
-          strictUpstreamPassthrough: compatMode
-        });
+      const pinSelectionReason = compatMode
+        ? 'compat_provider_pinned'
+        : ((readProviderPinSignal(req) || isClaudeCliPinnedRequest(req, proxiedPath))
+          ? 'cli_provider_pinned'
+          : null);
+      const {
+        providerPlan,
+        preferredProvider,
+        pinSelectionReason: effectivePinSelectionReason
+      } = parseProviderPreferencePlan({
+        preferredProvider: auth.preferredProvider,
+        requestProvider,
+        pinSelectionReason
+      });
+
+      let previousProvider: string | undefined;
+      let previousReason: string | undefined;
+      let terminalError: unknown = null;
+
+      for (const provider of providerPlan) {
+        try {
+          await assertTokenProviderEligible({
+            provider,
+            model: parsed.model,
+            streaming: parsed.streaming
+          });
+          const providerPreference: ProviderPreferenceMeta = {
+            preferredProvider,
+            effectiveProvider: provider,
+            fallbackFromProvider: previousProvider,
+            fallbackReason: previousReason,
+            providerPlan,
+            selectionReason: resolveProviderSelectionReason({
+              provider,
+              preferredProvider,
+              fallbackFromProvider: previousProvider,
+              pinSelectionReason: effectivePinSelectionReason
+            })
+          };
+          if (parsed.streaming) {
+            const streamedResult = await executeTokenModeStreaming({
+              requestId,
+              orgId,
+              apiKeyId: auth.apiKeyId,
+              correlation,
+              provider,
+              model: parsed.model,
+              payload: parsed.payload ?? {},
+              proxiedPath,
+              anthropicVersion,
+              anthropicBeta,
+              startedAt,
+              res,
+              idempotencySession: idemStart,
+              strictUpstreamPassthrough: compatMode,
+              providerPreference
+            });
+            if (streamedResult === null || res.headersSent || res.writableEnded) return;
+            result = streamedResult;
+          } else {
+            result = await executeTokenModeNonStreaming({
+              requestId,
+              orgId,
+              apiKeyId: auth.apiKeyId,
+              correlation,
+              provider,
+              model: parsed.model,
+              payload: parsed.payload ?? {},
+              proxiedPath,
+              anthropicVersion,
+              anthropicBeta,
+              startedAt,
+              strictUpstreamPassthrough: compatMode,
+              providerPreference
+            });
+          }
+          terminalError = null;
+          break;
+        } catch (error) {
+          terminalError = error;
+          const reason = providerFallbackReasonForError(error);
+          if (!reason || provider === providerPlan[providerPlan.length - 1]) {
+            throw error;
+          }
+          previousProvider = provider;
+          previousReason = reason;
+        }
+      }
+
+      if (terminalError) {
+        throw terminalError;
       }
     } else {
-      const keys = await runtime.repos.sellerKeys.listActiveForRouting(parsed.provider, parsed.model, parsed.streaming);
+      if (await runtime.repos.killSwitch.isDisabled('model', `${requestProvider}:${parsed.model}`)) {
+        throw new AppError('suspended', 423, 'Model is disabled');
+      }
+      const compatible = await runtime.repos.modelCompatibility.findActive(requestProvider, parsed.model);
+      if (!compatible) {
+        throw new AppError('model_invalid', 400, 'No active compatibility rule for provider/model');
+      }
+      if (parsed.streaming && !compatible.supports_streaming) {
+        throw new AppError('model_invalid', 400, 'Streaming not supported for provider/model');
+      }
+      const keys = await runtime.repos.sellerKeys.listActiveForRouting(requestProvider, parsed.model, parsed.streaming);
       runtime.services.keyPool.setKeys(keys);
 
       const sellerResult = await runtime.services.routingService.execute({
         request: {
           requestId,
           orgId,
-          provider: parsed.provider,
+          provider: requestProvider,
           model: parsed.model,
           streaming: parsed.streaming,
         },
@@ -2095,7 +2446,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               orgId,
               apiKeyId: auth.apiKeyId,
               sellerKeyId: decision.sellerKeyId,
-              provider: parsed.provider,
+              provider: requestProvider,
               model: parsed.model,
               streaming: parsed.streaming,
               routeDecision: { reason: decision.reason },
@@ -2111,7 +2462,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
             throw Object.assign(new Error('seller key not found'), { kind: 'auth', keySpecific: true });
           }
 
-          const baseUrl = upstreamBaseUrl(parsed.provider);
+          const baseUrl = upstreamBaseUrl(requestProvider);
           const targetUrl = new URL(proxiedPath, baseUrl);
           const timeoutMs = upstreamTimeoutMs();
           const controller = new AbortController();
@@ -2209,7 +2560,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               orgId,
               apiKeyId: auth.apiKeyId,
               sellerKeyId: decision.sellerKeyId,
-              provider: parsed.provider,
+              provider: requestProvider,
               model: parsed.model,
               streaming: true,
               routeDecision: { reason: decision.reason },
@@ -2222,7 +2573,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               orgId,
               apiKeyId: auth.apiKeyId,
               sellerKeyId: decision.sellerKeyId,
-              provider: parsed.provider,
+              provider: requestProvider,
               model: parsed.model,
               inputTokens,
               outputTokens,
@@ -2276,6 +2627,9 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
       };
     }
 
+    if (!result) {
+      throw new AppError('capacity_unavailable', 429, 'No provider produced a routable result');
+    }
     if (res.headersSent || res.writableEnded) return;
 
     const latencyMs = Date.now() - startedAt;
@@ -2287,7 +2641,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
         orgId,
         apiKeyId: auth.apiKeyId,
         sellerKeyId: result.keyId ?? undefined,
-        provider: parsed.provider,
+        provider: requestProvider,
         model: parsed.model,
         streaming: parsed.streaming,
         routeDecision: { reason: 'weighted_round_robin' },
@@ -2300,7 +2654,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
         orgId,
         apiKeyId: auth.apiKeyId,
         sellerKeyId: result.keyId ?? undefined,
-        provider: parsed.provider,
+        provider: requestProvider,
         model: parsed.model,
         inputTokens: observedInputTokens,
         outputTokens: observedOutputTokens,

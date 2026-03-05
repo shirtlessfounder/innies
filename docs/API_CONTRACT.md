@@ -9,6 +9,9 @@
   - `x-api-key: <token>`
 - `buyer_proxy` scope: proxy + usage endpoints.
 - `admin` scope: admin + seller-key endpoints.
+- Credential model distinction:
+  - buyer/admin API keys authenticate clients to Innies
+  - upstream provider credentials stored and routed by Innies are OAuth/session tokens from Claude Code and Codex/OpenAI logins, not public provider API keys
 
 ## Idempotency
 - Required header for mutation endpoints:
@@ -20,6 +23,7 @@
 - `POST /v1/admin/token-credentials`
 - `POST /v1/admin/token-credentials/rotate`
 - `POST /v1/admin/token-credentials/:id/revoke`
+- `PATCH /v1/admin/buyer-keys/:id/provider-preference`
 - Header: `Idempotency-Key`
 - Format: UUIDv7 or opaque token length >= 32.
 - C1 proxy policy: proxy requests are metadata-only idempotent; duplicate proxy calls return deterministic `409` (`proxy_replay_not_supported`).
@@ -49,11 +53,34 @@ Request body:
 
 Notes:
 - `orgId` is derived from authenticated API key; request body org fields are ignored.
+- `provider` is optional at schema level; if omitted, request parsing defaults it to `anthropic`.
 - Token mode is org-gated by `TOKEN_MODE_ENABLED_ORGS` allowlist.
 - Token mode supports both non-streaming and streaming execution.
 - Non-streaming responses mirror upstream HTTP status/body.
 - Streaming responses are pass-through when upstream returns `text/event-stream`.
 - Replay idempotency policy for proxy paths: deterministic non-replayable (`409` with `proxy_replay_not_supported` payload).
+- Current token-mode provider resolution:
+  - buyer-key preference source is the authenticated key’s stored preference
+  - `codex` normalizes to canonical `openai` at ingress
+  - OpenAI/Codex OAuth credentials are sent to the ChatGPT Codex backend (`/backend-api/codex/responses`), not the public `api.openai.com/v1/responses` path
+  - Codex OAuth requests force `store=false` on Responses payloads
+  - Codex OAuth streaming Responses requests force upstream `stream=true`
+  - `ChatGPT-Account-Id` is derived from the OAuth access token when present
+  - `POST /v1/messages` (compat mode) is pinned to Anthropic
+  - session/CLI pinning is controlled by `x-innies-provider-pin: true` or request metadata `innies_provider_pin=true`
+- Current token-mode routing metadata (from `in_routing_events.route_decision`) includes:
+  - `reason`
+  - `provider_selection_reason`
+  - `provider_preferred`
+  - `provider_effective`
+  - `provider_plan`
+  - `provider_fallback_from`
+  - `provider_fallback_reason`
+- Current reason values:
+  - `preferred_provider_selected`
+  - `fallback_provider_selected`
+  - `cli_provider_pinned`
+  - `compat_provider_pinned`
 
 ### `POST /v1/messages`
 Anthropic-compatible passthrough endpoint (feature-flagged by `ANTHROPIC_COMPAT_ENDPOINT_ENABLED=true`).
@@ -119,17 +146,54 @@ Replay metering writes (usage/correction/reversal) for recovery operations (admi
 ### `POST /v1/admin/token-credentials`
 Create token credential for an org/provider (admin only).
 Contract: appends an additional credential for the same `(org, provider)` token pool.
+Credential material:
+- `anthropic`: Claude Code OAuth bearer token (`sk-ant-oat...`)
+- `openai`: Codex/OpenAI OAuth/session token material, not a public OpenAI API key
+  - expected fields: access token, refresh token when available
+  - runtime behavior: Innies derives ChatGPT account context from the access token and uses OpenAI OAuth refresh against `auth.openai.com/oauth/token`
 Optional field:
 - `debugLabel` (1-64 chars): human-readable label stored with credential and emitted in routing/debug telemetry.
 
 ### `POST /v1/admin/token-credentials/rotate`
 Rotate token credential for an org/provider (admin only).
 Contract: primary path for replacing existing credential material.
+Credential material:
+- `anthropic`: Claude Code OAuth bearer token (`sk-ant-oat...`)
+- `openai`: Codex/OpenAI OAuth/session token material, not a public OpenAI API key
+  - expected fields: access token, refresh token when available
+  - runtime behavior: Innies derives ChatGPT account context from the access token and uses OpenAI OAuth refresh against `auth.openai.com/oauth/token`
 Optional field:
 - `debugLabel` (1-64 chars): human-readable label stored with credential and emitted in routing/debug telemetry.
 
 ### `POST /v1/admin/token-credentials/:id/revoke`
 Revoke a token credential by id (admin only).
+
+### `GET /v1/admin/buyer-keys/:id/provider-preference`
+Read provider preference for a buyer API key (admin only).
+
+Response shape:
+- `preferredProvider`: nullable explicit preference (`anthropic|openai`)
+- `effectiveProvider`: effective provider after applying default fallback
+- `source`: `explicit|default`
+
+Default behavior:
+- if no explicit preference is set, effective provider defaults to `anthropic`
+- override default via `BUYER_PROVIDER_PREFERENCE_DEFAULT` (`anthropic|openai|codex`, where `codex` maps to `openai`)
+
+### `PATCH /v1/admin/buyer-keys/:id/provider-preference`
+Set/clear provider preference for a buyer API key (admin only).
+
+Request body:
+```json
+{
+  "preferredProvider": "openai"
+}
+```
+
+Notes:
+- `preferredProvider` accepts `anthropic|openai|codex|null`.
+- `codex` is normalized to canonical `openai`.
+- `null` clears explicit preference and falls back to default provider behavior.
 
 ### `GET /v1/usage/me`
 Return usage summary for authenticated org.

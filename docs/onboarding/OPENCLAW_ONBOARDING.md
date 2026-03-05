@@ -3,6 +3,9 @@
 ## Purpose
 Set up OpenClaw to use Innies as the Anthropic-compatible provider.
 
+If you still need a provider credential first, see:
+- [Claude + Codex OAuth Token Quick Guide](./CLAUDE_CODEX_OAUTH_TOKENS.md)
+
 ## Quickstart (Required)
 
 ### 1) Configure OpenClaw to use Innies

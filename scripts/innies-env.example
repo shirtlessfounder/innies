@@ -1,0 +1,14 @@
+INNIES_BASE_URL=http://localhost:4010
+INNIES_ADMIN_API_KEY=in_admin_replace_me
+INNIES_BUYER_API_KEY=in_buyer_replace_me
+
+# Required for token + preference commands
+INNIES_ORG_ID=00000000-0000-0000-0000-000000000000
+
+# Optional, used by innies-check-preference for DB evidence
+DATABASE_URL=postgres://user:pass@host:5432/dbname?sslmode=verify-full
+
+# Required by innies-check-preference
+INNIES_IDEMPOTENCY_PREFIX=prefdemo
+INNIES_MODEL_ANTHROPIC=claude-opus-4-6
+INNIES_MODEL_CODEX=gpt-5.4

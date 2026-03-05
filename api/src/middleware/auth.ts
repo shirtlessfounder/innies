@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { ApiKeyRepository, type ApiKeyScope } from '../repos/apiKeyRepository.js';
 import { sha256Hex } from '../utils/hash.js';
+import { resolveDefaultBuyerProvider } from '../utils/providerPreference.js';
 
 function readToken(req: Request): string | null {
   const auth = req.header('authorization');
@@ -33,7 +34,10 @@ export function requireApiKey(repo: ApiKeyRepository, allowedScopes: ApiKeyScope
       req.auth = {
         apiKeyId: record.id,
         orgId: record.org_id,
-        scope: record.scope
+        scope: record.scope,
+        preferredProvider: record.scope === 'buyer_proxy'
+          ? (record.preferred_provider ?? resolveDefaultBuyerProvider())
+          : (record.preferred_provider ?? null)
       };
 
       await repo.touchLastUsed(record.id);

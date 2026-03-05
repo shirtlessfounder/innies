@@ -1,5 +1,6 @@
 import { TokenCredentialRepository, type TokenCredential } from '../repos/tokenCredentialRepository.js';
 import type { JobDefinition } from './types.js';
+import { isOpenAiOauthAccessToken, resolveOpenAiOauthAccountId } from '../utils/openaiOauth.js';
 
 const DEFAULT_SCHEDULE_MS = 60 * 60 * 1000;
 
@@ -32,6 +33,9 @@ function providerBaseUrl(provider: string): string | null {
   if (provider === 'anthropic') {
     return process.env.ANTHROPIC_UPSTREAM_BASE_URL || 'https://api.anthropic.com';
   }
+  if (provider === 'openai' || provider === 'codex') {
+    return process.env.OPENAI_UPSTREAM_BASE_URL || 'https://api.openai.com';
+  }
   return null;
 }
 
@@ -40,13 +44,24 @@ function isAnthropicOauthAccessToken(provider: string, accessToken: string): boo
 }
 
 function buildProbeHeaders(credential: TokenCredential): Record<string, string> {
-  const headers: Record<string, string> = {
-    'content-type': 'application/json',
-    'anthropic-version': '2023-06-01'
-  };
+  const headers: Record<string, string> = {};
+  if (credential.provider === 'anthropic') {
+    headers['content-type'] = 'application/json';
+    headers['anthropic-version'] = '2023-06-01';
+  }
   if (isAnthropicOauthAccessToken(credential.provider, credential.accessToken)) {
     headers.authorization = `Bearer ${credential.accessToken}`;
     headers['anthropic-beta'] = ANTHROPIC_OAUTH_BETAS.join(',');
+  } else if ((credential.provider === 'openai' || credential.provider === 'codex') && isOpenAiOauthAccessToken(credential.accessToken)) {
+    headers.authorization = `Bearer ${credential.accessToken}`;
+    headers.accept = 'application/json';
+    headers['user-agent'] = 'CodexBar';
+    const accountId = resolveOpenAiOauthAccountId(credential.accessToken);
+    if (accountId) {
+      headers['chatgpt-account-id'] = accountId;
+    }
+  } else if (credential.provider === 'openai' || credential.provider === 'codex') {
+    headers.authorization = `Bearer ${credential.accessToken}`;
   } else if (credential.authScheme === 'bearer') {
     headers.authorization = `Bearer ${credential.accessToken}`;
   } else {
@@ -61,23 +76,57 @@ type ProbeResult = {
   reason: string;
 };
 
-async function probeCredential(credential: TokenCredential, timeoutMs: number): Promise<ProbeResult> {
-  const baseUrl = providerBaseUrl(credential.provider);
-  if (!baseUrl) return { ok: false, reason: `unsupported_provider:${credential.provider}` };
+type ProbeRequest = {
+  targetUrl: URL;
+  method: 'GET' | 'POST';
+  headers: Record<string, string>;
+  body?: string;
+};
 
-  const model = process.env.TOKEN_CREDENTIAL_PROBE_MODEL || 'claude-opus-4-6';
-  const targetUrl = new URL('/v1/messages', baseUrl);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(targetUrl, {
+function buildProbeRequest(credential: TokenCredential): ProbeRequest | null {
+  if ((credential.provider === 'openai' || credential.provider === 'codex') && isOpenAiOauthAccessToken(credential.accessToken)) {
+    return {
+      targetUrl: new URL('/backend-api/wham/usage', 'https://chatgpt.com'),
+      method: 'GET',
+      headers: buildProbeHeaders(credential)
+    };
+  }
+
+  const baseUrl = providerBaseUrl(credential.provider);
+  if (!baseUrl) return null;
+
+  if (credential.provider === 'anthropic') {
+    const model = process.env.TOKEN_CREDENTIAL_PROBE_MODEL || 'claude-opus-4-6';
+    return {
+      targetUrl: new URL('/v1/messages', baseUrl),
       method: 'POST',
       headers: buildProbeHeaders(credential),
       body: JSON.stringify({
         model,
         max_tokens: 1,
         messages: [{ role: 'user', content: 'ping' }]
-      }),
+      })
+    };
+  }
+
+  return {
+    targetUrl: new URL('/v1/models', baseUrl),
+    method: 'GET',
+    headers: buildProbeHeaders(credential)
+  };
+}
+
+async function probeCredential(credential: TokenCredential, timeoutMs: number): Promise<ProbeResult> {
+  const request = buildProbeRequest(credential);
+  if (!request) return { ok: false, reason: `unsupported_provider:${credential.provider}` };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(request.targetUrl, {
+      method: request.method,
+      headers: request.headers,
+      body: request.body,
       signal: controller.signal
     });
     if (response.ok) return { ok: true, statusCode: response.status, reason: 'ok' };

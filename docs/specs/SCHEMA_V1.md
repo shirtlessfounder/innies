@@ -128,12 +128,15 @@ Buyer/admin API keys for proxy and admin endpoints.
 - `is_active boolean not null default true`
 - `last_used_at timestamptz`
 - `expires_at timestamptz`
+- `preferred_provider text` (nullable; `anthropic|openai`; buyer-key preference control)
+- `provider_preference_updated_at timestamptz`
 - `created_by uuid fk -> users(id)`
 - `created_at timestamptz not null default now()`
 
 Indexes:
 - unique(`key_hash`)
 - (`org_id`, `is_active`)
+- partial index for buyer preference lookups: (`scope`, `preferred_provider`) where `scope='buyer_proxy'`
 
 ### `idempotency_keys`
 Deduplication for write endpoints and metered proxy writes.

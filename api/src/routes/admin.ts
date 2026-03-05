@@ -6,8 +6,17 @@ import { AppError } from '../utils/errors.js';
 import { sha256Hex, stableJson } from '../utils/hash.js';
 import { readAndValidateIdempotencyKey } from '../utils/idempotencyKey.js';
 import { logSensitiveAction } from '../utils/audit.js';
+import { resolveDefaultBuyerProvider } from '../utils/providerPreference.js';
+import { isMissingBuyerProviderPreferenceColumn } from '../repos/apiKeyRepository.js';
 
 const router = Router();
+
+const tokenCredentialProviderSchema = z.preprocess(
+  (value) => (typeof value === 'string' ? value.trim().toLowerCase() : value),
+  z.enum(['anthropic', 'openai', 'codex'])
+).transform((provider) => (provider === 'codex' ? 'openai' : provider));
+
+const buyerProviderPreferenceSchema = tokenCredentialProviderSchema;
 
 const killSwitchSchema = z.object({
   scope: z.enum(['seller_key', 'org', 'model', 'global']),
@@ -63,7 +72,7 @@ const replayMeteringSchema = z.object({
 
 const tokenCredentialCreateSchema = z.object({
   orgId: z.string().uuid(),
-  provider: z.string().min(1),
+  provider: tokenCredentialProviderSchema,
   authScheme: z.enum(['x_api_key', 'bearer']).default('x_api_key'),
   accessToken: z.string().min(1),
   refreshToken: z.string().min(1).optional(),
@@ -74,7 +83,7 @@ const tokenCredentialCreateSchema = z.object({
 
 const tokenCredentialRotateSchema = z.object({
   orgId: z.string().uuid(),
-  provider: z.string().min(1),
+  provider: tokenCredentialProviderSchema,
   authScheme: z.enum(['x_api_key', 'bearer']).default('x_api_key'),
   accessToken: z.string().min(1),
   refreshToken: z.string().min(1).optional(),
@@ -83,9 +92,23 @@ const tokenCredentialRotateSchema = z.object({
   monthlyContributionLimitUnits: z.number().int().nonnegative().optional()
 });
 
+const buyerProviderPreferenceUpdateSchema = z.object({
+  preferredProvider: buyerProviderPreferenceSchema.nullable()
+});
+
 function isUniqueViolation(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   return (error as { code?: string }).code === '23505';
+}
+
+function canAccessBuyerKey(input: {
+  adminOrgId: string | null | undefined;
+  buyerOrgId: string | null;
+}): boolean {
+  const { adminOrgId, buyerOrgId } = input;
+  if (!buyerOrgId) return false;
+  if (!adminOrgId) return true;
+  return adminOrgId === buyerOrgId;
 }
 
 router.get('/v1/admin/pool-health', requireApiKey(runtime.repos.apiKeys, ['admin']), async (_req, res, next) => {
@@ -99,6 +122,118 @@ router.get('/v1/admin/pool-health', requireApiKey(runtime.repos.apiKeys, ['admin
       totalQueueDepth: 0,
       orgQueues: {}
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/admin/buyer-keys/:id/provider-preference', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const id = z.string().uuid().parse(req.params.id);
+    const record = await runtime.repos.apiKeys.getBuyerProviderPreference(id);
+    if (!record || record.scope !== 'buyer_proxy') {
+      throw new AppError('invalid_request', 404, 'Buyer key not found');
+    }
+    if (!canAccessBuyerKey({ adminOrgId: req.auth?.orgId, buyerOrgId: record.org_id })) {
+      throw new AppError('forbidden', 403, 'Cannot access buyer key outside admin org scope');
+    }
+
+    const defaultProvider = resolveDefaultBuyerProvider();
+    const preferredProvider = record.preferred_provider ?? null;
+    const effectiveProvider = preferredProvider ?? defaultProvider;
+
+    res.status(200).json({
+      ok: true,
+      apiKeyId: record.id,
+      orgId: record.org_id,
+      preferredProvider,
+      effectiveProvider,
+      source: preferredProvider ? 'explicit' : 'default',
+      updatedAt: record.provider_preference_updated_at
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/v1/admin/buyer-keys/:id/provider-preference', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const id = z.string().uuid().parse(req.params.id);
+    const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
+    const parsed = buyerProviderPreferenceUpdateSchema.parse(req.body);
+    const requestHash = sha256Hex(stableJson({ id, body: parsed, apiKeyId: req.auth?.apiKeyId }));
+    const tenantScope = req.auth?.orgId ?? `admin:${req.auth?.apiKeyId}`;
+
+    const idemStart = await runtime.services.idempotency.start({
+      scope: 'admin_buyer_provider_preference_update_v1',
+      tenantScope,
+      idempotencyKey,
+      requestHash
+    });
+
+    if (idemStart.replay) {
+      if (!idemStart.responseBody) {
+        throw new AppError('idempotency_replay_unavailable', 409, 'Idempotent replay not available for this request');
+      }
+      res.setHeader('x-idempotent-replay', 'true');
+      res.status(idemStart.responseCode).json(idemStart.responseBody);
+      return;
+    }
+
+    const existing = await runtime.repos.apiKeys.getBuyerProviderPreference(id);
+    if (!existing || existing.scope !== 'buyer_proxy') {
+      throw new AppError('invalid_request', 404, 'Buyer key not found');
+    }
+    if (!canAccessBuyerKey({ adminOrgId: req.auth?.orgId, buyerOrgId: existing.org_id })) {
+      throw new AppError('forbidden', 403, 'Cannot access buyer key outside admin org scope');
+    }
+
+    let updated: boolean;
+    try {
+      updated = await runtime.repos.apiKeys.setBuyerProviderPreference({
+        id,
+        preferredProvider: parsed.preferredProvider
+      });
+    } catch (error) {
+      if (isMissingBuyerProviderPreferenceColumn(error)) {
+        throw new AppError('conflict', 409, 'Buyer provider preference migration not applied');
+      }
+      throw error;
+    }
+    if (!updated) {
+      throw new AppError('invalid_request', 404, 'Buyer key not found');
+    }
+
+    const defaultProvider = resolveDefaultBuyerProvider();
+    const effectiveProvider = parsed.preferredProvider ?? defaultProvider;
+    const responseBody = {
+      ok: true,
+      apiKeyId: id,
+      orgId: existing.org_id,
+      preferredProvider: parsed.preferredProvider,
+      effectiveProvider,
+      source: parsed.preferredProvider ? 'explicit' : 'default'
+    } as const;
+
+    await logSensitiveAction(runtime.repos.auditLogs, req.auth, {
+      action: 'buyer_key.provider_preference.update',
+      targetType: 'api_key',
+      targetId: id,
+      orgId: existing.org_id,
+      metadata: {
+        preferredProvider: parsed.preferredProvider,
+        effectiveProvider
+      }
+    });
+
+    await runtime.services.idempotency.commit(idemStart, {
+      responseCode: 200,
+      responseBody,
+      responseDigest: sha256Hex(stableJson(responseBody)),
+      responseRef: id
+    });
+
+    res.status(200).json(responseBody);
   } catch (error) {
     next(error);
   }

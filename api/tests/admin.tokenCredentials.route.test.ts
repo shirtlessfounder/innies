@@ -316,4 +316,94 @@ describe('admin token credential routes idempotent replay', () => {
     expect(createSpy).toHaveBeenCalledTimes(1);
     expect(commitSpy).not.toHaveBeenCalled();
   });
+
+  it('normalizes codex provider alias to openai for create and rotate', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start')
+      .mockResolvedValueOnce({
+        replay: false,
+        input: {
+          scope: 'admin_token_credentials_create_v1',
+          tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+          idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123456',
+          requestHash: 'create_h'
+        }
+      } as any)
+      .mockResolvedValueOnce({
+        replay: false,
+        input: {
+          scope: 'admin_token_credentials_rotate_v1',
+          tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+          idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123457',
+          requestHash: 'rotate_h'
+        }
+      } as any);
+
+    const createSpy = vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'create').mockResolvedValue({
+      id: 'new_cred_codex',
+      rotationVersion: 1
+    } as any);
+    const rotateSpy = vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'rotate').mockResolvedValue({
+      id: 'new_cred_codex_rotated',
+      previousId: 'new_cred_codex',
+      rotationVersion: 2
+    } as any);
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const reqCreate = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456'
+      },
+      body: {
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'CoDeX',
+        authScheme: 'bearer',
+        accessToken: 'codex_tok_1',
+        expiresAt: '2026-03-05T00:00:00.000Z'
+      }
+    });
+    const resCreate = createMockRes();
+
+    await invoke(createHandlers[0], reqCreate, resCreate);
+    await invoke(createHandlers[1], reqCreate, resCreate);
+    expect(resCreate.statusCode).toBe(200);
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'openai'
+      }),
+      expect.any(Object)
+    );
+
+    const reqRotate = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/rotate',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123457'
+      },
+      body: {
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'codex',
+        authScheme: 'bearer',
+        accessToken: 'codex_tok_2',
+        expiresAt: '2026-03-06T00:00:00.000Z'
+      }
+    });
+    const resRotate = createMockRes();
+
+    await invoke(rotateHandlers[0], reqRotate, resRotate);
+    await invoke(rotateHandlers[1], reqRotate, resRotate);
+    expect(resRotate.statusCode).toBe(200);
+    expect(rotateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'openai'
+      }),
+      expect.any(Object)
+    );
+    expect(commitSpy).toHaveBeenCalledTimes(2);
+  });
 });

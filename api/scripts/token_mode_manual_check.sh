@@ -3,12 +3,14 @@ set -euo pipefail
 
 # DB-backed token-mode manual evidence check for C1 pilot.
 # Required env:
-#   INNIES_API_URL            e.g. http://localhost:4010
+#   INNIES_BASE_URL or INNIES_API_URL   e.g. http://localhost:4010
 #   INNIES_BUYER_API_KEY      buyer or admin API key
 #   INNIES_ORG_ID             org UUID
-#   INNIES_IDEMPOTENCY_KEY    UUIDv7 or opaque >= 32 chars
+#   INNIES_IDEMPOTENCY_KEY    optional static idempotency key
+#   INNIES_IDEMPOTENCY_PREFIX optional prefix for generated idempotency keys
 # Optional env:
-#   INNIES_MODEL              default claude-3-5-sonnet-latest
+#   INNIES_MODEL              preferred explicit model
+#   INNIES_MODEL_ANTHROPIC    fallback model when INNIES_MODEL is unset
 #   DATABASE_URL                required for DB evidence queries (psql)
 
 require_env() {
@@ -19,13 +21,43 @@ require_env() {
   fi
 }
 
-require_env INNIES_API_URL
 require_env INNIES_BUYER_API_KEY
 require_env INNIES_ORG_ID
-require_env INNIES_IDEMPOTENCY_KEY
 
-MODEL="${INNIES_MODEL:-claude-3-5-sonnet-latest}"
-API_URL="${INNIES_API_URL%/}"
+resolve_api_url() {
+  if [[ -n "${INNIES_BASE_URL:-}" ]]; then
+    printf '%s' "${INNIES_BASE_URL%/}"
+    return
+  fi
+  if [[ -n "${INNIES_API_URL:-}" ]]; then
+    printf '%s' "${INNIES_API_URL%/}"
+    return
+  fi
+  echo "missing INNIES_BASE_URL or INNIES_API_URL"
+  exit 1
+}
+
+build_idempotency_key() {
+  local suffix
+  if command -v openssl >/dev/null 2>&1; then
+    suffix="$(openssl rand -hex 8)"
+  else
+    suffix="${$}_manual_check_suffix_00000000"
+  fi
+  if [[ -n "${INNIES_IDEMPOTENCY_PREFIX:-}" ]]; then
+    printf '%s_%s_%s' "${INNIES_IDEMPOTENCY_PREFIX}" "$(date +%s)" "$suffix"
+    return
+  fi
+  if [[ -n "${INNIES_IDEMPOTENCY_KEY:-}" ]]; then
+    printf '%s' "${INNIES_IDEMPOTENCY_KEY}"
+    return
+  fi
+  printf 'manual_check_%s_%s' "$(date +%s)" "$suffix"
+}
+
+MODEL="${INNIES_MODEL:-${INNIES_MODEL_ANTHROPIC:-claude-3-5-sonnet-latest}}"
+API_URL="$(resolve_api_url)"
+IDEMPOTENCY_KEY="$(build_idempotency_key)"
 OUT_DIR="${TMPDIR:-/tmp}/innies_token_check_$$"
 mkdir -p "$OUT_DIR"
 
@@ -36,7 +68,7 @@ echo "[1/3] sending token-mode non-streaming proxy request..."
 STATUS="$(curl -sS -D "$HEADERS_FILE" -o "$BODY_FILE" -w "%{http_code}" \
   -X POST "$API_URL/v1/proxy/v1/messages" \
   -H "Authorization: Bearer $INNIES_BUYER_API_KEY" \
-  -H "Idempotency-Key: $INNIES_IDEMPOTENCY_KEY" \
+  -H "Idempotency-Key: $IDEMPOTENCY_KEY" \
   -H "Content-Type: application/json" \
   -H "anthropic-version: 2023-06-01" \
   -d "{\"provider\":\"anthropic\",\"model\":\"$MODEL\",\"streaming\":false,\"payload\":{\"model\":\"$MODEL\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"reply with one word: ok\"}]}}")"

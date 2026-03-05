@@ -67,6 +67,7 @@
   - no silent ambiguous failure mode.
 - Ship a simple landing page.
 - Build private community channel for F&F users (Telegram and/or Discord) for support, feedback loops, and release updates.
+- Add `innies claude` / `innies codex` how-to guide markdown for F&F onboarding.
 
 ## Phase 3: External PMF Scope
 - Permissionless org creation + user onboarding.
@@ -82,6 +83,9 @@
   - self-serve org creation
   - invite/member management
   - role-based access (owner/admin/member).
+- Per-user model selection by provider (Phase 3):
+  - allow different model choice per user within each provider
+  - keep provider-level defaults with user-level overrides.
 - Payments and settlement productization:
   - org-level billing settings
   - seller earnings/payout views
