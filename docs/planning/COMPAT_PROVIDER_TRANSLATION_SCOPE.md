@@ -164,14 +164,16 @@ Anthropic messages → OpenAI input items. The key difference: Anthropic uses a 
 |-----------|-----------------|
 | `{role: "user", content: "text"}` | `{type: "message", role: "user", content: "text"}` |
 | `{role: "user", content: [{type: "text", text}]}` | `{type: "message", role: "user", content: "text"}` |
-| `{role: "user", content: [{type: "image", source: {type: "base64", media_type, data}}]}` | `{type: "message", role: "user", content: [{type: "input_image", image_url: "data:{media_type};base64,{data}"}]}` |
+| `{role: "user", content: [{type: "image", source: {type: "base64", media_type, data}}]}` | `{type: "message", role: "user", content: [{type: "input_image", source: {type: "base64", media_type, data}}]}` |
+
+**Note:** OpenAI Responses `input_image` uses `source: {type: "url" | "base64", ...}`, NOT `image_url` string format. (Ref: `open-responses.schema.ts:30`, `open-responses.schema.ts:43`)
 
 **Assistant messages (conversation history):**
 
 | Anthropic | OpenAI Responses |
 |-----------|-----------------|
 | `{role: "assistant", content: [{type: "text", text}]}` | `{type: "message", role: "assistant", content: "text"}` |
-| `{role: "assistant", content: [{type: "tool_use", id, name, input}]}` | `{type: "function_call", id, name, arguments: JSON.stringify(input)}` |
+| `{role: "assistant", content: [{type: "tool_use", id, name, input}]}` | `{type: "function_call", call_id: id, name, arguments: JSON.stringify(input)}` |
 
 **Tool results:**
 
@@ -179,17 +181,41 @@ Anthropic messages → OpenAI input items. The key difference: Anthropic uses a 
 |-----------|-----------------|
 | `{role: "user", content: [{type: "tool_result", tool_use_id, content}]}` | `{type: "function_call_output", call_id: tool_use_id, output: stringify(content)}` |
 
-**Important:** Anthropic packs tool_result inside a user message. OpenAI has it as a top-level input item. The translator must unwrap these.
+**Important:**
+- Anthropic packs `tool_result` inside a user message. OpenAI has it as a top-level input item. The translator must unwrap these.
+- OpenAI Responses uses `call_id` (not `id`) as the continuation key for function calls. (Ref: `open-responses.schema.ts:96`, `open-responses.schema.ts:106`)
+
+#### Tool call ID continuity (critical for multi-turn)
+
+Tool call IDs must survive the full round-trip: request translation → Codex execution → response translation → back to OpenClaw → next turn request.
+
+The flow:
+1. OpenClaw sends Anthropic history with tool IDs like `toolu_01XYZ`
+2. Innies translates to OpenAI format: `toolu_01XYZ` → `call_id: "toolu_01XYZ"`
+3. Codex responds with its own tool call IDs (e.g. `call_abc123`)
+4. Innies translates response back: `call_abc123` → Anthropic `tool_use.id: "call_abc123"`
+5. OpenClaw receives this, executes the tool, sends back `tool_result.tool_use_id: "call_abc123"`
+6. Next turn: Innies must translate `call_abc123` back to `call_id: "call_abc123"` for Codex
+
+**Key constraint:** On Anthropic lanes, OpenClaw may sanitize tool call IDs between turns (`transcript-policy.ts:97`, `run/attempt.ts:1080`). The translation layer must handle the possibility that IDs are rewritten by the client between rounds.
+
+**Strategy:** The translator should NOT maintain a session-scoped ID remap table. Instead, pass IDs through as-is in both directions. Anthropic-format IDs (`toolu_xxx`) and OpenAI-format IDs (`call_xxx`) are both opaque strings — Codex and OpenClaw both accept arbitrary string IDs. If OpenClaw sanitizes an ID, the sanitized version flows through the next turn, which is correct behavior.
+
+**Risk:** If OpenClaw's Anthropic-lane sanitization produces IDs that Codex rejects, we need a remap. Validate in Phase A testing before adding complexity.
 
 #### Tool schema translation
 
-| Anthropic | OpenAI |
-|-----------|--------|
-| `tools[{name, description, input_schema}]` | `tools[{type: "function", name, description, parameters: input_schema}]` |
+Note: OpenAI Responses uses a nested `function` object inside the tool definition, not flat fields.
+
+| Anthropic | OpenAI Responses |
+|-----------|-----------------|
+| `tools[{name, description, input_schema}]` | `tools[{type: "function", function: {name, description, parameters: input_schema}}]` |
 | `tool_choice: {type: "auto"}` | `tool_choice: "auto"` |
 | `tool_choice: {type: "any"}` | `tool_choice: "required"` |
-| `tool_choice: {type: "tool", name}` | `tool_choice: {type: "function", name}` |
+| `tool_choice: {type: "tool", name}` | `tool_choice: {type: "function", function: {name}}` |
 | `tool_choice: {type: "none"}` | `tool_choice: "none"` |
+
+(Refs: `open-responses.schema.ts:144`, `open-responses.schema.ts:164`)
 
 #### Thinking / extended thinking
 
