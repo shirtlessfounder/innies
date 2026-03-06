@@ -141,4 +141,39 @@ describe('tokenCredentialRepository', () => {
     expect(db.queries[0].sql).toContain('consecutive_failure_count = 0');
     expect(db.queries[0].sql).toContain('next_probe_at = null');
   });
+
+  it('refreshes a credential in place without changing rotation_version', async () => {
+    process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 13).toString('base64');
+    const db = new SequenceSqlClient([{
+      rows: [{
+        id: 'cred_1',
+        org_id: '00000000-0000-0000-0000-000000000001',
+        provider: 'openai',
+        auth_scheme: 'bearer',
+        encrypted_access_token: encryptSecret('access-new'),
+        encrypted_refresh_token: encryptSecret('refresh-new'),
+        expires_at: '2026-03-02T00:00:00Z',
+        status: 'active',
+        rotation_version: 7,
+        created_at: '2026-03-01T00:00:00Z',
+        updated_at: '2026-03-01T00:00:00Z',
+        revoked_at: null,
+        monthly_contribution_limit_units: null,
+        monthly_contribution_used_units: 0,
+        monthly_window_start_at: '2026-03-01T00:00:00Z'
+      }],
+      rowCount: 1
+    }]);
+    const repo = new TokenCredentialRepository(db);
+
+    const updated = await repo.refreshInPlace({
+      id: 'cred_1',
+      accessToken: 'access-new',
+      refreshToken: 'refresh-new',
+      expiresAt: new Date('2026-03-02T00:00:00Z')
+    });
+
+    expect(updated?.rotationVersion).toBe(7);
+    expect(db.queries[0].sql).not.toContain('rotation_version = rotation_version + 1');
+  });
 });

@@ -191,6 +191,24 @@ read_required_token() {
   printf '%s' "$value"
 }
 
+read_optional_token() {
+  local label="$1"
+  local value=""
+  if command -v pbpaste >/dev/null 2>&1; then
+    if ! value="$(prompt "${label} (optional; type paste for clipboard, or press Enter to skip)")"; then
+      exit 1
+    fi
+    if [[ "$value" == "paste" ]]; then
+      value="$(pbpaste | tr -d '\r\n')"
+    fi
+  else
+    if ! value="$(prompt "${label} (optional; press Enter to skip)")"; then
+      exit 1
+    fi
+  fi
+  printf '%s' "$value"
+}
+
 resolve_buyer_key_id() {
   local input="$1"
   local key_hash
