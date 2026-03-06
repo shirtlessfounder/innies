@@ -9,23 +9,32 @@
 - Debug labels exist on token credentials for routing/health visibility.
 
 ## Phase 1: Internal PMF Scope
-- Codex token support.
+- ✅ Codex token support.
+  - Anthropic ↔ OpenAI Responses translation layer (request, response, streaming).
+  - Error envelope mapping (401/429/5xx → Anthropic-shaped).
+  - Default model: `gpt-5.4`. 125 tests, deployed to production.
 - CLI support:
   - `innie claude`
   - `innie codex`
   - wrappers for internal coding-tool workflows through Innies.
-- Developer docs baseline:
-  - clear API auth + endpoint docs with concrete request/response examples
-  - at minimum, one concise markdown page suitable for first-time integration.
+- ✅ Developer docs baseline:
+  - `docs/API_CONTRACT.md` — auth + endpoints + request/response examples.
+  - `docs/onboarding/OPENCLAW_ONBOARDING.md` — OpenClaw integration guide.
+  - `docs/onboarding/CLAUDE_CODEX_OAUTH_TOKENS.md` — OAuth credential setup.
 - Internal performance + usage dashboard.
-- Per-token analytics gathering:
-  - usage measurement by token
-  - token yield tracking (how many successful requests/tokens a credential handles before becoming `maxed`)
-  - daily/weekly efficiency views for pool tuning.
-- Easy new token onboarding into the shared pool.
-- Easy per-buyer-key provider preference:
-  - e.g. prefer Codex first, fallback to Claude when Codex pool is unavailable/depleted.
-  - not applicable to CLI coding session/tool-loop routing.
+- 🚧 Per-token analytics gathering:
+  - ✅ Aggregation jobs (daily incremental + nightly compaction).
+  - Read endpoints and dashboard views still needed.
+- ✅ Easy new token onboarding into the shared pool.
+  - Admin endpoints: add, rotate, revoke.
+  - Shell scripts: `innies-add-token.sh`, `innies-rotate-token.sh`.
+  - Debug labels + maxed/probe/reactivation lifecycle.
+- ✅ Easy per-buyer-key provider preference:
+  - Preference stored per buyer key with explicit/default distinction.
+  - Deterministic fallback plan: `[preferred, alternate]`.
+  - Compat translation activates automatically on cross-provider fallback.
+  - Admin endpoints + shell scripts for preference management.
+  - Not applicable to CLI coding session/tool-loop routing.
 
 ## Phase 2: Friends & Family PMF Scope
 - Set up isolation between internal team tokens and F&F tokens for free internal team usage, while still allowing cross-pool purchasing:

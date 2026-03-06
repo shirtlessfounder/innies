@@ -14,8 +14,11 @@ Product invariant:
 - The upstream provider credentials Innies pools and rotates are OAuth/session tokens from Claude Code and Codex/OpenAI logins, not public provider API keys.
 
 ## In Scope
-1. Provider support
+1. ✅ Provider support
 - Anthropic (existing) + Codex/OpenAI token routing support in same pool framework.
+- Compat translation layer: Anthropic Messages ↔ OpenAI Responses (request, response, streaming).
+- Error envelope mapping for translated paths (401/429/5xx → Anthropic-shaped errors).
+- 125 tests passing, deployed to production.
 
 2. CLI integration
 - `innies claude`
@@ -28,26 +31,35 @@ Product invariant:
 - Token health state (`active/maxed/probe`) and rotation visibility
 - Per-token usage and yield analytics
 
-4. Token onboarding
-- Internal admin flow for adding tokens
+4. ✅ Token onboarding
+- Internal admin flow for adding tokens (`POST /v1/admin/token-credentials`)
+- Token rotation (`POST /v1/admin/token-credentials/rotate`)
+- Token revocation (`POST /v1/admin/token-credentials/:id/revoke`)
 - Debug labels for attribution
-- Basic health checks + quarantine lifecycle operationalized
+- Basic health checks + quarantine lifecycle operationalized (maxed/probe/reactivation)
+- Shell scripts: `innies-add-token.sh`, `innies-rotate-token.sh`
 
-5. Buyer preference routing
+5. ✅ Buyer preference routing
 - Buyer-key policy: preferred provider + deterministic fallback
+- `preferredProviderSource` distinguishes explicit vs default preference
+- Fallback plan: `[preferred, alternate]` with translation when crossing provider boundary
+- Admin endpoints: `GET/PUT /v1/admin/buyer-keys/:id/provider-preference`
+- Shell scripts: `innies-set-preference.sh`, `innies-get-preference.sh`, `innies-check-preference.sh`
 - No mid-session provider switching for CLI coding sessions
 
-6. Developer docs baseline
-- One clear API doc page with auth + key endpoints + request/response examples.
+6. ✅ Developer docs baseline
+- `docs/API_CONTRACT.md`: auth + key endpoints + request/response examples
+- `docs/onboarding/OPENCLAW_ONBOARDING.md`: OpenClaw integration guide
+- `docs/onboarding/CLAUDE_CODEX_OAUTH_TOKENS.md`: OAuth credential setup
 
 ## Priority Order (Execution)
-1. Codex support.
-2. Easy per-buyer-key provider preference.
-3. Per-token analytics gathering.
+1. ✅ Codex support.
+2. ✅ Easy per-buyer-key provider preference.
+3. 🚧 Per-token analytics gathering (aggregation jobs exist, no read endpoints/dashboard yet).
 4. CLI support (`innies claude`, `innies codex`).
 5. Internal usage dashboard.
-6. Easy token onboarding.
-7. Developer docs baseline.
+6. ✅ Easy token onboarding.
+7. ✅ Developer docs baseline.
 
 ## Canonical Planning Rule
 - `docs/planning/ROADMAP.md` is the sequence/priority document.
@@ -55,43 +67,21 @@ Product invariant:
 - Durable runtime behavior belongs in `docs/API_CONTRACT.md`.
 - Temporary agent coordination docs, patch queues, audit scratch docs, and one-off validation notes should be folded back into this file or durable docs, then deleted.
 
-## Current Execution Focus (2026-03-05)
-Active implementation focus remains:
-1. Codex support.
-2. Easy per-buyer-key provider preference.
+## Current Execution Focus (2026-03-06)
+Active implementation focus:
+3. Per-token analytics gathering (read endpoints + dashboard views).
+4. CLI support (`innies claude`, `innies codex`).
 
-Why:
-- buyer-key provider preference is primarily for OpenClaw and other model-agnostic clients
-- provider-specific wrappers (`innies claude`, `innies codex`) are still planned Phase 1 work, but they are not the current feature focus
-
-Current validated state:
-- Codex/OpenAI OAuth credential routing works through Innies token mode.
-- Default Codex target is `gpt-5.4`.
-- Per-buyer-key provider preference works on `/v1/proxy/*`.
-- Compat-mode request translation exists:
-  - Anthropic Messages -> OpenAI Responses
-  - OpenAI Responses -> Anthropic-shaped JSON/SSE
-- Compat-mode buyer preference can already route `POST /v1/messages` onto the OpenAI/Codex lane.
-- Internal admin token onboarding exists:
-  - `POST /v1/admin/token-credentials`
-  - `POST /v1/admin/token-credentials/rotate`
-  - `POST /v1/admin/token-credentials/:id/revoke`
-  - debug labels + maxed/probe/reactivation lifecycle are implemented
-- Developer docs baseline exists:
-  - `docs/API_CONTRACT.md` covers auth + key endpoints + request/response examples
-  - onboarding docs exist for current internal client flows
-
-Current open blockers for closing the compat/OpenClaw path:
-- translated compat terminal `401` / `429` / `5xx` errors are not yet returning the correct Anthropic-shaped envelopes end-to-end
-- streaming translated tool paths still synthesize fallback IDs on missing `call_id`
-- translated streaming does not yet preserve multipart content structure
-- raw string text paths still trim content unnecessarily
-- unsupported translated content handling is still implicit
-- checked-in canary coverage does not yet prove multi-turn tool-use + fallback end-to-end
+Completed:
+- ✅ Codex support (translation layer deployed to production)
+- ✅ Per-buyer-key provider preference (deterministic fallback with translation)
+- ✅ Token onboarding (admin endpoints + shell scripts)
+- ✅ Developer docs baseline (API contract + onboarding guides)
 
 Current gate status:
-- `cd api && npx vitest run` is not green in the current working tree
-- known failing area: translated compat terminal error behavior on `/v1/messages`
+- `cd api && npx vitest run` → 19 files, 125 tests, all green
+- Compat translation deployed to production (2026-03-06)
+- OpenClaw verified compatible (anthropic-messages API, server-side translation transparent)
 
 ## Execution Protocol (Feature-by-Feature)
 Use this exact loop for features `1 -> 7`:
