@@ -131,7 +131,6 @@ Non-acceptable outcome:
 Stable requirements:
 - config path remains `~/.innies/config.json`
 - existing `~/.innies/config.json` configs must remain readable
-- legacy `~/.headroom/config.json` configs must remain readable
 - `innies login` remains the only required login/setup step for Phase 1
 
 Allowed change:
@@ -192,7 +191,7 @@ Deliverables:
 - add `innies codex` command
 - update CLI usage/help text for both wrappers
 - implement backward-compatible provider-scoped default model handling
-- preserve read compatibility with existing `.innies` and legacy `.headroom` configs
+- preserve read compatibility with existing `.innies` configs
 
 Done when:
 - both commands are visible in CLI usage

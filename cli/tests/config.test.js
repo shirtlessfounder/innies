@@ -15,10 +15,10 @@ async function importConfigModuleForHome(home) {
   }
 }
 
-test('legacy sentinel config falls back to provider defaults for both lanes', async () => {
+test('sentinel config falls back to provider defaults for both lanes', async () => {
   const home = await mkdtemp(join(tmpdir(), 'innies-cli-config-'));
-  await mkdir(join(home, '.headroom'), { recursive: true });
-  await writeFile(join(home, '.headroom', 'config.json'), JSON.stringify({
+  await mkdir(join(home, '.innies'), { recursive: true });
+  await writeFile(join(home, '.innies', 'config.json'), JSON.stringify({
     version: 1,
     token: 'in_live_legacy',
     apiBaseUrl: 'https://gateway.innies.ai',

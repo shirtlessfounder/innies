@@ -90,6 +90,10 @@ Creates wrapper shim at `~/.local/bin/claude`:
 
 This allows normal `claude` usage to route through Innies if `~/.local/bin` appears before other Claude paths in `PATH`.
 
+Safety behavior:
+- refuses to overwrite an existing non-Innies `~/.local/bin/claude`
+- if `~/.local/bin/claude` is already occupied by a real Claude install, use `innies claude` directly or move the original binary before linking
+
 ## Error UX
 - Missing login: `Run: innies login --token <in_token>`
 - Missing token flag: `Missing --token`
