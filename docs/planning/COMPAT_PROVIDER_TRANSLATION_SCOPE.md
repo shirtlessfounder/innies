@@ -261,8 +261,12 @@ Output item translation:
 | OpenAI output item | Anthropic content block |
 |-------------------|----------------------|
 | `{type: "output_text", text}` (inside message output) | `{type: "text", text}` |
-| `{type: "function_call", id, name, arguments}` | `{type: "tool_use", id, name, input: JSON.parse(arguments)}` |
-| `{type: "reasoning", content: [{type: "text", text}]}` | `{type: "thinking", thinking: text}` |
+| `{type: "function_call", call_id, name, arguments}` | `{type: "tool_use", id: call_id, name, input: JSON.parse(arguments)}` |
+
+**Note:** OpenAI Responses uses `call_id` as the continuation key on function_call output items, not the item-level `id`. The translator must map `call_id` → Anthropic `tool_use.id`. (Ref: `open-responses.schema.ts:229-231`)
+| `{type: "reasoning", content: string, summary: string}` | `{type: "thinking", thinking: content}` |
+
+**Note:** OpenAI Responses models reasoning output as string fields (`content`, `summary`), not an array of text parts. (Ref: `open-responses.schema.ts:238`)
 
 **Note:** OpenAI nests text inside `output[].content[]` as `output_text` items. Anthropic has flat `content[]` blocks. The translator needs to flatten the nesting.
 
