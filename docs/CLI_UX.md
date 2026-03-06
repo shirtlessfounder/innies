@@ -12,10 +12,15 @@ Persists local Innies config in `~/.innies/config.json`.
 ### `innies doctor`
 Performs local health checks and exits non-zero on failure.
 
+Exit behavior:
+- exits non-zero if any required local lane dependency is missing
+- output stays per-check so the failing lane is obvious
+
 Checks:
 - local config exists and is readable
 - token present
-- `claude` command available in `PATH`
+- `claude` command available in `PATH` or via `INNIES_CLAUDE_BIN`
+- `codex` command available in `PATH` or via `INNIES_CODEX_BIN`
 - `~/.local/bin/claude` wrapper presence (warning only; optional convenience link)
 
 ### `innies claude [-- <claude args...>]`
@@ -39,8 +44,14 @@ Behavior:
 - loop-safe binary resolution:
   - prefers non-wrapper Claude binary from `which -a claude`
   - supports `INNIES_CLAUDE_BIN` override
-  - recursion guard via `INNIES_CLAUDE_WRAPPED`
+- recursion guard via `INNIES_CLAUDE_WRAPPED`
 - prints one-line runtime status (model/proxy/request-id)
+
+### `innies codex [-- <codex args...>]`
+Current branch behavior:
+- command is present in CLI help/usage
+- loads Innies config and resolves the OpenAI/Codex provider default model
+- exits non-zero with a scaffold message until Codex runtime wiring is implemented
 
 ### `innies link claude`
 Creates wrapper shim at `~/.local/bin/claude`:
@@ -64,8 +75,9 @@ npm run test:smoke
 
 Smoke test validates:
 - login writes config
-- doctor reports OK with fake claude binary
+- doctor reports OK for fake Claude and Codex binaries
 - claude wrapper forwards args and injects env
+- Codex readiness probe is covered through `innies doctor`; wrapped Codex-session smoke begins once runtime wiring exists
 - link command writes wrapper shim
 - token-mode route marker is injected (`INNIES_ROUTE_MODE=token`)
 - non-streaming proxy compatibility check validates provider-native 2xx/4xx pass-through semantics
@@ -74,6 +86,11 @@ Smoke test validates:
 - CLI keeps interactive TTY behavior by default (capture mode is opt-in for smoke)
 
 Required for pilot signoff: real backend token-route proof
+
+Current scope note:
+- the real-env smoke path below is direct proxy/token-route evidence
+- wrapped-session proof is currently executable for `innies claude`
+- wrapped-session proof for `innies codex` starts after Codex runtime wiring ships
 
 Run in pilot/staging env with valid API credentials:
 

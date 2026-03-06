@@ -2,6 +2,7 @@
 import { runLogin } from './commands/login.js';
 import { runDoctor } from './commands/doctor.js';
 import { runClaude } from './commands/claude.js';
+import { runCodex } from './commands/codex.js';
 import { runLinkClaude } from './commands/link.js';
 import { fail, printUsage } from './utils.js';
 
@@ -29,6 +30,14 @@ async function main() {
     const sepIdx = cmdArgs.indexOf('--');
     const passArgs = sepIdx === -1 ? cmdArgs : cmdArgs.slice(sepIdx + 1);
     await runClaude(passArgs);
+    return;
+  }
+
+  if (command === 'codex') {
+    const cmdArgs = args.slice(1);
+    const sepIdx = cmdArgs.indexOf('--');
+    const passArgs = sepIdx === -1 ? cmdArgs : cmdArgs.slice(sepIdx + 1);
+    await runCodex(passArgs);
     return;
   }
 

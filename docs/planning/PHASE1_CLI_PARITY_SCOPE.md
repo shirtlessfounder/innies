@@ -9,6 +9,7 @@ Use this file to plan and execute the provider-specific CLI wrapper work without
 - `docs/planning/ROADMAP.md` remains the sequence/priority document.
 - `docs/planning/PHASE1_IMPLEMENTATION_SCOPE.md` remains the Phase 1 source of truth.
 - This file is the isolated execution scope for Phase 1 feature `4) CLI support`.
+- `docs/planning/PHASE1_CLI_PARITY_EXECUTION.md` is the 3-agent execution split for this feature.
 - Durable shipped runtime behavior belongs in `docs/CLI_UX.md` and `docs/API_CONTRACT.md`.
 
 If this file conflicts with the parent Phase 1 plan or the API contract, update this file to match the parent docs.
@@ -320,8 +321,9 @@ Source: https://developers.openai.com/codex/config-reference/, config-advanced/,
 
 **Wire API:**
 - Codex uses `wire_api = "responses"` by default (OpenAI Responses API).
-- Traffic from `innies codex` hits Innies as native OpenAI-shaped requests, NOT anthropic-shaped.
-- This means `innies codex` routes through `/v1/proxy/*` directly — the compat translation layer is NOT involved.
+- `innies codex` is intended to use native OpenAI Responses semantics, NOT the Anthropic compat translation path.
+- Current Innies proxy contract still uses the `/v1/proxy/*` wrapper-body ingress described in `docs/API_CONTRACT.md`.
+- If the shipped Codex wrapper emits a request shape that does not fit that current ingress contract directly, minimum ingress-compatibility/API work is in scope for this feature.
 - Translation only matters for `innies claude` → openai fallback scenarios.
 
 **CLI overrides:**
