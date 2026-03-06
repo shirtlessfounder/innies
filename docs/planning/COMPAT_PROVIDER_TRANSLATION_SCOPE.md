@@ -6,7 +6,7 @@
 
 The buyer experience:
 1. Buyer gets one API key
-2. Admin sets their provider preference (anthropic or openai/codex)
+2. Admin sets their provider preference (`anthropic` or `openai` — note: `codex` is accepted as an ingress alias but normalizes to canonical `openai`)
 3. Buyer configures their client (e.g. OpenClaw) once with `api: "anthropic-messages"` pointing at Innies
 4. Innies routes to the preferred provider, translating request/response formats as needed
 5. If the preferred provider's token pool is exhausted, Innies falls back to the other provider automatically and invisibly
@@ -113,7 +113,7 @@ OpenClaw → POST /v1/messages (Anthropic format)
   → Innies compat endpoint
     → check buyer preference
     → if anthropic: route as-is (current behavior)
-    → if openai/codex:
+    → if openai (canonical, includes codex alias):
         → translate request: Anthropic Messages → OpenAI Responses
         → route to Codex upstream
         → translate response: OpenAI Responses → Anthropic Messages
