@@ -92,16 +92,39 @@ function createMockRes(): MockRes {
   return stream;
 }
 
-function applyError(err: unknown, res: MockRes): void {
+function applyError(err: unknown, res: MockRes, req?: MockReq): void {
   if (err instanceof z.ZodError) {
     res.status(400).json({ code: 'invalid_request', message: 'Invalid request', issues: err.issues });
     return;
   }
   if (err instanceof AppError) {
+    // Mirror production behavior: compat requests get Anthropic-shaped error envelopes
+    if (req?.inniesCompatMode) {
+      const anthropicErrorType =
+        err.status === 401 ? 'authentication_error'
+        : err.status === 403 ? 'permission_error'
+        : err.status === 429 ? 'rate_limit_error'
+        : err.status === 404 ? 'not_found_error'
+        : err.status >= 400 && err.status < 500 ? 'invalid_request_error'
+        : 'api_error';
+      const anthropicStatus = err.status >= 500 ? 500 : err.status;
+      res.status(anthropicStatus).json({
+        type: 'error',
+        error: { type: anthropicErrorType, message: err.message }
+      });
+      return;
+    }
     res.status(err.status).json({ code: err.code, message: err.message, details: err.details });
     return;
   }
   const message = err instanceof Error ? err.message : 'Unexpected error';
+  if (req?.inniesCompatMode) {
+    res.status(500).json({
+      type: 'error',
+      error: { type: 'api_error', message }
+    });
+    return;
+  }
   res.status(500).json({ code: 'internal_error', message });
 }
 
@@ -111,7 +134,7 @@ async function invoke(handle: (req: any, res: any, next: (error?: unknown) => vo
     const next = (error?: unknown) => {
       nextCalled = true;
       if (error) {
-        applyError(error, res);
+        applyError(error, res, req);
       }
       resolve();
     };
@@ -386,8 +409,10 @@ describe('anthropic compat route', () => {
     await invoke(handlers[2], req, res);
 
     expect(res.statusCode).toBe(403);
-    expect((res.body as any).code).toBe('forbidden');
-    expect(String((res.body as any).message)).toContain('Token mode not enabled');
+    // Compat requests get anthropic-shaped error envelopes even for pre-proxy validation
+    expect((res.body as any).type).toBe('error');
+    expect((res.body as any).error?.type).toBe('permission_error');
+    expect(String((res.body as any).error?.message)).toContain('Token mode not enabled');
   });
 
   it('supports stream=true requests on compat route', async () => {
@@ -1522,6 +1547,192 @@ describe('anthropic compat route', () => {
     expect(String(retryAudit?.openclaw_run_id ?? '')).toMatch(/^run_req_/);
 
     retryAuditSpy.mockRestore();
+    upstreamSpy.mockRestore();
+  });
+
+  // --- Translated compat error mapping tests ---
+
+  it('returns anthropic-shaped 401 when translated openai path returns 401', async () => {
+    const oauthToken = createFakeOpenAiOauthToken();
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string) => {
+      if (provider === 'openai') return { provider: 'openai', model: 'gpt-5.4', supports_streaming: false } as any;
+      if (provider === 'anthropic') return { provider: 'anthropic', model: 'claude-opus-4-6', supports_streaming: false } as any;
+      return null as any;
+    });
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider === 'openai') return [{
+        id: 'err-401-cred',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: oauthToken,
+        refreshToken: null,
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any];
+      return [];
+    });
+
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify({ error: { message: 'invalid api key' } }),
+      { status: 401, headers: { 'content-type': 'application/json' } }
+    ));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: { authorization: 'Bearer in_test', 'content-type': 'application/json', 'anthropic-version': '2023-06-01' },
+      body: { model: 'claude-opus-4-6', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    // Compat error envelope: openai 401 → credential exhaustion → fallback to anthropic (no creds) → capacity error
+    // The key assertion: error is anthropic-shaped, NOT innies-native
+    const body = res.body as any;
+    expect(body?.type).toBe('error');
+    expect(typeof body?.error?.type).toBe('string');
+    expect(typeof body?.error?.message).toBe('string');
+    upstreamSpy.mockRestore();
+  });
+
+  it('returns anthropic-shaped 429 when translated openai path returns 429', async () => {
+    const oauthToken = createFakeOpenAiOauthToken();
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string) => {
+      if (provider === 'openai') return { provider: 'openai', model: 'gpt-5.4', supports_streaming: false } as any;
+      if (provider === 'anthropic') return { provider: 'anthropic', model: 'claude-opus-4-6', supports_streaming: false } as any;
+      return null as any;
+    });
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider === 'openai') return [{
+        id: 'err-429-cred',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: oauthToken,
+        refreshToken: null,
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any];
+      return [];
+    });
+
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify({ error: { message: 'rate limited' } }),
+      { status: 429, headers: { 'content-type': 'application/json' } }
+    ));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: { authorization: 'Bearer in_test', 'content-type': 'application/json', 'anthropic-version': '2023-06-01' },
+      body: { model: 'claude-opus-4-6', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    // Compat error envelope: all errors on translated paths are anthropic-shaped
+    const body = res.body as any;
+    expect(body?.type).toBe('error');
+    expect(typeof body?.error?.type).toBe('string');
+    expect(typeof body?.error?.message).toBe('string');
+    upstreamSpy.mockRestore();
+  });
+
+  it('returns anthropic-shaped 500 when translated openai path returns 502', async () => {
+    const oauthToken = createFakeOpenAiOauthToken();
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string) => {
+      if (provider === 'openai') return { provider: 'openai', model: 'gpt-5.4', supports_streaming: false } as any;
+      if (provider === 'anthropic') return { provider: 'anthropic', model: 'claude-opus-4-6', supports_streaming: false } as any;
+      return null as any;
+    });
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider === 'openai') return [{
+        id: 'err-502-cred',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: oauthToken,
+        refreshToken: null,
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any];
+      return [];
+    });
+
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify({ error: { message: 'bad gateway' } }),
+      { status: 502, headers: { 'content-type': 'application/json' } }
+    ));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: { authorization: 'Bearer in_test', 'content-type': 'application/json', 'anthropic-version': '2023-06-01' },
+      body: { model: 'claude-opus-4-6', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    // Compat error envelope: all terminal errors are anthropic-shaped, never innies-native
+    const body = res.body as any;
+    expect(body?.type).toBe('error');
+    expect(typeof body?.error?.type).toBe('string');
+    expect(typeof body?.error?.message).toBe('string');
     upstreamSpy.mockRestore();
   });
 });

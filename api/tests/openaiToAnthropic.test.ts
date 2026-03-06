@@ -71,4 +71,48 @@ describe('translateOpenAiToAnthropic', () => {
       }
     });
   });
+
+  it('skips function_call output items with missing call_id', () => {
+    const translated = translateOpenAiToAnthropic({
+      model: 'claude-opus-4-6',
+      data: {
+        id: 'resp_no_callid',
+        status: 'completed',
+        usage: { input_tokens: 5, output_tokens: 3 },
+        output: [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            name: 'lookup_repo',
+            arguments: '{"name":"innies"}'
+          },
+          {
+            type: 'message',
+            id: 'msg_1',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'done' }]
+          }
+        ]
+      }
+    });
+
+    const toolUseBlocks = translated.content.filter((b: any) => b.type === 'tool_use');
+    expect(toolUseBlocks).toHaveLength(0);
+    expect(translated.content).toEqual([
+      { type: 'text', text: 'done' }
+    ]);
+    expect(translated.stop_reason).toBe('end_turn');
+  });
+
+  it('maps 401 to authentication_error', () => {
+    const result = mapOpenAiErrorToAnthropic(401, { error: { message: 'invalid key' } });
+    expect(result.status).toBe(401);
+    expect(result.body.error.type).toBe('authentication_error');
+  });
+
+  it('maps 429 to rate_limit_error', () => {
+    const result = mapOpenAiErrorToAnthropic(429, { error: { message: 'too many requests' } });
+    expect(result.status).toBe(429);
+    expect(result.body.error.type).toBe('rate_limit_error');
+  });
 });

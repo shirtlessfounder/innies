@@ -104,4 +104,140 @@ describe('translateAnthropicToOpenAi', () => {
       }
     ]);
   });
+
+  it('skips tool_result with missing tool_use_id instead of falling back', () => {
+    const translated = translateAnthropicToOpenAi({
+      payload: {
+        model: 'claude-opus-4-6',
+        max_tokens: 64,
+        messages: [
+          { role: 'user', content: 'hello' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'tool_use', id: 'toolu_1', name: 'get_weather', input: { city: 'tokyo' } }
+            ]
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'tool_result', content: 'sunny' }
+            ]
+          }
+        ]
+      }
+    });
+
+    const toolOutputs = translated.payload.input.filter((i: any) => i.type === 'function_call_output');
+    expect(toolOutputs).toHaveLength(0);
+  });
+
+  it('skips tool_use with missing id instead of generating synthetic ID', () => {
+    const translated = translateAnthropicToOpenAi({
+      payload: {
+        model: 'claude-opus-4-6',
+        max_tokens: 64,
+        messages: [
+          {
+            role: 'assistant',
+            content: [
+              { type: 'tool_use', name: 'get_weather', input: { city: 'tokyo' } }
+            ]
+          }
+        ]
+      }
+    });
+
+    const toolCalls = translated.payload.input.filter((i: any) => i.type === 'function_call');
+    expect(toolCalls).toHaveLength(0);
+  });
+
+  it('serializes mixed tool_result content as full JSON array', () => {
+    const translated = translateAnthropicToOpenAi({
+      payload: {
+        model: 'claude-opus-4-6',
+        max_tokens: 64,
+        messages: [
+          {
+            role: 'assistant',
+            content: [
+              { type: 'tool_use', id: 'toolu_1', name: 'analyze', input: {} }
+            ]
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_1',
+                content: [
+                  { type: 'text', text: 'result text' },
+                  { type: 'json', data: { score: 42 } }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    });
+
+    const toolOutput = translated.payload.input.find((i: any) => i.type === 'function_call_output');
+    expect(toolOutput).toBeDefined();
+    const parsed = JSON.parse(toolOutput.output);
+    expect(parsed).toEqual([
+      { type: 'text', text: 'result text' },
+      { type: 'json', data: { score: 42 } }
+    ]);
+  });
+
+  it('joins pure-text tool_result arrays naturally without JSON wrapping', () => {
+    const translated = translateAnthropicToOpenAi({
+      payload: {
+        model: 'claude-opus-4-6',
+        max_tokens: 64,
+        messages: [
+          {
+            role: 'assistant',
+            content: [
+              { type: 'tool_use', id: 'toolu_1', name: 'search', input: {} }
+            ]
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_1',
+                content: [
+                  { type: 'text', text: 'line one' },
+                  { type: 'text', text: 'line two' }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    });
+
+    const toolOutput = translated.payload.input.find((i: any) => i.type === 'function_call_output');
+    expect(toolOutput.output).toBe('line one\nline two');
+  });
+
+  it('preserves whitespace and code blocks in text content', () => {
+    const codeBlock = '  function hello() {\n    return "world";\n  }';
+    const translated = translateAnthropicToOpenAi({
+      payload: {
+        model: 'claude-opus-4-6',
+        max_tokens: 64,
+        system: codeBlock,
+        messages: [
+          { role: 'user', content: '  leading spaces and trailing newline\n' }
+        ]
+      }
+    });
+
+    expect(translated.payload.instructions).toBe(codeBlock);
+    const userMsg = translated.payload.input.find((i: any) => i.role === 'user');
+    expect(userMsg.content).toBe('  leading spaces and trailing newline\n');
+  });
 });
