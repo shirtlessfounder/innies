@@ -12,9 +12,12 @@ function asString(value: unknown, fallback: string): string {
 
 function normalizeUsage(response: Record<string, unknown>): { input_tokens: number; output_tokens: number } {
   const usage = isRecord(response.usage) ? response.usage : {};
+  const input_tokens = Number(usage.input_tokens ?? 0);
+  const output_tokens = Number(usage.output_tokens ?? 0);
   return {
-    input_tokens: Number(usage.input_tokens ?? 0),
-    output_tokens: Number(usage.output_tokens ?? 0)
+    input_tokens,
+    output_tokens,
+    total_tokens: input_tokens + output_tokens
   };
 }
 
