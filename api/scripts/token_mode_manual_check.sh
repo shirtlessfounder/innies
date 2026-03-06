@@ -10,7 +10,7 @@ set -euo pipefail
 #   INNIES_IDEMPOTENCY_PREFIX optional prefix for generated idempotency keys
 # Optional env:
 #   INNIES_MODEL              preferred explicit model
-#   INNIES_MODEL_ANTHROPIC    fallback model when INNIES_MODEL is unset
+#   INNIES_MODEL_ANTHROPIC    fallback model when INNIES_MODEL is unset (defaults to claude-opus-4-6)
 #   DATABASE_URL                required for DB evidence queries (psql)
 
 require_env() {
@@ -55,7 +55,7 @@ build_idempotency_key() {
   printf 'manual_check_%s_%s' "$(date +%s)" "$suffix"
 }
 
-MODEL="${INNIES_MODEL:-${INNIES_MODEL_ANTHROPIC:-claude-3-5-sonnet-latest}}"
+MODEL="${INNIES_MODEL:-${INNIES_MODEL_ANTHROPIC:-claude-opus-4-6}}"
 API_URL="$(resolve_api_url)"
 IDEMPOTENCY_KEY="$(build_idempotency_key)"
 OUT_DIR="${TMPDIR:-/tmp}/innies_token_check_$$"

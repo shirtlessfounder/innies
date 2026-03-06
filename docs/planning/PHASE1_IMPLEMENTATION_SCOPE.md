@@ -49,6 +49,50 @@ Product invariant:
 6. Easy token onboarding.
 7. Developer docs baseline.
 
+## Canonical Planning Rule
+- `docs/planning/ROADMAP.md` is the sequence/priority document.
+- `docs/planning/PHASE1_IMPLEMENTATION_SCOPE.md` is the Phase 1 source of truth.
+- Durable runtime behavior belongs in `docs/API_CONTRACT.md`.
+- Temporary agent coordination docs, patch queues, audit scratch docs, and one-off validation notes should be folded back into this file or durable docs, then deleted.
+
+## Current Execution Focus (2026-03-05)
+Active implementation focus remains:
+1. Codex support.
+2. Easy per-buyer-key provider preference.
+
+Why:
+- buyer-key provider preference is primarily for OpenClaw and other model-agnostic clients
+- provider-specific wrappers (`innies claude`, `innies codex`) are still planned Phase 1 work, but they are not the current feature focus
+
+Current validated state:
+- Codex/OpenAI OAuth credential routing works through Innies token mode.
+- Default Codex target is `gpt-5.4`.
+- Per-buyer-key provider preference works on `/v1/proxy/*`.
+- Compat-mode request translation exists:
+  - Anthropic Messages -> OpenAI Responses
+  - OpenAI Responses -> Anthropic-shaped JSON/SSE
+- Compat-mode buyer preference can already route `POST /v1/messages` onto the OpenAI/Codex lane.
+- Internal admin token onboarding exists:
+  - `POST /v1/admin/token-credentials`
+  - `POST /v1/admin/token-credentials/rotate`
+  - `POST /v1/admin/token-credentials/:id/revoke`
+  - debug labels + maxed/probe/reactivation lifecycle are implemented
+- Developer docs baseline exists:
+  - `docs/API_CONTRACT.md` covers auth + key endpoints + request/response examples
+  - onboarding docs exist for current internal client flows
+
+Current open blockers for closing the compat/OpenClaw path:
+- translated compat terminal `401` / `429` / `5xx` errors are not yet returning the correct Anthropic-shaped envelopes end-to-end
+- streaming translated tool paths still synthesize fallback IDs on missing `call_id`
+- translated streaming does not yet preserve multipart content structure
+- raw string text paths still trim content unnecessarily
+- unsupported translated content handling is still implicit
+- checked-in canary coverage does not yet prove multi-turn tool-use + fallback end-to-end
+
+Current gate status:
+- `cd api && npx vitest run` is not green in the current working tree
+- known failing area: translated compat terminal error behavior on `/v1/messages`
+
 ## Execution Protocol (Feature-by-Feature)
 Use this exact loop for features `1 -> 7`:
 1. Work only on the current feature (do not start next feature early).
