@@ -72,11 +72,15 @@ Behavior:
 - exits with the same exit code as `codex`
 - prints actionable error if `codex` cannot start
 - prepends Codex config overrides for:
-  - `model_provider="openai"`
-  - `model_providers.openai.env_key="OPENAI_API_KEY"`
-  - `model_providers.openai.wire_api="responses"`
-  - `model_providers.openai.env_http_headers."x-request-id"="INNIES_CORRELATION_ID"`
-  - `model_providers.openai.env_http_headers."x-innies-provider-pin"="INNIES_PROVIDER_PIN"`
+  - `model_provider="innies"` (custom Codex provider id; avoids the built-in `openai` provider path)
+  - `model_providers.innies.base_url="<innies>/v1/proxy/v1"`
+  - `model_providers.innies.env_key="OPENAI_API_KEY"`
+  - `model_providers.innies.wire_api="responses"`
+  - `model_providers.innies.requires_openai_auth=false`
+  - `model_providers.innies.supports_websockets=false`
+  - `responses_websockets_v2=false`
+  - `model_providers.innies.env_http_headers."x-request-id"="INNIES_CORRELATION_ID"`
+  - `model_providers.innies.env_http_headers."x-innies-provider-pin"="INNIES_PROVIDER_PIN"`
 - injects the provider default OpenAI/Codex model when no explicit `-m`, `--model <id>`, or `--model=<id>` override is supplied
 - loop-safe binary resolution:
   - prefers non-wrapper Codex binary from `which -a codex`
