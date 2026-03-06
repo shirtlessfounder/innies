@@ -96,8 +96,10 @@ Implementation requirement:
 - wrappers must send or imply an explicit provider pin signal so routed traffic is recorded as `cli_provider_pinned`
 
 Planning note:
-- Codex parity is not treated as pure CLI scaffolding.
-- If the Codex binary cannot emit a pin signal or request correlation in a form Innies already recognizes, minimal API/request-shaping work is in scope for this feature.
+- Codex binary env contract is resolved (see First Implementation Checkpoint below).
+- Codex natively supports `OPENAI_BASE_URL`, bearer token injection, and custom headers via `env_http_headers`.
+- Codex uses `wire_api = "responses"` (OpenAI Responses API) — traffic goes through `/v1/proxy/*`, not the compat translation layer.
+- Pinning/correlation: wrapper sets env var → codex injects as request header via `env_http_headers` config.
 
 ### Routing Contract
 - `innies claude` hard-pins the Anthropic lane for the session.
@@ -298,8 +300,39 @@ These are discovery tasks inside the feature scope, not unresolved product-direc
 
 ## First Implementation Checkpoint
 Resolve these before coding deeper than command scaffolding:
-- **Codex binary env contract (BLOCKING):** prove what env vars the `codex` CLI accepts for API base URL, auth token, and model. This is the single biggest unknown — if `codex` doesn't accept the same kind of env override that `claude` does, the wrapper approach needs rethinking. Run `codex --help`, check source/docs, test with env vars before writing wrapper code.
-- Codex wrapper invocation contract
-- pinned-routing implementation strategy that the backend will actually recognize
+
+### ✅ Codex binary env contract (RESOLVED 2026-03-06)
+Source: https://developers.openai.com/codex/config-reference/, config-advanced/, config-sample/
+
+**Base URL override:**
+- `OPENAI_BASE_URL` env var overrides the default OpenAI endpoint. No config file change needed.
+- Alternatively: `[model_providers.openai] base_url = "..."` in `~/.codex/config.toml`.
+
+**Auth:**
+- `experimental_bearer_token` in config for direct bearer token injection.
+- `env_key` on model providers reads an API key from a named env var.
+- Standard OpenAI OAuth auth is the default path.
+
+**Custom headers:**
+- `http_headers = { "X-Example" = "value" }` — static headers per model provider.
+- `env_http_headers = { "Header-Name" = "ENV_VAR_NAME" }` — headers populated from env vars at runtime.
+- This is the pinning/correlation mechanism: wrapper sets an env var, codex injects it as a request header.
+
+**Wire API:**
+- Codex uses `wire_api = "responses"` by default (OpenAI Responses API).
+- Traffic from `innies codex` hits Innies as native OpenAI-shaped requests, NOT anthropic-shaped.
+- This means `innies codex` routes through `/v1/proxy/*` directly — the compat translation layer is NOT involved.
+- Translation only matters for `innies claude` → openai fallback scenarios.
+
+**CLI overrides:**
+- `codex --model gpt-5.4` — dedicated model flag.
+- `codex --config key=value` — arbitrary TOML key override per run.
+- `codex --profile <name>` — named config profile.
+
+**Wrapper approach:** confirmed viable. `innies codex` sets `OPENAI_BASE_URL` + bearer token env vars, codex routes through innies transparently. Same pattern as `innies claude`.
+
+### Remaining checkpoints
+- Codex wrapper invocation contract (scaffolding can proceed based on resolved env contract above)
+- pinned-routing implementation strategy: use `env_http_headers` to inject `x-request-id` or a custom pin header from `INNIES_CORRELATION_ID`
 - provider-scoped config/default-model write strategy
 - concrete server-side proof workflow for wrapped-session validation
