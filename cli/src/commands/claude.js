@@ -12,6 +12,20 @@ function proxyBase(configBaseUrl) {
   return `${configBaseUrl}/v1/proxy`;
 }
 
+function hasExplicitModelArg(args) {
+  return args.some((arg) => (
+    arg === '--model'
+    || arg.startsWith('--model=')
+  ));
+}
+
+function buildClaudeArgs(args, model) {
+  if (hasExplicitModelArg(args)) {
+    return args;
+  }
+  return ['--model', model, ...args];
+}
+
 export async function runClaude(args) {
   const config = await loadConfig(true);
   if (!config) {
@@ -49,7 +63,7 @@ export async function runClaude(args) {
   const captureOutput = shouldCaptureCommandOutput('INNIES_CAPTURE_CLAUDE_OUTPUT');
   let combinedOutput = '';
   const stdio = captureOutput ? ['inherit', 'pipe', 'pipe'] : 'inherit';
-  const child = spawn(claudeBinary, args, {
+  const child = spawn(claudeBinary, buildClaudeArgs(args, model), {
     stdio,
     env
   });
