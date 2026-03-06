@@ -64,6 +64,7 @@ Product invariant:
 ## Canonical Planning Rule
 - `docs/planning/ROADMAP.md` is the sequence/priority document.
 - `docs/planning/PHASE1_IMPLEMENTATION_SCOPE.md` is the Phase 1 source of truth.
+- `docs/planning/PHASE1_CLI_PARITY_SCOPE.md` is the isolated feature scope for Phase 1 feature `4) CLI support`.
 - Durable runtime behavior belongs in `docs/API_CONTRACT.md`.
 - Temporary agent coordination docs, patch queues, audit scratch docs, and one-off validation notes should be folded back into this file or durable docs, then deleted.
 
@@ -71,6 +72,8 @@ Product invariant:
 Active implementation focus:
 3. Per-token analytics gathering (read endpoints + dashboard views).
 4. CLI support (`innies claude`, `innies codex`).
+   - isolated execution scope: `docs/planning/PHASE1_CLI_PARITY_SCOPE.md`
+   - explicit sequencing exception: feature `4` is unblocked to run in parallel with feature `3`; each feature still needs its own validation gate and completion notes
 
 Completed:
 - ✅ Codex support (translation layer deployed to production)
@@ -79,7 +82,7 @@ Completed:
 - ✅ Developer docs baseline (API contract + onboarding guides)
 
 Current gate status:
-- `cd api && npx vitest run` → 19 files, 125 tests, all green
+- `cd api && npx vitest run` → 19 files, 127 tests, all green
 - Compat translation deployed to production (2026-03-06)
 - OpenClaw verified compatible (anthropic-messages API, server-side translation transparent)
 
@@ -99,6 +102,11 @@ Use this exact loop for features `1 -> 7`:
 6. Commit as one atomic feature commit.
 7. Tag/share feature completion notes (what changed, how it was validated, any known caveats).
 8. Move to the next feature only after gate pass.
+
+Execution exception (2026-03-06):
+- Features `3` and `4` may proceed in parallel.
+- This exception is explicitly authorized by `## Current Execution Focus`.
+- Parallel work does not waive per-feature validation, contract checkpoints, or atomic completion notes.
 
 ## 3-Agent Work Split (Per Feature)
 
@@ -277,6 +285,59 @@ Deliverables:
 Acceptance:
 - Internal users can complete coding sessions from both wrappers
 - No Innies-only stalls attributable to wrapper behavior
+
+#### D1) CLI Parity Implementation Slice (2026-03-06)
+Goal:
+- Finish provider-specific wrapper parity without widening the CLI surface beyond Phase 1 needs.
+- Detailed isolated scope: `docs/planning/PHASE1_CLI_PARITY_SCOPE.md`
+- This slice includes any minimal API/request-shaping work required to make Codex wrapper traffic truly pinned and validation-visible.
+
+In scope:
+- `innies claude -- <claude args...>` as the Anthropic-pinned coding lane.
+- `innies codex -- <codex args...>` as the Codex/OpenAI-pinned coding lane.
+- Shared `innies login` config remains one buyer token + base URL + provider defaults.
+- Shared `innies doctor` expands to report Claude-lane and Codex-lane readiness separately.
+- Existing `innies link claude` remains supported.
+- Argument passthrough after `--`, TTY-preserving execution, and exit-code parity with the wrapped binary.
+- One-line runtime status output including proxy target + correlation/request id.
+- Binary resolution + recursion guards for both wrappers:
+  - `INNIES_CLAUDE_BIN`
+  - `INNIES_CODEX_BIN`
+  - `INNIES_CLAUDE_WRAPPED`
+  - `INNIES_CODEX_WRAPPED`
+- Shared Innies env wiring (`INNIES_TOKEN`, `INNIES_API_BASE_URL`, `INNIES_PROXY_URL`, `INNIES_MODEL`, `INNIES_CORRELATION_ID`) plus the provider-native env vars expected by the wrapped CLI.
+- Explicit provider pin signal on every wrapper request so routing stays on the intended provider lane and emits `cli_provider_pinned`.
+- Provider-specific default model selection:
+  - Claude wrapper uses Anthropic default model config.
+  - Codex wrapper uses Codex/OpenAI default model config.
+- Actionable hints for:
+  - token mode not enabled
+  - unauthorized / expired upstream credential
+  - capacity unavailable / maxed pool state
+
+Validation gate:
+- Local fake-binary smoke coverage for both wrappers.
+- Real-env proof for both wrappers against `/v1/proxy/*`.
+- Evidence for each wrapper includes:
+  - successful routed request
+  - token-credential attribution header/log evidence
+  - routing reason `cli_provider_pinned`
+- At least one real coding-session validation on a team machine per wrapper.
+- No provider flip during a pinned session.
+
+Explicit non-goals for this slice:
+- Generic preference-routed CLI entrypoint (for example `innies chat` or `innies code`).
+- Mid-session cross-provider switching inside provider-specific wrappers.
+- CLI-managed OAuth setup/login productization (`innies auth setup` belongs to Phase 2).
+- Per-user provider/model override UI or config beyond Phase 1 defaults.
+- Auto-installing or auto-updating Claude/Codex upstream binaries.
+- Requiring `innies link codex` for Phase 1 exit; direct `innies codex` usage is sufficient.
+
+Implementation order:
+1. Add command parity (`innies codex`) using the same wrapper contract as `innies claude`.
+2. Expand shared readiness/troubleshooting surfaces (`innies doctor`, usage text, error hints) so both lanes are first-class.
+3. Extend smoke coverage to exercise both wrappers locally and in real-env proof mode.
+4. Update CLI docs only after command behavior and smoke validation match the shipped contract.
 
 ### E) Internal Dashboard + Analytics
 Deliverables:
