@@ -1039,6 +1039,60 @@ function normalizeSyntheticContentBlocks(message: Record<string, unknown>): Arra
   return [];
 }
 
+function looksLikeSsePayload(raw: string): boolean {
+  const trimmed = raw.trimStart();
+  return trimmed.startsWith('data:')
+    || trimmed.startsWith('event:')
+    || trimmed.startsWith(':')
+    || trimmed.includes('\n\ndata:')
+    || trimmed.includes('\n\nevent:');
+}
+
+async function readUpstreamBody(input: {
+  upstreamResponse: globalThis.Response;
+  contentType: string;
+}): Promise<{
+  rawText: string;
+  data: unknown;
+  jsonParsed: boolean;
+  looksLikeSse: boolean;
+}> {
+  const { upstreamResponse, contentType } = input;
+  const rawText = await upstreamResponse.text().catch(() => '');
+  const sseLike = looksLikeSsePayload(rawText);
+  if (!contentType.includes('application/json')) {
+    return {
+      rawText,
+      data: rawText,
+      jsonParsed: false,
+      looksLikeSse: sseLike
+    };
+  }
+  if (rawText.trim().length === 0) {
+    return {
+      rawText,
+      data: {},
+      jsonParsed: false,
+      looksLikeSse: false
+    };
+  }
+  try {
+    return {
+      rawText,
+      data: JSON.parse(rawText),
+      jsonParsed: true,
+      looksLikeSse: sseLike
+    };
+  } catch {
+    return {
+      rawText,
+      data: {},
+      jsonParsed: false,
+      looksLikeSse: sseLike
+    };
+  }
+}
+
 function summarizeSyntheticContentBlocks(message: Record<string, unknown>): { count: number; types: string } {
   const blocks = normalizeSyntheticContentBlocks(message);
   const uniqueTypes = new Set<string>();
@@ -1203,22 +1257,23 @@ function buildSyntheticAnthropicSse(data: unknown, model: string): string {
   return events.join('');
 }
 
-function summarizeOpenAiStreamFallbackPayload(data: unknown): Record<string, unknown> {
+function summarizeOpenAiStreamFallbackPayload(input: {
+  data: unknown;
+  rawText: string;
+  jsonParsed: boolean;
+  looksLikeSse: boolean;
+}): Record<string, unknown> {
+  const { data, rawText, jsonParsed, looksLikeSse } = input;
   const record = data && typeof data === 'object' && !Array.isArray(data)
     ? data as Record<string, unknown>
     : {};
   const output = Array.isArray(record.output)
     ? record.output.filter((item) => item && typeof item === 'object')
     : [];
-  const preview = (() => {
-    try {
-      return JSON.stringify(data).slice(0, 4000);
-    } catch {
-      return '[unserializable]';
-    }
-  })();
 
   return {
+    json_parsed: jsonParsed,
+    looks_like_sse: looksLikeSse,
     status: typeof record.status === 'string' ? record.status : null,
     id: typeof record.id === 'string' ? record.id : null,
     detail: typeof record.detail === 'string' ? record.detail : null,
@@ -1230,7 +1285,8 @@ function summarizeOpenAiStreamFallbackPayload(data: unknown): Record<string, unk
     output_text_present: typeof record.output_text === 'string' && record.output_text.length > 0,
     output_text_length: typeof record.output_text === 'string' ? record.output_text.length : 0,
     top_level_keys: Object.keys(record).slice(0, 50),
-    raw_json_preview: preview
+    raw_text_length: rawText.length,
+    raw_text_preview: rawText.slice(0, 4000)
   };
 }
 
@@ -2183,9 +2239,10 @@ async function executeTokenModeStreaming(input: {
       const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
       const isStreaming = contentType.includes('text/event-stream');
       if (!isStreaming) {
-        const data = contentType.includes('application/json')
-          ? await upstreamResponse.json().catch(() => ({}))
-          : await upstreamResponse.text();
+        const { data, rawText, jsonParsed, looksLikeSse } = await readUpstreamBody({
+          upstreamResponse,
+          contentType
+        });
         // Map ALL error statuses on translated paths to Anthropic-shaped error envelopes.
         const downstreamMappedError = compatTranslation && status >= 400
           ? mapOpenAiErrorToAnthropic(status, data)
@@ -2264,11 +2321,128 @@ async function executeTokenModeStreaming(input: {
             (res as any).socket.setNoDelay?.(true);
           }
 
+          const useAnthropicSse = !!(compatTranslation || compatModeFlag);
+          if (!useAnthropicSse && looksLikeSse) {
+            firstDownstreamWriteAt = Date.now();
+            (res as any).write(rawText);
+            if ((res as any).body === undefined) {
+              (res as any).body = rawText;
+            }
+            if (typeof (res as any).flush === 'function') {
+              (res as any).flush();
+            }
+            (res as any).end();
+            streamEndedAt = Date.now();
+
+            const parsedInputTokens = extractLastTokenCount(rawText, 'input_tokens');
+            const parsedOutputTokens = extractLastTokenCount(rawText, 'output_tokens');
+            const totalBytes = Buffer.byteLength(rawText, 'utf8');
+            const usageUnits = Math.max(
+              0,
+              (parsedInputTokens ?? 0) + (parsedOutputTokens ?? 0)
+            ) || Math.max(1, Math.ceil(totalBytes / 4));
+            const inputTokens = parsedInputTokens ?? Math.floor(usageUnits * 0.4);
+            const outputTokens = parsedOutputTokens ?? Math.max(0, usageUnits - inputTokens);
+            const meteringSource: MeteringSource = parsedInputTokens === null || parsedOutputTokens === null
+              ? 'stream_estimate'
+              : 'stream_usage';
+
+            try {
+              if (status < 500) {
+                await runtime.services.metering.recordUsage({
+                  requestId,
+                  attemptNo,
+                  orgId,
+                  apiKeyId,
+                  sellerKeyId: undefined,
+                  provider,
+                  model,
+                  inputTokens,
+                  outputTokens,
+                  usageUnits,
+                  retailEquivalentMinor: usageUnits,
+                  note: `metering_source=${meteringSource} stream_mode=buffered_passthrough`
+                });
+
+                const monthlyUsageRecorded = await runtime.repos.tokenCredentials.addMonthlyContributionUsage(
+                  credential.id,
+                  usageUnits
+                );
+                if (!monthlyUsageRecorded) {
+                  await logAttemptFailure({
+                    kind: 'metering_degraded',
+                    message: 'monthly contribution increment could not be recorded after buffered SSE passthrough'
+                  });
+                }
+              }
+
+              if (idempotencySession && !idempotencySession.replay) {
+                await commitProxyMetadataIdempotency(
+                  idempotencySession,
+                  requestId,
+                  { type: 'stream_non_replayable', requestId, usageUnits }
+                );
+              }
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              console.warn('[post-stream-bookkeeping] buffered_passthrough_failed', {
+                requestId,
+                attemptNo,
+                credential_id: credential.id,
+                message
+              });
+            }
+
+            console.info('[stream-first-byte]', {
+              requestId,
+              attemptNo,
+              provider,
+              model,
+              first_byte_ms: (firstDownstreamWriteAt ?? Date.now()) - startedAt,
+              synthetic_stream_bridge: false,
+              buffered_upstream_sse: true
+            });
+            console.info('[stream-latency]', {
+              requestId,
+              attemptNo,
+              credential_id: credential.id,
+              credential_label: credential.debugLabel ?? null,
+              openclaw_run_id: correlation.openclawRunId,
+              openclaw_session_id: correlation.openclawSessionId ?? null,
+              upstream_status: status,
+              upstream_content_type: contentType,
+              stream_mode: 'buffered_passthrough',
+              synthetic_stream_bridge: false,
+              buffered_upstream_sse: true,
+              metering_source: meteringSource,
+              pre_upstream_ms: dispatchStartedAt - attemptStartedAt,
+              upstream_ttfb_ms: upstreamHeadersAt - dispatchStartedAt,
+              bridge_build_ms: firstDownstreamWriteAt ? (firstDownstreamWriteAt - upstreamHeadersAt) : null,
+              synthetic_content_block_count: null,
+              synthetic_content_block_types: null,
+              synthetic_output_item_count: null,
+              synthetic_output_item_types: null,
+              post_stream_write_ms: firstDownstreamWriteAt && streamEndedAt
+                ? Math.max(0, streamEndedAt - firstDownstreamWriteAt)
+                : null
+            });
+            return {
+              requestId,
+              keyId: credential.id,
+              attemptNo,
+              upstreamStatus: status,
+              usageUnits,
+              contentType: 'text/event-stream; charset=utf-8',
+              data: null,
+              routeKind: 'token_credential',
+              alreadyRecorded: true
+            };
+          }
+
           const syntheticMessage = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
           const downstreamMessage = (downstreamData && typeof downstreamData === 'object'
             ? downstreamData
             : {}) as Record<string, unknown>;
-          const useAnthropicSse = !!(compatTranslation || compatModeFlag);
           const anthropicSummary = useAnthropicSse
             ? summarizeSyntheticContentBlocks(compatTranslation ? downstreamMessage : syntheticMessage)
             : null;
@@ -2293,7 +2467,12 @@ async function executeTokenModeStreaming(input: {
               model,
               upstream_status: status,
               upstream_content_type: contentType,
-              ...summarizeOpenAiStreamFallbackPayload(syntheticMessage)
+              ...summarizeOpenAiStreamFallbackPayload({
+                data: syntheticMessage,
+                rawText,
+                jsonParsed,
+                looksLikeSse
+              })
             });
           }
           firstDownstreamWriteAt = Date.now();
