@@ -266,11 +266,12 @@ Validation rule:
 - preferred proof path is wrapper correlation id -> Innies `x-request-id` -> server-side evidence
 - if direct `x-request-id` propagation is not feasible for Codex on the current binary contract, this feature must add another explicit correlation path before Phase 1 exit
 
-### Team-Machine Validation
+### Live Session Validation
 For each wrapper:
-- at least one real coding-session check on a team machine
+- at least one real coding-session check by Dylan on his local machine
 - confirm no wrapper-induced stalls
 - confirm session remains on the intended provider lane
+- Phase 1 is internal-only — Dylan's machine is the validation surface, not a QA matrix
 
 ## Done Criteria
 - `innies claude` and `innies codex` both exist and are usable
@@ -297,6 +298,7 @@ These are discovery tasks inside the feature scope, not unresolved product-direc
 
 ## First Implementation Checkpoint
 Resolve these before coding deeper than command scaffolding:
+- **Codex binary env contract (BLOCKING):** prove what env vars the `codex` CLI accepts for API base URL, auth token, and model. This is the single biggest unknown — if `codex` doesn't accept the same kind of env override that `claude` does, the wrapper approach needs rethinking. Run `codex --help`, check source/docs, test with env vars before writing wrapper code.
 - Codex wrapper invocation contract
 - pinned-routing implementation strategy that the backend will actually recognize
 - provider-scoped config/default-model write strategy

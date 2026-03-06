@@ -182,7 +182,7 @@ Agent 2 (session/runtime wiring):
 Agent 3 (UX validation + troubleshooting):
 - Create smoke-test scripts for both wrappers.
 - Add clear failure messages for auth/capacity/maxed states.
-- Validate compatibility on team machines.
+- Validate compatibility on Dylan's machine (Phase 1 is internal-only).
 
 Definition of done:
 - Internal team can use both wrappers for normal coding sessions.
@@ -322,7 +322,7 @@ Validation gate:
   - successful routed request
   - token-credential attribution header/log evidence
   - routing reason `cli_provider_pinned`
-- At least one real coding-session validation on a team machine per wrapper.
+- At least one real coding-session validation by Dylan on his local machine per wrapper.
 - No provider flip during a pinned session.
 
 Explicit non-goals for this slice:
