@@ -11,6 +11,7 @@ mkdir -p "$HOME/bin" "$HOME/.local/bin"
 MOCK_BASE_URL="https://gateway.innies.ai"
 
 FAKE_CLAUDE_LOG="$TMP_DIR/fake_claude.log"
+FAKE_CODEX_LOG="$TMP_DIR/fake_codex.log"
 cat > "$HOME/bin/claude" << 'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -66,19 +67,45 @@ chmod +x "$HOME/bin/claude"
 cat > "$HOME/bin/codex" << 'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+{
+  for arg in "$@"; do
+    echo "arg:$arg"
+  done
+  echo "INNIES_ROUTE_MODE:${INNIES_ROUTE_MODE:-}"
+  echo "INNIES_API_BASE_URL:${INNIES_API_BASE_URL:-}"
+  echo "INNIES_PROXY_URL:${INNIES_PROXY_URL:-}"
+  echo "INNIES_TOKEN:${INNIES_TOKEN:-}"
+  echo "INNIES_CORRELATION_ID:${INNIES_CORRELATION_ID:-}"
+  echo "INNIES_PROVIDER_PIN:${INNIES_PROVIDER_PIN:-}"
+  echo "OPENAI_API_KEY:${OPENAI_API_KEY:-}"
+  echo "OPENAI_BASE_URL:${OPENAI_BASE_URL:-}"
+} >> "$FAKE_CODEX_LOG"
+
+if printf '%s\n' "$@" | grep -qx -- '--check-token-auth-failure'; then
+  echo '{"error":{"message":"token mode not enabled for org"}}' >&2
+  exit 1
+fi
+
 echo "codex-help-stub"
 SH
 chmod +x "$HOME/bin/codex"
 
 export PATH="$HOME/bin:$PATH"
 export FAKE_CLAUDE_LOG
+export FAKE_CODEX_LOG
 export TMP_DIR
 export INNIES_CAPTURE_CLAUDE_OUTPUT=1
+export INNIES_CAPTURE_CODEX_OUTPUT=1
 
 node "$ROOT_DIR/src/index.js" login --token in_live_test --base-url "$MOCK_BASE_URL"
 node "$ROOT_DIR/src/index.js" doctor > "$TMP_DIR/doctor.out"
 node "$ROOT_DIR/src/index.js" link claude
 node "$ROOT_DIR/src/index.js" claude -- --version --foo bar
+node "$ROOT_DIR/src/index.js" codex -- --help > "$TMP_DIR/codex.out"
+if node "$ROOT_DIR/src/index.js" codex -- --check-token-auth-failure > "$TMP_DIR/codex_token_auth_failure.out" 2>&1; then
+  echo "smoke: expected codex token auth failure path to return non-zero"
+  exit 1
+fi
 node "$ROOT_DIR/src/index.js" claude -- --check-pass-through
 node "$ROOT_DIR/src/index.js" claude -- --check-idempotency-policy
 if node "$ROOT_DIR/src/index.js" claude -- --check-token-auth-failure > "$TMP_DIR/token_auth_failure.out" 2>&1; then
@@ -144,6 +171,51 @@ if ! grep -q 'INNIES_TOKEN:in_live_test' "$FAKE_CLAUDE_LOG"; then
   exit 1
 fi
 
+if ! grep -q 'arg:model_provider="openai"' "$FAKE_CODEX_LOG"; then
+  echo "smoke: missing codex provider override"
+  exit 1
+fi
+
+if ! grep -q 'arg:model_providers.openai.wire_api="responses"' "$FAKE_CODEX_LOG"; then
+  echo "smoke: missing codex wire_api override"
+  exit 1
+fi
+
+if ! grep -q 'arg:model_providers.openai.env_http_headers."x-request-id"="INNIES_CORRELATION_ID"' "$FAKE_CODEX_LOG"; then
+  echo "smoke: missing codex x-request-id header wiring"
+  exit 1
+fi
+
+if ! grep -q 'arg:model_providers.openai.env_http_headers."x-innies-provider-pin"="INNIES_PROVIDER_PIN"' "$FAKE_CODEX_LOG"; then
+  echo "smoke: missing codex pin header wiring"
+  exit 1
+fi
+
+if ! grep -q 'arg:gpt-5.4' "$FAKE_CODEX_LOG"; then
+  echo "smoke: missing codex default model injection"
+  exit 1
+fi
+
+if ! grep -q 'arg:--help' "$FAKE_CODEX_LOG"; then
+  echo "smoke: codex args not forwarded"
+  exit 1
+fi
+
+if ! grep -q "INNIES_PROXY_URL:$MOCK_BASE_URL/v1/proxy/v1" "$FAKE_CODEX_LOG"; then
+  echo "smoke: missing codex INNIES_PROXY_URL wiring"
+  exit 1
+fi
+
+if ! grep -q "OPENAI_BASE_URL:$MOCK_BASE_URL/v1/proxy/v1" "$FAKE_CODEX_LOG"; then
+  echo "smoke: missing codex OPENAI_BASE_URL wiring"
+  exit 1
+fi
+
+if ! grep -q 'INNIES_PROVIDER_PIN:true' "$FAKE_CODEX_LOG"; then
+  echo "smoke: missing codex provider pin env wiring"
+  exit 1
+fi
+
 if ! grep -q 'pass_through:ok' "$FAKE_CLAUDE_LOG"; then
   echo "smoke: non-streaming pass-through compatibility check failed"
   exit 1
@@ -154,8 +226,13 @@ if ! grep -q 'idempotency:ok' "$FAKE_CLAUDE_LOG"; then
   exit 1
 fi
 
-if ! grep -q 'Innies hint: Token auth failed: token mode is not enabled for this org.' "$TMP_DIR/token_auth_failure.out"; then
+if ! grep -q 'Innies hint: Token mode is not enabled for this org. Ask an operator to add the org to TOKEN_MODE_ENABLED_ORGS.' "$TMP_DIR/token_auth_failure.out"; then
   echo "smoke: token auth failure hint missing or unclear"
+  exit 1
+fi
+
+if ! grep -q 'Innies hint: Token mode is not enabled for this org. Ask an operator to add the org to TOKEN_MODE_ENABLED_ORGS.' "$TMP_DIR/codex_token_auth_failure.out"; then
+  echo "smoke: codex token auth failure hint missing or unclear"
   exit 1
 fi
 

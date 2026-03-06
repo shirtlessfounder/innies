@@ -97,8 +97,10 @@ export async function runDoctor() {
   }
 
   if (config) {
-    console.log(`Innies endpoint: ${config.apiBaseUrl}/v1/proxy`);
-    console.log(`Default model: ${config.defaultModel}`);
+    console.log(`Innies endpoint (claude): ${config.apiBaseUrl}/v1/proxy`);
+    console.log(`Innies endpoint (codex): ${config.apiBaseUrl}/v1/proxy/v1`);
+    console.log(`Fallback model: ${config.defaultModel}`);
+    console.log(`Provider defaults: anthropic=${config.providerDefaults.anthropic} openai=${config.providerDefaults.openai}`);
   }
 
   if (failed > 0) {

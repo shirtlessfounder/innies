@@ -8,8 +8,8 @@ Internal quickstart for the provider-specific Innies CLI wrappers:
 This is the intended Phase 1 user-facing flow for internal users. The goal is simple: log in once with an Innies buyer key, then start either Claude or Codex through Innies without managing provider auth directly.
 
 Current branch note:
-- `innies claude` is already functional
-- `innies codex` may still show a scaffold message until the Codex runtime lane is fully merged
+- `innies claude` and `innies codex` are both functional wrapper entrypoints
+- both use the same Innies login/config and remain provider-pinned lanes
 
 ## What These Commands Are
 - `innies claude` starts a Claude session pinned to the Anthropic lane.
@@ -31,7 +31,7 @@ Make sure you have:
 innies login --token in_live_REPLACE_ME
 ```
 
-This writes local config to `~/.innies/config.json`.
+This writes local config to `~/.innies/config.json` with one shared Innies token, one fallback model, and provider defaults for the Claude and Codex lanes.
 
 ### 2) Check readiness
 ```bash
@@ -59,13 +59,18 @@ When a session starts, the wrapper prints one short status line before handing o
 
 Example shape:
 ```text
-Innies connected | model <model-id> | proxy <base-url>/v1/proxy | request <request-id>
+Innies connected | model <model-id> | proxy <proxy-url> | request <request-id>
 ```
+
+In practice:
+- `innies claude` reports an Anthropic-lane proxy URL ending in `/v1/proxy`
+- `innies codex` reports a Codex/OpenAI-lane proxy URL ending in `/v1/proxy/v1`
 
 After that:
 - your args pass straight through to the upstream CLI
 - the session keeps the upstream CLI's normal TTY behavior
 - the wrapper exits with the same exit code as the upstream CLI
+- Codex also injects OpenAI provider config overrides so requests stay on the native Responses lane and carry Innies correlation/pin headers
 
 ## Mental Model
 - one Innies login
@@ -95,6 +100,8 @@ This creates a shim in `~/.local/bin/claude`. Make sure `~/.local/bin` is ahead 
   - install the upstream CLI first, then rerun `innies doctor`
 - wrapper recursion
   - point the wrapper at the real upstream binary, not another Innies shim
+- token-mode not enabled / capacity / unauthorized hints
+  - use the printed request id plus server-side routing evidence to debug the provider-pinned lane
 
 ## Daily Flow
 ```bash

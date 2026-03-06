@@ -18,7 +18,7 @@ Product invariant:
 - Anthropic (existing) + Codex/OpenAI token routing support in same pool framework.
 - Compat translation layer: Anthropic Messages ↔ OpenAI Responses (request, response, streaming).
 - Error envelope mapping for translated paths (401/429/5xx → Anthropic-shaped errors).
-- 125 tests passing, deployed to production.
+- 127 tests passing, deployed to production.
 
 2. CLI integration
 - `innies claude`

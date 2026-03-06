@@ -2,45 +2,36 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fail, normalizeBaseUrl } from './utils.js';
+import {
+  defaultAnthropicModel,
+  defaultOpenAiModel,
+  defaultProviderModels as defaultProviderModelsBase,
+  inferModelProvider,
+  normalizeLegacyFallbackModel,
+  normalizeModel,
+  normalizeProviderDefaults,
+  providerDefaultsFromModelHint
+} from './modelSelection.js';
 
-const DEFAULT_MODELS = Object.freeze({
-  anthropic: 'claude-opus-4-6',
-  openai: 'gpt-5.4'
-});
-const LEGACY_DEFAULT_MODEL = DEFAULT_MODELS.anthropic;
+const LEGACY_DEFAULT_MODEL = defaultAnthropicModel();
 const PRIMARY_CONFIG_PATH = join(homedir(), '.innies', 'config.json');
 const LEGACY_CONFIG_PATH = join(homedir(), '.headroom', 'config.json');
-
-function normalizeModel(value) {
-  if (typeof value !== 'string') return null;
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : null;
-}
-
-function normalizeProviderDefaults(raw, fallbackModel) {
-  const providerDefaults = raw && typeof raw === 'object'
-    ? raw
-    : {};
-  const fallback = normalizeModel(fallbackModel) ?? LEGACY_DEFAULT_MODEL;
-  return {
-    anthropic: normalizeModel(providerDefaults.anthropic) ?? fallback,
-    openai: normalizeModel(providerDefaults.openai) ?? fallback
-  };
-}
 
 function buildConfigRecord(input) {
   const token = normalizeModel(input.token);
   const apiBaseUrl = normalizeModel(input.apiBaseUrl);
-  const fallbackModel = normalizeModel(input.defaultModel)
-    ?? normalizeModel(input.providerDefaults?.anthropic)
-    ?? normalizeModel(input.providerDefaults?.openai)
-    ?? LEGACY_DEFAULT_MODEL;
+  const legacyFallbackModel = normalizeLegacyFallbackModel(input.defaultModel);
 
   if (!token || !apiBaseUrl) {
     return null;
   }
 
-  const providerDefaults = normalizeProviderDefaults(input.providerDefaults, fallbackModel);
+  const providerDefaults = normalizeProviderDefaults(input.providerDefaults, legacyFallbackModel);
+  const fallbackModel = legacyFallbackModel
+    ?? normalizeLegacyFallbackModel(input.providerDefaults?.anthropic)
+    ?? providerDefaults.anthropic
+    ?? LEGACY_DEFAULT_MODEL;
+
   return {
     version: 1,
     token,
@@ -86,19 +77,19 @@ export async function loadConfig(required = true) {
 export async function saveConfig(token, apiBaseUrl, defaultModel) {
   const file = configPath();
   await mkdir(dirname(file), { recursive: true });
-  const normalizedModel = normalizeModel(defaultModel);
+  const normalizedModel = normalizeLegacyFallbackModel(defaultModel) ?? normalizeModel(defaultModel);
   const providerDefaults = normalizedModel
-    ? {
-      anthropic: normalizedModel,
-      openai: normalizedModel
-    }
-    : defaultProviderModels();
+    ? providerDefaultsFromModelHint(normalizedModel)
+    : defaultProviderModelsBase();
+  const selectedProvider = inferModelProvider(normalizedModel);
 
   const config = {
     version: 1,
     token,
     apiBaseUrl: normalizeBaseUrl(apiBaseUrl),
-    defaultModel: normalizedModel ?? LEGACY_DEFAULT_MODEL,
+    defaultModel: normalizedModel && selectedProvider !== 'openai'
+      ? normalizedModel
+      : providerDefaults.anthropic,
     providerDefaults,
     updatedAt: new Date().toISOString()
   };
@@ -107,12 +98,8 @@ export async function saveConfig(token, apiBaseUrl, defaultModel) {
   return config;
 }
 
-export function defaultModelId() {
-  return LEGACY_DEFAULT_MODEL;
-}
-
 export function defaultProviderModels() {
-  return { ...DEFAULT_MODELS };
+  return defaultProviderModelsBase();
 }
 
 export function resolveProviderDefaultModel(config, provider) {
@@ -120,12 +107,12 @@ export function resolveProviderDefaultModel(config, provider) {
   if (normalizedProvider === 'anthropic') {
     return normalizeModel(config?.providerDefaults?.anthropic)
       ?? normalizeModel(config?.defaultModel)
-      ?? DEFAULT_MODELS.anthropic;
+      ?? defaultAnthropicModel();
   }
   if (normalizedProvider === 'openai') {
     return normalizeModel(config?.providerDefaults?.openai)
       ?? normalizeModel(config?.defaultModel)
-      ?? DEFAULT_MODELS.openai;
+      ?? defaultOpenAiModel();
   }
   return normalizeModel(config?.defaultModel) ?? LEGACY_DEFAULT_MODEL;
 }

@@ -12,11 +12,16 @@ function proxyBase(configBaseUrl) {
   return `${configBaseUrl}/v1/proxy/v1`;
 }
 
-function hasExplicitModelArg(args) {
-  return args.includes('-m') || args.includes('--model');
+export function hasExplicitModelArg(args) {
+  return args.some((arg) => (
+    arg === '-m'
+    || arg === '--model'
+    || arg.startsWith('--model=')
+    || (/^-m.+/.test(arg) && arg !== '-m')
+  ));
 }
 
-function buildCodexArgs(input) {
+export function buildCodexArgs(input) {
   const { args, model } = input;
   const forcedArgs = [
     '--config', 'model_provider="openai"',
