@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "echo 'No build step required (plain Node.js ESM)'",
+    "test:unit": "node --test tests/*.test.js",
     "test:smoke": "bash scripts/smoke.sh",
     "test:smoke:real": "INNIES_SMOKE_REAL_PROXY=1 bash scripts/smoke.sh"
   }

@@ -28,6 +28,16 @@ const proxyRequestSchema = z.object({
   payload: z.unknown().optional(),
 });
 
+const nativeAnthropicProxyRequestSchema = z.object({
+  model: z.string().min(1),
+  stream: z.boolean().optional()
+}).passthrough();
+
+const nativeOpenAiResponsesRequestSchema = z.object({
+  model: z.string().min(1),
+  stream: z.boolean().optional()
+}).passthrough();
+
 type AttemptFailure = {
   statusCode?: number;
   message?: string;
@@ -134,6 +144,48 @@ function extractProxyPath(originalUrl: string): string {
   if (idx < 0) return '/';
   const rest = originalUrl.slice(idx + marker.length);
   return rest.startsWith('/') ? rest : `/${rest}`;
+}
+
+function isWrappedProxyRequestBody(body: unknown): body is Record<string, unknown> {
+  return Boolean(
+    body
+    && typeof body === 'object'
+    && !Array.isArray(body)
+    && (
+      Object.prototype.hasOwnProperty.call(body, 'provider')
+      || Object.prototype.hasOwnProperty.call(body, 'streaming')
+      || Object.prototype.hasOwnProperty.call(body, 'payload')
+    )
+  );
+}
+
+function parseProxyRequestBody(body: unknown, proxiedPath: string) {
+  if (isWrappedProxyRequestBody(body)) {
+    return proxyRequestSchema.parse(body);
+  }
+
+  const parsedPath = parseRelativeProxyUrl(proxiedPath);
+  if (parsedPath.pathname === '/v1/messages') {
+    const parsed = nativeAnthropicProxyRequestSchema.parse(body);
+    return {
+      provider: 'anthropic',
+      model: parsed.model,
+      streaming: parsed.stream === true,
+      payload: parsed
+    };
+  }
+
+  if (parsedPath.pathname === '/v1/responses') {
+    const parsed = nativeOpenAiResponsesRequestSchema.parse(body);
+    return {
+      provider: 'openai',
+      model: parsed.model,
+      streaming: parsed.stream === true,
+      payload: parsed
+    };
+  }
+
+  return proxyRequestSchema.parse(body);
 }
 
 function upstreamBaseUrl(provider: string): string {
@@ -2548,7 +2600,8 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
     }
     const orgId = auth.orgId;
 
-    const parsed = proxyRequestSchema.parse(req.body);
+    const proxiedPath = req.inniesProxiedPath ?? extractProxyPath(req.originalUrl);
+    const parsed = parseProxyRequestBody(req.body, proxiedPath);
     const requestProvider = canonicalizeProvider(parsed.provider);
     const requestId = buildRequestId(req.header('x-request-id') ?? undefined);
     const correlation = resolveOpenClawCorrelation(req, requestId);
@@ -2601,7 +2654,6 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
       throw new AppError('forbidden', 403, 'Token mode not enabled for org', { orgId });
     }
 
-    const proxiedPath = req.inniesProxiedPath ?? extractProxyPath(req.originalUrl);
     const anthropicVersion = req.header('anthropic-version') ?? '2023-06-01';
     const anthropicBeta = req.header('anthropic-beta') ?? undefined;
     let result: ProxyRouteResult | null = null;

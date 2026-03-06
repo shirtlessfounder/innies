@@ -9,26 +9,52 @@ import {
 } from './wrapperRuntime.js';
 
 function proxyBase(configBaseUrl) {
-  return `${configBaseUrl}/v1/proxy`;
+  return `${configBaseUrl}/v1/proxy/v1`;
 }
 
-export async function runClaude(args) {
+export function hasExplicitModelArg(args) {
+  return args.some((arg) => (
+    arg === '-m'
+    || arg === '--model'
+    || arg.startsWith('--model=')
+    || (/^-m.+/.test(arg) && arg !== '-m')
+  ));
+}
+
+export function buildCodexArgs(input) {
+  const { args, model } = input;
+  const forcedArgs = [
+    '--config', 'model_provider="openai"',
+    '--config', 'model_providers.openai.env_key="OPENAI_API_KEY"',
+    '--config', 'model_providers.openai.wire_api="responses"',
+    '--config', 'model_providers.openai.env_http_headers."x-request-id"="INNIES_CORRELATION_ID"',
+    '--config', 'model_providers.openai.env_http_headers."x-innies-provider-pin"="INNIES_PROVIDER_PIN"'
+  ];
+
+  if (!hasExplicitModelArg(args)) {
+    forcedArgs.push('--model', model);
+  }
+
+  return [...forcedArgs, ...args];
+}
+
+export async function runCodex(args) {
   const config = await loadConfig(true);
   if (!config) {
     fail('Not logged in. Run: innies login --token <in_token>');
   }
 
-  if (process.env.INNIES_CLAUDE_WRAPPED === '1') {
-    fail('Detected wrapper recursion. Set INNIES_CLAUDE_BIN to the real Claude binary path.');
+  if (process.env.INNIES_CODEX_WRAPPED === '1') {
+    fail('Detected wrapper recursion. Set INNIES_CODEX_BIN to the real Codex binary path.');
   }
 
-  const model = resolveProviderDefaultModel(config, 'anthropic');
+  const model = resolveProviderDefaultModel(config, 'openai');
   const proxyUrl = proxyBase(config.apiBaseUrl);
   const correlationId = buildCorrelationId();
-  const claudeBinary = resolveWrappedBinary({
-    binaryName: 'claude',
-    displayName: 'Claude',
-    overrideEnvVar: 'INNIES_CLAUDE_BIN'
+  const codexBinary = resolveWrappedBinary({
+    binaryName: 'codex',
+    displayName: 'Codex',
+    overrideEnvVar: 'INNIES_CODEX_BIN'
   });
 
   console.log(
@@ -37,23 +63,22 @@ export async function runClaude(args) {
 
   const env = {
     ...process.env,
-    INNIES_CLAUDE_WRAPPED: '1',
+    INNIES_CODEX_WRAPPED: '1',
     INNIES_TOKEN: config.token,
     INNIES_API_BASE_URL: config.apiBaseUrl,
     INNIES_PROXY_URL: proxyUrl,
     INNIES_MODEL: model,
     INNIES_ROUTE_MODE: 'token',
     INNIES_CORRELATION_ID: correlationId,
-    ANTHROPIC_API_KEY: config.token,
-    ANTHROPIC_BASE_URL: proxyUrl,
+    INNIES_PROVIDER_PIN: 'true',
     OPENAI_API_KEY: config.token,
     OPENAI_BASE_URL: proxyUrl
   };
 
-  const captureOutput = shouldCaptureCommandOutput('INNIES_CAPTURE_CLAUDE_OUTPUT');
+  const captureOutput = shouldCaptureCommandOutput('INNIES_CAPTURE_CODEX_OUTPUT');
   let combinedOutput = '';
   const stdio = captureOutput ? ['inherit', 'pipe', 'pipe'] : 'inherit';
-  const child = spawn(claudeBinary, args, {
+  const child = spawn(codexBinary, buildCodexArgs({ args, model }), {
     stdio,
     env
   });
@@ -73,7 +98,7 @@ export async function runClaude(args) {
   }
 
   child.on('error', (error) => {
-    fail(`Failed to run claude: ${error.message}`);
+    fail(`Failed to run codex: ${error.message}`);
   });
 
   child.on('exit', (code, signal) => {

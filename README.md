@@ -89,6 +89,7 @@ Token management, buyer key management, preference configuration. See `docs/API_
 - [API Contract](docs/API_CONTRACT.md)
 - [Roadmap](docs/planning/ROADMAP.md)
 - [OpenClaw Onboarding](docs/onboarding/OPENCLAW_ONBOARDING.md)
+- [CLI Onboarding](docs/onboarding/CLI_ONBOARDING.md)
 - [Codex OAuth Guide](docs/onboarding/CLAUDE_CODEX_OAUTH_TOKENS.md)
 - [Phase 1 Scope](docs/planning/PHASE1_IMPLEMENTATION_SCOPE.md)
 
