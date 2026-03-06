@@ -12,6 +12,7 @@ import { readAndValidateIdempotencyKey } from '../utils/idempotencyKey.js';
 import { anthropicToOpenAi } from '../utils/anthropicToOpenai.js';
 import { mapOpenAiErrorToAnthropic, translateOpenAiToAnthropic } from '../utils/openaiToAnthropic.js';
 import { OpenAiToAnthropicStreamTransform } from '../utils/openaiToAnthropicStream.js';
+import { buildSyntheticOpenAiResponsesSse, summarizeSyntheticOpenAiOutputItems } from '../utils/openaiSyntheticStream.js';
 import {
   isOpenAiOauthAccessToken,
   resolveOpenAiOauthAccountId,
@@ -2234,13 +2235,20 @@ async function executeTokenModeStreaming(input: {
           const downstreamMessage = (downstreamData && typeof downstreamData === 'object'
             ? downstreamData
             : {}) as Record<string, unknown>;
-          const syntheticSummary = summarizeSyntheticContentBlocks(
-            compatTranslation ? downstreamMessage : syntheticMessage
-          );
-          const syntheticPayload = `: keepalive\n\n${buildSyntheticAnthropicSse(
-            compatTranslation ? downstreamMessage : syntheticMessage,
-            compatTranslation ? compatTranslation.originalModel : model
-          )}`;
+          const anthropicSummary = compatTranslation
+            ? summarizeSyntheticContentBlocks(downstreamMessage)
+            : null;
+          const openAiSummary = compatTranslation
+            ? null
+            : summarizeSyntheticOpenAiOutputItems(syntheticMessage);
+          const syntheticPayload = compatTranslation
+            ? `: keepalive\n\n${buildSyntheticAnthropicSse(
+              downstreamMessage,
+              compatTranslation.originalModel
+            )}`
+            : `: keepalive\n\n${buildSyntheticOpenAiResponsesSse(syntheticMessage)}`;
+          const streamMode = compatTranslation ? 'synthetic_bridge' : 'synthetic_openai_responses_bridge';
+          const syntheticFormat = compatTranslation ? 'anthropic' : 'openai_responses';
           firstDownstreamWriteAt = Date.now();
           (res as any).write(syntheticPayload);
           if ((res as any).body === undefined) {
@@ -2266,7 +2274,7 @@ async function executeTokenModeStreaming(input: {
                 outputTokens,
                 usageUnits,
                 retailEquivalentMinor: usageUnits,
-                note: `metering_source=${meteringSource} stream_mode=synthetic_bridge`
+                note: `metering_source=${meteringSource} stream_mode=${streamMode}`
               });
 
               const monthlyUsageRecorded = await runtime.repos.tokenCredentials.addMonthlyContributionUsage(
@@ -2303,7 +2311,8 @@ async function executeTokenModeStreaming(input: {
             provider,
             model,
             first_byte_ms: (firstDownstreamWriteAt ?? Date.now()) - startedAt,
-            synthetic_stream_bridge: true
+            synthetic_stream_bridge: true,
+            synthetic_stream_format: syntheticFormat
           });
           console.info('[stream-latency]', {
             requestId,
@@ -2314,14 +2323,17 @@ async function executeTokenModeStreaming(input: {
             openclaw_session_id: correlation.openclawSessionId ?? null,
             upstream_status: status,
             upstream_content_type: contentType,
-            stream_mode: 'synthetic_bridge',
+            stream_mode: streamMode,
             synthetic_stream_bridge: true,
+            synthetic_stream_format: syntheticFormat,
             metering_source: meteringSource,
             pre_upstream_ms: dispatchStartedAt - attemptStartedAt,
             upstream_ttfb_ms: upstreamHeadersAt - dispatchStartedAt,
             bridge_build_ms: firstDownstreamWriteAt ? (firstDownstreamWriteAt - upstreamHeadersAt) : null,
-            synthetic_content_block_count: syntheticSummary.count,
-            synthetic_content_block_types: syntheticSummary.types,
+            synthetic_content_block_count: anthropicSummary?.count ?? null,
+            synthetic_content_block_types: anthropicSummary?.types ?? null,
+            synthetic_output_item_count: openAiSummary?.count ?? null,
+            synthetic_output_item_types: openAiSummary?.types ?? null,
             post_stream_write_ms: firstDownstreamWriteAt && streamEndedAt
               ? Math.max(0, streamEndedAt - firstDownstreamWriteAt)
               : null

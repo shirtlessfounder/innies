@@ -8,6 +8,8 @@ import {
   shouldCaptureCommandOutput
 } from './wrapperRuntime.js';
 
+const CODEX_PROXY_PROVIDER = 'innies';
+
 function proxyBase(configBaseUrl) {
   return `${configBaseUrl}/v1/proxy/v1`;
 }
@@ -23,16 +25,18 @@ export function hasExplicitModelArg(args) {
 
 export function buildCodexArgs(input) {
   const { args, model, proxyUrl } = input;
+  const providerPath = `model_providers.${CODEX_PROXY_PROVIDER}`;
   const forcedArgs = [
-    '--config', 'model_provider="openai"',
-    '--config', 'model_providers.openai.name="openai"',
-    '--config', `model_providers.openai.base_url="${proxyUrl}"`,
-    '--config', 'model_providers.openai.env_key="OPENAI_API_KEY"',
-    '--config', 'model_providers.openai.wire_api="responses"',
-    '--config', 'model_providers.openai.requires_openai_auth=false',
+    '--config', `model_provider="${CODEX_PROXY_PROVIDER}"`,
+    '--config', `${providerPath}.name="${CODEX_PROXY_PROVIDER}"`,
+    '--config', `${providerPath}.base_url="${proxyUrl}"`,
+    '--config', `${providerPath}.env_key="OPENAI_API_KEY"`,
+    '--config', `${providerPath}.wire_api="responses"`,
+    '--config', `${providerPath}.requires_openai_auth=false`,
+    '--config', `${providerPath}.supports_websockets=false`,
     '--config', 'responses_websockets_v2=false',
-    '--config', 'model_providers.openai.env_http_headers."x-request-id"="INNIES_CORRELATION_ID"',
-    '--config', 'model_providers.openai.env_http_headers."x-innies-provider-pin"="INNIES_PROVIDER_PIN"'
+    '--config', `${providerPath}.env_http_headers."x-request-id"="INNIES_CORRELATION_ID"`,
+    '--config', `${providerPath}.env_http_headers."x-innies-provider-pin"="INNIES_PROVIDER_PIN"`
   ];
 
   if (!hasExplicitModelArg(args)) {

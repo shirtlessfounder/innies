@@ -16,7 +16,17 @@ test('does not inject default model when user passes --model=<id>', () => {
 });
 
 test('injects default model when user does not pass a model override', () => {
-  const args = buildCodexArgs({ args: ['--help'], model: 'gpt-5.4' });
+  const args = buildCodexArgs({ args: ['--help'], model: 'gpt-5.4', proxyUrl: 'https://api.innies.computer/v1/proxy/v1' });
   assert.ok(args.includes('--model'));
   assert.deepEqual(args.slice(-3), ['--model', 'gpt-5.4', '--help']);
+});
+
+test('injects a custom codex provider config that points at the innies proxy', () => {
+  const args = buildCodexArgs({ args: ['--help'], model: 'gpt-5.4', proxyUrl: 'https://api.innies.computer/v1/proxy/v1' });
+
+  assert.ok(args.includes('model_provider="innies"'));
+  assert.ok(args.includes('model_providers.innies.base_url="https://api.innies.computer/v1/proxy/v1"'));
+  assert.ok(args.includes('model_providers.innies.requires_openai_auth=false'));
+  assert.ok(args.includes('model_providers.innies.supports_websockets=false'));
+  assert.ok(args.includes('responses_websockets_v2=false'));
 });

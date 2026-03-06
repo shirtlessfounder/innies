@@ -78,6 +78,50 @@ function createMockRes(): MockRes {
   };
 }
 
+function createStreamingMockRes(): MockRes & {
+  write: (chunk: unknown) => void;
+  end: (chunk?: unknown) => void;
+  flushHeaders: () => void;
+  flush: () => void;
+  socket: {
+    setKeepAlive: () => void;
+    setNoDelay: () => void;
+  };
+} {
+  const res = createMockRes() as MockRes & {
+    write: (chunk: unknown) => void;
+    end: (chunk?: unknown) => void;
+    flushHeaders: () => void;
+    flush: () => void;
+    socket: {
+      setKeepAlive: () => void;
+      setNoDelay: () => void;
+    };
+  };
+
+  res.write = (chunk: unknown) => {
+    const next = typeof chunk === 'string' ? chunk : Buffer.from(chunk as any).toString('utf8');
+    res.body = typeof res.body === 'string' ? `${res.body}${next}` : next;
+  };
+  res.end = (chunk?: unknown) => {
+    if (chunk !== undefined) {
+      res.write(chunk);
+    }
+    res.headersSent = true;
+    res.writableEnded = true;
+  };
+  res.flushHeaders = () => {
+    res.headersSent = true;
+  };
+  res.flush = () => undefined;
+  res.socket = {
+    setKeepAlive: () => undefined,
+    setNoDelay: () => undefined
+  };
+
+  return res;
+}
+
 function createFakeOpenAiOauthToken(input?: {
   accountId?: string;
   clientId?: string;
@@ -1312,7 +1356,7 @@ describe('proxy token-mode route behavior', () => {
     upstreamSpy.mockRestore();
   });
 
-  it('forces stream=true for streaming codex oauth responses requests', async () => {
+  it('forces stream=true for streaming codex oauth responses requests and synthesizes native Responses SSE for JSON upstream success', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     const oauthToken = createFakeOpenAiOauthToken({
       accountId: 'acct_codex_stream',
@@ -1350,7 +1394,19 @@ describe('proxy token-mode route behavior', () => {
       monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
     const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ id: 'resp_codex_stream_ok' }), {
+      new Response(JSON.stringify({
+        id: 'resp_codex_stream_ok',
+        model: 'gpt-5.4',
+        status: 'completed',
+        usage: { input_tokens: 5, output_tokens: 7 },
+        output: [{
+          type: 'message',
+          id: 'msg_codex_stream_1',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'hello from codex' }],
+          status: 'completed'
+        }]
+      }), {
         status: 200,
         headers: { 'content-type': 'application/json' }
       })
@@ -1366,23 +1422,25 @@ describe('proxy token-mode route behavior', () => {
         'x-innies-provider-pin': 'true'
       },
       body: {
-        provider: 'codex',
         model: 'gpt-5.4',
-        streaming: true,
-        payload: {
-          model: 'gpt-5.4',
-          instructions: 'Reply with one word only.',
-          input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] }]
-        }
+        stream: true,
+        instructions: 'Reply with one word only.',
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] }]
       }
     });
-    const res = createMockRes();
+    const res = createStreamingMockRes();
 
     await invoke(handlers[0], req, res);
     await invoke(handlers[1], req, res);
 
     expect(res.statusCode).toBe(200);
-    expect((res.body as any).id).toBe('resp_codex_stream_ok');
+    expect(res.headers['content-type']).toContain('text/event-stream');
+    expect(String(res.body)).toContain('data: {"type":"response.created"');
+    expect(String(res.body)).toContain('"type":"response.output_item.added"');
+    expect(String(res.body)).toContain('"type":"response.output_text.delta"');
+    expect(String(res.body)).toContain('"delta":"hello from codex"');
+    expect(String(res.body)).toContain('"type":"response.completed"');
+    expect(String(res.body)).not.toContain('event: message_start');
     const [targetUrl, init] = upstreamSpy.mock.calls[0] as [URL, RequestInit];
     expect(String(targetUrl)).toBe('https://chatgpt.com/backend-api/codex/responses');
     expect(JSON.parse(String(init.body))).toMatchObject({
