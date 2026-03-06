@@ -41,7 +41,7 @@ export async function runClaude(args) {
     INNIES_ROUTE_MODE: 'token',
     INNIES_CORRELATION_ID: correlationId,
     ANTHROPIC_API_KEY: config.token,
-    ANTHROPIC_BASE_URL: proxyUrl,
+    ANTHROPIC_BASE_URL: config.apiBaseUrl,
     OPENAI_API_KEY: config.token,
     OPENAI_BASE_URL: proxyUrl
   };
