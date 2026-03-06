@@ -91,6 +91,10 @@ innies link claude
 
 This creates a shim in `~/.local/bin/claude`. Make sure `~/.local/bin` is ahead of other Claude install paths in `PATH`.
 
+Safety note:
+- if `~/.local/bin/claude` already points to a real Claude install, `innies link claude` now refuses to overwrite it
+- in that case, use `innies claude` directly or move the existing Claude binary before linking
+
 ## Common Failure Cases
 - `Missing --token`
   - rerun `innies login --token in_live_...`

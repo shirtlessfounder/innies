@@ -24,7 +24,6 @@ Before deeper implementation, run one short shared checkpoint and lock:
 ### 1) Config Contract
 Lock before parallel work:
 - existing `~/.innies/config.json` remains readable
-- legacy `~/.headroom/config.json` remains readable
 - provider-scoped model defaults are the new write target
 - legacy single `defaultModel` remains a read-compatible fallback
 - `innies login --model` remains supported
@@ -74,7 +73,6 @@ Scope:
 - evolve config handling to support provider-scoped model defaults
 - preserve read compatibility for:
   - current `.innies` config
-  - legacy `.headroom` config
 - define how `innies login --model` behaves during compatibility/migration
 
 Primary files:

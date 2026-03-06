@@ -1,17 +1,48 @@
-import { spawnSync } from 'node:child_process';
+import { accessSync, constants, lstatSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { delimiter, join } from 'node:path';
 import { fail } from '../utils.js';
 
 function binaryCandidates(binaryName) {
-  const whichAll = spawnSync('sh', ['-lc', `which -a ${binaryName}`], { encoding: 'utf8' });
-  if (whichAll.status !== 0) {
-    return [];
+  const pathEntries = (process.env.PATH ?? '')
+    .split(delimiter)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  const candidates = [];
+  const seen = new Set();
+
+  for (const entry of pathEntries) {
+    const candidate = join(entry, binaryName);
+    if (seen.has(candidate)) {
+      continue;
+    }
+
+    try {
+      accessSync(candidate, constants.X_OK);
+      candidates.push(candidate);
+      seen.add(candidate);
+    } catch {
+      // Ignore non-existent or non-executable entries.
+    }
   }
 
-  return whichAll.stdout
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+  return candidates;
+}
+
+function resolveRealPath(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+function isSymbolicLink(path) {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 export function resolveWrappedBinary(input) {
@@ -32,9 +63,22 @@ export function resolveWrappedBinary(input) {
     fail(`Could not find ${displayName} CLI binary in PATH.`);
   }
 
-  const nonWrapper = candidates.find((candidate) => candidate !== wrapperPath);
-  if (nonWrapper) {
-    return nonWrapper;
+  const wrapperIsSymlink = isSymbolicLink(wrapperPath);
+  const wrapperRealPath = resolveRealPath(wrapperPath);
+
+  for (const candidate of candidates) {
+    if (candidate === wrapperPath) {
+      if (wrapperIsSymlink) {
+        return wrapperRealPath;
+      }
+      continue;
+    }
+
+    if (!wrapperIsSymlink && resolveRealPath(candidate) === wrapperRealPath) {
+      continue;
+    }
+
+    return candidate;
   }
 
   fail(

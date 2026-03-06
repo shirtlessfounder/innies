@@ -18,10 +18,6 @@ export async function runClaude(args) {
     fail('Not logged in. Run: innies login --token <in_token>');
   }
 
-  if (process.env.INNIES_CLAUDE_WRAPPED === '1') {
-    fail('Detected wrapper recursion. Set INNIES_CLAUDE_BIN to the real Claude binary path.');
-  }
-
   const model = resolveProviderDefaultModel(config, 'anthropic');
   const proxyUrl = proxyBase(config.apiBaseUrl);
   const correlationId = buildCorrelationId();

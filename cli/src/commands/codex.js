@@ -44,10 +44,6 @@ export async function runCodex(args) {
     fail('Not logged in. Run: innies login --token <in_token>');
   }
 
-  if (process.env.INNIES_CODEX_WRAPPED === '1') {
-    fail('Detected wrapper recursion. Set INNIES_CODEX_BIN to the real Codex binary path.');
-  }
-
   const model = resolveProviderDefaultModel(config, 'openai');
   const proxyUrl = proxyBase(config.apiBaseUrl);
   const correlationId = buildCorrelationId();

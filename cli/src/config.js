@@ -15,7 +15,6 @@ import {
 
 const LEGACY_DEFAULT_MODEL = defaultAnthropicModel();
 const PRIMARY_CONFIG_PATH = join(homedir(), '.innies', 'config.json');
-const LEGACY_CONFIG_PATH = join(homedir(), '.headroom', 'config.json');
 
 function buildConfigRecord(input) {
   const token = normalizeModel(input.token);
@@ -47,31 +46,24 @@ export function configPath() {
 }
 
 export async function loadConfig(required = true) {
-  const candidates = [PRIMARY_CONFIG_PATH, LEGACY_CONFIG_PATH];
-  let lastError = null;
+  try {
+    const raw = await readFile(PRIMARY_CONFIG_PATH, 'utf8');
+    const parsed = JSON.parse(raw);
+    const config = buildConfigRecord(parsed);
 
-  for (const file of candidates) {
-    try {
-      const raw = await readFile(file, 'utf8');
-      const parsed = JSON.parse(raw);
-      const config = buildConfigRecord(parsed);
-
-      if (parsed.version !== 1 || !config) {
-        fail(`Invalid config at ${file}. Run: innies login --token <in_token>`);
-      }
-
-      return config;
-    } catch (error) {
-      lastError = error;
+    if (parsed.version !== 1 || !config) {
+      fail(`Invalid config at ${PRIMARY_CONFIG_PATH}. Run: innies login --token <in_token>`);
     }
-  }
 
-  if (!required) {
-    return null;
-  }
+    return config;
+  } catch (error) {
+    if (!required) {
+      return null;
+    }
 
-  const message = lastError instanceof Error ? lastError.message : String(lastError);
-  fail(`Missing or unreadable config (${PRIMARY_CONFIG_PATH}): ${message}`);
+    const message = error instanceof Error ? error.message : String(error);
+    fail(`Missing or unreadable config (${PRIMARY_CONFIG_PATH}): ${message}`);
+  }
 }
 
 export async function saveConfig(token, apiBaseUrl, defaultModel) {
