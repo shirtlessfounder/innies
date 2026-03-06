@@ -286,7 +286,6 @@ export class TokenCredentialRepository {
           else monthly_window_start_at
         end,
         status = 'active',
-        rotation_version = rotation_version + 1,
         rotated_at = now(),
         updated_at = now()
       where id = $1
@@ -325,6 +324,22 @@ export class TokenCredentialRepository {
     const result = await this.db.query<TokenCredentialRow>(sql, params);
     if (result.rowCount !== 1) return null;
     return mapRow(result.rows[0]);
+  }
+
+  async setRefreshToken(id: string, refreshToken: string | null): Promise<boolean> {
+    const sql = `
+      update ${TABLES.tokenCredentials}
+      set
+        encrypted_refresh_token = $2,
+        updated_at = now()
+      where id = $1
+    `;
+
+    const result = await this.db.query(sql, [
+      id,
+      refreshToken ? encryptSecret(refreshToken) : null
+    ]);
+    return result.rowCount === 1;
   }
 
   async rotate(input: RotateTokenCredentialInput): Promise<{ id: string; rotationVersion: number; previousId: string | null }> {

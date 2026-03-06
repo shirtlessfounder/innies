@@ -121,6 +121,7 @@ describe('admin token credential routes idempotent replay', () => {
   let createHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let rotateHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let revokeHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let refreshTokenHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
 
   beforeAll(async () => {
     process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@127.0.0.1:5432/innies_test';
@@ -130,6 +131,7 @@ describe('admin token credential routes idempotent replay', () => {
     createHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials');
     rotateHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/rotate');
     revokeHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/revoke');
+    refreshTokenHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/refresh-token');
   });
 
   beforeEach(() => {
@@ -159,6 +161,7 @@ describe('admin token credential routes idempotent replay', () => {
       rotationVersion: 2
     } as any);
     vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'revoke').mockResolvedValue(true);
+    vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'setRefreshToken').mockResolvedValue(true);
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
       id: 'z',
       orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d'
@@ -169,7 +172,7 @@ describe('admin token credential routes idempotent replay', () => {
     vi.restoreAllMocks();
   });
 
-  it('replays create/rotate/revoke deterministically without executing mutations', async () => {
+  it('replays create/rotate/revoke/refresh-token deterministically without executing mutations', async () => {
     const headers = {
       authorization: 'Bearer in_admin_token',
       'content-type': 'application/json',
@@ -227,9 +230,26 @@ describe('admin token credential routes idempotent replay', () => {
     expect(resRevoke.headers['x-idempotent-replay']).toBe('true');
     expect((resRevoke.body as any).replayed).toBe(true);
 
+    const reqRefresh = createMockReq({
+      method: 'PATCH',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/refresh-token',
+      headers,
+      params: { id: '11111111-1111-4111-8111-111111111111' },
+      body: {
+        refreshToken: 'rt_1'
+      }
+    });
+    const resRefresh = createMockRes();
+    await invoke(refreshTokenHandlers[0], reqRefresh, resRefresh);
+    await invoke(refreshTokenHandlers[1], reqRefresh, resRefresh);
+    expect(resRefresh.statusCode).toBe(200);
+    expect(resRefresh.headers['x-idempotent-replay']).toBe('true');
+    expect((resRefresh.body as any).replayed).toBe(true);
+
     expect(runtimeModule.runtime.services.tokenCredentials.create).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.tokenCredentials.rotate).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.tokenCredentials.revoke).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.services.tokenCredentials.setRefreshToken).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.repos.tokenCredentials.getById).not.toHaveBeenCalled();
   });
 
@@ -402,6 +422,98 @@ describe('admin token credential routes idempotent replay', () => {
       expect.objectContaining({
         provider: 'openai'
       }),
+      expect.any(Object)
+    );
+    expect(commitSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('sets and clears refresh tokens for an existing credential by id', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start')
+      .mockResolvedValueOnce({
+        replay: false,
+        input: {
+          scope: 'admin_token_credentials_refresh_token_v1',
+          tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+          idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123456',
+          requestHash: 'refresh_h_1'
+        }
+      } as any)
+      .mockResolvedValueOnce({
+        replay: false,
+        input: {
+          scope: 'admin_token_credentials_refresh_token_v1',
+          tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+          idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123457',
+          requestHash: 'refresh_h_2'
+        }
+      } as any);
+
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d'
+    } as any);
+    const updateSpy = vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'setRefreshToken').mockResolvedValue(true);
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const reqSet = createMockReq({
+      method: 'PATCH',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/refresh-token',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' },
+      body: {
+        refreshToken: 'rt_live'
+      }
+    });
+    const resSet = createMockRes();
+    await invoke(refreshTokenHandlers[0], reqSet, resSet);
+    await invoke(refreshTokenHandlers[1], reqSet, resSet);
+
+    expect(resSet.statusCode).toBe(200);
+    expect((resSet.body as any)).toEqual({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      hasRefreshToken: true
+    });
+    expect(updateSpy).toHaveBeenNthCalledWith(
+      1,
+      '11111111-1111-4111-8111-111111111111',
+      '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      'rt_live',
+      expect.any(Object)
+    );
+
+    const reqClear = createMockReq({
+      method: 'PATCH',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/refresh-token',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123457'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' },
+      body: {
+        refreshToken: null
+      }
+    });
+    const resClear = createMockRes();
+    await invoke(refreshTokenHandlers[0], reqClear, resClear);
+    await invoke(refreshTokenHandlers[1], reqClear, resClear);
+
+    expect(resClear.statusCode).toBe(200);
+    expect((resClear.body as any)).toEqual({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      hasRefreshToken: false
+    });
+    expect(updateSpy).toHaveBeenNthCalledWith(
+      2,
+      '11111111-1111-4111-8111-111111111111',
+      '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      null,
       expect.any(Object)
     );
     expect(commitSpy).toHaveBeenCalledTimes(2);

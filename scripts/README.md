@@ -15,6 +15,7 @@ chmod +x scripts/install.sh
 ```bash
 innies-add-token
 innies-rotate-token
+innies-set-refresh-token
 innies-set-preference
 innies-get-preference
 innies-check-preference
@@ -23,6 +24,7 @@ innies-check-preference
 What they do:
 - `innies-add-token`: create a Claude Code or Codex OAuth credential
 - `innies-rotate-token`: rotate a Claude Code or Codex OAuth credential pool
+- `innies-set-refresh-token`: set or clear the stored OAuth refresh token for an existing credential id
 - `innies-set-preference`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
 - `innies-get-preference`: read the current buyer key preference
 - `innies-check-preference`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
@@ -33,6 +35,10 @@ Behavior:
 - focused token scripts are OAuth-token flows, not provider API-key flows
 - add/rotate always send `authScheme=bearer`
 - on macOS, add/rotate reads the OAuth access token from your clipboard after you press Enter
+- add/rotate now prompt for an optional OAuth refresh token; type `paste` to read it from your clipboard, or press Enter to skip
+- `innies-set-refresh-token` accepts a credential UUID, then:
+  - `paste` to read the refresh token from clipboard
+  - `clear` to remove the stored refresh token
 - `label` maps to API field `debugLabel`
 - set/get preference accept either the buyer-key UUID or the live buyer key value; live-key lookup uses `DATABASE_URL`
 

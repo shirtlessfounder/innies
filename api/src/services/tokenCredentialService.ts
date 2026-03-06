@@ -69,4 +69,22 @@ export class TokenCredentialService {
     }
     return revoked;
   }
+
+  async setRefreshToken(id: string, orgId: string, refreshToken: string | null, actor?: ActorContext): Promise<boolean> {
+    const updated = await this.repo.setRefreshToken(id, refreshToken);
+    if (updated) {
+      await this.auditLogs.createEvent({
+        actorApiKeyId: actor?.actorApiKeyId ?? null,
+        actorUserId: actor?.actorUserId ?? null,
+        orgId,
+        action: 'token_credential.update_refresh_token',
+        targetType: 'token_credential',
+        targetId: id,
+        metadata: {
+          hasRefreshToken: refreshToken !== null
+        }
+      });
+    }
+    return updated;
+  }
 }

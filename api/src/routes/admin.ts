@@ -92,6 +92,10 @@ const tokenCredentialRotateSchema = z.object({
   monthlyContributionLimitUnits: z.number().int().nonnegative().optional()
 });
 
+const tokenCredentialRefreshTokenSchema = z.object({
+  refreshToken: z.string().trim().min(1).nullable()
+});
+
 const buyerProviderPreferenceUpdateSchema = z.object({
   preferredProvider: buyerProviderPreferenceSchema.nullable()
 });
@@ -521,6 +525,64 @@ router.post('/v1/admin/token-credentials/:id/revoke', requireApiKey(runtime.repo
       actorApiKeyId: req.auth?.apiKeyId ?? null
     });
     const responseBody = { ok: true, id, revoked };
+
+    await runtime.services.idempotency.commit(idemStart, {
+      responseCode: 200,
+      responseBody,
+      responseDigest: sha256Hex(stableJson(responseBody)),
+      responseRef: id
+    });
+
+    res.status(200).json(responseBody);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/v1/admin/token-credentials/:id/refresh-token', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const id = z.string().uuid().parse(req.params.id);
+    const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
+    const parsed = tokenCredentialRefreshTokenSchema.parse(req.body);
+    const requestHash = sha256Hex(stableJson({ id, body: parsed, apiKeyId: req.auth?.apiKeyId }));
+    const tenantScope = req.auth?.orgId ?? `admin:${req.auth?.apiKeyId}`;
+
+    const idemStart = await runtime.services.idempotency.start({
+      scope: 'admin_token_credentials_refresh_token_v1',
+      tenantScope,
+      idempotencyKey,
+      requestHash
+    });
+
+    if (idemStart.replay) {
+      if (!idemStart.responseBody) {
+        throw new AppError('idempotency_replay_unavailable', 409, 'Idempotent replay not available for this request');
+      }
+      res.setHeader('x-idempotent-replay', 'true');
+      res.status(idemStart.responseCode).json(idemStart.responseBody);
+      return;
+    }
+
+    const existing = await runtime.repos.tokenCredentials.getById(id);
+    if (!existing) {
+      throw new AppError('invalid_request', 404, 'Token credential not found');
+    }
+
+    const updated = await runtime.services.tokenCredentials.setRefreshToken(
+      id,
+      existing.orgId,
+      parsed.refreshToken,
+      { actorApiKeyId: req.auth?.apiKeyId ?? null }
+    );
+    if (!updated) {
+      throw new AppError('invalid_request', 404, 'Token credential not found');
+    }
+
+    const responseBody = {
+      ok: true,
+      id,
+      hasRefreshToken: parsed.refreshToken !== null
+    };
 
     await runtime.services.idempotency.commit(idemStart, {
       responseCode: 200,
