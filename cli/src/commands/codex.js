@@ -25,6 +25,7 @@ export function buildCodexArgs(input) {
   const { args, model } = input;
   const forcedArgs = [
     '--config', 'model_provider="openai"',
+    '--config', 'model_providers.openai.name="openai"',
     '--config', 'model_providers.openai.env_key="OPENAI_API_KEY"',
     '--config', 'model_providers.openai.wire_api="responses"',
     '--config', 'model_providers.openai.env_http_headers."x-request-id"="INNIES_CORRELATION_ID"',
