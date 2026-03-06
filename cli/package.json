@@ -1,8 +1,24 @@
 {
-  "name": "innies-cli",
+  "name": "innies",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
+  "description": "CLI wrappers for routing Claude and Codex through the Innies proxy.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shirtlessfounder/innies.git",
+    "directory": "cli"
+  },
+  "keywords": [
+    "innies",
+    "llm",
+    "proxy",
+    "anthropic",
+    "openai",
+    "claude",
+    "codex",
+    "cli"
+  ],
+  "license": "UNLICENSED",
   "bin": {
     "innies": "bin/innies.js"
   },
