@@ -24,7 +24,7 @@ set -euo pipefail
   echo "INNIES_CORRELATION_ID:${INNIES_CORRELATION_ID:-}"
 } >> "$FAKE_CLAUDE_LOG"
 
-if [[ "${1:-}" == "--check-pass-through" ]]; then
+if printf '%s\n' "$@" | grep -qx -- '--check-pass-through'; then
   echo '{"id":"msg_123","type":"message","content":[{"type":"text","text":"ok"}]}' > "$TMP_DIR/r200.json"
   echo '{"type":"error","error":{"type":"invalid_request_error","message":"bad input"}}' > "$TMP_DIR/r400.json"
 
@@ -41,7 +41,7 @@ if [[ "${1:-}" == "--check-pass-through" ]]; then
   echo "pass_through:ok" >> "$FAKE_CLAUDE_LOG"
 fi
 
-if [[ "${1:-}" == "--check-idempotency-policy" ]]; then
+if printf '%s\n' "$@" | grep -qx -- '--check-idempotency-policy'; then
   echo '{"code":"proxy_replay_not_supported","message":"Streaming requests cannot be idempotently replayed."}' > "$TMP_DIR/replay409.json"
 
   if ! grep -q '"code":"proxy_replay_not_supported"' "$TMP_DIR/replay409.json"; then
@@ -57,7 +57,7 @@ if [[ "${1:-}" == "--check-idempotency-policy" ]]; then
   echo "idempotency:ok" >> "$FAKE_CLAUDE_LOG"
 fi
 
-if [[ "${1:-}" == "--check-token-auth-failure" ]]; then
+if printf '%s\n' "$@" | grep -qx -- '--check-token-auth-failure'; then
   echo '{"type":"error","error":{"type":"authentication_error","message":"token mode not enabled for org"}}' >&2
   exit 1
 fi
@@ -146,12 +146,12 @@ export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
 unset INNIES_CLAUDE_WRAPPED
 "$HOME/.local/bin/claude" --via-wrapper
 
-if ! grep -q 'args:--version --foo bar' "$FAKE_CLAUDE_LOG"; then
+if ! grep -q 'args:.*--version --foo bar' "$FAKE_CLAUDE_LOG"; then
   echo "smoke: claude args not forwarded"
   exit 1
 fi
 
-if ! grep -q 'args:--via-wrapper' "$FAKE_CLAUDE_LOG"; then
+if ! grep -q 'args:.*--via-wrapper' "$FAKE_CLAUDE_LOG"; then
   echo "smoke: wrapper invocation did not reach real claude binary"
   exit 1
 fi
@@ -171,22 +171,42 @@ if ! grep -q 'INNIES_TOKEN:in_live_test' "$FAKE_CLAUDE_LOG"; then
   exit 1
 fi
 
-if ! grep -q 'arg:model_provider="openai"' "$FAKE_CODEX_LOG"; then
+if ! grep -q 'arg:model_provider="innies"' "$FAKE_CODEX_LOG"; then
   echo "smoke: missing codex provider override"
   exit 1
 fi
 
-if ! grep -q 'arg:model_providers.openai.wire_api="responses"' "$FAKE_CODEX_LOG"; then
+if ! grep -q "arg:model_providers.innies.base_url=\"$MOCK_BASE_URL/v1/proxy/v1\"" "$FAKE_CODEX_LOG"; then
+  echo "smoke: missing codex base_url override"
+  exit 1
+fi
+
+if ! grep -q 'arg:model_providers.innies.wire_api="responses"' "$FAKE_CODEX_LOG"; then
   echo "smoke: missing codex wire_api override"
   exit 1
 fi
 
-if ! grep -q 'arg:model_providers.openai.env_http_headers."x-request-id"="INNIES_CORRELATION_ID"' "$FAKE_CODEX_LOG"; then
+if ! grep -q 'arg:model_providers.innies.requires_openai_auth=false' "$FAKE_CODEX_LOG"; then
+  echo "smoke: missing codex auth override"
+  exit 1
+fi
+
+if ! grep -q 'arg:model_providers.innies.supports_websockets=false' "$FAKE_CODEX_LOG"; then
+  echo "smoke: missing codex websocket disable override"
+  exit 1
+fi
+
+if ! grep -q 'arg:responses_websockets_v2=false' "$FAKE_CODEX_LOG"; then
+  echo "smoke: missing codex responses websocket disable flag"
+  exit 1
+fi
+
+if ! grep -q 'arg:model_providers.innies.env_http_headers."x-request-id"="INNIES_CORRELATION_ID"' "$FAKE_CODEX_LOG"; then
   echo "smoke: missing codex x-request-id header wiring"
   exit 1
 fi
 
-if ! grep -q 'arg:model_providers.openai.env_http_headers."x-innies-provider-pin"="INNIES_PROVIDER_PIN"' "$FAKE_CODEX_LOG"; then
+if ! grep -q 'arg:model_providers.innies.env_http_headers."x-innies-provider-pin"="INNIES_PROVIDER_PIN"' "$FAKE_CODEX_LOG"; then
   echo "smoke: missing codex pin header wiring"
   exit 1
 fi

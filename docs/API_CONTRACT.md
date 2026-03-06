@@ -62,6 +62,8 @@ Notes:
 - Token mode supports both non-streaming and streaming execution.
 - Non-streaming responses mirror upstream HTTP status/body.
 - Streaming responses are pass-through when upstream returns `text/event-stream`.
+- For native `POST /v1/proxy/v1/responses` streaming requests, if upstream returns a successful non-SSE JSON response, Innies synthesizes native OpenAI Responses SSE events before returning to the client.
+- For Anthropic compat callers (`POST /v1/messages` routed to `openai`), the equivalent non-SSE streaming fallback remains Anthropic-shaped SSE.
 - Replay idempotency policy for proxy paths: deterministic non-replayable (`409` with `proxy_replay_not_supported` payload).
 - Current token-mode provider resolution:
   - buyer-key preference source is the authenticated key’s stored preference
