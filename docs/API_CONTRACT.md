@@ -61,12 +61,14 @@ Notes:
 - Replay idempotency policy for proxy paths: deterministic non-replayable (`409` with `proxy_replay_not_supported` payload).
 - Current token-mode provider resolution:
   - buyer-key preference source is the authenticated key’s stored preference
+  - buyer-key preference is the main cross-provider steering control for OpenClaw and other model-agnostic clients
   - `codex` normalizes to canonical `openai` at ingress
   - OpenAI/Codex OAuth credentials are sent to the ChatGPT Codex backend (`/backend-api/codex/responses`), not the public `api.openai.com/v1/responses` path
   - Codex OAuth requests force `store=false` on Responses payloads
   - Codex OAuth streaming Responses requests force upstream `stream=true`
   - `ChatGPT-Account-Id` is derived from the OAuth access token when present
   - `POST /v1/messages` (compat mode) is pinned to Anthropic
+  - provider-specific wrapper/CLI sessions are intentionally pinned and do not use cross-provider preference routing
   - session/CLI pinning is controlled by `x-innies-provider-pin: true` or request metadata `innies_provider_pin=true`
 - Current token-mode routing metadata (from `in_routing_events.route_decision`) includes:
   - `reason`
@@ -179,6 +181,7 @@ Response shape:
 Default behavior:
 - if no explicit preference is set, effective provider defaults to `anthropic`
 - override default via `BUYER_PROVIDER_PREFERENCE_DEFAULT` (`anthropic|openai|codex`, where `codex` maps to `openai`)
+- intended primary consumer: OpenClaw and other model-agnostic clients that should route across providers via buyer-key preference rather than a provider-pinned entrypoint
 
 ### `PATCH /v1/admin/buyer-keys/:id/provider-preference`
 Set/clear provider preference for a buyer API key (admin only).

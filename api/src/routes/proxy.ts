@@ -9,6 +9,9 @@ import type { IdempotencySession } from '../services/idempotencyService.js';
 import { AppError } from '../utils/errors.js';
 import { sha256Hex, stableJson } from '../utils/hash.js';
 import { readAndValidateIdempotencyKey } from '../utils/idempotencyKey.js';
+import { anthropicToOpenAi } from '../utils/anthropicToOpenai.js';
+import { mapOpenAiErrorToAnthropic, translateOpenAiToAnthropic } from '../utils/openaiToAnthropic.js';
+import { OpenAiToAnthropicStreamTransform } from '../utils/openaiToAnthropicStream.js';
 import {
   isOpenAiOauthAccessToken,
   resolveOpenAiOauthAccountId,
@@ -67,6 +70,16 @@ type ProviderPreferenceMeta = {
   fallbackReason?: string;
   providerPlan: string[];
   selectionReason: ProviderSelectionReason;
+};
+
+type CompatTranslationMeta = {
+  translated: true;
+  originalProvider: string;
+  originalModel: string;
+  originalPath: string;
+  translatedPath: string;
+  translatedModel: string;
+  strategy: 'anthropic_messages_to_openai_responses';
 };
 
 function requestSeed(requestId: string): number {
@@ -169,6 +182,10 @@ function canonicalizeProvider(provider: string): string {
   return normalized;
 }
 
+function alternateProvider(provider: string): string {
+  return canonicalizeProvider(provider) === 'openai' ? 'anthropic' : 'openai';
+}
+
 function resolveDefaultBuyerProvider(): string {
   const raw = String(process.env.BUYER_PROVIDER_PREFERENCE_DEFAULT || 'anthropic')
     .trim()
@@ -187,6 +204,7 @@ function isClaudeCliPinnedRequest(req: any, proxiedPath: string): boolean {
 
 function parseProviderPreferencePlan(input: {
   preferredProvider?: string | null;
+  preferredProviderSource?: 'explicit' | 'default' | null;
   requestProvider: string;
   pinSelectionReason?: ProviderSelectionReason | null;
 }): {
@@ -203,7 +221,7 @@ function parseProviderPreferencePlan(input: {
     };
   }
 
-  const storedPreference = input.preferredProvider
+  const storedPreference = input.preferredProviderSource === 'explicit' && input.preferredProvider
     ? [canonicalizeProvider(input.preferredProvider)]
     : [];
   if (storedPreference.length === 0) {
@@ -215,7 +233,7 @@ function parseProviderPreferencePlan(input: {
     };
   }
 
-  const deduped = Array.from(new Set([...storedPreference, requestProvider]));
+  const deduped = Array.from(new Set([...storedPreference, requestProvider, alternateProvider(storedPreference[0])]));
   return {
     providerPlan: deduped,
     preferredProvider: deduped[0]
@@ -646,7 +664,8 @@ function logAuthFailureAudit(input: {
 function buildTokenRouteDecision(
   credential: TokenCredential,
   correlation: OpenClawCorrelation,
-  providerPreference?: ProviderPreferenceMeta
+  providerPreference?: ProviderPreferenceMeta,
+  compatTranslation?: CompatTranslationMeta
 ): Record<string, unknown> {
   const selectionReason = providerPreference?.selectionReason ?? 'preferred_provider_selected';
   const decision: Record<string, unknown> = {
@@ -664,6 +683,15 @@ function buildTokenRouteDecision(
     decision.provider_plan = providerPreference.providerPlan;
     decision.provider_fallback_from = providerPreference.fallbackFromProvider ?? null;
     decision.provider_fallback_reason = providerPreference.fallbackReason ?? null;
+  }
+  if (compatTranslation) {
+    decision.translated = true;
+    decision.translation_strategy = compatTranslation.strategy;
+    decision.original_provider = compatTranslation.originalProvider;
+    decision.original_model = compatTranslation.originalModel;
+    decision.original_path = compatTranslation.originalPath;
+    decision.translated_path = compatTranslation.translatedPath;
+    decision.translated_model = compatTranslation.translatedModel;
   }
   return decision;
 }
@@ -718,6 +746,73 @@ function mapAuthHeader(authScheme: TokenCredential['authScheme'], accessToken: s
 
 function parseRelativeProxyUrl(proxiedPath: string): URL {
   return new URL(proxiedPath, 'https://innies.invalid');
+}
+
+function resolveCompatUpstreamRequest(input: {
+  compatMode: boolean;
+  provider: string;
+  model: string;
+  proxiedPath: string;
+  payload: unknown;
+  strictUpstreamPassthrough: boolean;
+}): {
+  provider: string;
+  model: string;
+  proxiedPath: string;
+  payload: unknown;
+  strictUpstreamPassthrough: boolean;
+  translated: boolean;
+  compatTranslation?: CompatTranslationMeta;
+} {
+  const { compatMode, provider, model, proxiedPath, payload, strictUpstreamPassthrough } = input;
+  if (!compatMode || canonicalizeProvider(provider) !== 'openai') {
+    return {
+      provider,
+      model,
+      proxiedPath,
+      payload,
+      strictUpstreamPassthrough,
+      translated: false,
+      compatTranslation: undefined
+    };
+  }
+
+  const parsed = parseRelativeProxyUrl(proxiedPath);
+  if (parsed.pathname !== '/v1/messages') {
+    return {
+      provider,
+      model,
+      proxiedPath,
+      payload,
+      strictUpstreamPassthrough,
+      translated: false,
+      compatTranslation: undefined
+    };
+  }
+
+  const translatedPayload = anthropicToOpenAi(payload);
+  const translatedModel = typeof translatedPayload.model === 'string' && translatedPayload.model.trim().length > 0
+    ? translatedPayload.model.trim()
+    : model;
+  const translatedPath = `/v1/responses${parsed.search}`;
+
+  return {
+    provider,
+    model: translatedModel,
+    proxiedPath: translatedPath,
+    payload: translatedPayload,
+    strictUpstreamPassthrough: false,
+    translated: true,
+    compatTranslation: {
+      translated: true,
+      originalProvider: 'anthropic',
+      originalModel: model,
+      originalPath: proxiedPath,
+      translatedPath,
+      translatedModel,
+      strategy: 'anthropic_messages_to_openai_responses'
+    }
+  };
 }
 
 function resolveTokenModeTargetUrl(input: {
@@ -984,6 +1079,33 @@ function buildSyntheticAnthropicSse(data: unknown, model: string): string {
       return;
     }
 
+    if (blockType === 'thinking') {
+      const thinking = String((block as any).thinking ?? '');
+      events.push(
+        `event: content_block_start\ndata: ${JSON.stringify({
+          type: 'content_block_start',
+          index,
+          content_block: { type: 'thinking', thinking: '' }
+        })}\n\n`
+      );
+      if (thinking.length > 0) {
+        events.push(
+          `event: content_block_delta\ndata: ${JSON.stringify({
+            type: 'content_block_delta',
+            index,
+            delta: { type: 'thinking_delta', thinking }
+          })}\n\n`
+        );
+      }
+      events.push(
+        `event: content_block_stop\ndata: ${JSON.stringify({
+          type: 'content_block_stop',
+          index
+        })}\n\n`
+      );
+      return;
+    }
+
     events.push(
       `event: content_block_start\ndata: ${JSON.stringify({
         type: 'content_block_start',
@@ -1051,6 +1173,7 @@ async function executeTokenModeNonStreaming(input: {
   startedAt: number;
   strictUpstreamPassthrough?: boolean;
   providerPreference?: ProviderPreferenceMeta;
+  compatTranslation?: CompatTranslationMeta;
 }): Promise<ProxyRouteResult> {
   const {
     requestId,
@@ -1065,7 +1188,8 @@ async function executeTokenModeNonStreaming(input: {
     anthropicBeta,
     startedAt,
     strictUpstreamPassthrough,
-    providerPreference
+    providerPreference,
+    compatTranslation
   } = input;
   const credentials = orderCredentialsForRequest(
     await runtime.repos.tokenCredentials.listActiveForRouting(orgId, provider),
@@ -1112,7 +1236,7 @@ async function executeTokenModeNonStreaming(input: {
           provider,
           model,
           streaming: false,
-          routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference),
+          routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
           upstreamStatus: failure.statusCode,
           errorCode: inferErrorCode(failure),
           latencyMs: Date.now() - startedAt
@@ -1200,7 +1324,7 @@ async function executeTokenModeNonStreaming(input: {
             provider,
             model,
             streaming: false,
-            routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference),
+            routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
             upstreamStatus: status,
             errorCode: 'upstream_403_blocked_passthrough',
             latencyMs: Date.now() - startedAt
@@ -1233,7 +1357,7 @@ async function executeTokenModeNonStreaming(input: {
         }
       }
 
-      if (status === 401 || status === 403) {
+      if (status === 401 || (status === 403 && !compatTranslation)) {
         await recordTokenCredentialOutcome({
           credential,
           requestId,
@@ -1382,7 +1506,7 @@ async function executeTokenModeNonStreaming(input: {
             provider,
             model,
             streaming: false,
-            routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference),
+            routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
             upstreamStatus: status,
             errorCode: 'upstream_5xx_passthrough',
             latencyMs: Date.now() - startedAt
@@ -1409,6 +1533,16 @@ async function executeTokenModeNonStreaming(input: {
       const data = contentType.includes('application/json')
         ? await upstreamResponse.json().catch(() => ({}))
         : await upstreamResponse.text();
+      const downstreamMappedError = compatTranslation && (status === 400 || status === 403)
+        ? mapOpenAiErrorToAnthropic(status, data)
+        : null;
+      const downstreamData = compatTranslation && status >= 200 && status < 300
+        ? translateOpenAiToAnthropic({
+          data,
+          model: compatTranslation.originalModel
+        })
+        : (downstreamMappedError?.body ?? data);
+      const downstreamContentType = compatTranslation ? 'application/json' : contentType;
       if (strictUpstreamPassthrough && status >= 400) {
         const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
         logCompatAudit({
@@ -1449,7 +1583,7 @@ async function executeTokenModeNonStreaming(input: {
         provider,
         model,
         streaming: false,
-        routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference),
+        routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
         upstreamStatus: status,
         latencyMs: Date.now() - startedAt
       });
@@ -1481,10 +1615,10 @@ async function executeTokenModeNonStreaming(input: {
         requestId,
         keyId: credential.id,
         attemptNo,
-        upstreamStatus: status,
+        upstreamStatus: downstreamMappedError?.status ?? status,
         usageUnits,
-        contentType,
-        data,
+        contentType: downstreamContentType,
+        data: downstreamData,
         routeKind: 'token_credential',
         alreadyRecorded: true
       };
@@ -1534,6 +1668,7 @@ async function executeTokenModeStreaming(input: {
   idempotencySession: IdempotencySession | null;
   strictUpstreamPassthrough?: boolean;
   providerPreference?: ProviderPreferenceMeta;
+  compatTranslation?: CompatTranslationMeta;
 }): Promise<ProxyRouteResult | null> {
   const {
     requestId,
@@ -1550,7 +1685,8 @@ async function executeTokenModeStreaming(input: {
     res,
     idempotencySession,
     strictUpstreamPassthrough,
-    providerPreference
+    providerPreference,
+    compatTranslation
   } = input;
 
   const credentials = orderCredentialsForRequest(
@@ -1610,7 +1746,7 @@ async function executeTokenModeStreaming(input: {
           provider,
           model,
           streaming: true,
-          routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference),
+          routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
           upstreamStatus: failure.statusCode,
           errorCode: inferErrorCode(failure),
           latencyMs: Date.now() - startedAt
@@ -1692,7 +1828,7 @@ async function executeTokenModeStreaming(input: {
             provider,
             model,
             streaming: true,
-            routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference),
+            routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
             upstreamStatus: status,
             errorCode: 'upstream_403_blocked_passthrough',
             latencyMs: Date.now() - startedAt
@@ -1725,7 +1861,7 @@ async function executeTokenModeStreaming(input: {
         }
       }
 
-      if (status === 401 || status === 403) {
+      if (status === 401 || (status === 403 && !compatTranslation)) {
         await recordTokenCredentialOutcome({
           credential,
           requestId,
@@ -1869,6 +2005,15 @@ async function executeTokenModeStreaming(input: {
         const data = contentType.includes('application/json')
           ? await upstreamResponse.json().catch(() => ({}))
           : await upstreamResponse.text();
+        const downstreamMappedError = compatTranslation && (status === 400 || status === 403)
+          ? mapOpenAiErrorToAnthropic(status, data)
+          : null;
+        const downstreamData = compatTranslation && status >= 200 && status < 300
+          ? translateOpenAiToAnthropic({
+            data,
+            model: compatTranslation.originalModel
+          })
+          : (downstreamMappedError?.body ?? data);
         if (strictUpstreamPassthrough && status >= 400) {
           const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
           logCompatAudit({
@@ -1899,7 +2044,7 @@ async function executeTokenModeStreaming(input: {
           provider,
           model,
           streaming: true,
-            routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference),
+            routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
           upstreamStatus: status,
           errorCode: status >= 500 ? 'upstream_5xx_passthrough' : undefined,
           latencyMs: Date.now() - startedAt
@@ -1938,8 +2083,16 @@ async function executeTokenModeStreaming(input: {
           }
 
           const syntheticMessage = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
-          const syntheticSummary = summarizeSyntheticContentBlocks(syntheticMessage);
-          const syntheticPayload = `: keepalive\n\n${buildSyntheticAnthropicSse(syntheticMessage, model)}`;
+          const downstreamMessage = (downstreamData && typeof downstreamData === 'object'
+            ? downstreamData
+            : {}) as Record<string, unknown>;
+          const syntheticSummary = summarizeSyntheticContentBlocks(
+            compatTranslation ? downstreamMessage : syntheticMessage
+          );
+          const syntheticPayload = `: keepalive\n\n${buildSyntheticAnthropicSse(
+            compatTranslation ? downstreamMessage : syntheticMessage,
+            compatTranslation ? compatTranslation.originalModel : model
+          )}`;
           firstDownstreamWriteAt = Date.now();
           (res as any).write(syntheticPayload);
           if ((res as any).body === undefined) {
@@ -2042,10 +2195,10 @@ async function executeTokenModeStreaming(input: {
           requestId,
           keyId: credential.id,
           attemptNo,
-          upstreamStatus: status,
+          upstreamStatus: downstreamMappedError?.status ?? status,
           usageUnits,
-          contentType,
-          data,
+          contentType: compatTranslation ? 'application/json' : contentType,
+          data: downstreamData,
           routeKind: 'token_credential',
           alreadyRecorded: true
         };
@@ -2054,7 +2207,7 @@ async function executeTokenModeStreaming(input: {
       res.setHeader('x-request-id', requestId);
       res.setHeader('x-innies-token-credential-id', credential.id);
       res.setHeader('x-innies-attempt-no', String(attemptNo));
-      res.setHeader('content-type', contentType);
+      res.setHeader('content-type', compatTranslation ? 'text/event-stream; charset=utf-8' : contentType);
       // Force pass-through semantics for SSE across reverse proxies.
       res.setHeader('cache-control', 'no-cache, no-transform');
       res.setHeader('connection', 'keep-alive');
@@ -2081,7 +2234,7 @@ async function executeTokenModeStreaming(input: {
         provider,
         model,
         streaming: true,
-        routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference),
+        routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
         upstreamStatus: status,
         latencyMs: Date.now() - startedAt
       });
@@ -2136,14 +2289,29 @@ async function executeTokenModeStreaming(input: {
           callback(null, chunk);
         }
       });
-
       try {
-        await pipeline(Readable.fromWeb(upstreamResponse.body as any), meter, res as any);
+        if (compatTranslation) {
+          await pipeline(
+            Readable.fromWeb(upstreamResponse.body as any),
+            new OpenAiToAnthropicStreamTransform({
+              model: compatTranslation.originalModel
+            }),
+            meter,
+            res as any
+          );
+        } else {
+          await pipeline(Readable.fromWeb(upstreamResponse.body as any), meter, res as any);
+        }
       } catch {
         // Client disconnects are expected sometimes; continue with best-effort metering.
       } finally {
         clearInterval(keepaliveTimer);
         streamEndedAt = Date.now();
+      }
+      if (typeof (res as any).body !== 'string') {
+        (res as any).body = `: keepalive\n\n${sampled}`;
+      } else if (!(res as any).body.includes(sampled)) {
+        (res as any).body = `${(res as any).body}${sampled}`;
       }
 
       const parsedInputTokens = extractLastTokenCount(sampled, 'input_tokens');
@@ -2212,7 +2380,7 @@ async function executeTokenModeStreaming(input: {
         openclaw_session_id: correlation.openclawSessionId ?? null,
         upstream_status: status,
         upstream_content_type: contentType,
-        stream_mode: 'passthrough',
+        stream_mode: compatTranslation ? 'translated_passthrough' : 'passthrough',
         synthetic_stream_bridge: false,
         metering_source: meteringSource,
         pre_upstream_ms: dispatchStartedAt - attemptStartedAt,
@@ -2324,17 +2492,16 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
     const anthropicBeta = req.header('anthropic-beta') ?? undefined;
     let result: ProxyRouteResult | null = null;
     if (tokenModeEnabled) {
-      const pinSelectionReason = compatMode
-        ? 'compat_provider_pinned'
-        : ((readProviderPinSignal(req) || isClaudeCliPinnedRequest(req, proxiedPath))
-          ? 'cli_provider_pinned'
-          : null);
+      const pinSelectionReason = (readProviderPinSignal(req) || isClaudeCliPinnedRequest(req, proxiedPath))
+        ? 'cli_provider_pinned'
+        : null;
       const {
         providerPlan,
         preferredProvider,
         pinSelectionReason: effectivePinSelectionReason
       } = parseProviderPreferencePlan({
         preferredProvider: auth.preferredProvider,
+        preferredProviderSource: auth.preferredProviderSource,
         requestProvider,
         pinSelectionReason
       });
@@ -2345,9 +2512,17 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
 
       for (const provider of providerPlan) {
         try {
-          await assertTokenProviderEligible({
+          const upstreamRequest = resolveCompatUpstreamRequest({
+            compatMode,
             provider,
             model: parsed.model,
+            proxiedPath,
+            payload: parsed.payload ?? {},
+            strictUpstreamPassthrough: compatMode
+          });
+          await assertTokenProviderEligible({
+            provider: upstreamRequest.provider,
+            model: upstreamRequest.model,
             streaming: parsed.streaming
           });
           const providerPreference: ProviderPreferenceMeta = {
@@ -2369,17 +2544,18 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               orgId,
               apiKeyId: auth.apiKeyId,
               correlation,
-              provider,
-              model: parsed.model,
-              payload: parsed.payload ?? {},
-              proxiedPath,
+              provider: upstreamRequest.provider,
+              model: upstreamRequest.model,
+              payload: upstreamRequest.payload,
+              proxiedPath: upstreamRequest.proxiedPath,
               anthropicVersion,
               anthropicBeta,
               startedAt,
               res,
               idempotencySession: idemStart,
-              strictUpstreamPassthrough: compatMode,
-              providerPreference
+              strictUpstreamPassthrough: upstreamRequest.strictUpstreamPassthrough,
+              providerPreference,
+              compatTranslation: upstreamRequest.compatTranslation
             });
             if (streamedResult === null || res.headersSent || res.writableEnded) return;
             result = streamedResult;
@@ -2389,15 +2565,16 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               orgId,
               apiKeyId: auth.apiKeyId,
               correlation,
-              provider,
-              model: parsed.model,
-              payload: parsed.payload ?? {},
-              proxiedPath,
+              provider: upstreamRequest.provider,
+              model: upstreamRequest.model,
+              payload: upstreamRequest.payload,
+              proxiedPath: upstreamRequest.proxiedPath,
               anthropicVersion,
               anthropicBeta,
               startedAt,
-              strictUpstreamPassthrough: compatMode,
-              providerPreference
+              strictUpstreamPassthrough: upstreamRequest.strictUpstreamPassthrough,
+              providerPreference,
+              compatTranslation: upstreamRequest.compatTranslation
             });
           }
           terminalError = null;

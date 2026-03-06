@@ -93,6 +93,10 @@ Agent 1 (data model + API):
 - Add buyer-key provider preference fields + admin API update/read endpoints.
 - Add safe defaults for keys without explicit preference.
 
+Intent:
+- This feature primarily exists for OpenClaw and other model-agnostic clients.
+- Goal: let buyer-key preference steer cross-provider routing without making the client pick a provider-specific lane up front.
+
 Agent 2 (routing engine):
 - Implement deterministic preference-first routing.
 - Implement fallback triggers (`401/403/429/timeout/5xx/capacity`) + return-to-preferred checks.
@@ -322,6 +326,7 @@ Minimum metrics:
 - `innies claude` hard-pins Anthropic path for the session.
 - `innies codex` hard-pins Codex/OpenAI path for the session.
 - Goal: match normal CLI coding UX, with pooled keys underneath.
+- Buyer-key provider preference is not the primary steering control for these wrappers; they are provider-specific entrypoints by design.
 
 5. Codex model strategy (Phase 1)
 - Single default Codex model for all internal usage in Phase 1.
