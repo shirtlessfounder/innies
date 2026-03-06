@@ -94,14 +94,14 @@ The parity bar is NOT: "behave identically to OpenClaw natively configured with 
 The parity bar (restated): OpenClaw functions correctly through Anthropic-shaped semantics, regardless of which upstream provider Innies selects. These risks are scoped to that bar — not to native Codex behavior parity.
 
 **Verified risks (repo-backed):**
-1. **Streaming fidelity:** OpenClaw's Anthropic streaming uses pi-ai as the transport layer, which constructs `${baseUrl}/v1/messages` requests and parses the returned SSE stream (see `model-compat.ts:27-44`). Translated SSE events must be valid for OpenClaw/pi-ai's Anthropic stream parser. This is the hardest technical constraint.
+1. **Streaming fidelity:** OpenClaw's Anthropic streaming uses pi-ai as the transport layer, which constructs `${baseUrl}/v1/messages` requests and parses the returned SSE stream. Translated SSE events must be valid for OpenClaw/pi-ai's Anthropic stream parser. This is the hardest technical constraint.
 2. **Content block ordering:** OpenClaw relies on Anthropic's block ordering (thinking → text → tool_use). Translated responses must preserve this ordering.
 3. **Beta headers:** OpenClaw sends `anthropic-beta: fine-grained-tool-streaming-2025-05-14, interleaved-thinking-2025-05-14`. The compat endpoint already handles these, but translated responses must be consistent with what these betas enable.
 
 **Validation needed (may be risks, evidence inconclusive):**
 4. **Tool call IDs:** OpenClaw's strict tool-ID sanitization (`sanitizeToolCallIdsForCloudCodeAssist`) applies to `openai-completions` path, not `openai-responses` or `openai-codex-responses` (see `transcript-policy.ts:88-133`). The more relevant risk for this scope is whether translated-back Anthropic responses with OpenAI-originated tool IDs (`call_xxx` format) pass OpenClaw's Anthropic turn validation/pairing. Need to verify.
 5. **Thinking blocks:** OpenClaw has thinking block filtering (`transcript-policy.ts:99`) and tag scanning (`pi-embedded-subscribe.ts:24`), generic output filters. Need to verify translated reasoning content format requirements.
-6. **Cache control:** OpenClaw's `cache_control` block injection is scoped to the OpenRouter-Anthropic path (`extra-params.ts:468-509`), not general Anthropic behavior. Direct Anthropic uses `cacheRetention` semantics, not prompt-block rewriting (see `prompt-caching.md:89-105`). Innies should still strip any `cache_control` blocks during translation (no OpenAI equivalent), but this is an edge case, not a primary concern.
+6. **Cache control:** OpenClaw's `cache_control` block injection is scoped to the OpenRouter-Anthropic path (`extra-params.ts:468-509`), not general Anthropic behavior. Direct Anthropic uses `cacheRetention` semantics, not prompt-block rewriting. Innies should still strip any `cache_control` blocks during translation (no OpenAI equivalent), but this is an edge case, not a primary concern.
 
 **Not a risk (intentional boundary):**
 7. **Transcript shaping delta:** Codex receives Anthropic-shaped transcripts. This is the product contract, not a gap. See "Intentional contract" above.
@@ -183,7 +183,7 @@ Anthropic messages → OpenAI input items. The key difference: Anthropic uses a 
 
 **Important:**
 - Anthropic packs `tool_result` inside a user message. OpenAI has it as a top-level input item. The translator must unwrap these.
-- OpenAI Responses uses `call_id` (not `id`) as the continuation key for function calls. (Ref: `open-responses.schema.ts:96`, `open-responses.schema.ts:106`)
+- **Tool ID mapping rule (applies everywhere in this doc):** Anthropic `tool_use.id` ↔ OpenAI Responses `function_call.call_id`. Always. OpenAI's item-level `id` field is internal to OpenAI and is never used for translation. `call_id` is the only continuation key. (Ref: `open-responses.schema.ts:96`, `open-responses.schema.ts:229`)
 
 #### Tool call ID continuity (critical for multi-turn)
 
