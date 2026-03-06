@@ -39,10 +39,11 @@ function stripCacheControl(value: unknown): unknown {
 }
 
 function joinTextParts(parts: string[]): string {
+  // Preserve original text fidelity — no trimming, no normalization.
+  // Only filter out completely empty strings.
   return parts
-    .map((part) => part.trim())
     .filter((part) => part.length > 0)
-    .join('\n\n');
+    .join('\n');
 }
 
 function normalizeSystemInstructions(system: unknown): string | undefined {
@@ -67,11 +68,18 @@ function normalizeSystemInstructions(system: unknown): string | undefined {
 function serializeToolResultContent(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
-    const text = content
-      .filter((block): block is Record<string, unknown> => isRecord(block))
-      .filter((block) => block.type === 'text' && typeof block.text === 'string')
-      .map((block) => String(block.text));
-    if (text.length > 0) return text.join('\n');
+    const textBlocks = content.filter(
+      (block): block is Record<string, unknown> => isRecord(block) && block.type === 'text' && typeof block.text === 'string'
+    );
+    const hasNonText = content.some(
+      (block) => isRecord(block) && block.type !== 'text'
+    );
+    // If mixed content (text + non-text), preserve everything via JSON.
+    // If all text, join naturally.
+    if (hasNonText || textBlocks.length !== content.length) {
+      return JSON.stringify(content);
+    }
+    if (textBlocks.length > 0) return textBlocks.map((b) => String(b.text)).join('\n');
   }
   return JSON.stringify(content ?? null);
 }
@@ -151,11 +159,9 @@ function translateUserMessage(message: Record<string, unknown>, items: OpenAiIte
     if (rawBlock.type === 'tool_result') {
       flushMessageItem(items, 'user', pendingParts);
       pendingParts.length = 0;
-      const callId = typeof rawBlock.tool_use_id === 'string'
-        ? rawBlock.tool_use_id
-        : typeof rawBlock.id === 'string'
-          ? rawBlock.id
-          : null;
+      // Strict call_id contract: tool_use_id is the only valid continuation key.
+      // Do not fall back to item.id — missing tool_use_id is a translation error.
+      const callId = typeof rawBlock.tool_use_id === 'string' ? rawBlock.tool_use_id : null;
       if (!callId) continue;
       items.push({
         type: 'function_call_output',
@@ -204,11 +210,13 @@ function translateAssistantMessage(message: Record<string, unknown>, items: Open
     }
     if (rawBlock.type === 'tool_use') {
       flushPendingText();
-      const callId = typeof rawBlock.id === 'string' ? rawBlock.id : undefined;
+      // Anthropic tool_use.id maps to OpenAI call_id. This is the canonical continuation key.
+      const callId = typeof rawBlock.id === 'string' ? rawBlock.id : null;
+      if (!callId) continue; // Missing tool_use.id = skip, cannot create valid function_call
       const toolName = typeof rawBlock.name === 'string' ? rawBlock.name : 'tool';
       items.push({
         type: 'function_call',
-        ...(callId ? { call_id: callId } : {}),
+        call_id: callId,
         name: toolName,
         arguments: JSON.stringify(rawBlock.input ?? {})
       });

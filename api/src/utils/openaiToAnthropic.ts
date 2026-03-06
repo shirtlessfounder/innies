@@ -52,11 +52,10 @@ function translateOutputItem(item: Record<string, unknown>): Array<Record<string
   }
 
   if (item.type === 'function_call') {
-    const toolId = typeof item.call_id === 'string'
-      ? item.call_id
-      : typeof item.id === 'string'
-        ? item.id
-        : `call_${Date.now()}`;
+    // Strict call_id contract: call_id is the only valid continuation key.
+    // Do not fall back to item.id or generate synthetic IDs.
+    const toolId = typeof item.call_id === 'string' ? item.call_id : null;
+    if (!toolId) return []; // Missing call_id = translation error, skip item
     return [{
       type: 'tool_use',
       id: toolId,

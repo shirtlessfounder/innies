@@ -158,6 +158,14 @@ export class OpenAiToAnthropicStreamTransform extends Transform {
       case 'response.completed':
         this.handleCompleted(payload);
         break;
+      case 'response.failed':
+        this.handleFailed(payload);
+        break;
+      // Intentional no-ops: these events don't map to Anthropic SSE events.
+      // content_part.done and output_text.done are covered by output_item.done.
+      case 'response.content_part.done':
+      case 'response.output_text.done':
+        break;
       default:
         break;
     }
@@ -191,11 +199,8 @@ export class OpenAiToAnthropicStreamTransform extends Transform {
     }
 
     if (kind === 'tool_use') {
-      const toolUseId = typeof item.call_id === 'string'
-        ? item.call_id
-        : typeof item.id === 'string'
-          ? item.id
-          : `call_${outputIndex}`;
+      // Strict call_id contract: call_id is the only valid continuation key.
+      const toolUseId = typeof item.call_id === 'string' ? item.call_id : `call_unknown_${outputIndex}`;
       this.push(sseEvent('content_block_start', {
         type: 'content_block_start',
         index: state.blockIndex,
@@ -332,6 +337,43 @@ export class OpenAiToAnthropicStreamTransform extends Transform {
       type: 'content_block_stop',
       index: state.blockIndex
     }));
+  }
+
+  private handleFailed(payload: Record<string, unknown>): void {
+    this.ensureMessageStart(isRecord(payload.response) ? payload.response : undefined);
+    const response = isRecord(payload.response) ? payload.response : {};
+    const error = isRecord(response.error) ? response.error : {};
+    const errorMessage = typeof error.message === 'string' ? error.message : 'Upstream provider error';
+
+    // Emit an error as a text block so OpenClaw sees a complete message,
+    // then terminate with message_delta + message_stop.
+    const blockIndex = this.nextBlockIndex;
+    this.nextBlockIndex += 1;
+    this.push(sseEvent('content_block_start', {
+      type: 'content_block_start',
+      index: blockIndex,
+      content_block: { type: 'text', text: '' }
+    }));
+    this.push(sseEvent('content_block_delta', {
+      type: 'content_block_delta',
+      index: blockIndex,
+      delta: { type: 'text_delta', text: `[Translation error: ${errorMessage}]` }
+    }));
+    this.push(sseEvent('content_block_stop', {
+      type: 'content_block_stop',
+      index: blockIndex
+    }));
+
+    const usage = isRecord(response.usage) ? response.usage : {};
+    this.push(sseEvent('message_delta', {
+      type: 'message_delta',
+      delta: { stop_reason: 'end_turn', stop_sequence: null },
+      usage: {
+        input_tokens: Number(usage.input_tokens ?? 0),
+        output_tokens: Number(usage.output_tokens ?? 0)
+      }
+    }));
+    this.push(sseEvent('message_stop', { type: 'message_stop' }));
   }
 
   private handleCompleted(payload: Record<string, unknown>): void {

@@ -1533,7 +1533,8 @@ async function executeTokenModeNonStreaming(input: {
       const data = contentType.includes('application/json')
         ? await upstreamResponse.json().catch(() => ({}))
         : await upstreamResponse.text();
-      const downstreamMappedError = compatTranslation && (status === 400 || status === 403)
+      // Map ALL error statuses on translated paths to Anthropic-shaped error envelopes.
+      const downstreamMappedError = compatTranslation && status >= 400
         ? mapOpenAiErrorToAnthropic(status, data)
         : null;
       const downstreamData = compatTranslation && status >= 200 && status < 300
@@ -2005,7 +2006,8 @@ async function executeTokenModeStreaming(input: {
         const data = contentType.includes('application/json')
           ? await upstreamResponse.json().catch(() => ({}))
           : await upstreamResponse.text();
-        const downstreamMappedError = compatTranslation && (status === 400 || status === 403)
+        // Map ALL error statuses on translated paths to Anthropic-shaped error envelopes.
+        const downstreamMappedError = compatTranslation && status >= 400
           ? mapOpenAiErrorToAnthropic(status, data)
           : null;
         const downstreamData = compatTranslation && status >= 200 && status < 300
