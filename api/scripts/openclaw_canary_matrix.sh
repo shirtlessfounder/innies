@@ -15,14 +15,10 @@ resolve_api_url() {
 }
 
 API_URL="$(resolve_api_url)"
-MODEL="${MODEL:-${INNIES_MODEL_ANTHROPIC:-}}"
+MODEL="${MODEL:-${INNIES_MODEL_ANTHROPIC:-claude-opus-4-6}}"
 TOKEN_A="${TOKEN_A:-${INNIES_BUYER_API_KEY:-}}"
 TOKEN_B="${TOKEN_B:-${INNIES_BUYER_API_KEY_B:-}}"
 
-if [[ -z "$MODEL" ]]; then
-  echo "missing MODEL or INNIES_MODEL_ANTHROPIC" >&2
-  exit 1
-fi
 if [[ -z "$TOKEN_A" ]]; then
   echo "missing TOKEN_A or INNIES_BUYER_API_KEY" >&2
   exit 1

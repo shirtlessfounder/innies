@@ -7,7 +7,7 @@ set -euo pipefail
 #   INNIES_BASE_URL or INNIES_API_URL
 #   INNIES_BUYER_API_KEY
 #   INNIES_IDEMPOTENCY_PREFIX
-#   INNIES_MODEL_ANTHROPIC
+#   INNIES_MODEL_ANTHROPIC    defaults to claude-opus-4-6
 # Optional env:
 #   INNIES_MODEL_CODEX        required for openai/codex preference scenarios
 #   INNIES_EXPECTED_PREFERRED_PROVIDER
@@ -31,7 +31,7 @@ require_env() {
 
 require_env INNIES_BUYER_API_KEY
 require_env INNIES_IDEMPOTENCY_PREFIX
-require_env INNIES_MODEL_ANTHROPIC
+INNIES_MODEL_ANTHROPIC="${INNIES_MODEL_ANTHROPIC:-claude-opus-4-6}"
 
 canonicalize_provider() {
   local provider="${1:-}"
