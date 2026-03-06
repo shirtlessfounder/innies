@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { access, constants } from 'node:fs/promises';
 import { loadConfig } from '../config.js';
 import { fileExists } from '../utils.js';
 
@@ -10,6 +11,30 @@ function findCommand(bin) {
 
   const value = which.stdout.trim();
   return value.length > 0 ? value : null;
+}
+
+async function resolveBinary(bin, overrideEnvVar) {
+  const override = process.env[overrideEnvVar]?.trim();
+  if (override) {
+    try {
+      await access(override, constants.X_OK);
+      return {
+        ok: true,
+        note: `${override} (via ${overrideEnvVar})`
+      };
+    } catch {
+      return {
+        ok: false,
+        note: `${override} (via ${overrideEnvVar}; not executable or not found)`
+      };
+    }
+  }
+
+  const path = findCommand(bin);
+  return {
+    ok: path !== null,
+    note: path ?? 'not found in PATH'
+  };
 }
 
 export async function runDoctor() {
@@ -30,11 +55,18 @@ export async function runDoctor() {
     note: config?.token ? 'present' : 'missing'
   });
 
-  const claudePath = findCommand('claude');
+  const claudeBinary = await resolveBinary('claude', 'INNIES_CLAUDE_BIN');
   checks.push({
     name: 'claude_binary',
-    ok: claudePath !== null,
-    note: claudePath ?? 'not found in PATH'
+    ok: claudeBinary.ok,
+    note: claudeBinary.note
+  });
+
+  const codexBinary = await resolveBinary('codex', 'INNIES_CODEX_BIN');
+  checks.push({
+    name: 'codex_binary',
+    ok: codexBinary.ok,
+    note: codexBinary.note
   });
 
   const linkedWrapperPath = `${process.env.HOME ?? ''}/.local/bin/claude`;

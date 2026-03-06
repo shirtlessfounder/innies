@@ -11,6 +11,7 @@ export function printUsage() {
       '  innies login --token <in_token> [--base-url <url>] [--model <id>]',
       '  innies doctor',
       '  innies claude [-- <claude args...>]',
+      '  innies codex [-- <codex args...>]',
       '  innies link claude',
       ''
     ].join('\n')

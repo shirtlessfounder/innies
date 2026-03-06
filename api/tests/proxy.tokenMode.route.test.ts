@@ -192,6 +192,7 @@ describe('proxy token-mode route behavior', () => {
   afterEach(() => {
     delete process.env.BUYER_PROVIDER_PREFERENCE_DEFAULT;
     delete process.env.TOKEN_MODE_ENABLED_ORGS;
+    delete process.env.ANTHROPIC_UPSTREAM_BASE_URL;
     delete process.env.OPENAI_UPSTREAM_BASE_URL;
     delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
     vi.restoreAllMocks();
@@ -1060,6 +1061,178 @@ describe('proxy token-mode route behavior', () => {
     expect(String(targetUrl)).toContain('https://openai.internal.test/v1/responses');
     expect(headers.authorization).toBe('Bearer openai-key-live');
     expect(headers['anthropic-version']).toBeUndefined();
+    upstreamSpy.mockRestore();
+  });
+
+  it('accepts native codex/openai responses bodies on /v1/proxy/v1/responses and records pinned routing', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.OPENAI_UPSTREAM_BASE_URL = 'https://openai.internal.test';
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: null
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      supports_streaming: false
+    } as any);
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'dddd0001-0000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      authScheme: 'x_api_key',
+      accessToken: 'openai-key-native',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'resp_native_ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/responses',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-request-id': 'req_native_codex',
+        'x-innies-provider-pin': 'true'
+      },
+      body: {
+        model: 'gpt-5.4',
+        input: 'hello from native codex',
+        stream: false
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('resp_native_ok');
+    expect(listSpy).toHaveBeenCalledWith('818d0cc7-7ed2-469f-b690-a977e72a921d', 'openai');
+    const [targetUrl, init] = upstreamSpy.mock.calls[0] as [URL, RequestInit];
+    const headers = (init.headers ?? {}) as Record<string, string>;
+    expect(String(targetUrl)).toBe('https://openai.internal.test/v1/responses');
+    expect(headers.authorization).toBe('Bearer openai-key-native');
+    expect(headers['x-request-id']).toBe('req_native_codex');
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      model: 'gpt-5.4',
+      input: 'hello from native codex',
+      stream: false
+    });
+    expect(runtimeModule.runtime.repos.routingEvents.insert).toHaveBeenCalledWith(expect.objectContaining({
+      routeDecision: expect.objectContaining({
+        reason: 'cli_provider_pinned',
+        provider_selection_reason: 'cli_provider_pinned',
+        provider_effective: 'openai',
+        provider_plan: ['openai']
+      })
+    }));
+    upstreamSpy.mockRestore();
+  });
+
+  it('accepts native anthropic message bodies on /v1/proxy/v1/messages and preserves claude-cli pinning', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.ANTHROPIC_UPSTREAM_BASE_URL = 'https://anthropic.internal.test';
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'anthropic',
+      model: 'claude-opus-4-6',
+      supports_streaming: false
+    } as any);
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'aaaa0001-0000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'sk-ant-oat01-native-token',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_native_ok', type: 'message' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-app': 'cli',
+        'user-agent': 'claude-cli/1.0.0'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 32,
+        messages: [{ role: 'user', content: 'hi from native claude' }],
+        stream: false
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('msg_native_ok');
+    expect(listSpy).toHaveBeenCalledWith('818d0cc7-7ed2-469f-b690-a977e72a921d', 'anthropic');
+    const [targetUrl, init] = upstreamSpy.mock.calls[0] as [URL, RequestInit];
+    const headers = (init.headers ?? {}) as Record<string, string>;
+    expect(String(targetUrl)).toBe('https://anthropic.internal.test/v1/messages');
+    expect(headers.authorization).toBe('Bearer sk-ant-oat01-native-token');
+    expect(headers['anthropic-version']).toBe('2023-06-01');
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      model: 'claude-opus-4-6',
+      max_tokens: 32,
+      messages: [{ role: 'user', content: 'hi from native claude' }],
+      stream: false
+    });
+    expect(runtimeModule.runtime.repos.routingEvents.insert).toHaveBeenCalledWith(expect.objectContaining({
+      routeDecision: expect.objectContaining({
+        reason: 'cli_provider_pinned',
+        provider_selection_reason: 'cli_provider_pinned',
+        provider_effective: 'anthropic',
+        provider_plan: ['anthropic']
+      })
+    }));
     upstreamSpy.mockRestore();
   });
 

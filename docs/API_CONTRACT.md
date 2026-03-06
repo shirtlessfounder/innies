@@ -53,7 +53,11 @@ Request body:
 
 Notes:
 - `orgId` is derived from authenticated API key; request body org fields are ignored.
-- `provider` is optional at schema level; if omitted, request parsing defaults it to `anthropic`.
+- wrapped proxy ingress continues to accept the envelope above.
+- provider-native ingress is also accepted on the standard upstream-shaped proxy paths:
+  - `POST /v1/proxy/v1/messages`: Anthropic-native body; Innies infers `provider=anthropic`, `model=body.model`, `streaming=(body.stream === true)`.
+  - `POST /v1/proxy/v1/responses`: OpenAI Responses-native body; Innies infers `provider=openai`, `model=body.model`, `streaming=(body.stream === true)`.
+- for wrapped proxy ingress, `provider` is optional at schema level; if omitted, request parsing defaults it to `anthropic`.
 - Token mode is org-gated by `TOKEN_MODE_ENABLED_ORGS` allowlist.
 - Token mode supports both non-streaming and streaming execution.
 - Non-streaming responses mirror upstream HTTP status/body.

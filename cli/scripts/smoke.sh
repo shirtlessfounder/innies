@@ -63,13 +63,20 @@ fi
 SH
 chmod +x "$HOME/bin/claude"
 
+cat > "$HOME/bin/codex" << 'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "codex-help-stub"
+SH
+chmod +x "$HOME/bin/codex"
+
 export PATH="$HOME/bin:$PATH"
 export FAKE_CLAUDE_LOG
 export TMP_DIR
 export INNIES_CAPTURE_CLAUDE_OUTPUT=1
 
 node "$ROOT_DIR/src/index.js" login --token in_live_test --base-url "$MOCK_BASE_URL"
-node "$ROOT_DIR/src/index.js" doctor
+node "$ROOT_DIR/src/index.js" doctor > "$TMP_DIR/doctor.out"
 node "$ROOT_DIR/src/index.js" link claude
 node "$ROOT_DIR/src/index.js" claude -- --version --foo bar
 node "$ROOT_DIR/src/index.js" claude -- --check-pass-through
@@ -86,6 +93,18 @@ fi
 
 if [[ ! -x "$HOME/.local/bin/claude" ]]; then
   echo "smoke: missing claude wrapper"
+  exit 1
+fi
+
+if ! grep -q '^OK  claude_binary' "$TMP_DIR/doctor.out"; then
+  echo "smoke: doctor did not report claude_binary as ready"
+  cat "$TMP_DIR/doctor.out"
+  exit 1
+fi
+
+if ! grep -q '^OK  codex_binary' "$TMP_DIR/doctor.out"; then
+  echo "smoke: doctor did not report codex_binary as ready"
+  cat "$TMP_DIR/doctor.out"
   exit 1
 fi
 
