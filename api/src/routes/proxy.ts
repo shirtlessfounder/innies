@@ -2606,7 +2606,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
     const requestId = buildRequestId(req.header('x-request-id') ?? undefined);
     const correlation = resolveOpenClawCorrelation(req, requestId);
     const rawIdempotencyKey = req.header('idempotency-key') ?? undefined;
-    const shouldPersistIdempotency = !compatMode || Boolean(rawIdempotencyKey);
+    const shouldPersistIdempotency = Boolean(rawIdempotencyKey);
     const idempotencyKey = shouldPersistIdempotency
       ? readAndValidateIdempotencyKey(rawIdempotencyKey)
       : generateCompatIdempotencyKey(requestId);
