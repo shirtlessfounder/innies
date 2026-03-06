@@ -21,8 +21,24 @@ Current branch note:
 Make sure you have:
 - an Innies buyer key: `in_live_...`
 - the upstream CLI you want to use already installed:
-  - `claude` for `innies claude`
-  - `codex` for `innies codex`
+  - `claude` (Claude Code) for `innies claude`
+  - `codex` (Codex CLI) for `innies codex`
+
+### Codex Config Requirement
+Codex CLI needs a custom provider in `~/.codex/config.toml` to route through Innies. The wrapper injects `--config` flags, but if you have an existing config, add this to ensure routing works:
+
+```toml
+model_provider = "innies"
+
+[model_providers.innies]
+name = "innies"
+base_url = "https://api.innies.computer/v1/proxy/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+requires_openai_auth = false
+```
+
+Also set `responses_websockets_v2 = false` in your `[general]` section — websockets bypass the proxy.
 
 ## Quickstart
 
@@ -63,14 +79,16 @@ Innies connected | model <model-id> | proxy <proxy-url> | request <request-id>
 ```
 
 In practice:
-- `innies claude` reports an Anthropic-lane proxy URL ending in `/v1/proxy`
-- `innies codex` reports a Codex/OpenAI-lane proxy URL ending in `/v1/proxy/v1`
+- `innies claude` uses the base URL (e.g. `https://api.innies.computer`) — Claude Code appends `/v1/messages` to hit the compat endpoint
+- `innies codex` reports a Codex/OpenAI-lane proxy URL ending in `/v1/proxy/v1` — Codex appends `/responses`
 
 After that:
 - your args pass straight through to the upstream CLI
 - the session keeps the upstream CLI's normal TTY behavior
 - the wrapper exits with the same exit code as the upstream CLI
-- Codex also injects OpenAI provider config overrides so requests stay on the native Responses lane and carry Innies correlation/pin headers
+- Codex injects a custom `innies` provider config (not the built-in `openai` provider) so requests route through the proxy, and carries Innies correlation/pin headers
+- The Claude wrapper injects `--model` (default: `claude-opus-4-6`) unless you pass `--model` yourself
+- The Codex wrapper injects `--model` (default: `gpt-5.4`) unless you pass `--model` yourself
 
 ## Mental Model
 - one Innies login
@@ -106,6 +124,14 @@ Safety note:
   - point the wrapper at the real upstream binary, not another Innies shim
 - token-mode not enabled / capacity / unauthorized hints
   - use the printed request id plus server-side routing evidence to debug the provider-pinned lane
+- `No active compatibility rule for provider/model`
+  - the model sent by the CLI isn't in the `in_model_compatibility_rules` DB table — add it or ensure `--model` is injected correctly
+- `Stream disconnected before completion`
+  - check server logs for `synthetic_output_item_count: 0` — upstream may be returning empty output
+- Claude Code auth conflict warning (`Both a token and an API key are set`)
+  - cosmetic — Innies sets `ANTHROPIC_API_KEY` (buyer token) alongside any existing claude.ai login; routing still works correctly via `ANTHROPIC_BASE_URL`
+- Codex showing "high demand" / reconnecting
+  - requests aren't reaching Innies — verify `~/.codex/config.toml` has the `[model_providers.innies]` section with correct `base_url` and `responses_websockets_v2 = false`
 
 ## Daily Flow
 ```bash
