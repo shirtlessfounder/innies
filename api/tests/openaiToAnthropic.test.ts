@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { mapOpenAiErrorToAnthropic, translateOpenAiToAnthropic } from '../src/utils/openaiToAnthropic.js';
+import {
+  mapOpenAiErrorToAnthropic,
+  openAiOutputToAnthropicContent,
+  translateOpenAiToAnthropic
+} from '../src/utils/openaiToAnthropic.js';
 
 describe('translateOpenAiToAnthropic', () => {
   it('maps text, tool calls, reasoning, and usage back to anthropic message format', () => {
@@ -96,7 +100,7 @@ describe('translateOpenAiToAnthropic', () => {
       }
     });
 
-    const toolUseBlocks = translated.content.filter((b: any) => b.type === 'tool_use');
+    const toolUseBlocks = (translated.content as any[]).filter((b: any) => b.type === 'tool_use');
     expect(toolUseBlocks).toHaveLength(0);
     expect(translated.content).toEqual([
       { type: 'text', text: 'done' }
@@ -114,5 +118,16 @@ describe('translateOpenAiToAnthropic', () => {
     const result = mapOpenAiErrorToAnthropic(429, { error: { message: 'too many requests' } });
     expect(result.status).toBe(429);
     expect(result.body.error.type).toBe('rate_limit_error');
+  });
+
+  it('skips function_call output items that are missing call_id', () => {
+    expect(openAiOutputToAnthropicContent([
+      {
+        type: 'function_call',
+        id: 'fc_missing_call_id',
+        name: 'lookup_repo',
+        arguments: '{"name":"innies"}'
+      }
+    ])).toEqual([]);
   });
 });

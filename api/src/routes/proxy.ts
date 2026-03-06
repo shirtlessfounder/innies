@@ -60,8 +60,7 @@ type RetryReason =
 type ProviderSelectionReason =
   | 'preferred_provider_selected'
   | 'fallback_provider_selected'
-  | 'cli_provider_pinned'
-  | 'compat_provider_pinned';
+  | 'cli_provider_pinned';
 
 type ProviderPreferenceMeta = {
   preferredProvider: string;
@@ -696,6 +695,25 @@ function buildTokenRouteDecision(
   return decision;
 }
 
+function buildCompatTerminalErrorResult(input: {
+  mappedError: ReturnType<typeof mapOpenAiErrorToAnthropic>;
+  requestId: string;
+  keyId?: string | null;
+  attemptNo: number;
+}): ProxyRouteResult {
+  return {
+    requestId: input.requestId,
+    keyId: input.keyId ?? null,
+    attemptNo: input.attemptNo,
+    upstreamStatus: input.mappedError.status,
+    usageUnits: 0,
+    contentType: 'application/json',
+    data: input.mappedError.body,
+    routeKind: 'token_credential',
+    alreadyRecorded: true
+  };
+}
+
 async function recordTokenCredentialOutcome(input: {
   credential: TokenCredential;
   requestId: string;
@@ -1174,6 +1192,7 @@ async function executeTokenModeNonStreaming(input: {
   strictUpstreamPassthrough?: boolean;
   providerPreference?: ProviderPreferenceMeta;
   compatTranslation?: CompatTranslationMeta;
+  allowCompatTerminalErrorResponse?: boolean;
 }): Promise<ProxyRouteResult> {
   const {
     requestId,
@@ -1189,7 +1208,8 @@ async function executeTokenModeNonStreaming(input: {
     startedAt,
     strictUpstreamPassthrough,
     providerPreference,
-    compatTranslation
+    compatTranslation,
+    allowCompatTerminalErrorResponse
   } = input;
   const credentials = orderCredentialsForRequest(
     await runtime.repos.tokenCredentials.listActiveForRouting(orgId, provider),
@@ -1203,6 +1223,9 @@ async function executeTokenModeNonStreaming(input: {
   let sawAuthFailure = false;
   let lastAuthStatus: number | null = null;
   let lastAuthFailure: { attemptNo: number; credentialId: string; credentialLabel?: string | null; status: number; errorType?: string; errorMessage?: string } | null = null;
+  let terminalCompatError: ReturnType<typeof mapOpenAiErrorToAnthropic> | null = null;
+  let terminalCompatCredentialId: string | null = null;
+  let terminalCompatAttemptNo = 0;
   for (const initialCredential of credentials) {
     attemptNo += 1;
     let credential = initialCredential;
@@ -1368,14 +1391,20 @@ async function executeTokenModeNonStreaming(input: {
         });
         let statusErrorType: string | undefined;
         let statusErrorMessage: string | undefined;
-        if (strictUpstreamPassthrough) {
+        let statusData: unknown = null;
+        if (strictUpstreamPassthrough || compatTranslation) {
           const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
-          const statusData = contentType.includes('application/json')
+          statusData = contentType.includes('application/json')
             ? await upstreamResponse.json().catch(() => ({}))
             : await upstreamResponse.text();
           const details = extractUpstreamErrorDetails(statusData);
           statusErrorType = details.errorType;
           statusErrorMessage = details.errorMessage;
+          if (compatTranslation) {
+            terminalCompatError = mapOpenAiErrorToAnthropic(status, statusData);
+            terminalCompatCredentialId = credential.id;
+            terminalCompatAttemptNo = attemptNo;
+          }
         }
         if (shouldRetryWithOauthSafeCompatPayload({
           status,
@@ -1463,6 +1492,15 @@ async function executeTokenModeNonStreaming(input: {
       }
 
       if (status === 429) {
+        if (compatTranslation) {
+          const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+          const rateLimitData = contentType.includes('application/json')
+            ? await upstreamResponse.json().catch(() => ({}))
+            : await upstreamResponse.text();
+          terminalCompatError = mapOpenAiErrorToAnthropic(status, rateLimitData);
+          terminalCompatCredentialId = credential.id;
+          terminalCompatAttemptNo = attemptNo;
+        }
         await recordTokenCredentialOutcome({
           credential,
           requestId,
@@ -1523,6 +1561,16 @@ async function executeTokenModeNonStreaming(input: {
             routeKind: 'token_credential',
             alreadyRecorded: true
           };
+        }
+
+        if (compatTranslation) {
+          const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+          const upstreamErrorData = contentType.includes('application/json')
+            ? await upstreamResponse.json().catch(() => ({}))
+            : await upstreamResponse.text();
+          terminalCompatError = mapOpenAiErrorToAnthropic(status, upstreamErrorData);
+          terminalCompatCredentialId = credential.id;
+          terminalCompatAttemptNo = attemptNo;
         }
 
         await logAttemptFailure({ kind: 'server_error', statusCode: status, message: 'upstream server error' });
@@ -1626,6 +1674,19 @@ async function executeTokenModeNonStreaming(input: {
     }
   }
 
+  const compatTerminalResult = compatTranslation && terminalCompatError
+    ? buildCompatTerminalErrorResult({
+      mappedError: terminalCompatError,
+      requestId,
+      keyId: terminalCompatCredentialId,
+      attemptNo: terminalCompatAttemptNo || attemptNo || 1
+    })
+    : null;
+
+  if (allowCompatTerminalErrorResponse && compatTerminalResult) {
+    return compatTerminalResult;
+  }
+
   if (sawAuthFailure) {
     if (lastAuthFailure) {
       logAuthFailureAudit({
@@ -1643,14 +1704,19 @@ async function executeTokenModeNonStreaming(input: {
         errorMessage: lastAuthFailure.errorMessage
       });
     }
-    throw new AppError('unauthorized', 401, 'All token credentials unauthorized or expired', {
-      provider,
-      model,
-      lastAuthStatus
-    });
+      throw new AppError('unauthorized', 401, 'All token credentials unauthorized or expired', {
+        provider,
+        model,
+        lastAuthStatus,
+        ...(compatTerminalResult ? { compatTerminalResult } : {})
+      });
   }
 
-  throw new AppError('capacity_unavailable', 429, 'All token credential attempts exhausted', { provider, model });
+  throw new AppError('capacity_unavailable', 429, 'All token credential attempts exhausted', {
+    provider,
+    model,
+    ...(compatTerminalResult ? { compatTerminalResult } : {})
+  });
 }
 
 async function executeTokenModeStreaming(input: {
@@ -1670,6 +1736,7 @@ async function executeTokenModeStreaming(input: {
   strictUpstreamPassthrough?: boolean;
   providerPreference?: ProviderPreferenceMeta;
   compatTranslation?: CompatTranslationMeta;
+  allowCompatTerminalErrorResponse?: boolean;
 }): Promise<ProxyRouteResult | null> {
   const {
     requestId,
@@ -1687,7 +1754,8 @@ async function executeTokenModeStreaming(input: {
     idempotencySession,
     strictUpstreamPassthrough,
     providerPreference,
-    compatTranslation
+    compatTranslation,
+    allowCompatTerminalErrorResponse
   } = input;
 
   const credentials = orderCredentialsForRequest(
@@ -1702,6 +1770,9 @@ async function executeTokenModeStreaming(input: {
   let sawAuthFailure = false;
   let lastAuthStatus: number | null = null;
   let lastAuthFailure: { attemptNo: number; credentialId: string; credentialLabel?: string | null; status: number; errorType?: string; errorMessage?: string } | null = null;
+  let terminalCompatError: ReturnType<typeof mapOpenAiErrorToAnthropic> | null = null;
+  let terminalCompatCredentialId: string | null = null;
+  let terminalCompatAttemptNo = 0;
 
   for (const initialCredential of credentials) {
     attemptNo += 1;
@@ -1873,7 +1944,7 @@ async function executeTokenModeStreaming(input: {
         });
         let statusErrorType: string | undefined;
         let statusErrorMessage: string | undefined;
-        if (strictUpstreamPassthrough) {
+        if (strictUpstreamPassthrough || compatTranslation) {
           const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
           const statusData = contentType.includes('application/json')
             ? await upstreamResponse.json().catch(() => ({}))
@@ -1881,6 +1952,11 @@ async function executeTokenModeStreaming(input: {
           const details = extractUpstreamErrorDetails(statusData);
           statusErrorType = details.errorType;
           statusErrorMessage = details.errorMessage;
+          if (compatTranslation) {
+            terminalCompatError = mapOpenAiErrorToAnthropic(status, statusData);
+            terminalCompatCredentialId = credential.id;
+            terminalCompatAttemptNo = attemptNo;
+          }
         }
         if (shouldRetryWithOauthSafeCompatPayload({
           status,
@@ -1968,6 +2044,15 @@ async function executeTokenModeStreaming(input: {
       }
 
       if (status === 429) {
+        if (compatTranslation) {
+          const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+          const rateLimitData = contentType.includes('application/json')
+            ? await upstreamResponse.json().catch(() => ({}))
+            : await upstreamResponse.text();
+          terminalCompatError = mapOpenAiErrorToAnthropic(status, rateLimitData);
+          terminalCompatCredentialId = credential.id;
+          terminalCompatAttemptNo = attemptNo;
+        }
         await recordTokenCredentialOutcome({
           credential,
           requestId,
@@ -1996,6 +2081,15 @@ async function executeTokenModeStreaming(input: {
       }
 
       if (status >= 500 && !strictUpstreamPassthrough) {
+        if (compatTranslation) {
+          const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+          const upstreamErrorData = contentType.includes('application/json')
+            ? await upstreamResponse.json().catch(() => ({}))
+            : await upstreamResponse.text();
+          terminalCompatError = mapOpenAiErrorToAnthropic(status, upstreamErrorData);
+          terminalCompatCredentialId = credential.id;
+          terminalCompatAttemptNo = attemptNo;
+        }
         await logAttemptFailure({ kind: 'server_error', statusCode: status, message: 'upstream server error' });
         break;
       }
@@ -2397,6 +2491,19 @@ async function executeTokenModeStreaming(input: {
     }
   }
 
+  const compatTerminalResult = compatTranslation && terminalCompatError
+    ? buildCompatTerminalErrorResult({
+      mappedError: terminalCompatError,
+      requestId,
+      keyId: terminalCompatCredentialId,
+      attemptNo: terminalCompatAttemptNo || attemptNo || 1
+    })
+    : null;
+
+  if (allowCompatTerminalErrorResponse && compatTerminalResult) {
+    return compatTerminalResult;
+  }
+
   if (sawAuthFailure) {
     if (lastAuthFailure) {
       logAuthFailureAudit({
@@ -2414,14 +2521,19 @@ async function executeTokenModeStreaming(input: {
         errorMessage: lastAuthFailure.errorMessage
       });
     }
-    throw new AppError('unauthorized', 401, 'All token credentials unauthorized or expired', {
-      provider,
-      model,
-      lastAuthStatus
-    });
+      throw new AppError('unauthorized', 401, 'All token credentials unauthorized or expired', {
+        provider,
+        model,
+        lastAuthStatus,
+        ...(compatTerminalResult ? { compatTerminalResult } : {})
+      });
   }
 
-  throw new AppError('capacity_unavailable', 429, 'All token credential attempts exhausted', { provider, model });
+  throw new AppError('capacity_unavailable', 429, 'All token credential attempts exhausted', {
+    provider,
+    model,
+    ...(compatTerminalResult ? { compatTerminalResult } : {})
+  });
 }
 
 export async function proxyPostHandler(req: any, res: Response, next: any): Promise<void> {
@@ -2511,6 +2623,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
       let previousProvider: string | undefined;
       let previousReason: string | undefined;
       let terminalError: unknown = null;
+      let deferredCompatTerminalResult: ProxyRouteResult | null = null;
 
       for (const provider of providerPlan) {
         try {
@@ -2557,7 +2670,8 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               idempotencySession: idemStart,
               strictUpstreamPassthrough: upstreamRequest.strictUpstreamPassthrough,
               providerPreference,
-              compatTranslation: upstreamRequest.compatTranslation
+              compatTranslation: upstreamRequest.compatTranslation,
+              allowCompatTerminalErrorResponse: provider === providerPlan[providerPlan.length - 1]
             });
             if (streamedResult === null || res.headersSent || res.writableEnded) return;
             result = streamedResult;
@@ -2576,15 +2690,27 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               startedAt,
               strictUpstreamPassthrough: upstreamRequest.strictUpstreamPassthrough,
               providerPreference,
-              compatTranslation: upstreamRequest.compatTranslation
+              compatTranslation: upstreamRequest.compatTranslation,
+              allowCompatTerminalErrorResponse: provider === providerPlan[providerPlan.length - 1]
             });
           }
           terminalError = null;
           break;
         } catch (error) {
           terminalError = error;
+          const compatTerminalResult = error instanceof AppError
+            ? ((error.details as Record<string, unknown> | undefined)?.compatTerminalResult as ProxyRouteResult | undefined)
+            : undefined;
+          if (compatTerminalResult && !deferredCompatTerminalResult) {
+            deferredCompatTerminalResult = compatTerminalResult;
+          }
           const reason = providerFallbackReasonForError(error);
           if (!reason || provider === providerPlan[providerPlan.length - 1]) {
+            if (deferredCompatTerminalResult) {
+              result = deferredCompatTerminalResult;
+              terminalError = null;
+              break;
+            }
             throw error;
           }
           previousProvider = provider;

@@ -128,7 +128,7 @@ describe('translateAnthropicToOpenAi', () => {
       }
     });
 
-    const toolOutputs = translated.payload.input.filter((i: any) => i.type === 'function_call_output');
+    const toolOutputs = (translated.payload.input as any[]).filter((i: any) => i.type === 'function_call_output');
     expect(toolOutputs).toHaveLength(0);
   });
 
@@ -148,8 +148,54 @@ describe('translateAnthropicToOpenAi', () => {
       }
     });
 
-    const toolCalls = translated.payload.input.filter((i: any) => i.type === 'function_call');
+    const toolCalls = (translated.payload.input as any[]).filter((i: any) => i.type === 'function_call');
     expect(toolCalls).toHaveLength(0);
+  });
+
+  it('skips tool blocks that do not carry a valid call_id source', () => {
+    const translated = translateAnthropicToOpenAi({
+      payload: {
+        model: 'claude-opus-4-6',
+        max_tokens: 128,
+        messages: [
+          {
+            role: 'assistant',
+            content: [
+              { type: 'text', text: 'before missing tool' },
+              { type: 'tool_use', name: 'lookup_repo', input: { name: 'innies' } },
+              { type: 'text', text: 'after missing tool' }
+            ]
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'tool_result', content: [{ type: 'text', text: 'missing tool_use_id result' }] },
+              { type: 'text', text: 'continue' }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(translated.payload.input).toEqual([
+      {
+        type: 'message',
+        role: 'assistant',
+        content: 'before missing tool'
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        content: 'after missing tool'
+      },
+      {
+        type: 'message',
+        role: 'user',
+        content: 'continue'
+      }
+    ]);
+    expect((translated.payload.input as Array<Record<string, unknown>>).some((item) => item.type === 'function_call')).toBe(false);
+    expect((translated.payload.input as Array<Record<string, unknown>>).some((item) => item.type === 'function_call_output')).toBe(false);
   });
 
   it('serializes mixed tool_result content as full JSON array', () => {
@@ -181,7 +227,7 @@ describe('translateAnthropicToOpenAi', () => {
       }
     });
 
-    const toolOutput = translated.payload.input.find((i: any) => i.type === 'function_call_output');
+    const toolOutput = (translated.payload.input as any[]).find((i: any) => i.type === 'function_call_output');
     expect(toolOutput).toBeDefined();
     const parsed = JSON.parse(toolOutput.output);
     expect(parsed).toEqual([
@@ -219,8 +265,56 @@ describe('translateAnthropicToOpenAi', () => {
       }
     });
 
-    const toolOutput = translated.payload.input.find((i: any) => i.type === 'function_call_output');
+    const toolOutput = (translated.payload.input as any[]).find((i: any) => i.type === 'function_call_output');
     expect(toolOutput.output).toBe('line one\nline two');
+  });
+
+  it('serializes mixed tool_result arrays as full JSON while preserving pure-text arrays as newline-joined text', () => {
+    const translated = translateAnthropicToOpenAi({
+      payload: {
+        model: 'claude-opus-4-6',
+        max_tokens: 128,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_mixed',
+                content: [
+                  { type: 'text', text: 'foo' },
+                  { type: 'json', data: { x: 1 } }
+                ]
+              },
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_text',
+                content: [
+                  { type: 'text', text: 'line 1' },
+                  { type: 'text', text: 'line 2' }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(translated.payload.input).toEqual([
+      {
+        type: 'function_call_output',
+        call_id: 'toolu_mixed',
+        output: JSON.stringify([
+          { type: 'text', text: 'foo' },
+          { type: 'json', data: { x: 1 } }
+        ])
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'toolu_text',
+        output: 'line 1\nline 2'
+      }
+    ]);
   });
 
   it('preserves whitespace and code blocks in text content', () => {
@@ -237,7 +331,37 @@ describe('translateAnthropicToOpenAi', () => {
     });
 
     expect(translated.payload.instructions).toBe(codeBlock);
-    const userMsg = translated.payload.input.find((i: any) => i.role === 'user');
+    const userMsg = (translated.payload.input as any[]).find((i: any) => i.role === 'user');
     expect(userMsg.content).toBe('  leading spaces and trailing newline\n');
+  });
+
+  it('preserves whitespace fidelity for multi-line system and message text blocks', () => {
+    const translated = translateAnthropicToOpenAi({
+      payload: {
+        model: 'claude-opus-4-6',
+        max_tokens: 128,
+        system: [
+          { type: 'text', text: 'System block line 1\n  indented line 2\n' }
+        ],
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: '  function demo() {\n    return 1;\n  }' },
+              { type: 'text', text: 'next line stays separate' }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(translated.payload.instructions).toBe('System block line 1\n  indented line 2\n');
+    expect(translated.payload.input).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: '  function demo() {\n    return 1;\n  }\nnext line stays separate'
+      }
+    ]);
   });
 });

@@ -76,6 +76,24 @@ describe('OpenAiToAnthropicStreamTransform', () => {
     expect(translated).toContain('event: message_stop');
   });
 
+  it('translates response.failed into a terminated anthropic text message', async () => {
+    const openAiSse = [
+      'data: {"type":"response.failed","response":{"id":"resp_failed","status":"failed","error":{"message":"codex upstream failed"},"usage":{"input_tokens":2,"output_tokens":0}}}\n\n',
+      'data: [DONE]\n\n'
+    ].join('');
+
+    const translated = await collectTranslatedSse(openAiSse);
+
+    expect(translated).toContain('event: message_start');
+    expect(translated).toContain('event: content_block_start');
+    expect(translated).toContain('"type":"text_delta"');
+    expect(translated).toContain('[Translation error: codex upstream failed]');
+    expect(translated).toContain('event: content_block_stop');
+    expect(translated).toContain('event: message_delta');
+    expect(translated).toContain('"stop_reason":"end_turn"');
+    expect(translated).toContain('event: message_stop');
+  });
+
   it('treats content_part.done and output_text.done as no-ops', async () => {
     const openAiSse = [
       'data: {"type":"response.created","response":{"id":"resp_noop","status":"in_progress","usage":{"input_tokens":0,"output_tokens":0}}}\n\n',
@@ -89,13 +107,22 @@ describe('OpenAiToAnthropicStreamTransform', () => {
 
     const translated = await collectTranslatedSse(openAiSse);
 
-    // Should have exactly one content block (not duplicated by no-op events)
     const blockStarts = (translated.match(/event: content_block_start/g) || []).length;
     const blockStops = (translated.match(/event: content_block_stop/g) || []).length;
     expect(blockStarts).toBe(1);
     expect(blockStops).toBe(1);
     expect(translated).toContain('"text":"hi"');
     expect(translated).toContain('event: message_stop');
+  });
+
+  it('ignores response.content_part.done and response.output_text.done events', async () => {
+    const translated = await collectTranslatedSse([
+      'data: {"type":"response.content_part.done","output_index":0,"content_index":0,"part":{"type":"output_text","text":"ignored"}}\n\n',
+      'data: {"type":"response.output_text.done","output_index":0,"content_index":0,"text":"ignored"}\n\n',
+      'data: [DONE]\n\n'
+    ].join(''));
+
+    expect(translated).toBe('');
   });
 
   it('uses call_unknown_N fallback for streaming function_call without call_id', async () => {
@@ -112,5 +139,19 @@ describe('OpenAiToAnthropicStreamTransform', () => {
     expect(translated).toContain('"id":"call_unknown_0"');
     expect(translated).not.toContain('"id":"fc_nocallid"');
     expect(translated).toContain('"name":"search"');
+  });
+
+  it('falls back to call_unknown_N for function_call streams missing call_id', async () => {
+    const openAiSse = [
+      'data: {"type":"response.output_item.added","output_index":3,"item":{"type":"function_call","id":"fc_missing","name":"lookup_repo","arguments":""}}\n\n',
+      'data: {"type":"response.output_item.done","output_index":3,"item":{"type":"function_call","id":"fc_missing","name":"lookup_repo","arguments":"{\\"name\\":\\"innies\\"}"}}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_missing_call_id","status":"completed","usage":{"input_tokens":4,"output_tokens":3}}}\n\n'
+    ].join('');
+
+    const translated = await collectTranslatedSse(openAiSse);
+
+    expect(translated).toContain('"type":"tool_use"');
+    expect(translated).toContain('"id":"call_unknown_3"');
+    expect(translated).not.toContain('"id":"fc_missing"');
   });
 });

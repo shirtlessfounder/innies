@@ -67,7 +67,8 @@ Notes:
   - Codex OAuth requests force `store=false` on Responses payloads
   - Codex OAuth streaming Responses requests force upstream `stream=true`
   - `ChatGPT-Account-Id` is derived from the OAuth access token when present
-  - `POST /v1/messages` (compat mode) is pinned to Anthropic
+  - `POST /v1/messages` (compat mode) stays Anthropic-shaped at the client boundary, but can route to either provider under buyer-key preference
+  - compat requests routed to `openai` are translated to `/v1/responses` and translated back into Anthropic-shaped JSON/SSE before returning to the client
   - provider-specific wrapper/CLI sessions are intentionally pinned and do not use cross-provider preference routing
   - session/CLI pinning is controlled by `x-innies-provider-pin: true` or request metadata `innies_provider_pin=true`
 - Current token-mode routing metadata (from `in_routing_events.route_decision`) includes:
@@ -82,7 +83,6 @@ Notes:
   - `preferred_provider_selected`
   - `fallback_provider_selected`
   - `cli_provider_pinned`
-  - `compat_provider_pinned`
 
 ### `POST /v1/messages`
 Anthropic-compatible passthrough endpoint (feature-flagged by `ANTHROPIC_COMPAT_ENDPOINT_ENABLED=true`).
@@ -100,7 +100,8 @@ Request body:
 
 Notes:
 - Auth/scoping matches proxy routes (buyer/admin API key required).
-- `provider` is fixed to `anthropic`; internal mapping reuses proxy execution path.
+- request ingress is Anthropic-shaped and initially marked `provider=anthropic`, but runtime provider selection still honors buyer-key preference and fallback policy.
+- when buyer preference resolves to `openai`, Innies translates the request to OpenAI Responses format upstream and translates the result back into Anthropic-shaped JSON/SSE for the client.
 - If `anthropic-version` is missing, default is `2023-06-01`.
 - If `x-request-id` is missing, API generates and returns one.
 - `stream=true` is supported; streaming passthrough is used when upstream returns `text/event-stream`.

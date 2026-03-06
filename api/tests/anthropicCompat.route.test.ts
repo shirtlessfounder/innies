@@ -171,6 +171,49 @@ function createFakeOpenAiOauthToken(input?: {
   return `${header}.${payload}.signature`;
 }
 
+function setupTranslatedCompatOpenAiRoute(runtimeModule: RuntimeModule) {
+  process.env.OPENAI_UPSTREAM_BASE_URL = 'https://openai.internal.test';
+  process.env.COMPAT_CODEX_DEFAULT_MODEL = 'gpt-5.4';
+
+  vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+    id: '11111111-1111-4111-8111-111111111111',
+    org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+    scope: 'buyer_proxy',
+    is_active: true,
+    expires_at: null,
+    preferred_provider: 'openai'
+  } as any);
+  vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string, model: string) => {
+    if (provider === 'openai' && model === 'gpt-5.4') {
+      return { provider: 'openai', model: 'gpt-5.4', supports_streaming: true } as any;
+    }
+    if (provider === 'anthropic' && model === 'claude-opus-4-6') {
+      return { provider: 'anthropic', model: 'claude-opus-4-6', supports_streaming: true } as any;
+    }
+    return null as any;
+  });
+  vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+    if (provider !== 'openai') return [];
+    return [{
+      id: 'openai-compat-cred',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: 'openai-compat-token',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any];
+  });
+}
+
 describe('anthropic compat route', () => {
   let runtimeModule: RuntimeModule;
   let handlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
@@ -383,6 +426,129 @@ describe('anthropic compat route', () => {
     expect(routeDecision.provider_preferred).toBe('openai');
     expect(routeDecision.provider_effective).toBe('openai');
     expect(routeDecision.provider_plan).toEqual(['openai', 'anthropic']);
+    upstreamSpy.mockRestore();
+  });
+
+  it('maps translated openai 401 responses into anthropic authentication_error envelopes', async () => {
+    setupTranslatedCompatOpenAiRoute(runtimeModule);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      error: { message: 'bad oauth token' }
+    }), {
+      status: 401,
+      headers: { 'content-type': 'application/json' }
+    }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 32,
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(401);
+    expect((res.body as any)).toEqual({
+      type: 'error',
+      error: {
+        type: 'authentication_error',
+        message: 'bad oauth token'
+      }
+    });
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('maps translated openai 429 responses into anthropic rate_limit_error envelopes', async () => {
+    setupTranslatedCompatOpenAiRoute(runtimeModule);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      error: { message: 'slow down' }
+    }), {
+      status: 429,
+      headers: { 'content-type': 'application/json' }
+    }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 32,
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(429);
+    expect((res.body as any)).toEqual({
+      type: 'error',
+      error: {
+        type: 'rate_limit_error',
+        message: 'slow down'
+      }
+    });
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('maps translated openai 5xx responses into anthropic api_error envelopes with status 500', async () => {
+    setupTranslatedCompatOpenAiRoute(runtimeModule);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      error: { message: 'upstream outage' }
+    }), {
+      status: 502,
+      headers: { 'content-type': 'application/json' }
+    }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 32,
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(500);
+    expect((res.body as any)).toEqual({
+      type: 'error',
+      error: {
+        type: 'api_error',
+        message: 'upstream outage'
+      }
+    });
+
     upstreamSpy.mockRestore();
   });
 
