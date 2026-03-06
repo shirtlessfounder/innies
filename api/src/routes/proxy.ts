@@ -1203,6 +1203,37 @@ function buildSyntheticAnthropicSse(data: unknown, model: string): string {
   return events.join('');
 }
 
+function summarizeOpenAiStreamFallbackPayload(data: unknown): Record<string, unknown> {
+  const record = data && typeof data === 'object' && !Array.isArray(data)
+    ? data as Record<string, unknown>
+    : {};
+  const output = Array.isArray(record.output)
+    ? record.output.filter((item) => item && typeof item === 'object')
+    : [];
+  const preview = (() => {
+    try {
+      return JSON.stringify(data).slice(0, 4000);
+    } catch {
+      return '[unserializable]';
+    }
+  })();
+
+  return {
+    status: typeof record.status === 'string' ? record.status : null,
+    id: typeof record.id === 'string' ? record.id : null,
+    detail: typeof record.detail === 'string' ? record.detail : null,
+    output_present: Array.isArray(record.output),
+    output_count: output.length,
+    output_types: output
+      .map((item) => String((item as any)?.type ?? 'unknown'))
+      .slice(0, 10),
+    output_text_present: typeof record.output_text === 'string' && record.output_text.length > 0,
+    output_text_length: typeof record.output_text === 'string' ? record.output_text.length : 0,
+    top_level_keys: Object.keys(record).slice(0, 50),
+    raw_json_preview: preview
+  };
+}
+
 function sendProxyReplayNotSupported(res: Response, requestId: string): void {
   res.setHeader('x-request-id', requestId);
   res.setHeader('x-idempotent-replay', 'true');
@@ -2252,6 +2283,19 @@ async function executeTokenModeStreaming(input: {
             : `: keepalive\n\n${buildSyntheticOpenAiResponsesSse(syntheticMessage)}`;
           const streamMode = useAnthropicSse ? 'synthetic_bridge' : 'synthetic_openai_responses_bridge';
           const syntheticFormat = useAnthropicSse ? 'anthropic' : 'openai_responses';
+          if (!useAnthropicSse && process.env.INNIES_OPENAI_STREAM_FALLBACK_TRACE === 'true') {
+            console.info('[openai-stream-fallback-trace]', {
+              requestId,
+              attemptNo,
+              credential_id: credential.id,
+              credential_label: credential.debugLabel ?? null,
+              provider,
+              model,
+              upstream_status: status,
+              upstream_content_type: contentType,
+              ...summarizeOpenAiStreamFallbackPayload(syntheticMessage)
+            });
+          }
           firstDownstreamWriteAt = Date.now();
           (res as any).write(syntheticPayload);
           if ((res as any).body === undefined) {

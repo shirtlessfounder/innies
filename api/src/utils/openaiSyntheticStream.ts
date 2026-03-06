@@ -10,7 +10,11 @@ function asString(value: unknown, fallback: string): string {
   return typeof value === 'string' && value.trim().length > 0 ? value : fallback;
 }
 
-function normalizeUsage(response: Record<string, unknown>): { input_tokens: number; output_tokens: number } {
+function normalizeUsage(response: Record<string, unknown>): {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+} {
   const usage = isRecord(response.usage) ? response.usage : {};
   const input_tokens = Number(usage.input_tokens ?? 0);
   const output_tokens = Number(usage.output_tokens ?? 0);
