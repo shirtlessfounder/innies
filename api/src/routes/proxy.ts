@@ -1054,7 +1054,6 @@ async function readUpstreamBody(input: {
 }): Promise<{
   rawText: string;
   data: unknown;
-  jsonParsed: boolean;
   looksLikeSse: boolean;
 }> {
   const { upstreamResponse, contentType } = input;
@@ -1064,7 +1063,6 @@ async function readUpstreamBody(input: {
     return {
       rawText,
       data: rawText,
-      jsonParsed: false,
       looksLikeSse: sseLike
     };
   }
@@ -1072,7 +1070,6 @@ async function readUpstreamBody(input: {
     return {
       rawText,
       data: {},
-      jsonParsed: false,
       looksLikeSse: false
     };
   }
@@ -1080,14 +1077,12 @@ async function readUpstreamBody(input: {
     return {
       rawText,
       data: JSON.parse(rawText),
-      jsonParsed: true,
       looksLikeSse: sseLike
     };
   } catch {
     return {
       rawText,
       data: {},
-      jsonParsed: false,
       looksLikeSse: sseLike
     };
   }
@@ -1255,39 +1250,6 @@ function buildSyntheticAnthropicSse(data: unknown, model: string): string {
   );
   events.push(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
   return events.join('');
-}
-
-function summarizeOpenAiStreamFallbackPayload(input: {
-  data: unknown;
-  rawText: string;
-  jsonParsed: boolean;
-  looksLikeSse: boolean;
-}): Record<string, unknown> {
-  const { data, rawText, jsonParsed, looksLikeSse } = input;
-  const record = data && typeof data === 'object' && !Array.isArray(data)
-    ? data as Record<string, unknown>
-    : {};
-  const output = Array.isArray(record.output)
-    ? record.output.filter((item) => item && typeof item === 'object')
-    : [];
-
-  return {
-    json_parsed: jsonParsed,
-    looks_like_sse: looksLikeSse,
-    status: typeof record.status === 'string' ? record.status : null,
-    id: typeof record.id === 'string' ? record.id : null,
-    detail: typeof record.detail === 'string' ? record.detail : null,
-    output_present: Array.isArray(record.output),
-    output_count: output.length,
-    output_types: output
-      .map((item) => String((item as any)?.type ?? 'unknown'))
-      .slice(0, 10),
-    output_text_present: typeof record.output_text === 'string' && record.output_text.length > 0,
-    output_text_length: typeof record.output_text === 'string' ? record.output_text.length : 0,
-    top_level_keys: Object.keys(record).slice(0, 50),
-    raw_text_length: rawText.length,
-    raw_text_preview: rawText.slice(0, 4000)
-  };
 }
 
 function sendProxyReplayNotSupported(res: Response, requestId: string): void {
@@ -2239,7 +2201,7 @@ async function executeTokenModeStreaming(input: {
       const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
       const isStreaming = contentType.includes('text/event-stream');
       if (!isStreaming) {
-        const { data, rawText, jsonParsed, looksLikeSse } = await readUpstreamBody({
+        const { data, rawText, looksLikeSse } = await readUpstreamBody({
           upstreamResponse,
           contentType
         });
@@ -2457,24 +2419,6 @@ async function executeTokenModeStreaming(input: {
             : `: keepalive\n\n${buildSyntheticOpenAiResponsesSse(syntheticMessage)}`;
           const streamMode = useAnthropicSse ? 'synthetic_bridge' : 'synthetic_openai_responses_bridge';
           const syntheticFormat = useAnthropicSse ? 'anthropic' : 'openai_responses';
-          if (!useAnthropicSse) {
-            console.info('[openai-stream-fallback-trace]', {
-              requestId,
-              attemptNo,
-              credential_id: credential.id,
-              credential_label: credential.debugLabel ?? null,
-              provider,
-              model,
-              upstream_status: status,
-              upstream_content_type: contentType,
-              ...summarizeOpenAiStreamFallbackPayload({
-                data: syntheticMessage,
-                rawText,
-                jsonParsed,
-                looksLikeSse
-              })
-            });
-          }
           firstDownstreamWriteAt = Date.now();
           (res as any).write(syntheticPayload);
           if ((res as any).body === undefined) {
