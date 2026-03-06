@@ -6,7 +6,9 @@
 Persists local Innies config in `~/.innies/config.json`.
 
 - validates token format (`in_...`)
-- stores token + API base URL + default model
+- stores token + API base URL + fallback model + provider-scoped defaults
+- `--model <id>` seeds the matching provider lane when the model family is recognized
+- unknown model ids are preserved as fallback metadata and do not rewrite provider defaults
 - file mode target: user-only (`0600`)
 
 ### `innies doctor`
@@ -22,6 +24,11 @@ Checks:
 - `claude` command available in `PATH` or via `INNIES_CLAUDE_BIN`
 - `codex` command available in `PATH` or via `INNIES_CODEX_BIN`
 - `~/.local/bin/claude` wrapper presence (warning only; optional convenience link)
+
+Config summary:
+- prints Claude and Codex proxy endpoints
+- prints fallback model
+- prints provider defaults for `anthropic` and `openai`
 
 ### `innies claude [-- <claude args...>]`
 Wraps Claude CLI execution and injects Innies env wiring.
@@ -48,10 +55,34 @@ Behavior:
 - prints one-line runtime status (model/proxy/request-id)
 
 ### `innies codex [-- <codex args...>]`
-Current branch behavior:
-- command is present in CLI help/usage
-- loads Innies config and resolves the OpenAI/Codex provider default model
-- exits non-zero with a scaffold message until Codex runtime wiring is implemented
+Wraps Codex CLI execution and injects Innies env/config wiring for the Codex/OpenAI lane.
+
+Injected environment:
+- `INNIES_TOKEN`
+- `INNIES_API_BASE_URL`
+- `INNIES_PROXY_URL`
+- `INNIES_MODEL`
+- `INNIES_CORRELATION_ID`
+- `INNIES_PROVIDER_PIN`
+- `OPENAI_API_KEY`
+- `OPENAI_BASE_URL`
+
+Behavior:
+- forwards all args to `codex`
+- exits with the same exit code as `codex`
+- prints actionable error if `codex` cannot start
+- prepends Codex config overrides for:
+  - `model_provider="openai"`
+  - `model_providers.openai.env_key="OPENAI_API_KEY"`
+  - `model_providers.openai.wire_api="responses"`
+  - `model_providers.openai.env_http_headers."x-request-id"="INNIES_CORRELATION_ID"`
+  - `model_providers.openai.env_http_headers."x-innies-provider-pin"="INNIES_PROVIDER_PIN"`
+- injects the provider default OpenAI/Codex model when no explicit `-m`, `--model <id>`, or `--model=<id>` override is supplied
+- loop-safe binary resolution:
+  - prefers non-wrapper Codex binary from `which -a codex`
+  - supports `INNIES_CODEX_BIN` override
+- recursion guard via `INNIES_CODEX_WRAPPED`
+- prints one-line runtime status (model/proxy/request-id)
 
 ### `innies link claude`
 Creates wrapper shim at `~/.local/bin/claude`:
@@ -77,20 +108,20 @@ Smoke test validates:
 - login writes config
 - doctor reports OK for fake Claude and Codex binaries
 - claude wrapper forwards args and injects env
-- Codex readiness probe is covered through `innies doctor`; wrapped Codex-session smoke begins once runtime wiring exists
+- codex wrapper forwards args and injects env/config overrides
 - link command writes wrapper shim
 - token-mode route marker is injected (`INNIES_ROUTE_MODE=token`)
 - non-streaming proxy compatibility check validates provider-native 2xx/4xx pass-through semantics
 - idempotency policy compatibility check validates deterministic non-envelope replay error contract
-- token auth failure class emits actionable CLI hint (`not-enabled` case)
+- token auth failure class emits actionable CLI hint (`not-enabled` case) for both wrappers
 - CLI keeps interactive TTY behavior by default (capture mode is opt-in for smoke)
 
 Required for pilot signoff: real backend token-route proof
 
 Current scope note:
+- local fake-binary smoke executes wrapped Claude and Codex sessions
 - the real-env smoke path below is direct proxy/token-route evidence
-- wrapped-session proof is currently executable for `innies claude`
-- wrapped-session proof for `innies codex` starts after Codex runtime wiring ships
+- real wrapped-session pilot checks are still recommended per wrapper
 
 Run in pilot/staging env with valid API credentials:
 
@@ -111,7 +142,9 @@ Daily path for internal pilot users:
 innies login --token in_live_<redacted> --base-url https://gateway.innies.ai
 innies doctor
 innies claude -- --version
+innies codex -- --help
 innies claude -- "summarize this repo"
+innies codex -- "summarize this repo"
 ```
 
 Expected:
@@ -125,6 +158,7 @@ Expected:
 ## 4-User Pilot Checklist (Daily)
 - Run `innies doctor`
 - Run one non-streaming `innies claude -- "<task>"`
+- Run one non-streaming `innies codex -- "<task>"`
 - Run `npm run test:smoke:real` once per pilot day in staging/prod-like env and archive output
 - If failure occurs, record:
   - timestamp

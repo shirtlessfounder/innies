@@ -12,7 +12,7 @@
 - ✅ Codex token support.
   - Anthropic ↔ OpenAI Responses translation layer (request, response, streaming).
   - Error envelope mapping (401/429/5xx → Anthropic-shaped).
-  - Default model: `gpt-5.4`. 125 tests, deployed to production.
+  - Default model: `gpt-5.4`. 127 tests, deployed to production.
 - CLI support:
   - `innie claude`
   - `innie codex`

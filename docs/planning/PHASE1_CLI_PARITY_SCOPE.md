@@ -28,13 +28,13 @@ Both wrappers should feel like provider-specific entrypoints into the same Innie
 
 ## Current State Snapshot (2026-03-06)
 - `innies claude` exists.
-- `innies codex` does not exist yet.
-- `innies doctor` is currently Claude-lane biased.
-- CLI help/usage text is currently Claude-lane biased.
-- Local smoke coverage currently exercises only the Claude wrapper path.
+- `innies codex` now exists as a provider-pinned Codex/OpenAI wrapper lane.
+- `innies doctor` now reports Claude and Codex lane readiness separately.
+- CLI help/usage text now exposes both wrapper entrypoints.
+- Local smoke coverage now exercises the Claude wrapper path and basic Codex wrapper path.
 - API routing can honor explicit provider-pin signals and emits `cli_provider_pinned` when a recognized pin signal is present.
 - Claude already has backend-side pin recognition heuristics.
-- Codex does not yet have a defined wrapper-to-backend pinning contract.
+- Codex now has a wrapper-to-backend pinning/correlation contract via `env_http_headers`.
 - Backend Codex/OpenAI token-mode support already exists, including ChatGPT Codex backend routing and refresh behavior.
 
 ## Desired User Outcome
@@ -146,6 +146,7 @@ Locked Phase 1 decision:
 - Existing single-field `defaultModel` remains supported on read as a backward-compatible fallback.
 - When a legacy config is read, that single `defaultModel` is treated as the fallback/default for both provider lanes until provider-scoped defaults are written.
 - `innies login --model` remains supported and may seed the shared fallback or both provider defaults during migration/write paths, but the implementation must not require manual config surgery for existing users.
+- Unknown model ids must not silently rewrite both provider defaults; if provider family cannot be inferred, preserve the value as fallback metadata only.
 
 ### Model Default Contract
 - Anthropic wrapper uses the Anthropic default model
