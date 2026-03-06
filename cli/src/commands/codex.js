@@ -22,12 +22,15 @@ export function hasExplicitModelArg(args) {
 }
 
 export function buildCodexArgs(input) {
-  const { args, model } = input;
+  const { args, model, proxyUrl } = input;
   const forcedArgs = [
     '--config', 'model_provider="openai"',
     '--config', 'model_providers.openai.name="openai"',
+    '--config', `model_providers.openai.base_url="${proxyUrl}"`,
     '--config', 'model_providers.openai.env_key="OPENAI_API_KEY"',
     '--config', 'model_providers.openai.wire_api="responses"',
+    '--config', 'model_providers.openai.requires_openai_auth=false',
+    '--config', 'responses_websockets_v2=false',
     '--config', 'model_providers.openai.env_http_headers."x-request-id"="INNIES_CORRELATION_ID"',
     '--config', 'model_providers.openai.env_http_headers."x-innies-provider-pin"="INNIES_PROVIDER_PIN"'
   ];
@@ -75,7 +78,7 @@ export async function runCodex(args) {
   const captureOutput = shouldCaptureCommandOutput('INNIES_CAPTURE_CODEX_OUTPUT');
   let combinedOutput = '';
   const stdio = captureOutput ? ['inherit', 'pipe', 'pipe'] : 'inherit';
-  const child = spawn(codexBinary, buildCodexArgs({ args, model }), {
+  const child = spawn(codexBinary, buildCodexArgs({ args, model, proxyUrl }), {
     stdio,
     env
   });
