@@ -2283,7 +2283,7 @@ async function executeTokenModeStreaming(input: {
             : `: keepalive\n\n${buildSyntheticOpenAiResponsesSse(syntheticMessage)}`;
           const streamMode = useAnthropicSse ? 'synthetic_bridge' : 'synthetic_openai_responses_bridge';
           const syntheticFormat = useAnthropicSse ? 'anthropic' : 'openai_responses';
-          if (!useAnthropicSse && process.env.INNIES_OPENAI_STREAM_FALLBACK_TRACE === 'true') {
+          if (!useAnthropicSse) {
             console.info('[openai-stream-fallback-trace]', {
               requestId,
               attemptNo,
