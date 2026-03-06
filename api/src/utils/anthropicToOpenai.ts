@@ -48,8 +48,8 @@ function joinTextParts(parts: string[]): string {
 
 function normalizeSystemInstructions(system: unknown): string | undefined {
   if (typeof system === 'string') {
-    const trimmed = system.trim();
-    return trimmed.length > 0 ? trimmed : undefined;
+    // Preserve whitespace fidelity — only skip completely empty strings.
+    return system.length > 0 ? system : undefined;
   }
   if (!Array.isArray(system)) {
     return undefined;
@@ -137,9 +137,9 @@ function flushMessageItem(items: OpenAiItem[], role: 'user' | 'assistant', parts
 function translateUserMessage(message: Record<string, unknown>, items: OpenAiItem[]): void {
   const content = message.content;
   if (typeof content === 'string') {
-    const trimmed = content.trim();
-    if (trimmed.length > 0) {
-      items.push({ type: 'message', role: 'user', content: trimmed });
+    // Preserve whitespace fidelity — only skip completely empty strings.
+    if (content.length > 0) {
+      items.push({ type: 'message', role: 'user', content });
     }
     return;
   }
@@ -176,9 +176,9 @@ function translateUserMessage(message: Record<string, unknown>, items: OpenAiIte
 function translateAssistantMessage(message: Record<string, unknown>, items: OpenAiItem[]): void {
   const content = message.content;
   if (typeof content === 'string') {
-    const trimmed = content.trim();
-    if (trimmed.length > 0) {
-      items.push({ type: 'message', role: 'assistant', content: trimmed });
+    // Preserve whitespace fidelity — only skip completely empty strings.
+    if (content.length > 0) {
+      items.push({ type: 'message', role: 'assistant', content });
     }
     return;
   }
