@@ -85,11 +85,35 @@ export function createApp(): express.Express {
     }
 
     if (err instanceof AppError) {
+      // On compat-translated requests, format errors as Anthropic-shaped envelopes
+      // so OpenClaw/clients never see innies-native error shapes.
+      if (((_req as any).inniesCompatMode)) {
+        const anthropicErrorType =
+          err.status === 401 ? 'authentication_error'
+          : err.status === 403 ? 'permission_error'
+          : err.status === 429 ? 'rate_limit_error'
+          : err.status === 404 ? 'not_found_error'
+          : err.status >= 400 && err.status < 500 ? 'invalid_request_error'
+          : 'api_error';
+        const anthropicStatus = err.status >= 500 ? 500 : err.status;
+        res.status(anthropicStatus).json({
+          type: 'error',
+          error: { type: anthropicErrorType, message: err.message }
+        });
+        return;
+      }
       res.status(err.status).json({ code: err.code, message: err.message, details: err.details });
       return;
     }
 
     const message = err instanceof Error ? err.message : 'Unexpected error';
+    if (((_req as any).inniesCompatMode)) {
+      res.status(500).json({
+        type: 'error',
+        error: { type: 'api_error', message }
+      });
+      return;
+    }
     res.status(500).json({ code: 'internal_error', message });
   });
 

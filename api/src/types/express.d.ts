@@ -8,6 +8,7 @@ declare global {
         orgId: string | null;
         scope: 'buyer_proxy' | 'admin';
         preferredProvider?: 'anthropic' | 'openai' | null;
+        preferredProviderSource?: 'explicit' | 'default' | null;
       };
     }
   }
