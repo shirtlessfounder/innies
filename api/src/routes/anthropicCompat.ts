@@ -154,6 +154,8 @@ router.post(
       (req as any).inniesCompatMode = true;
       (req as any).inniesProxiedPath = '/v1/messages';
       req.body = {
+        // Compat requests stay Anthropic-shaped at ingress; buyer preference is
+        // applied later in proxy routing so fallback can still include Anthropic.
         provider: 'anthropic',
         model: parsed.model,
         streaming: parsed.stream === true,

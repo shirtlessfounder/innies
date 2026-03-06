@@ -127,12 +127,12 @@ OpenClaw → POST /v1/messages (Anthropic format)
 **File:** `api/src/routes/anthropicCompat.ts`
 
 Current behavior: always sets `provider: 'anthropic'` in request body.
-New behavior: set `provider` based on buyer preference (fall back to `anthropic` if no preference).
+New behavior: keep ingress marked as `provider: 'anthropic'` because the client contract is still Anthropic-shaped. Apply buyer preference later in proxy routing so the provider plan can remain `openai -> anthropic` and preserve automatic fallback.
 
 **File:** `api/src/routes/proxy.ts`
 
 Current behavior: `compatMode` → `pinSelectionReason = 'compat_provider_pinned'`
-New behavior: `compatMode` alone no longer pins. Only pin if the resolved provider matches the request format (i.e., anthropic request → anthropic provider = no translation needed = can still pin).
+New behavior: `compatMode` alone no longer pins. Buyer preference decides whether the compat request stays native Anthropic or enters the OpenAI translation path.
 
 ### 2. Request translation: Anthropic → OpenAI (medium)
 

@@ -10,12 +10,12 @@ Phase A goal: OpenClaw completes multi-turn tool-use conversations through Innie
 
 ### Tasks:
 1. **Remove compat provider pin** (`api/src/routes/anthropicCompat.ts`)
-   - Stop hardcoding `provider: 'anthropic'` in request body
-   - Set provider based on buyer preference from `req.auth.preferredProvider` (fall back to `anthropic` if null)
+   - Keep compat ingress marked as `provider: 'anthropic'` because the wire format is still Anthropic-shaped
+   - Apply buyer preference later in proxy routing, not in the compat entrypoint, so the provider plan can still be `openai -> anthropic` for fallback
    
 2. **Remove pin in proxy** (`api/src/routes/proxy.ts`)
    - `compatMode` alone no longer sets `pinSelectionReason = 'compat_provider_pinned'`
-   - Only pin when resolved provider matches request format (anthropic → anthropic)
+   - Buyer preference decides whether compat traffic stays native Anthropic or flows into the OpenAI translation path
    - When resolved provider is `openai`, do NOT pin — flow into translation path
 
 3. **Build request translator** (`api/src/utils/anthropicToOpenai.ts`)

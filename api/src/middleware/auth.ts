@@ -37,7 +37,10 @@ export function requireApiKey(repo: ApiKeyRepository, allowedScopes: ApiKeyScope
         scope: record.scope,
         preferredProvider: record.scope === 'buyer_proxy'
           ? (record.preferred_provider ?? resolveDefaultBuyerProvider())
-          : (record.preferred_provider ?? null)
+          : (record.preferred_provider ?? null),
+        preferredProviderSource: record.scope === 'buyer_proxy'
+          ? (record.preferred_provider ? 'explicit' : 'default')
+          : (record.preferred_provider ? 'explicit' : null)
       };
 
       await repo.touchLastUsed(record.id);

@@ -3,6 +3,12 @@
 ## Purpose
 Set up OpenClaw to use Innies as the Anthropic-compatible provider.
 
+Intent note:
+- OpenClaw is intended to be the model/provider-agnostic client in the Innies UX.
+- Buyer-key provider preference exists primarily to steer OpenClaw and similar clients across providers.
+- Future provider-specific wrappers such as `innies claude` and `innies codex` are separate pinned lanes and should not be treated as preference-routed clients.
+- Current onboarding below uses the Anthropic-compatible path for bootstrap; that is an implementation detail of the current wiring, not the long-term OpenClaw routing intent.
+
 If you still need a provider credential first, see:
 - [Claude + Codex OAuth Token Quick Guide](./CLAUDE_CODEX_OAUTH_TOKENS.md)
 

@@ -149,6 +149,7 @@ describe('proxy token-mode route behavior', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     delete process.env.TOKEN_REFRESH_ENDPOINT;
+    delete process.env.BUYER_PROVIDER_PREFERENCE_DEFAULT;
 
     vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
       id: '11111111-1111-4111-8111-111111111111',
@@ -192,6 +193,7 @@ describe('proxy token-mode route behavior', () => {
     delete process.env.BUYER_PROVIDER_PREFERENCE_DEFAULT;
     delete process.env.TOKEN_MODE_ENABLED_ORGS;
     delete process.env.OPENAI_UPSTREAM_BASE_URL;
+    delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
     vi.restoreAllMocks();
   });
 
@@ -1343,6 +1345,222 @@ describe('proxy token-mode route behavior', () => {
     const secondHeaders = (secondUpstreamCall?.[1]?.headers ?? {}) as Record<string, string>;
     expect(secondHeaders.authorization).toBe(`Bearer ${secondToken}`);
     fetchSpy.mockRestore();
+  });
+
+  it('translates compat anthropic requests onto openai responses when buyer preference is openai', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.OPENAI_UPSTREAM_BASE_URL = 'https://openai.internal.test';
+    process.env.COMPAT_CODEX_DEFAULT_MODEL = 'gpt-5.4';
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string, model: string) => {
+      if (provider === 'openai' && model === 'gpt-5.4') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: false } as any;
+      }
+      if (provider === 'anthropic' && model === 'claude-opus-4-6') {
+        return { provider: 'anthropic', model: 'claude-opus-4-6', supports_streaming: false } as any;
+      }
+      return null as any;
+    });
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider !== 'openai') return [];
+      return [{
+        id: 'dddd3333-0000-4000-8000-000000000000',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: 'openai-key-translated',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any];
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        id: 'resp_translated_ok',
+        status: 'incomplete',
+        usage: { input_tokens: 5, output_tokens: 7 },
+        output: [
+          {
+            type: 'message',
+            id: 'msg_1',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'working on it' }]
+          },
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            call_id: 'call_1',
+            name: 'lookup_repo',
+            arguments: '{\"name\":\"innies\"}'
+          }
+        ]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: false,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 64,
+          tools: [{ name: 'lookup_repo', description: 'lookup repo', input_schema: { type: 'object', properties: { name: { type: 'string' } } } }],
+          tool_choice: { type: 'tool', name: 'lookup_repo' },
+          messages: [{ role: 'user', content: 'hi' }]
+        }
+      }
+    });
+    (req as any).inniesCompatMode = true;
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('resp_translated_ok');
+    expect((res.body as any).content).toEqual([
+      { type: 'text', text: 'working on it' },
+      { type: 'tool_use', id: 'call_1', name: 'lookup_repo', input: { name: 'innies' } }
+    ]);
+    expect((res.body as any).stop_reason).toBe('tool_use');
+    expect(listSpy.mock.calls.map((call) => call[1])).toEqual(['openai']);
+
+    const [targetUrl, init] = upstreamSpy.mock.calls[0] as [URL, RequestInit];
+    expect(String(targetUrl)).toBe('https://openai.internal.test/v1/responses');
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      model: 'gpt-5.4',
+      input: [{ type: 'message', role: 'user', content: 'hi' }],
+      tools: [{ type: 'function', function: { name: 'lookup_repo' } }],
+      tool_choice: { type: 'function', function: { name: 'lookup_repo' } }
+    });
+
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls[0]?.[0]?.routeDecision;
+    expect(routeDecision?.translated).toBe(true);
+    expect(routeDecision?.original_provider).toBe('anthropic');
+    expect(routeDecision?.translated_path).toBe('/v1/responses');
+    expect(routeDecision?.provider_preferred).toBe('openai');
+    expect(routeDecision?.provider_effective).toBe('openai');
+    upstreamSpy.mockRestore();
+    delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
+  });
+
+  it('falls back from translated openai compat lane to native anthropic compat lane when openai capacity is unavailable', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.COMPAT_CODEX_DEFAULT_MODEL = 'gpt-5.4';
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string, model: string) => {
+      if (provider === 'openai' && model === 'gpt-5.4') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: false } as any;
+      }
+      if (provider === 'anthropic' && model === 'claude-opus-4-6') {
+        return { provider: 'anthropic', model: 'claude-opus-4-6', supports_streaming: false } as any;
+      }
+      return null as any;
+    });
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider === 'openai') return [];
+      if (provider === 'anthropic') {
+        return [{
+          id: 'eeee7777-0000-4000-8000-000000000000',
+          orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+          provider: 'anthropic',
+          authScheme: 'bearer',
+          accessToken: 'sk-ant-oat01-native-fallback',
+          refreshToken: null,
+          expiresAt: new Date('2026-03-02T00:00:00Z'),
+          status: 'active',
+          rotationVersion: 1,
+          createdAt: new Date('2026-03-01T00:00:00Z'),
+          updatedAt: new Date('2026-03-01T00:00:00Z'),
+          revokedAt: null,
+          monthlyContributionLimitUnits: null,
+          monthlyContributionUsedUnits: 0,
+          monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+        } as any];
+      }
+      return [];
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        id: 'msg_native_fallback',
+        usage: { input_tokens: 2, output_tokens: 3 },
+        content: [{ type: 'text', text: 'fallback ok' }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: false,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 32,
+          messages: [{ role: 'user', content: 'hi' }]
+        }
+      }
+    });
+    (req as any).inniesCompatMode = true;
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('msg_native_fallback');
+    expect(listSpy.mock.calls.map((call) => call[1])).toEqual(['openai', 'anthropic']);
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls[0]?.[0]?.routeDecision;
+    expect(routeDecision?.translated).toBeUndefined();
+    expect(routeDecision?.provider_preferred).toBe('openai');
+    expect(routeDecision?.provider_effective).toBe('anthropic');
+    expect(routeDecision?.provider_fallback_from).toBe('openai');
+    expect(routeDecision?.provider_fallback_reason).toBe('capacity_unavailable');
+    upstreamSpy.mockRestore();
+    delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
   });
 
   it('applies stored buyer-key provider preference ahead of an unpinned request provider', async () => {
