@@ -1789,6 +1789,7 @@ async function executeTokenModeStreaming(input: {
   strictUpstreamPassthrough?: boolean;
   providerPreference?: ProviderPreferenceMeta;
   compatTranslation?: CompatTranslationMeta;
+  compatMode?: boolean;
   allowCompatTerminalErrorResponse?: boolean;
 }): Promise<ProxyRouteResult | null> {
   const {
@@ -1808,6 +1809,7 @@ async function executeTokenModeStreaming(input: {
     strictUpstreamPassthrough,
     providerPreference,
     compatTranslation,
+    compatMode: compatModeFlag,
     allowCompatTerminalErrorResponse
   } = input;
 
@@ -2235,20 +2237,21 @@ async function executeTokenModeStreaming(input: {
           const downstreamMessage = (downstreamData && typeof downstreamData === 'object'
             ? downstreamData
             : {}) as Record<string, unknown>;
-          const anthropicSummary = compatTranslation
-            ? summarizeSyntheticContentBlocks(downstreamMessage)
+          const useAnthropicSse = !!(compatTranslation || compatModeFlag);
+          const anthropicSummary = useAnthropicSse
+            ? summarizeSyntheticContentBlocks(compatTranslation ? downstreamMessage : syntheticMessage)
             : null;
-          const openAiSummary = compatTranslation
+          const openAiSummary = useAnthropicSse
             ? null
             : summarizeSyntheticOpenAiOutputItems(syntheticMessage);
-          const syntheticPayload = compatTranslation
+          const syntheticPayload = useAnthropicSse
             ? `: keepalive\n\n${buildSyntheticAnthropicSse(
-              downstreamMessage,
-              compatTranslation.originalModel
+              compatTranslation ? downstreamMessage : syntheticMessage,
+              compatTranslation ? compatTranslation.originalModel : model
             )}`
             : `: keepalive\n\n${buildSyntheticOpenAiResponsesSse(syntheticMessage)}`;
-          const streamMode = compatTranslation ? 'synthetic_bridge' : 'synthetic_openai_responses_bridge';
-          const syntheticFormat = compatTranslation ? 'anthropic' : 'openai_responses';
+          const streamMode = useAnthropicSse ? 'synthetic_bridge' : 'synthetic_openai_responses_bridge';
+          const syntheticFormat = useAnthropicSse ? 'anthropic' : 'openai_responses';
           firstDownstreamWriteAt = Date.now();
           (res as any).write(syntheticPayload);
           if ((res as any).body === undefined) {
@@ -2735,6 +2738,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               strictUpstreamPassthrough: upstreamRequest.strictUpstreamPassthrough,
               providerPreference,
               compatTranslation: upstreamRequest.compatTranslation,
+              compatMode,
               allowCompatTerminalErrorResponse: provider === providerPlan[providerPlan.length - 1]
             });
             if (streamedResult === null || res.headersSent || res.writableEnded) return;
