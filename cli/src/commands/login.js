@@ -3,7 +3,7 @@ import { fail, parseFlag } from '../utils.js';
 
 export async function runLogin(args) {
   const token = parseFlag(args, '--token');
-  const baseUrl = parseFlag(args, '--base-url') ?? 'https://gateway.innies.ai';
+  const baseUrl = parseFlag(args, '--base-url') ?? 'https://api.innies.computer';
   const model = parseFlag(args, '--model');
 
   if (!token) {
