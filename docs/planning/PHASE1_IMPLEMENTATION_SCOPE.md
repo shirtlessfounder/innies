@@ -20,10 +20,11 @@ Product invariant:
 - Error envelope mapping for translated paths (401/429/5xx → Anthropic-shaped errors).
 - 127 tests passing, deployed to production.
 
-2. CLI integration
+2. ✅ CLI integration
 - `innies claude`
 - `innies codex`
 - Wrapper behavior remains compatible with current coding loop UX.
+- Published to npm as `innies@0.1.0`.
 
 3. Internal dashboard (v1)
 - Latency and success rates
@@ -56,7 +57,7 @@ Product invariant:
 1. ✅ Codex support.
 2. ✅ Easy per-buyer-key provider preference.
 3. 🚧 Per-token analytics gathering (aggregation jobs exist, no read endpoints/dashboard yet).
-4. CLI support (`innies claude`, `innies codex`).
+4. ✅ CLI support (`innies claude`, `innies codex`). Published as `innies@0.1.0`.
 5. Internal usage dashboard.
 6. ✅ Easy token onboarding.
 7. ✅ Developer docs baseline.
@@ -68,18 +69,17 @@ Product invariant:
 - Durable runtime behavior belongs in `docs/API_CONTRACT.md`.
 - Temporary agent coordination docs, patch queues, audit scratch docs, and one-off validation notes should be folded back into this file or durable docs, then deleted.
 
-## Current Execution Focus (2026-03-06)
+## Current Execution Focus (2026-03-07)
 Active implementation focus:
 3. Per-token analytics gathering (read endpoints + dashboard views).
-4. CLI support (`innies claude`, `innies codex`).
-   - isolated execution scope: `docs/planning/PHASE1_CLI_PARITY_SCOPE.md`
-   - explicit sequencing exception: feature `4` is unblocked to run in parallel with feature `3`; each feature still needs its own validation gate and completion notes
+5. Internal usage dashboard.
 
 Completed:
 - ✅ Codex support (translation layer deployed to production)
 - ✅ Per-buyer-key provider preference (deterministic fallback with translation)
 - ✅ Token onboarding (admin endpoints + shell scripts)
 - ✅ Developer docs baseline (API contract + onboarding guides)
+- ✅ CLI support (`innies claude`, `innies codex`) — published as `innies@0.1.0`, validated locally by Dylan
 
 Current gate status:
 - `cd api && npx vitest run` → 19 files, 127 tests, all green
