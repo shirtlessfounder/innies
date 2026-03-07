@@ -13,10 +13,11 @@
   - Anthropic ↔ OpenAI Responses translation layer (request, response, streaming).
   - Error envelope mapping (401/429/5xx → Anthropic-shaped).
   - Default model: `gpt-5.4`. 127 tests, deployed to production.
-- CLI support:
-  - `innie claude`
-  - `innie codex`
+- ✅ CLI support:
+  - `innies claude`
+  - `innies codex`
   - wrappers for internal coding-tool workflows through Innies.
+  - Published to npm as `innies@0.1.0`.
 - ✅ Developer docs baseline:
   - `docs/API_CONTRACT.md` — auth + endpoints + request/response examples.
   - `docs/onboarding/OPENCLAW_ONBOARDING.md` — OpenClaw integration guide.
