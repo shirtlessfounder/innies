@@ -21,7 +21,7 @@ test('sentinel config falls back to provider defaults for both lanes', async () 
   await writeFile(join(home, '.innies', 'config.json'), JSON.stringify({
     version: 1,
     token: 'in_live_legacy',
-    apiBaseUrl: 'https://gateway.innies.ai',
+    apiBaseUrl: 'https://api.innies.computer',
     defaultModel: 'innies/default',
     updatedAt: '2026-03-06T00:00:00.000Z'
   }));
@@ -41,7 +41,7 @@ test('sentinel config falls back to provider defaults for both lanes', async () 
 test('saveConfig with anthropic model keeps codex lane on openai default', async () => {
   const home = await mkdtemp(join(tmpdir(), 'innies-cli-config-'));
   const configModule = await importConfigModuleForHome(home);
-  const saved = await configModule.saveConfig('in_live_test', 'https://gateway.innies.ai', 'claude-opus-4-6');
+  const saved = await configModule.saveConfig('in_live_test', 'https://api.innies.computer', 'claude-opus-4-6');
 
   assert.equal(saved.defaultModel, 'claude-opus-4-6');
   assert.deepEqual(saved.providerDefaults, {
@@ -55,7 +55,7 @@ test('saveConfig with anthropic model keeps codex lane on openai default', async
 test('saveConfig with unknown model preserves fallback but leaves provider defaults unchanged', async () => {
   const home = await mkdtemp(join(tmpdir(), 'innies-cli-config-'));
   const configModule = await importConfigModuleForHome(home);
-  const saved = await configModule.saveConfig('in_live_test', 'https://gateway.innies.ai', 'future-model-x');
+  const saved = await configModule.saveConfig('in_live_test', 'https://api.innies.computer', 'future-model-x');
 
   assert.equal(saved.defaultModel, 'future-model-x');
   assert.deepEqual(saved.providerDefaults, {

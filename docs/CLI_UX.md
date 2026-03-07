@@ -135,7 +135,7 @@ Run in pilot/staging env with valid API credentials:
 
 ```bash
 cd cli
-INNIES_SMOKE_API_URL=https://gateway.innies.ai \
+INNIES_SMOKE_API_URL=https://api.innies.computer \
 INNIES_SMOKE_API_KEY=in_live_<api_key> \
 INNIES_SMOKE_IDEMPOTENCY_KEY=11111111-1111-7111-8111-111111111111 \
 npm run test:smoke:real
@@ -147,7 +147,7 @@ Expected proof: response includes `x-innies-token-credential-id` header.
 Daily path for internal pilot users:
 
 ```bash
-innies login --token in_live_<redacted> --base-url https://gateway.innies.ai
+innies login --token in_live_<redacted> --base-url https://api.innies.computer
 innies doctor
 innies claude -- --version
 innies codex -- --help

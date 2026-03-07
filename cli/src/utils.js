@@ -24,7 +24,7 @@ export function fail(message) {
 }
 
 export function normalizeBaseUrl(input) {
-  const value = (input ?? 'https://gateway.innies.ai').trim();
+  const value = (input ?? 'https://api.innies.computer').trim();
   if (!value) {
     fail('Base URL cannot be empty.');
   }
