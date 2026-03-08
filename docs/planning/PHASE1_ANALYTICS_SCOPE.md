@@ -92,6 +92,19 @@ Boundary note:
 - Pool/provider/token-level read APIs are in scope here.
 - Per-buyer/per-buyer-key dashboard panels are not required to close feature `3`; if needed, they belong to feature `5` or a later dedicated analytics slice.
 
+### Request Source Classification
+
+Every analytics endpoint should support slicing by request source. Derived from `route_decision` in `in_routing_events`:
+
+| Source | Detection |
+|--------|-----------|
+| `openclaw` | `route_decision->>'openclaw_run_id'` is non-null AND `provider_selection_reason != 'cli_provider_pinned'` |
+| `cli-claude` | `provider_selection_reason = 'cli_provider_pinned'` AND provider = `anthropic` |
+| `cli-codex` | `provider_selection_reason = 'cli_provider_pinned'` AND provider = `openai` |
+| `direct` | no openclaw_run_id AND not cli-pinned |
+
+All endpoints accept optional `source` query param to filter by request source.
+
 ### 1. Per-Token Usage Endpoint
 `GET /v1/admin/analytics/tokens`
 
@@ -110,13 +123,17 @@ Returns per-token usage breakdown for the pool.
       "usageUnits": 89400,
       "retailEquivalentMinor": 15200,
       "inputTokens": 1240000,
-      "outputTokens": 62000
+      "outputTokens": 62000,
+      "bySource": {
+        "openclaw": { "requests": 300, "usageUnits": 65000 },
+        "cli-claude": { "requests": 112, "usageUnits": 24400 }
+      }
     }
   ]
 }
 ```
 
-Query params: `window` (`24h`, `7d`, `1m`, `all`), `provider` filter.
+Query params: `window` (`24h`, `7d`, `1m`, `all`), `provider` filter, `source` filter.
 
 Source:
 - Token-mode canonical path: join `in_usage_ledger` to `in_routing_events` on (`org_id`, `request_id`, `attempt_no`), extract `route_decision->>'tokenCredentialId'`, then join to `in_token_credentials`.
@@ -151,6 +168,7 @@ Returns credential health state for all tokens in the pool.
       "avgRecoveryTimeMs": 1800000,
       "estimatedDailyCapacityUnits": 156000,
       "maxingCyclesObserved": 12,
+      "utilizationRate24h": 0.42,
       "createdAt": "2026-02-15T...",
       "expiresAt": "2026-06-01T..."
     }
@@ -185,6 +203,8 @@ Returns routing performance per token.
       },
       "latencyP50Ms": 1200,
       "latencyP95Ms": 4800,
+      "ttfbP50Ms": 280,
+      "ttfbP95Ms": 650,
       "fallbackCount": 3,
       "authFailures24h": 2,
       "rateLimited24h": 3
@@ -222,7 +242,30 @@ Returns pool-wide stats.
   "activeTokens": 8,
   "maxedTokens": 1,
   "totalTokens": 10,
-  "maxedEvents7d": 4
+  "maxedEvents7d": 4,
+  "bySource": {
+    "openclaw": { "requests": 900, "usageUnits": 200000 },
+    "cli-claude": { "requests": 400, "usageUnits": 90000 },
+    "cli-codex": { "requests": 100, "usageUnits": 20000 },
+    "direct": { "requests": 50, "usageUnits": 10000 }
+  },
+  "translationOverhead": {
+    "directLatencyP50Ms": 1300,
+    "directLatencyP95Ms": 4800,
+    "translatedLatencyP50Ms": 1600,
+    "translatedLatencyP95Ms": 5900,
+    "translatedRequestCount": 250,
+    "directRequestCount": 1200
+  },
+  "topBuyers": [
+    {
+      "apiKeyId": "uuid",
+      "orgId": "uuid",
+      "requests": 800,
+      "usageUnits": 180000,
+      "percentOfTotal": 0.56
+    }
+  ]
 }
 ```
 
@@ -253,7 +296,103 @@ Source: `in_daily_aggregates` for usage, `in_routing_events` for latency/errors.
 
 Query params: `window`, `granularity` (hour, day), `provider`, `credentialId`.
 
-### 6. Analytics Quality / Anomaly Endpoint
+### 6. Request Log Endpoint
+`GET /v1/admin/analytics/requests`
+
+Returns recent requests with full detail for debugging and audit.
+
+```json
+{
+  "window": "24h",
+  "limit": 50,
+  "requests": [
+    {
+      "requestId": "uuid",
+      "createdAt": "2026-03-07T14:32:00Z",
+      "credentialId": "uuid",
+      "credentialLabel": "dylan-anthropic-1",
+      "provider": "anthropic",
+      "model": "claude-opus-4-6",
+      "source": "openclaw",
+      "translated": false,
+      "streaming": true,
+      "upstreamStatus": 200,
+      "latencyMs": 1450,
+      "ttfbMs": 320,
+      "inputTokens": 12400,
+      "outputTokens": 680,
+      "usageUnits": 1340,
+      "prompt": "[first 500 chars of user message]",
+      "response": "[first 500 chars of assistant response]"
+    }
+  ]
+}
+```
+
+Query params: `window`, `limit` (max 200), `provider`, `credentialId`, `source`, `model`, `minLatencyMs`.
+
+Source:
+- `in_routing_events` joined to `in_usage_ledger` on (`org_id`, `request_id`, `attempt_no`)
+- `in_token_credentials` for label
+- **New: `in_request_log`** for prompt/response content (see Request Content Storage below)
+
+### Request Content Storage
+
+**New table: `in_request_log`**
+
+Stores truncated prompt and response content for debugging and audit.
+
+Schema:
+```sql
+create table in_request_log (
+  id uuid primary key,
+  request_id text not null,
+  attempt_no integer not null default 1,
+  org_id uuid not null,
+  provider text not null,
+  model text not null,
+  prompt_preview text,        -- first 500 chars of user message
+  response_preview text,      -- first 500 chars of assistant response
+  full_prompt_encrypted bytea,  -- full prompt, encrypted at rest (optional, off by default)
+  full_response_encrypted bytea, -- full response, encrypted at rest (optional, off by default)
+  created_at timestamptz not null default now()
+);
+
+create index idx_request_log_org_created on in_request_log (org_id, created_at desc);
+create unique index idx_request_log_org_req_attempt on in_request_log (org_id, request_id, attempt_no);
+```
+
+Write path:
+- Populated in the proxy route after upstream response completes
+- Preview fields always written (truncated to 500 chars)
+- Full encrypted fields controlled by env flag `REQUEST_LOG_STORE_FULL=1` (off by default for Phase 1)
+- Retention: 30 days default, configurable via `REQUEST_LOG_RETENTION_DAYS`
+
+Privacy/security:
+- Admin-only access (same as all analytics endpoints)
+- Previews truncated to limit exposure
+- Full content encrypted at rest with same key management as token credentials
+- Retention job deletes rows older than configured window
+- Phase 1: internal team only, no external user content unless F&F is live
+
+### TTFB Persistence
+
+**Schema addition to `in_routing_events`:**
+
+```sql
+alter table in_routing_events add column ttfb_ms integer;
+```
+
+Write path:
+- Populated from `firstByteAt - startedAt` which is already computed in the proxy (line ~2363 in proxy.ts)
+- Just needs to be passed through to the routing events insert
+
+Surfaced in:
+- Request log endpoint (`ttfbMs` field)
+- Per-token routing endpoint (add `ttfbP50Ms`, `ttfbP95Ms`)
+- System endpoint (add `ttfbP50Ms`, `ttfbP95Ms`)
+
+### 7. Analytics Quality / Anomaly Endpoint
 `GET /v1/admin/analytics/anomalies`
 
 Returns data-quality and operability checks needed for Phase 1 confidence.
@@ -283,13 +422,18 @@ Source:
 
 ### Phase A: Repository Layer
 1. Add `AnalyticsRepository` with query methods:
-   - `getTokenUsage(window, provider?)` — aggregated usage per token
-   - `getTokenHealth(window?, provider?)` — health + derived maxing metrics per token
-   - `getTokenRouting(window, provider?)` — routing stats per token from routing_events
-   - `getSystemSummary(window)` — pool-wide aggregates
+   - `getTokenUsage(window, provider?, source?)` — aggregated usage per token with source breakdown
+   - `getTokenHealth(window?, provider?)` — health + derived maxing metrics + utilization per token
+   - `getTokenRouting(window, provider?, source?)` — routing stats per token including TTFB
+   - `getSystemSummary(window)` — pool-wide aggregates + source breakdown + translation overhead + top buyers
    - `getTimeSeries(window, granularity, filters?)` — daily/hourly breakdown
+   - `getRecentRequests(window, limit, filters?)` — request log with prompt/response previews
    - `getAnomalies(window)` — quality checks for analytics confidence
-2. Add percentile helpers (p50/p95 from routing_events latency_ms)
+2. Add percentile helpers (p50/p95 from routing_events latency_ms and ttfb_ms)
+3. Add `RequestLogRepository` with:
+   - `insert(requestId, orgId, provider, model, promptPreview, responsePreview)` — write on each request
+   - `query(window, limit, filters)` — read for request log endpoint
+   - `purgeOlderThan(days)` — retention cleanup
 3. Add derived-metric helpers for:
    - `maxed_events_per_token_7d`
    - `requests_before_maxed_last_window`
@@ -302,8 +446,17 @@ Source:
 4. Add one shared helper for extracting/resolving token credential id from routing metadata
 5. Keep canonical window parsing centralized: `24h`, `7d`, `1m`, `all`
 
+### Phase A2: Schema Changes
+1. Add `ttfb_ms` column to `in_routing_events`
+2. Create `in_request_log` table with indexes
+3. Add `REQUEST_LOG_STORE_FULL` env flag (default off)
+4. Add `REQUEST_LOG_RETENTION_DAYS` env config (default 30)
+5. Wire prompt/response preview capture into proxy write path
+6. Wire ttfb_ms into routing events insert
+7. Add retention cleanup job for `in_request_log`
+
 ### Phase B: API Routes
-1. Register all 6 endpoints under `api/src/routes/analytics.ts`
+1. Register all 7 endpoints under `api/src/routes/analytics.ts`
 2. All admin-only (`requireApiKey(['admin'])`)
 3. Input validation via zod schemas
 4. Wire into express app
@@ -315,6 +468,9 @@ Source:
 4. Verify derived maxing metrics and anomaly checks
 5. Verify token-mode analytics work when `seller_key_id` is null
 6. Verify fallback counts come from routing metadata, not heuristics
+7. Verify source classification (openclaw/cli-claude/cli-codex/direct) is accurate
+8. Verify request log captures prompt/response previews without leaking full content
+9. Verify TTFB percentiles are populated after schema migration
 
 ### Phase D: Validation
 1. Hit each endpoint against prod data
@@ -343,9 +499,9 @@ Source:
 - Dashboard UI (separate Phase 1 item)
 - Real-time streaming metrics / websocket feeds
 - Alerting / threshold notifications
-- Per-buyer-key analytics (could add later, not Phase 1)
 - Historical backfill for routing_events older than table creation
-- Large schema redesign unless the query-level join path proves unworkable
+- Full prompt/response storage by default (preview only in Phase 1, full encrypted storage behind flag)
+- Per-token cost efficiency / ROI metrics (needs pricing model not yet defined)
 
 ## Dependencies
 - Existing aggregation jobs must be running (they are)
@@ -354,7 +510,7 @@ Source:
 - Token-mode routing rows must consistently carry `route_decision.tokenCredentialId`
 
 ## Exit Criteria
-- All 6 endpoints return correct data against production DB
+- All 7 endpoints return correct data against production DB
 - Test coverage for query logic and route auth
 - Numbers cross-checked against raw SQL
 - Phase 1 minimum metrics are queryable:
@@ -372,4 +528,10 @@ Source:
 - Canonical window set is used consistently: `24h`, `7d`, `1m`, `all`
 - Token-mode per-token analytics are correct even when `seller_key_id` is null
 - Operator validation/anomaly queries exist and are usable without raw log spelunking
+- Request source breakdown (openclaw / cli-claude / cli-codex / direct) works across all endpoints
+- Translation overhead comparison available in system endpoint
+- TTFB percentiles available in routing and system endpoints
+- Request log captures prompt/response previews with 30-day retention
+- Top buyer consumption visible in system endpoint
+- Token utilization rate derived from actual usage vs estimated capacity
 - Feature `5` can build Phase 1 dashboard panels on top of these read APIs without inventing one-off raw SQL per panel
