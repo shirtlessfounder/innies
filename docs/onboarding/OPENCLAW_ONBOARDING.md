@@ -1,6 +1,6 @@
 # OpenClaw → Innies Onboarding
 
-Connect OpenClaw to Innies as its Anthropic-compatible provider.
+Connect OpenClaw to Innies. Innies handles provider routing and model selection server-side — your OpenClaw config stays the same regardless of which provider (Anthropic, OpenAI) serves the request.
 
 Need a provider credential first? See [Claude + Codex OAuth Token Guide](./CLAUDE_CODEX_OAUTH_TOKENS.md).
 
@@ -56,6 +56,15 @@ curl -sS -X POST "https://api.innies.computer/v1/messages" \
 ```
 
 Expected: streaming SSE response starting with `event: message_start`.
+
+## Provider Routing
+
+OpenClaw always sends requests in Anthropic Messages format. Innies routes them based on your buyer key's provider preference:
+
+- **Anthropic preference** → request goes directly to an Anthropic credential (Claude).
+- **OpenAI preference** → Innies translates the request to OpenAI Responses format, routes to an OpenAI credential (Codex/GPT), and translates the response back. The default translated model is `gpt-5.4`.
+
+You don't need separate OpenClaw configs for different providers. Provider preference is set server-side by an admin on your buyer key. The OpenClaw config above works for both.
 
 ## Notes
 
