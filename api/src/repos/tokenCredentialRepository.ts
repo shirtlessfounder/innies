@@ -78,6 +78,7 @@ export type RotateTokenCredentialInput = {
   monthlyContributionLimitUnits?: number | null;
   debugLabel?: string | null;
   createdBy?: string | null;
+  previousCredentialId?: string | null;
 };
 
 function currentUtcMonthStartExpr(): string {
@@ -356,16 +357,31 @@ export class TokenCredentialRepository {
       const latestRow = latest.rowCount === 1 ? latest.rows[0] : null;
       const nextRotationVersion = (latestRow?.rotation_version ?? 0) + 1;
 
-      const activeSql = `
-        select id
-        from ${TABLES.tokenCredentials}
-        where org_id = $1 and provider = $2 and status = 'active'
-        order by rotation_version desc
-        limit 1
-        for update
-      `;
-      const active = await tx.query<{ id: string }>(activeSql, [input.orgId, input.provider]);
-      const previousActive = active.rowCount === 1 ? active.rows[0] : null;
+      let previousActive: { id: string } | null = null;
+      if (input.previousCredentialId) {
+        const targetSql = `
+          select id
+          from ${TABLES.tokenCredentials}
+          where id = $1 and org_id = $2 and provider = $3 and status = 'active'
+          for update
+        `;
+        const target = await tx.query<{ id: string }>(targetSql, [input.previousCredentialId, input.orgId, input.provider]);
+        if (target.rowCount !== 1) {
+          throw new Error(`Credential ${input.previousCredentialId} not found or not active for org/provider`);
+        }
+        previousActive = target.rows[0];
+      } else {
+        const activeSql = `
+          select id
+          from ${TABLES.tokenCredentials}
+          where org_id = $1 and provider = $2 and status = 'active'
+          order by rotation_version desc
+          limit 1
+          for update
+        `;
+        const active = await tx.query<{ id: string }>(activeSql, [input.orgId, input.provider]);
+        previousActive = active.rowCount === 1 ? active.rows[0] : null;
+      }
 
       if (previousActive) {
         await tx.query(
