@@ -379,8 +379,8 @@ function tokenCredentialMaxedFailureThreshold(): number {
 }
 
 function tokenCredentialProbeIntervalHours(): number {
-  const parsed = Number(process.env.TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS || 24);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 24;
+  const parsed = Number(process.env.TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS || 4);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 4;
 }
 
 function tokenCredentialMaxStatuses(): Set<number> {
@@ -388,10 +388,14 @@ function tokenCredentialMaxStatuses(): Set<number> {
   const parsed = new Set<number>();
   for (const chunk of raw.split(',')) {
     const code = Number(chunk.trim());
-    if (code === 401 || code === 403 || code === 429) parsed.add(code);
+    if (code === 401 || code === 403) parsed.add(code);
   }
   if (parsed.size === 0) parsed.add(401);
   return parsed;
+}
+
+function isOauthCredential(credential: TokenCredential, provider: string): boolean {
+  return isOpenAiOauthToken(credential, provider) || isAnthropicOauthToken(credential, provider);
 }
 
 const ANTHROPIC_DEFAULT_BETAS = [
@@ -782,7 +786,10 @@ async function recordTokenCredentialOutcome(input: {
   }
   if (!tokenCredentialMaxStatuses().has(upstreamStatus)) return;
 
-  const threshold = tokenCredentialMaxedFailureThreshold();
+  const baseThreshold = tokenCredentialMaxedFailureThreshold();
+  const threshold = isOauthCredential(credential, provider)
+    ? baseThreshold * 3
+    : baseThreshold;
   const nextProbeAt = new Date(Date.now() + (tokenCredentialProbeIntervalHours() * 60 * 60 * 1000));
   const result = await runtime.repos.tokenCredentials.recordFailureAndMaybeMax({
     id: credential.id,
