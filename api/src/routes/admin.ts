@@ -89,7 +89,8 @@ const tokenCredentialRotateSchema = z.object({
   refreshToken: z.string().min(1).optional(),
   debugLabel: z.string().trim().min(1).max(64).optional(),
   expiresAt: z.string().datetime({ offset: true }),
-  monthlyContributionLimitUnits: z.number().int().nonnegative().optional()
+  monthlyContributionLimitUnits: z.number().int().nonnegative().optional(),
+  previousCredentialId: z.string().uuid().optional()
 });
 
 const tokenCredentialRefreshTokenSchema = z.object({
@@ -468,7 +469,8 @@ router.post('/v1/admin/token-credentials/rotate', requireApiKey(runtime.repos.ap
         refreshToken: parsed.refreshToken ?? null,
         debugLabel: parsed.debugLabel ?? null,
         expiresAt: new Date(parsed.expiresAt),
-        monthlyContributionLimitUnits: parsed.monthlyContributionLimitUnits ?? null
+        monthlyContributionLimitUnits: parsed.monthlyContributionLimitUnits ?? null,
+        previousCredentialId: parsed.previousCredentialId ?? null
     }, {
       actorApiKeyId: req.auth?.apiKeyId ?? null
     });

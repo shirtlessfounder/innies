@@ -181,7 +181,7 @@ function parseProxyRequestBody(body: unknown, proxiedPath: string) {
     return {
       provider: 'openai',
       model: parsed.model,
-      streaming: parsed.stream === true,
+      streaming: parsed.stream !== false,
       payload: parsed
     };
   }
