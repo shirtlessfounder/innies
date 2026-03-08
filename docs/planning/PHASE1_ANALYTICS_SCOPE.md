@@ -146,6 +146,11 @@ Returns credential health state for all tokens in the pool.
       "monthlyWindowStartAt": "2026-03-01T00:00:00Z",
       "maxedEvents7d": 0,
       "requestsBeforeMaxedLastWindow": null,
+      "avgRequestsBeforeMaxed": 340,
+      "avgUsageUnitsBeforeMaxed": 52000,
+      "avgRecoveryTimeMs": 1800000,
+      "estimatedDailyCapacityUnits": 156000,
+      "maxingCyclesObserved": 12,
       "createdAt": "2026-02-15T...",
       "expiresAt": "2026-06-01T..."
     }
@@ -288,6 +293,11 @@ Source:
 3. Add derived-metric helpers for:
    - `maxed_events_per_token_7d`
    - `requests_before_maxed_last_window`
+   - `avg_requests_before_maxed` — average requests per active→maxed cycle across all observed cycles
+   - `avg_usage_units_before_maxed` — average usage units consumed per cycle
+   - `avg_recovery_time_ms` — average time from maxed→active (via probe reactivation)
+   - `estimated_daily_capacity_units` — derived from (avg usage per cycle × cycles per day), gives empirical estimate of provider-side token limit
+   - `maxing_cycles_observed` — total count of active→maxed transitions (confidence indicator)
    - auth-failure and rate-limit counts per token/window
 4. Add one shared helper for extracting/resolving token credential id from routing metadata
 5. Keep canonical window parsing centralized: `24h`, `7d`, `1m`, `all`
@@ -355,6 +365,10 @@ Source:
   - `tokens_processed_per_token_24h`
   - `maxed_events_per_token_7d`
   - `requests_before_maxed_last_window`
+- Per-token capacity estimation metrics are queryable:
+  - `avgRequestsBeforeMaxed`, `avgUsageUnitsBeforeMaxed`, `avgRecoveryTimeMs`
+  - `estimatedDailyCapacityUnits` derived from maxing cycle history
+  - `maxingCyclesObserved` as a confidence indicator (more cycles = better estimate)
 - Canonical window set is used consistently: `24h`, `7d`, `1m`, `all`
 - Token-mode per-token analytics are correct even when `seller_key_id` is null
 - Operator validation/anomaly queries exist and are usable without raw log spelunking
