@@ -48,6 +48,9 @@ Behavior:
 - forwards all args to `claude`
 - exits with the same exit code as `claude`
 - prints actionable error if `claude` cannot start
+- starts a loopback HTTP bridge and points `ANTHROPIC_BASE_URL` at it
+- bridge injects `x-api-key`, `x-request-id`, and `x-innies-provider-pin: true` for forwarded Innies requests
+- bridge strips Claude.ai OAuth `Authorization` before forwarding to Innies so active claude.ai sessions do not break buyer-key auth
 - loop-safe binary resolution:
   - prefers non-wrapper Claude binary from `which -a claude`
   - supports `INNIES_CLAUDE_BIN` override
