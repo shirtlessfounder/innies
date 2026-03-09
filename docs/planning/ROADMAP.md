@@ -23,9 +23,14 @@
   - `docs/onboarding/OPENCLAW_ONBOARDING.md` — OpenClaw integration guide.
   - `docs/onboarding/CLAUDE_CODEX_OAUTH_TOKENS.md` — OAuth credential setup.
 - Internal performance + usage dashboard.
-- 🚧 Per-token analytics gathering:
-  - ✅ Aggregation jobs (daily incremental + nightly compaction).
-  - Read endpoints and dashboard views still needed.
+- ✅ Per-token analytics:
+  - Aggregation jobs (daily incremental + nightly compaction).
+  - 7 read endpoints: tokens, health, routing, system, timeseries, requests, anomalies.
+  - Request source classification (openclaw / cli-claude / cli-codex / direct).
+  - TTFB persistence, translation overhead, buyer consumption, token utilization.
+  - Request log with prompt/response previews and 30-day retention.
+  - Per-token capacity estimation from maxing cycle history.
+  - Anomaly/quality checks.
 - ✅ Easy new token onboarding into the shared pool.
   - Admin endpoints: add, rotate, revoke.
   - Shell scripts: `innies-add-token.sh`, `innies-rotate-token.sh`.
