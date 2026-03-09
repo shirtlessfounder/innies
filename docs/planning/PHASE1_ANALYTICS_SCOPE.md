@@ -16,6 +16,18 @@ Canonical analytics windows for Phase 1:
 Implementation note:
 - `30d` may be accepted as an API alias for `1m`, but Phase 1 docs and response payloads should use `1m` as the canonical name.
 
+## Descoped to Post-Merge
+
+These fields stay in the response shape for now, but Phase 1 treats them as deferred and they must return `null`, not fake `0`.
+
+- `translationOverhead` — requires a durable `translated` flag in routing metadata. `/system` returns `null` until that attribution exists end-to-end.
+- `requestsBeforeMaxedLastWindow` — requires paired maxed-event analysis across the observed request window. `/tokens/health` returns `null` for now.
+- Derived maxing metrics (`avgRequestsBeforeMaxed`, `avgUsageUnitsBeforeMaxed`, `avgRecoveryTimeMs`, `estimatedDailyCapacityUnits`, `maxingCyclesObserved`) — all require paired event analysis not yet implemented. `/tokens/health` returns `null` for all of these.
+- `utilizationRate24h` — requires actual 24h usage joined to a real capacity estimate. `/tokens/health` returns `null` for now.
+- `staleAggregateWindows` — anomaly check not yet implemented. `/anomalies` returns `null` for now.
+- `usageLedgerVsAggregateMismatchCount` — anomaly check not yet implemented. `/anomalies` returns `null` for now.
+- `REQUEST_LOG_STORE_FULL` wiring — Phase 1 request-log contract is preview-only. Encrypted full-content storage is deferred even if schema columns already exist.
+
 ## What Exists
 
 ### Data Sources (live, writing data now)
@@ -37,8 +49,8 @@ Implementation note:
 - **No per-token health view.** Token credential health data (failure counts, maxed events, probe state) isn't exposed through any endpoint.
 - **No routing analytics.** Routing events are logged but not queryable through an API.
 - **No time-series breakdown.** Usage/me returns one number, not a daily/hourly curve.
-- **No derived maxing metrics surface.** Phase 1 requires `maxed_events_per_token_7d` and `requests_before_maxed_last_window`, but they are not currently queryable.
-- **No anomaly/data-quality checks surface.** Missing labels, null credential ids, stale windows, and aggregate-vs-raw mismatches are not surfaced anywhere.
+- **No derived maxing metrics surface.** Phase 1 still requires `maxed_events_per_token_7d`; `requests_before_maxed_last_window` is descoped to post-merge and returns `null`.
+- **No anomaly/data-quality checks surface.** Missing labels and null credential ids are not surfaced anywhere. Stale-window and aggregate-vs-raw mismatch checks are descoped to post-merge and return `null`.
 - **Token identity mismatch on the current hot path.** Feature `3` is about token credentials, but the current warehouse-ish tables are still keyed around `seller_key_id`.
 
 ### Important Constraint: Token Credential Identity
@@ -98,10 +110,10 @@ Every analytics endpoint should support slicing by request source. Derived from 
 
 | Source | Detection |
 |--------|-----------|
-| `openclaw` | `route_decision->>'openclaw_run_id'` is non-null AND `provider_selection_reason != 'cli_provider_pinned'` |
-| `cli-claude` | `provider_selection_reason = 'cli_provider_pinned'` AND provider = `anthropic` |
-| `cli-codex` | `provider_selection_reason = 'cli_provider_pinned'` AND provider = `openai` |
-| `direct` | no openclaw_run_id AND not cli-pinned |
+| `openclaw` | prefer explicit `route_decision->>'request_source' = 'openclaw'`; fallback for legacy rows: `openclaw_run_id` is non-null AND `provider_selection_reason != 'cli_provider_pinned'` |
+| `cli-claude` | prefer explicit `route_decision->>'request_source' = 'cli-claude'`; fallback: `provider_selection_reason = 'cli_provider_pinned'` AND provider = `anthropic` |
+| `cli-codex` | prefer explicit `route_decision->>'request_source' = 'cli-codex'`; fallback: `provider_selection_reason = 'cli_provider_pinned'` AND provider = `openai` |
+| `direct` | prefer explicit `route_decision->>'request_source' = 'direct'`; fallback: no `openclaw_run_id` and not cli-pinned |
 
 All endpoints accept optional `source` query param to filter by request source.
 
@@ -163,12 +175,12 @@ Returns credential health state for all tokens in the pool.
       "monthlyWindowStartAt": "2026-03-01T00:00:00Z",
       "maxedEvents7d": 0,
       "requestsBeforeMaxedLastWindow": null,
-      "avgRequestsBeforeMaxed": 340,
-      "avgUsageUnitsBeforeMaxed": 52000,
-      "avgRecoveryTimeMs": 1800000,
-      "estimatedDailyCapacityUnits": 156000,
-      "maxingCyclesObserved": 12,
-      "utilizationRate24h": 0.42,
+      "avgRequestsBeforeMaxed": null,
+      "avgUsageUnitsBeforeMaxed": null,
+      "avgRecoveryTimeMs": null,
+      "estimatedDailyCapacityUnits": null,
+      "maxingCyclesObserved": null,
+      "utilizationRate24h": null,
       "createdAt": "2026-02-15T...",
       "expiresAt": "2026-06-01T..."
     }
@@ -178,8 +190,9 @@ Returns credential health state for all tokens in the pool.
 
 Source:
 - `in_token_credentials` for current credential health state
-- `in_routing_events` for `maxedEvents7d`
-- derived aggregate from recent routing/usage windows for `requestsBeforeMaxedLastWindow`
+- `in_token_credential_events` for `maxedEvents7d`
+- `requestsBeforeMaxedLastWindow` is descoped to post-merge and returns `null` until paired maxed-event analysis lands
+- `utilizationRate24h` is descoped to post-merge and returns `null` until actual 24h usage can be compared against a real capacity estimate
 
 ### 3. Per-Token Routing Analytics
 `GET /v1/admin/analytics/tokens/routing`
@@ -249,14 +262,7 @@ Returns pool-wide stats.
     "cli-codex": { "requests": 100, "usageUnits": 20000 },
     "direct": { "requests": 50, "usageUnits": 10000 }
   },
-  "translationOverhead": {
-    "directLatencyP50Ms": 1300,
-    "directLatencyP95Ms": 4800,
-    "translatedLatencyP50Ms": 1600,
-    "translatedLatencyP95Ms": 5900,
-    "translatedRequestCount": 250,
-    "directRequestCount": 1200
-  },
+  "translationOverhead": null,
   "topBuyers": [
     {
       "apiKeyId": "uuid",
@@ -270,6 +276,8 @@ Returns pool-wide stats.
 ```
 
 Source: `in_routing_events` + `in_usage_ledger` + `in_token_credentials`.
+
+`translationOverhead` is descoped to post-merge until translated-request attribution is emitted durably enough to validate.
 
 ### 5. Time-Series Endpoint
 `GET /v1/admin/analytics/timeseries`
@@ -299,7 +307,7 @@ Query params: `window`, `granularity` (hour, day), `provider`, `credentialId`.
 ### 6. Request Log Endpoint
 `GET /v1/admin/analytics/requests`
 
-Returns recent requests with full detail for debugging and audit.
+Returns recent requests with preview detail for debugging and audit.
 
 ```json
 {
@@ -353,8 +361,8 @@ create table in_request_log (
   model text not null,
   prompt_preview text,        -- first 500 chars of user message
   response_preview text,      -- first 500 chars of assistant response
-  full_prompt_encrypted bytea,  -- full prompt, encrypted at rest (optional, off by default)
-  full_response_encrypted bytea, -- full response, encrypted at rest (optional, off by default)
+  full_prompt_encrypted bytea,  -- reserved for post-merge wiring
+  full_response_encrypted bytea, -- reserved for post-merge wiring
   created_at timestamptz not null default now()
 );
 
@@ -363,15 +371,15 @@ create unique index idx_request_log_org_req_attempt on in_request_log (org_id, r
 ```
 
 Write path:
-- Populated in the proxy route after upstream response completes
+- Populated in the proxy route for successful upstream responses
 - Preview fields always written (truncated to 500 chars)
-- Full encrypted fields controlled by env flag `REQUEST_LOG_STORE_FULL=1` (off by default for Phase 1)
+- `REQUEST_LOG_STORE_FULL` wiring is deferred; encrypted full-content columns stay unused in Phase 1
 - Retention: 30 days default, configurable via `REQUEST_LOG_RETENTION_DAYS`
 
 Privacy/security:
 - Admin-only access (same as all analytics endpoints)
 - Previews truncated to limit exposure
-- Full content encrypted at rest with same key management as token credentials
+- Encrypted full-content columns are reserved for follow-up wiring and are not populated in Phase 1
 - Retention job deletes rows older than configured window
 - Phase 1: internal team only, no external user content unless F&F is live
 
@@ -404,8 +412,8 @@ Returns data-quality and operability checks needed for Phase 1 confidence.
     "missingDebugLabels": 0,
     "unresolvedCredentialIdsInTokenModeUsage": 0,
     "nullCredentialIdsInRouting": 0,
-    "staleAggregateWindows": 0,
-    "usageLedgerVsAggregateMismatchCount": 0
+    "staleAggregateWindows": null,
+    "usageLedgerVsAggregateMismatchCount": null
   },
   "ok": true
 }
@@ -414,7 +422,7 @@ Returns data-quality and operability checks needed for Phase 1 confidence.
 Source:
 - `in_token_credentials` for missing labels
 - `in_usage_ledger` + `in_routing_events` for unresolved token credential ids on token-mode rows
-- `in_daily_aggregates` recency + raw-vs-aggregate comparison for stale/mismatch checks
+- stale aggregate and raw-vs-aggregate mismatch checks are descoped to post-merge and return `null`
 
 ---
 
@@ -425,7 +433,7 @@ Source:
    - `getTokenUsage(window, provider?, source?)` — aggregated usage per token with source breakdown
    - `getTokenHealth(window?, provider?)` — health + derived maxing metrics + utilization per token
    - `getTokenRouting(window, provider?, source?)` — routing stats per token including TTFB
-   - `getSystemSummary(window)` — pool-wide aggregates + source breakdown + translation overhead + top buyers
+   - `getSystemSummary(window)` — pool-wide aggregates + source breakdown + top buyers (`translationOverhead` remains `null` in Phase 1)
    - `getTimeSeries(window, granularity, filters?)` — daily/hourly breakdown
    - `getRecentRequests(window, limit, filters?)` — request log with prompt/response previews
    - `getAnomalies(window)` — quality checks for analytics confidence
@@ -436,7 +444,6 @@ Source:
    - `purgeOlderThan(days)` — retention cleanup
 3. Add derived-metric helpers for:
    - `maxed_events_per_token_7d`
-   - `requests_before_maxed_last_window`
    - `avg_requests_before_maxed` — average requests per active→maxed cycle across all observed cycles
    - `avg_usage_units_before_maxed` — average usage units consumed per cycle
    - `avg_recovery_time_ms` — average time from maxed→active (via probe reactivation)
@@ -449,10 +456,10 @@ Source:
 ### Phase A2: Schema Changes
 1. Add `ttfb_ms` column to `in_routing_events`
 2. Create `in_request_log` table with indexes
-3. Add `REQUEST_LOG_STORE_FULL` env flag (default off)
+3. Keep request-log full-content columns reserved for post-merge wiring; Phase 1 stays preview-only
 4. Add `REQUEST_LOG_RETENTION_DAYS` env config (default 30)
 5. Wire prompt/response preview capture into proxy write path
-6. Wire ttfb_ms into routing events insert
+6. Wire `ttfb_ms` into routing events insert
 7. Add retention cleanup job for `in_request_log`
 
 ### Phase B: API Routes
@@ -500,7 +507,7 @@ Source:
 - Real-time streaming metrics / websocket feeds
 - Alerting / threshold notifications
 - Historical backfill for routing_events older than table creation
-- Full prompt/response storage by default (preview only in Phase 1, full encrypted storage behind flag)
+- Any full prompt/response storage beyond previews (`REQUEST_LOG_STORE_FULL` wiring is deferred)
 - Per-token cost efficiency / ROI metrics (needs pricing model not yet defined)
 
 ## Dependencies
@@ -520,7 +527,6 @@ Source:
   - `rate_limited_per_token_24h`
   - `tokens_processed_per_token_24h`
   - `maxed_events_per_token_7d`
-  - `requests_before_maxed_last_window`
 - Per-token capacity estimation metrics are queryable:
   - `avgRequestsBeforeMaxed`, `avgUsageUnitsBeforeMaxed`, `avgRecoveryTimeMs`
   - `estimatedDailyCapacityUnits` derived from maxing cycle history
@@ -529,9 +535,9 @@ Source:
 - Token-mode per-token analytics are correct even when `seller_key_id` is null
 - Operator validation/anomaly queries exist and are usable without raw log spelunking
 - Request source breakdown (openclaw / cli-claude / cli-codex / direct) works across all endpoints
-- Translation overhead comparison available in system endpoint
+- Descoped fields return `null`, not fake `0`
 - TTFB percentiles available in routing and system endpoints
 - Request log captures prompt/response previews with 30-day retention
 - Top buyer consumption visible in system endpoint
-- Token utilization rate derived from actual usage vs estimated capacity
+- `utilizationRate24h` is explicitly deferred and returns `null`
 - Feature `5` can build Phase 1 dashboard panels on top of these read APIs without inventing one-off raw SQL per panel

@@ -113,10 +113,19 @@ describe('tokenCredentialRepository', () => {
   });
 
   it('records failure and marks credential maxed when threshold is reached', async () => {
-    const db = new SequenceSqlClient([{
-      rows: [{ status: 'maxed', consecutive_failures: 10 }],
-      rowCount: 1
-    }]);
+    const db = new SequenceSqlClient([
+      {
+        rows: [{
+          previous_status: 'active',
+          org_id: '00000000-0000-0000-0000-000000000001',
+          provider: 'anthropic',
+          status: 'maxed',
+          consecutive_failures: 10
+        }],
+        rowCount: 1
+      },
+      { rows: [], rowCount: 1 }
+    ]);
     const repo = new TokenCredentialRepository(db);
 
     const result = await repo.recordFailureAndMaybeMax({
@@ -127,12 +136,23 @@ describe('tokenCredentialRepository', () => {
       reason: 'upstream_401_consecutive_failure'
     });
 
-    expect(result).toEqual({ status: 'maxed', consecutiveFailures: 10 });
+    expect(result).toEqual({ status: 'maxed', consecutiveFailures: 10, newlyMaxed: true });
     expect(db.queries[0].sql).toContain("then 'maxed'");
+    expect(db.queries[1].sql).toContain('insert into in_token_credential_events');
+    expect(db.queries[1].sql).toContain("'maxed'");
   });
 
   it('reactivates maxed credential and clears probe/failure fields', async () => {
-    const db = new SequenceSqlClient([{ rows: [], rowCount: 1 }]);
+    const db = new SequenceSqlClient([
+      {
+        rows: [{
+          org_id: '00000000-0000-0000-0000-000000000001',
+          provider: 'anthropic'
+        }],
+        rowCount: 1
+      },
+      { rows: [], rowCount: 1 }
+    ]);
     const repo = new TokenCredentialRepository(db);
 
     const ok = await repo.reactivateFromMaxed('cred_1');
@@ -140,6 +160,8 @@ describe('tokenCredentialRepository', () => {
     expect(db.queries[0].sql).toContain("status = 'active'");
     expect(db.queries[0].sql).toContain('consecutive_failure_count = 0');
     expect(db.queries[0].sql).toContain('next_probe_at = null');
+    expect(db.queries[1].sql).toContain('insert into in_token_credential_events');
+    expect(db.queries[1].sql).toContain("'reactivated'");
   });
 
   it('refreshes a credential in place without changing rotation_version', async () => {

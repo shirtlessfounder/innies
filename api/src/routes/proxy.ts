@@ -13,6 +13,7 @@ import { anthropicToOpenAi } from '../utils/anthropicToOpenai.js';
 import { mapOpenAiErrorToAnthropic, translateOpenAiToAnthropic } from '../utils/openaiToAnthropic.js';
 import { OpenAiToAnthropicStreamTransform } from '../utils/openaiToAnthropicStream.js';
 import { buildSyntheticOpenAiResponsesSse, summarizeSyntheticOpenAiOutputItems } from '../utils/openaiSyntheticStream.js';
+import { extractRequestPreview, extractResponsePreview } from '../utils/requestLogPreview.js';
 import {
   isOpenAiOauthAccessToken,
   resolveOpenAiOauthAccountId,
@@ -55,12 +56,16 @@ type ProxyRouteResult = {
   data: unknown;
   routeKind: 'seller_key' | 'token_credential';
   alreadyRecorded: boolean;
+  routeDecision?: Record<string, unknown>;
+  ttfbMs?: number | null;
 };
 
 type MeteringSource = 'payload_usage' | 'stream_usage' | 'stream_estimate';
+type RequestSource = 'openclaw' | 'cli-claude' | 'cli-codex' | 'direct';
 type OpenClawCorrelation = {
   openclawRunId: string;
   openclawSessionId?: string;
+  sourceExplicit: boolean;
 };
 type RetryReason =
   | 'blocked_403_compat_retry'
@@ -131,12 +136,15 @@ function resolveOpenClawCorrelation(req: any, requestId: string): OpenClawCorrel
   const metadataSessionId = typeof metadata?.openclaw_session_id === 'string'
     ? metadata.openclaw_session_id.trim()
     : undefined;
-  const openclawRunId = readHeader(req, 'x-openclaw-run-id', 'openclaw-run-id', 'x-run-id')
-    ?? (metadataRunId && metadataRunId.length > 0 ? metadataRunId : undefined)
-    ?? `run_${requestId}`;
-  const openclawSessionId = readHeader(req, 'x-openclaw-session-id', 'openclaw-session-id', 'x-session-id')
+  const explicitRunId = readHeader(req, 'x-openclaw-run-id', 'openclaw-run-id', 'x-run-id')
+    ?? (metadataRunId && metadataRunId.length > 0 ? metadataRunId : undefined);
+  const explicitSessionId = readHeader(req, 'x-openclaw-session-id', 'openclaw-session-id', 'x-session-id')
     ?? (metadataSessionId && metadataSessionId.length > 0 ? metadataSessionId : undefined);
-  return { openclawRunId, openclawSessionId };
+  return {
+    openclawRunId: explicitRunId ?? `run_${requestId}`,
+    openclawSessionId: explicitSessionId,
+    sourceExplicit: Boolean(explicitRunId || explicitSessionId)
+  };
 }
 
 function extractProxyPath(originalUrl: string): string {
@@ -717,6 +725,18 @@ function logAuthFailureAudit(input: {
   });
 }
 
+function resolveRequestSource(input: {
+  provider: string;
+  selectionReason: ProviderSelectionReason;
+  correlation: OpenClawCorrelation;
+}): RequestSource {
+  if (input.selectionReason === 'cli_provider_pinned') {
+    return canonicalizeProvider(input.provider) === 'openai' ? 'cli-codex' : 'cli-claude';
+  }
+
+  return input.correlation.sourceExplicit ? 'openclaw' : 'direct';
+}
+
 function buildTokenRouteDecision(
   credential: TokenCredential,
   correlation: OpenClawCorrelation,
@@ -727,6 +747,11 @@ function buildTokenRouteDecision(
   const decision: Record<string, unknown> = {
     reason: selectionReason,
     provider_selection_reason: selectionReason,
+    request_source: resolveRequestSource({
+      provider: credential.provider,
+      selectionReason,
+      correlation
+    }),
     tokenCredentialId: credential.id,
     tokenCredentialLabel: credential.debugLabel ?? null,
     tokenAuthScheme: credential.authScheme,
@@ -750,6 +775,26 @@ function buildTokenRouteDecision(
     decision.translated_model = compatTranslation.translatedModel;
   }
   return decision;
+}
+
+function buildSellerRouteDecision(input: {
+  routeReason: string;
+  provider: string;
+  correlation: OpenClawCorrelation;
+  pinSelectionReason?: ProviderSelectionReason | null;
+}): Record<string, unknown> {
+  const selectionReason = input.pinSelectionReason ?? 'preferred_provider_selected';
+  return {
+    reason: input.routeReason,
+    provider_selection_reason: selectionReason,
+    request_source: resolveRequestSource({
+      provider: input.provider,
+      selectionReason,
+      correlation: input.correlation
+    }),
+    openclaw_run_id: input.correlation.openclawRunId,
+    openclaw_session_id: input.correlation.openclawSessionId ?? null
+  };
 }
 
 function buildCompatTerminalErrorResult(input: {
@@ -1350,6 +1395,7 @@ async function executeTokenModeNonStreaming(input: {
       const timeoutMs = upstreamTimeoutMs();
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const dispatchStartedAt = Date.now();
       const upstreamPayload = normalizeTokenModeUpstreamPayload({
         provider,
         credential,
@@ -1358,7 +1404,7 @@ async function executeTokenModeNonStreaming(input: {
         streaming: false
       });
 
-      const logAttemptFailure = async (failure: AttemptFailure) => {
+      const logAttemptFailure = async (failure: AttemptFailure, ttfb?: number | null) => {
         await runtime.repos.routingEvents.insert({
           requestId,
           attemptNo,
@@ -1371,7 +1417,8 @@ async function executeTokenModeNonStreaming(input: {
           routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
           upstreamStatus: failure.statusCode,
           errorCode: inferErrorCode(failure),
-          latencyMs: Date.now() - startedAt
+          latencyMs: Date.now() - startedAt,
+          ttfbMs: ttfb ?? null
         });
       };
 
@@ -1398,6 +1445,8 @@ async function executeTokenModeNonStreaming(input: {
       if (!upstreamResponse) break;
 
       const status = upstreamResponse.status;
+      const upstreamHeadersAt = Date.now();
+      const ttfbMs = Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt));
       if (status === 403 && strictUpstreamPassthrough) {
         const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
         const data = contentType.includes('application/json')
@@ -1459,7 +1508,8 @@ async function executeTokenModeNonStreaming(input: {
             routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
             upstreamStatus: status,
             errorCode: 'upstream_403_blocked_passthrough',
-            latencyMs: Date.now() - startedAt
+            latencyMs: Date.now() - startedAt,
+            ttfbMs
           });
           logCompatAudit({
             orgId,
@@ -1581,7 +1631,7 @@ async function executeTokenModeNonStreaming(input: {
           errorType: statusErrorType,
           errorMessage: statusErrorMessage
         };
-        await logAttemptFailure({ kind: 'auth', statusCode: status, message: 'token auth failed' });
+        await logAttemptFailure({ kind: 'auth', statusCode: status, message: 'token auth failed' }, ttfbMs);
         if (strictUpstreamPassthrough) {
           logCompatAudit({
             orgId,
@@ -1618,7 +1668,7 @@ async function executeTokenModeNonStreaming(input: {
           model,
           upstreamStatus: status
         });
-        await logAttemptFailure({ kind: 'rate_limited', statusCode: 429, message: 'rate limited' });
+        await logAttemptFailure({ kind: 'rate_limited', statusCode: 429, message: 'rate limited' }, ttfbMs);
         logRetryAudit({
           orgId,
           provider,
@@ -1656,7 +1706,8 @@ async function executeTokenModeNonStreaming(input: {
             routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
             upstreamStatus: status,
             errorCode: 'upstream_5xx_passthrough',
-            latencyMs: Date.now() - startedAt
+            latencyMs: Date.now() - startedAt,
+            ttfbMs
           });
 
           return {
@@ -1682,7 +1733,7 @@ async function executeTokenModeNonStreaming(input: {
           terminalCompatAttemptNo = attemptNo;
         }
 
-        await logAttemptFailure({ kind: 'server_error', statusCode: status, message: 'upstream server error' });
+        await logAttemptFailure({ kind: 'server_error', statusCode: status, message: 'upstream server error' }, ttfbMs);
         break;
       }
 
@@ -1743,7 +1794,8 @@ async function executeTokenModeNonStreaming(input: {
         streaming: false,
         routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
         upstreamStatus: status,
-        latencyMs: Date.now() - startedAt
+        latencyMs: Date.now() - startedAt,
+        ttfbMs
       });
       await runtime.services.metering.recordUsage({
         requestId,
@@ -1767,6 +1819,18 @@ async function executeTokenModeNonStreaming(input: {
           kind: 'metering_degraded',
           message: 'monthly contribution increment could not be recorded after successful upstream response'
         });
+      }
+
+      if (status >= 200 && status < 300) {
+        runtime.repos.requestLog.insert({
+          requestId,
+          attemptNo,
+          orgId,
+          provider,
+          model,
+          promptPreview: extractRequestPreview(compat.payload, proxiedPath),
+          responsePreview: extractResponsePreview(data)
+        }).catch(() => {});
       }
 
       return {
@@ -1919,7 +1983,7 @@ async function executeTokenModeStreaming(input: {
       }));
       const dispatchStartedAt = Date.now();
 
-      const logAttemptFailure = async (failure: AttemptFailure) => {
+      const logAttemptFailure = async (failure: AttemptFailure, ttfb?: number | null) => {
         await runtime.repos.routingEvents.insert({
           requestId,
           attemptNo,
@@ -1932,7 +1996,8 @@ async function executeTokenModeStreaming(input: {
           routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
           upstreamStatus: failure.statusCode,
           errorCode: inferErrorCode(failure),
-          latencyMs: Date.now() - startedAt
+          latencyMs: Date.now() - startedAt,
+          ttfbMs: ttfb ?? null
         });
       };
 
@@ -2014,7 +2079,8 @@ async function executeTokenModeStreaming(input: {
             routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
             upstreamStatus: status,
             errorCode: 'upstream_403_blocked_passthrough',
-            latencyMs: Date.now() - startedAt
+            latencyMs: Date.now() - startedAt,
+            ttfbMs: Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt))
           });
           logCompatAudit({
             orgId,
@@ -2135,7 +2201,7 @@ async function executeTokenModeStreaming(input: {
           errorType: statusErrorType,
           errorMessage: statusErrorMessage
         };
-        await logAttemptFailure({ kind: 'auth', statusCode: status, message: 'token auth failed' });
+        await logAttemptFailure({ kind: 'auth', statusCode: status, message: 'token auth failed' }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
         if (strictUpstreamPassthrough) {
           logCompatAudit({
             orgId,
@@ -2172,7 +2238,7 @@ async function executeTokenModeStreaming(input: {
           model,
           upstreamStatus: status
         });
-        await logAttemptFailure({ kind: 'rate_limited', statusCode: 429, message: 'rate limited' });
+        await logAttemptFailure({ kind: 'rate_limited', statusCode: 429, message: 'rate limited' }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
         logRetryAudit({
           orgId,
           provider,
@@ -2201,7 +2267,7 @@ async function executeTokenModeStreaming(input: {
           terminalCompatCredentialId = credential.id;
           terminalCompatAttemptNo = attemptNo;
         }
-        await logAttemptFailure({ kind: 'server_error', statusCode: status, message: 'upstream server error' });
+        await logAttemptFailure({ kind: 'server_error', statusCode: status, message: 'upstream server error' }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
         break;
       }
 
@@ -2255,7 +2321,8 @@ async function executeTokenModeStreaming(input: {
             routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
           upstreamStatus: status,
           errorCode: status >= 500 ? 'upstream_5xx_passthrough' : undefined,
-          latencyMs: Date.now() - startedAt
+          latencyMs: Date.now() - startedAt,
+          ttfbMs: Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt))
         });
 
         // Maintain stream contract for compat callers: if client requested stream=true,
@@ -2395,6 +2462,17 @@ async function executeTokenModeStreaming(input: {
                 ? Math.max(0, streamEndedAt - firstDownstreamWriteAt)
                 : null
             });
+            if (status >= 200 && status < 300) {
+              runtime.repos.requestLog.insert({
+                requestId,
+                attemptNo,
+                orgId,
+                provider,
+                model,
+                promptPreview: extractRequestPreview(compat.payload, proxiedPath),
+                responsePreview: extractResponsePreview(rawText)
+              }).catch(() => {});
+            }
             return {
               requestId,
               keyId: credential.id,
@@ -2515,6 +2593,17 @@ async function executeTokenModeStreaming(input: {
               ? Math.max(0, streamEndedAt - firstDownstreamWriteAt)
               : null
           });
+          if (status >= 200 && status < 300) {
+            runtime.repos.requestLog.insert({
+              requestId,
+              attemptNo,
+              orgId,
+              provider,
+              model,
+              promptPreview: extractRequestPreview(compat.payload, proxiedPath),
+              responsePreview: extractResponsePreview(data)
+            }).catch(() => {});
+          }
           return {
             requestId,
             keyId: credential.id,
@@ -2559,7 +2648,7 @@ async function executeTokenModeStreaming(input: {
       }
 
       if (!upstreamResponse.body) {
-        await logAttemptFailure({ kind: 'network', message: 'upstream stream missing body' });
+        await logAttemptFailure({ kind: 'network', message: 'upstream stream missing body' }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
         break;
       }
       await runtime.repos.routingEvents.insert({
@@ -2573,7 +2662,8 @@ async function executeTokenModeStreaming(input: {
         streaming: true,
         routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
         upstreamStatus: status,
-        latencyMs: Date.now() - startedAt
+        latencyMs: Date.now() - startedAt,
+        ttfbMs: Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt))
       });
 
       if (status >= 200 && status < 300) {
@@ -2728,6 +2818,18 @@ async function executeTokenModeStreaming(input: {
           : null
       });
 
+      if (status >= 200 && status < 300) {
+        runtime.repos.requestLog.insert({
+          requestId,
+          attemptNo,
+          orgId,
+          provider,
+          model,
+          promptPreview: extractRequestPreview(compat.payload, proxiedPath),
+          responsePreview: extractResponsePreview(sampled)
+        }).catch(() => {});
+      }
+
       return null;
     }
   }
@@ -2846,10 +2948,10 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
     const anthropicVersion = req.header('anthropic-version') ?? '2023-06-01';
     const anthropicBeta = req.header('anthropic-beta') ?? undefined;
     let result: ProxyRouteResult | null = null;
+    const requestPinSelectionReason = (readProviderPinSignal(req) || isClaudeCliPinnedRequest(req, proxiedPath))
+      ? 'cli_provider_pinned'
+      : null;
     if (tokenModeEnabled) {
-      const pinSelectionReason = (readProviderPinSignal(req) || isClaudeCliPinnedRequest(req, proxiedPath))
-        ? 'cli_provider_pinned'
-        : null;
       const {
         providerPlan,
         preferredProvider,
@@ -2858,7 +2960,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
         preferredProvider: auth.preferredProvider,
         preferredProviderSource: auth.preferredProviderSource,
         requestProvider,
-        pinSelectionReason
+        pinSelectionReason: requestPinSelectionReason
       });
 
       let previousProvider: string | undefined;
@@ -2986,7 +3088,13 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
           streaming: parsed.streaming,
         },
         runUpstream: async (decision) => {
-          const logAttemptFailure = async (failure: AttemptFailure) => {
+          const sellerRouteDecision = buildSellerRouteDecision({
+            routeReason: decision.reason,
+            provider: requestProvider,
+            correlation,
+            pinSelectionReason: requestPinSelectionReason
+          });
+          const logAttemptFailure = async (failure: AttemptFailure, ttfb?: number | null) => {
             await runtime.repos.routingEvents.insert({
               requestId,
               attemptNo: decision.attemptNo,
@@ -2996,10 +3104,11 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               provider: requestProvider,
               model: parsed.model,
               streaming: parsed.streaming,
-              routeDecision: { reason: decision.reason },
+              routeDecision: sellerRouteDecision,
               upstreamStatus: failure.statusCode,
               errorCode: inferErrorCode(failure),
-              latencyMs: Date.now() - startedAt
+              latencyMs: Date.now() - startedAt,
+              ttfbMs: ttfb ?? null
             });
           };
 
@@ -3016,6 +3125,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
           const timer = setTimeout(() => controller.abort(), timeoutMs);
 
           const payload = parsed.payload ?? {};
+          const dispatchStartedAt = Date.now();
           const upstreamResponse = await fetch(targetUrl, {
             method: 'POST',
             headers: {
@@ -3033,19 +3143,21 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               throw Object.assign(new Error(message), { kind: 'network' });
             })
             .finally(() => clearTimeout(timer));
+          const upstreamHeadersAt = Date.now();
+          const ttfbMs = Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt));
 
           if (upstreamResponse.status === 429) {
-            await logAttemptFailure({ kind: 'rate_limited', statusCode: 429, message: 'rate limited' });
+            await logAttemptFailure({ kind: 'rate_limited', statusCode: 429, message: 'rate limited' }, ttfbMs);
             throw Object.assign(new Error('rate limited'), { kind: 'rate_limited', statusCode: 429 });
           }
 
           if (upstreamResponse.status === 401 || upstreamResponse.status === 403) {
-            await logAttemptFailure({ kind: 'auth', statusCode: upstreamResponse.status, message: 'auth failed' });
+            await logAttemptFailure({ kind: 'auth', statusCode: upstreamResponse.status, message: 'auth failed' }, ttfbMs);
             throw Object.assign(new Error('auth failed'), { kind: 'auth', keySpecific: true, statusCode: upstreamResponse.status });
           }
 
           if (upstreamResponse.status >= 500) {
-            await logAttemptFailure({ kind: 'server_error', statusCode: upstreamResponse.status, message: 'upstream server error' });
+            await logAttemptFailure({ kind: 'server_error', statusCode: upstreamResponse.status, message: 'upstream server error' }, ttfbMs);
             throw Object.assign(new Error('upstream server error'), { kind: 'server_error', statusCode: upstreamResponse.status });
           }
 
@@ -3058,7 +3170,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
             res.status(upstreamResponse.status);
 
             if (!upstreamResponse.body) {
-              await logAttemptFailure({ kind: 'network', message: 'upstream stream missing body' });
+              await logAttemptFailure({ kind: 'network', message: 'upstream stream missing body' }, ttfbMs);
               throw Object.assign(new Error('upstream stream missing body'), { kind: 'network' });
             }
 
@@ -3110,9 +3222,10 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               provider: requestProvider,
               model: parsed.model,
               streaming: true,
-              routeDecision: { reason: decision.reason },
+              routeDecision: sellerRouteDecision,
               upstreamStatus: upstreamResponse.status,
-              latencyMs: Date.now() - startedAt
+              latencyMs: Date.now() - startedAt,
+              ttfbMs
             });
             await runtime.services.metering.recordUsage({
               requestId,
@@ -3135,7 +3248,9 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               upstreamStatus: upstreamResponse.status,
               contentType,
               data: null,
-              usageUnits
+              usageUnits,
+              routeDecision: sellerRouteDecision,
+              ttfbMs
             };
           }
           const contentTypeOut = upstreamResponse.headers.get('content-type') ?? 'application/json';
@@ -3156,7 +3271,9 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
             upstreamStatus: upstreamResponse.status,
             contentType: contentTypeOut,
             data,
-            usageUnits
+            usageUnits,
+            routeDecision: sellerRouteDecision,
+            ttfbMs
           };
         }
       });
@@ -3170,7 +3287,9 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
         contentType: sellerResult.contentType ?? 'application/json',
         data: sellerResult.data,
         routeKind: 'seller_key',
-        alreadyRecorded: false
+        alreadyRecorded: false,
+        routeDecision: sellerResult.routeDecision,
+        ttfbMs: sellerResult.ttfbMs
       };
     }
 
@@ -3191,9 +3310,10 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
         provider: requestProvider,
         model: parsed.model,
         streaming: parsed.streaming,
-        routeDecision: { reason: 'weighted_round_robin' },
+        routeDecision: result.routeDecision ?? { reason: 'weighted_round_robin' },
         upstreamStatus: result.upstreamStatus,
-        latencyMs
+        latencyMs,
+        ttfbMs: result.ttfbMs ?? null
       });
       await runtime.services.metering.recordUsage({
         requestId,

@@ -15,6 +15,7 @@ export type RoutingEventInput = {
   upstreamStatus?: number;
   errorCode?: string;
   latencyMs: number;
+  ttfbMs?: number | null;
 };
 
 export class RoutingEventsRepository {
@@ -39,11 +40,23 @@ export class RoutingEventsRepository {
         upstream_status,
         error_code,
         latency_ms,
+        ttfb_ms,
         created_at
       ) values (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now()
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now()
       )
-      on conflict (org_id, request_id, attempt_no) do nothing
+      on conflict (org_id, request_id, attempt_no)
+      do update set
+        api_key_id = coalesce(excluded.api_key_id, ${TABLES.routingEvents}.api_key_id),
+        seller_key_id = coalesce(excluded.seller_key_id, ${TABLES.routingEvents}.seller_key_id),
+        provider = excluded.provider,
+        model = excluded.model,
+        streaming = excluded.streaming,
+        route_decision = excluded.route_decision,
+        upstream_status = coalesce(excluded.upstream_status, ${TABLES.routingEvents}.upstream_status),
+        error_code = coalesce(excluded.error_code, ${TABLES.routingEvents}.error_code),
+        latency_ms = greatest(${TABLES.routingEvents}.latency_ms, excluded.latency_ms),
+        ttfb_ms = coalesce(excluded.ttfb_ms, ${TABLES.routingEvents}.ttfb_ms)
     `;
 
     const params: SqlValue[] = [
@@ -59,7 +72,8 @@ export class RoutingEventsRepository {
       JSON.stringify(input.routeDecision),
       input.upstreamStatus ?? null,
       input.errorCode ?? null,
-      input.latencyMs
+      input.latencyMs,
+      input.ttfbMs ?? null
     ];
 
     await this.db.query(sql, params);

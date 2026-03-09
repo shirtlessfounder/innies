@@ -496,52 +496,112 @@ export class TokenCredentialRepository {
     threshold: number;
     nextProbeAt: Date;
     reason?: string;
-  }): Promise<{ status: TokenCredentialStatus; consecutiveFailures: number } | null> {
-    const sql = `
-      update ${TABLES.tokenCredentials}
-      set
-        consecutive_failure_count = coalesce(consecutive_failure_count, 0) + 1,
-        last_failed_status = $2,
-        last_failed_at = now(),
-        status = case
-          when status in ('active', 'rotating')
-            and coalesce(consecutive_failure_count, 0) + 1 >= $3
-          then 'maxed'
-          else status
-        end,
-        maxed_at = case
-          when status in ('active', 'rotating')
-            and coalesce(consecutive_failure_count, 0) + 1 >= $3
-          then now()
-          else maxed_at
-        end,
-        next_probe_at = case
-          when status in ('active', 'rotating')
-            and coalesce(consecutive_failure_count, 0) + 1 >= $3
-          then $4
-          else next_probe_at
-        end,
-        last_refresh_error = case
-          when $5::text is not null then $5
-          else last_refresh_error
-        end,
-        updated_at = now()
-      where id = $1
-        and status in ('active', 'rotating', 'maxed')
-      returning status, coalesce(consecutive_failure_count, 0) as consecutive_failures
-    `;
-    const result = await this.db.query<{ status: TokenCredentialStatus; consecutive_failures: number }>(sql, [
-      input.id,
-      input.statusCode,
-      input.threshold,
-      input.nextProbeAt,
-      input.reason ?? null
-    ]);
-    if (result.rowCount !== 1) return null;
-    return {
-      status: result.rows[0].status,
-      consecutiveFailures: Number(result.rows[0].consecutive_failures)
-    };
+  }): Promise<{ status: TokenCredentialStatus; consecutiveFailures: number; newlyMaxed: boolean } | null> {
+    return this.db.transaction(async (tx) => {
+      const sql = `
+        with previous as (
+          select status, org_id, provider
+          from ${TABLES.tokenCredentials}
+          where id = $1
+          for update
+        ),
+        updated as (
+          update ${TABLES.tokenCredentials}
+          set
+            consecutive_failure_count = coalesce(consecutive_failure_count, 0) + 1,
+            last_failed_status = $2,
+            last_failed_at = now(),
+            status = case
+              when status in ('active', 'rotating')
+                and coalesce(consecutive_failure_count, 0) + 1 >= $3
+              then 'maxed'
+              else status
+            end,
+            maxed_at = case
+              when status in ('active', 'rotating')
+                and coalesce(consecutive_failure_count, 0) + 1 >= $3
+              then now()
+              else maxed_at
+            end,
+            next_probe_at = case
+              when status in ('active', 'rotating')
+                and coalesce(consecutive_failure_count, 0) + 1 >= $3
+              then $4
+              else next_probe_at
+            end,
+            last_refresh_error = case
+              when $5::text is not null then $5
+              else last_refresh_error
+            end,
+            updated_at = now()
+          where id = $1
+            and status in ('active', 'rotating', 'maxed')
+          returning status, coalesce(consecutive_failure_count, 0) as consecutive_failures
+        )
+        select
+          previous.status as previous_status,
+          previous.org_id,
+          previous.provider,
+          updated.status,
+          updated.consecutive_failures
+        from updated
+        join previous on true
+      `;
+      const result = await tx.query<{
+        previous_status: TokenCredentialStatus;
+        org_id: string;
+        provider: string;
+        status: TokenCredentialStatus;
+        consecutive_failures: number;
+      }>(sql, [
+        input.id,
+        input.statusCode,
+        input.threshold,
+        input.nextProbeAt,
+        input.reason ?? null
+      ]);
+      if (result.rowCount !== 1) return null;
+
+      const row = result.rows[0];
+      const newlyMaxed = (row.previous_status === 'active' || row.previous_status === 'rotating')
+        && row.status === 'maxed';
+
+      if (newlyMaxed) {
+        await tx.query(
+          `
+            insert into ${TABLES.tokenCredentialEvents} (
+              id,
+              token_credential_id,
+              org_id,
+              provider,
+              event_type,
+              status_code,
+              reason,
+              metadata,
+              created_at
+            ) values ($1,$2,$3,$4,'maxed',$5,$6,$7,now())
+          `,
+          [
+            newId(),
+            input.id,
+            row.org_id,
+            row.provider,
+            input.statusCode,
+            input.reason ?? null,
+            {
+              threshold: input.threshold,
+              consecutiveFailures: Number(row.consecutive_failures)
+            }
+          ]
+        );
+      }
+
+      return {
+        status: row.status,
+        consecutiveFailures: Number(row.consecutive_failures),
+        newlyMaxed
+      };
+    });
   }
 
   async recordSuccess(id: string): Promise<boolean> {
@@ -596,38 +656,95 @@ export class TokenCredentialRepository {
   }
 
   async markProbeFailure(id: string, nextProbeAt: Date, reason?: string): Promise<boolean> {
-    const sql = `
-      update ${TABLES.tokenCredentials}
-      set
-        last_probe_at = now(),
-        next_probe_at = $2,
-        last_refresh_error = case
-          when $3::text is not null then $3
-          else last_refresh_error
-        end,
-        updated_at = now()
-      where id = $1
-        and status = 'maxed'
-    `;
-    const result = await this.db.query(sql, [id, nextProbeAt, reason ?? null]);
-    return result.rowCount === 1;
+    return this.db.transaction(async (tx) => {
+      const sql = `
+        update ${TABLES.tokenCredentials}
+        set
+          last_probe_at = now(),
+          next_probe_at = $2,
+          last_refresh_error = case
+            when $3::text is not null then $3
+            else last_refresh_error
+          end,
+          updated_at = now()
+        where id = $1
+          and status = 'maxed'
+        returning org_id, provider
+      `;
+      const result = await tx.query<{ org_id: string; provider: string }>(sql, [id, nextProbeAt, reason ?? null]);
+      if (result.rowCount !== 1) return false;
+
+      const row = result.rows[0];
+      await tx.query(
+        `
+          insert into ${TABLES.tokenCredentialEvents} (
+            id,
+            token_credential_id,
+            org_id,
+            provider,
+            event_type,
+            status_code,
+            reason,
+            metadata,
+            created_at
+          ) values ($1,$2,$3,$4,'probe_failed',null,$5,$6,now())
+        `,
+        [
+          newId(),
+          id,
+          row.org_id,
+          row.provider,
+          reason ?? null,
+          { nextProbeAt: nextProbeAt.toISOString() }
+        ]
+      );
+      return true;
+    });
   }
 
   async reactivateFromMaxed(id: string): Promise<boolean> {
-    const sql = `
-      update ${TABLES.tokenCredentials}
-      set
-        status = 'active',
-        consecutive_failure_count = 0,
-        last_failed_status = null,
-        last_failed_at = null,
-        next_probe_at = null,
-        last_probe_at = now(),
-        updated_at = now()
-      where id = $1
-        and status = 'maxed'
-    `;
-    const result = await this.db.query(sql, [id]);
-    return result.rowCount === 1;
+    return this.db.transaction(async (tx) => {
+      const sql = `
+        update ${TABLES.tokenCredentials}
+        set
+          status = 'active',
+          consecutive_failure_count = 0,
+          last_failed_status = null,
+          last_failed_at = null,
+          next_probe_at = null,
+          last_probe_at = now(),
+          updated_at = now()
+        where id = $1
+          and status = 'maxed'
+        returning org_id, provider
+      `;
+      const result = await tx.query<{ org_id: string; provider: string }>(sql, [id]);
+      if (result.rowCount !== 1) return false;
+
+      const row = result.rows[0];
+      await tx.query(
+        `
+          insert into ${TABLES.tokenCredentialEvents} (
+            id,
+            token_credential_id,
+            org_id,
+            provider,
+            event_type,
+            status_code,
+            reason,
+            metadata,
+            created_at
+          ) values ($1,$2,$3,$4,'reactivated',null,null,$5,now())
+        `,
+        [
+          newId(),
+          id,
+          row.org_id,
+          row.provider,
+          {}
+        ]
+      );
+      return true;
+    });
   }
 }

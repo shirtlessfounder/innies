@@ -974,7 +974,7 @@ describe('proxy token-mode route behavior', () => {
     upstreamSpy.mockRestore();
   });
 
-  it('auto-maxes credential on 429 when configured via TOKEN_CREDENTIAL_MAX_ON_STATUSES', async () => {
+  it('ignores unsupported 429 max-status overrides and does not auto-max the credential', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     process.env.TOKEN_CREDENTIAL_MAX_ON_STATUSES = '401,429';
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
@@ -1027,10 +1027,7 @@ describe('proxy token-mode route behavior', () => {
     await invoke(handlers[1], req, res);
 
     expect(res.statusCode).toBe(429);
-    expect(recordFailureSpy).toHaveBeenCalledTimes(1);
-    const call = recordFailureSpy.mock.calls[0]?.[0] as any;
-    expect(call?.id).toBe('cccc9999-9999-4999-8999-999999999999');
-    expect(call?.statusCode).toBe(429);
+    expect(recordFailureSpy).not.toHaveBeenCalled();
     upstreamSpy.mockRestore();
     delete process.env.TOKEN_CREDENTIAL_MAX_ON_STATUSES;
   });
