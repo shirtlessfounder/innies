@@ -30,13 +30,47 @@ Edit `~/.openclaw/agents/main/agent/models.json`:
 
 Replace `in_live_REPLACE_ME` with your buyer key.
 
-### 2. Restart gateway
+### 2. Add UA patch
+
+Cloudflare blocks OpenClaw's default user-agent. This patch overrides it for requests to Innies.
+
+```bash
+mkdir -p ~/.openclaw/patches
+
+cat > ~/.openclaw/patches/ua_patch.js <<'JS'
+const orig = global.fetch;
+global.fetch = async (url, init = {}) => {
+  const u = String(url || '');
+  if (u.includes('api.innies.computer/v1/messages')) {
+    const h = new Headers(init.headers || {});
+    h.set('user-agent', 'OpenClawGateway/1.0');
+    init = { ...init, headers: h };
+  }
+  return orig(url, init);
+};
+JS
+```
+
+Then load it via systemd override:
+
+```bash
+mkdir -p ~/.config/systemd/user/openclaw-gateway.service.d
+
+cat > ~/.config/systemd/user/openclaw-gateway.service.d/ua-patch.conf <<EOF
+[Service]
+Environment=NODE_OPTIONS=--require=$HOME/.openclaw/patches/ua_patch.js
+EOF
+
+systemctl --user daemon-reload
+```
+
+### 3. Restart gateway
 
 ```bash
 openclaw gateway restart
 ```
 
-### 3. Verify
+### 4. Verify
 
 Send a test prompt from OpenClaw (e.g. `ping`), then check logs:
 
