@@ -496,6 +496,8 @@ export class TokenCredentialRepository {
     threshold: number;
     nextProbeAt: Date;
     reason?: string;
+    requestId?: string | null;
+    attemptNo?: number | null;
   }): Promise<{ status: TokenCredentialStatus; consecutiveFailures: number; newlyMaxed: boolean } | null> {
     return this.db.transaction(async (tx) => {
       const sql = `
@@ -536,14 +538,18 @@ export class TokenCredentialRepository {
             updated_at = now()
           where id = $1
             and status in ('active', 'rotating', 'maxed')
-          returning status, coalesce(consecutive_failure_count, 0) as consecutive_failures
+          returning
+            status,
+            coalesce(consecutive_failure_count, 0) as consecutive_failures,
+            coalesce(monthly_contribution_used_units, 0) as monthly_contribution_used_units
         )
         select
           previous.status as previous_status,
           previous.org_id,
           previous.provider,
           updated.status,
-          updated.consecutive_failures
+          updated.consecutive_failures,
+          updated.monthly_contribution_used_units
         from updated
         join previous on true
       `;
@@ -553,6 +559,7 @@ export class TokenCredentialRepository {
         provider: string;
         status: TokenCredentialStatus;
         consecutive_failures: number;
+        monthly_contribution_used_units: number;
       }>(sql, [
         input.id,
         input.statusCode,
@@ -589,8 +596,12 @@ export class TokenCredentialRepository {
             input.statusCode,
             input.reason ?? null,
             {
+              requestId: input.requestId ?? null,
+              attemptNo: input.attemptNo ?? null,
+              statusCode: input.statusCode,
               threshold: input.threshold,
-              consecutiveFailures: Number(row.consecutive_failures)
+              consecutiveFailures: Number(row.consecutive_failures),
+              monthlyContributionUsedUnits: Number(row.monthly_contribution_used_units)
             }
           ]
         );
@@ -669,9 +680,12 @@ export class TokenCredentialRepository {
           updated_at = now()
         where id = $1
           and status = 'maxed'
-        returning org_id, provider
+        returning org_id, provider, maxed_at
       `;
-      const result = await tx.query<{ org_id: string; provider: string }>(sql, [id, nextProbeAt, reason ?? null]);
+      const result = await tx.query<{ org_id: string; provider: string; maxed_at: string | Date | null }>(
+        sql,
+        [id, nextProbeAt, reason ?? null]
+      );
       if (result.rowCount !== 1) return false;
 
       const row = result.rows[0];
@@ -695,7 +709,10 @@ export class TokenCredentialRepository {
           row.org_id,
           row.provider,
           reason ?? null,
-          { nextProbeAt: nextProbeAt.toISOString() }
+          {
+            nextProbeAt: nextProbeAt.toISOString(),
+            previousMaxedAt: row.maxed_at ? new Date(row.maxed_at).toISOString() : null
+          }
         ]
       );
       return true;
@@ -716,9 +733,14 @@ export class TokenCredentialRepository {
           updated_at = now()
         where id = $1
           and status = 'maxed'
-        returning org_id, provider
+        returning org_id, provider, maxed_at, last_probe_at
       `;
-      const result = await tx.query<{ org_id: string; provider: string }>(sql, [id]);
+      const result = await tx.query<{
+        org_id: string;
+        provider: string;
+        maxed_at: string | Date | null;
+        last_probe_at: string | Date | null;
+      }>(sql, [id]);
       if (result.rowCount !== 1) return false;
 
       const row = result.rows[0];
@@ -741,7 +763,10 @@ export class TokenCredentialRepository {
           id,
           row.org_id,
           row.provider,
-          {}
+          {
+            previousMaxedAt: row.maxed_at ? new Date(row.maxed_at).toISOString() : null,
+            probeSucceededAt: row.last_probe_at ? new Date(row.last_probe_at).toISOString() : null
+          }
         ]
       );
       return true;

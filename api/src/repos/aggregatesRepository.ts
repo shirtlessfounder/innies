@@ -1,6 +1,10 @@
 import type { SqlClient, SqlValue } from './sqlClient.js';
 import { TABLES } from './tableNames.js';
 
+function usageUtcDaySql(col = 'created_at'): string {
+  return `(${col} at time zone 'utc')::date`;
+}
+
 export type IncrementalAggregateResult = {
   upsertedRows: number;
 };
@@ -15,13 +19,13 @@ export class AggregatesRepository {
   async incrementalUpdate(since: Date): Promise<IncrementalAggregateResult> {
     const sql = `
       with touched_days as (
-        select distinct date_trunc('day', created_at)::date as day
+        select distinct ${usageUtcDaySql()} as day
         from ${TABLES.usageLedger}
         where entry_type = 'usage' and created_at >= $1
       ),
       rolled as (
         select
-          date_trunc('day', created_at)::date as day,
+          ${usageUtcDaySql()} as day,
           org_id,
           seller_key_id,
           provider,
@@ -29,7 +33,7 @@ export class AggregatesRepository {
           md5(
             concat_ws(
               '|',
-              date_trunc('day', created_at)::date::text,
+              ${usageUtcDaySql()}::text,
               org_id::text,
               coalesce(seller_key_id::text, ''),
               provider,
@@ -42,7 +46,7 @@ export class AggregatesRepository {
         from ${TABLES.usageLedger}
         where
           entry_type = 'usage'
-          and date_trunc('day', created_at)::date in (select day from touched_days)
+          and ${usageUtcDaySql()} in (select day from touched_days)
         group by 1,2,3,4,5
       )
       insert into ${TABLES.dailyAggregates} (

@@ -18,10 +18,6 @@ Use this after the analytics route/repository work lands to:
 
 Pending implementation in the current contract:
 - `translationOverhead`
-- `requestsBeforeMaxedLastWindow`
-- `utilizationRate24h`
-- `staleAggregateWindows`
-- `usageLedgerVsAggregateMismatchCount`
 
 Current API expectation for those fields: return `null`, not `0`.
 
@@ -140,34 +136,88 @@ Expectations:
 
 ### `GET /v1/admin/analytics/tokens/health`
 ```sql
-select
-  tc.id as credential_id,
-  tc.debug_label,
-  tc.provider,
-  tc.status,
-  tc.consecutive_failure_count,
-  tc.last_failed_status,
-  tc.last_failed_at,
-  tc.maxed_at,
-  tc.next_probe_at,
-  tc.last_probe_at,
-  tc.monthly_contribution_limit_units,
-  tc.monthly_contribution_used_units,
-  tc.monthly_window_start_at,
-  tc.created_at,
-  tc.expires_at
-from in_token_credentials tc
-where (:provider is null or tc.provider = :provider)
-order by tc.provider, tc.debug_label nulls last, tc.id;
+with credential_base as (
+  select
+    tc.id,
+    tc.debug_label,
+    tc.provider,
+    tc.status,
+    tc.consecutive_failure_count,
+    tc.last_failed_status,
+    tc.last_failed_at,
+    tc.maxed_at,
+    tc.next_probe_at,
+    tc.last_probe_at,
+    tc.monthly_contribution_limit_units,
+    tc.monthly_contribution_used_units,
+    tc.monthly_window_start_at,
+    tc.created_at,
+    tc.expires_at
+  from in_token_credentials tc
+  where (:provider is null or tc.provider = :provider)
+),
+maxed_cycles as (
+  select
+    cb.id::text as credential_id,
+    me.created_at as maxed_at,
+    coalesce(
+      (
+        select re.created_at
+        from in_token_credential_events re
+        where re.token_credential_id = me.token_credential_id
+          and re.event_type = 'reactivated'
+          and re.created_at < me.created_at
+        order by re.created_at desc
+        limit 1
+      ),
+      cb.created_at
+    ) as cycle_start_at,
+    (
+      select re.created_at
+      from in_token_credential_events re
+      where re.token_credential_id = me.token_credential_id
+        and re.event_type = 'reactivated'
+        and re.created_at > me.created_at
+      order by re.created_at asc
+      limit 1
+    ) as reactivated_at
+  from credential_base cb
+  join in_token_credential_events me
+    on me.token_credential_id = cb.id
+   and me.event_type = 'maxed'
+),
+cycle_rollups as (
+  select
+    mc.credential_id,
+    mc.maxed_at,
+    mc.reactivated_at,
+    count(distinct re.request_id) as request_count,
+    coalesce(sum(ul.usage_units), 0) as usage_units,
+    extract(epoch from (mc.maxed_at - mc.cycle_start_at)) / 86400.0 as cycle_duration_days
+  from maxed_cycles mc
+  left join in_routing_events re
+    on re.route_decision->>'tokenCredentialId' = mc.credential_id
+   and re.created_at >= mc.cycle_start_at
+   and re.created_at <= mc.maxed_at
+  left join in_usage_ledger ul
+    on ul.org_id = re.org_id
+   and ul.request_id = re.request_id
+   and ul.attempt_no = re.attempt_no
+   and ul.entry_type = 'usage'
+  group by 1,2,3
+)
+select ...
+from credential_base cb
+left join cycle_rollups cr on cr.credential_id = cb.id::text;
 ```
 
-Exact `maxedEvents7d` check:
-- validate against the durable transition source Agent 1 lands
-- do not infer exact event count from current-state `maxed_at` alone
-
-Pending implementation:
-- `requestsBeforeMaxedLastWindow` should stay `null` until paired maxed-event analysis exists
-- `utilizationRate24h` should stay `null` until actual 24h usage can be compared against a real capacity estimate
+Expectations:
+- `maxedEvents7d` validates against `in_token_credential_events`, not current-state `maxed_at`
+- maxed-cycle metrics anchor on `maxed_at`; `avgRecoveryTimeMs` anchors on `reactivated_at`
+- `source` is accepted by the route layer but ignored by the health query
+- `estimatedDailyCapacityUnits` is the `p50` of per-cycle `usage_units / cycle_duration_days` and stays `null` unless at least 2 valid cycles exist
+- `utilizationRate24h` is trailing 24h credential-attributed usage divided by `estimatedDailyCapacityUnits`; it may exceed `1`
+- `maxingCyclesObserved` stays numeric and becomes `0` when no maxed cycles are present in-window
 
 ### `GET /v1/admin/analytics/tokens/routing`
 ```sql
@@ -290,12 +340,138 @@ select
     select count(*)
     from routing_scoped
     where credential_id is null
-  ) as null_credential_ids_in_routing;
+  ) as null_credential_ids_in_routing,
+  (
+    with raw_windows as (
+      select
+        date_trunc('day', ul.created_at)::date as day,
+        ul.org_id,
+        ul.seller_key_id,
+        ul.provider,
+        ul.model,
+        max(ul.created_at) as latest_raw_at
+      from in_usage_ledger ul
+      where ul.entry_type = 'usage'
+        and (
+          :window = 'all'
+          or ul.created_at >= case
+            when :window = '24h' then now() - interval '24 hours'
+            when :window = '7d' then now() - interval '7 days'
+            when :window = '1m' then now() - interval '30 days'
+            else now() - interval '24 hours'
+          end
+        )
+        and (:provider is null or ul.provider = :provider)
+      group by 1,2,3,4,5
+    )
+    select count(*)
+    from raw_windows rw
+    left join in_daily_aggregates da
+      on da.day = rw.day
+     and da.org_id = rw.org_id
+     and da.seller_key_id is not distinct from rw.seller_key_id
+     and da.provider = rw.provider
+     and da.model = rw.model
+    where now() >= case
+      when rw.day = (now() at time zone 'utc')::date
+        then rw.latest_raw_at + interval '20 minutes'
+      else greatest(
+        rw.latest_raw_at + interval '20 minutes',
+        (((rw.day + 1)::timestamp at time zone 'utc') + interval '2 hours')
+      )
+    end
+      and (
+        da.updated_at is null
+        or da.updated_at < rw.latest_raw_at
+      )
+  ) as stale_aggregate_windows,
+  (
+    with candidate_days as (
+      select distinct day
+      from (
+        select distinct date_trunc('day', ul.created_at)::date as day
+        from in_usage_ledger ul
+        where ul.entry_type = 'usage'
+          and (
+            :window = 'all'
+            or ul.created_at >= case
+              when :window = '24h' then now() - interval '24 hours'
+              when :window = '7d' then now() - interval '7 days'
+              when :window = '1m' then now() - interval '30 days'
+              else now() - interval '24 hours'
+            end
+          )
+          and (:provider is null or ul.provider = :provider)
+        union
+        select distinct da.day
+        from in_daily_aggregates da
+        where (
+          :window = 'all'
+          or da.day >= case
+            when :window = '24h' then ((now() at time zone 'utc') - interval '24 hours')::date
+            when :window = '7d' then ((now() at time zone 'utc') - interval '7 days')::date
+            when :window = '1m' then ((now() at time zone 'utc') - interval '30 days')::date
+            else ((now() at time zone 'utc') - interval '24 hours')::date
+          end
+        )
+          and (:provider is null or da.provider = :provider)
+      ) candidate_day_union
+    ),
+    closed_candidate_days as (
+      select day
+      from candidate_days
+      where day < (now() at time zone 'utc')::date
+    ),
+    raw_windows as (
+      select
+        date_trunc('day', ul.created_at)::date as day,
+        ul.org_id,
+        ul.seller_key_id,
+        ul.provider,
+        ul.model,
+        count(*) as requests_count,
+        coalesce(sum(ul.usage_units), 0) as usage_units,
+        coalesce(sum(ul.retail_equivalent_minor), 0) as retail_equivalent_minor
+      from in_usage_ledger ul
+      where ul.entry_type = 'usage'
+        and date_trunc('day', ul.created_at)::date in (select day from closed_candidate_days)
+        and (:provider is null or ul.provider = :provider)
+      group by 1,2,3,4,5
+    ),
+    aggregate_windows as (
+      select
+        da.day,
+        da.org_id,
+        da.seller_key_id,
+        da.provider,
+        da.model,
+        da.requests_count,
+        da.usage_units,
+        da.retail_equivalent_minor
+      from in_daily_aggregates da
+      where da.day in (select day from closed_candidate_days)
+        and (:provider is null or da.provider = :provider)
+    )
+    select count(*)
+    from raw_windows rw
+    full outer join aggregate_windows aw
+      on aw.day = rw.day
+     and aw.org_id = rw.org_id
+     and aw.seller_key_id is not distinct from rw.seller_key_id
+     and aw.provider = rw.provider
+     and aw.model = rw.model
+    where rw.requests_count is distinct from aw.requests_count
+       or rw.usage_units is distinct from aw.usage_units
+       or rw.retail_equivalent_minor is distinct from aw.retail_equivalent_minor
+  ) as usage_ledger_vs_aggregate_mismatch_count;
 ```
 
-Pending implementation:
-- `staleAggregateWindows` should stay `null` until the stale-aggregate recency check lands
-- `usageLedgerVsAggregateMismatchCount` should stay `null` until the raw-vs-aggregate comparison lands
+Checks:
+- aggregate anomaly checks honor `provider` but ignore `source`
+- mismatch checks only compare closed UTC days
+- both checks use raw rows where `entry_type = 'usage'`
+- stale checks only fire once the raw window is past its refresh SLA and the aggregate row is still older than the latest raw row
+- mismatch checks include aggregate-only closed days, not just days discovered from raw usage
 
 ## End-to-End Token-Mode Trace
 1. Issue one token-mode request and capture response headers:
@@ -312,7 +488,7 @@ Pending implementation:
 
 ## Dashboard Consumer Mapping
 - `/v1/admin/analytics/tokens` -> per-token throughput and usage cards
-- `/v1/admin/analytics/tokens/health` -> token health and maxed panels (`utilizationRate24h` / recovery-derived metrics remain deferred)
+- `/v1/admin/analytics/tokens/health` -> token health and maxed panels
 - `/v1/admin/analytics/tokens/routing` -> latency/error/fallback grid per credential
 - `/v1/admin/analytics/system` -> global overview, provider mix, source mix, top buyers
 - `/v1/admin/analytics/timeseries` -> day/hour charts for traffic, usage, error rate, latency

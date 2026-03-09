@@ -259,11 +259,12 @@ Query params:
 
 Notes:
 - current credential state fields (`status`, `maxedAt`, `nextProbeAt`, etc.) are point-in-time values
-- rolling fields (`requestsBeforeMaxedLastWindow`) use the requested `window`
-- `requestsBeforeMaxedLastWindow` is currently descoped and returns `null` until paired maxed-event analysis lands
-- Derived maxing metrics (`avgRequestsBeforeMaxed`, `avgUsageUnitsBeforeMaxed`, `avgRecoveryTimeMs`, `estimatedDailyCapacityUnits`, `maxingCyclesObserved`) are descoped and return `null` — they require paired event analysis not yet implemented
-- `utilizationRate24h` is currently descoped and returns `null` until actual 24h usage can be compared against a real capacity estimate
-- `source` is accepted for contract consistency; current health output is metadata plus descoped `null` derived fields, so credential metadata rows are always returned
+- maxed-cycle metrics (`requestsBeforeMaxedLastWindow`, `avgRequestsBeforeMaxed`, `avgUsageUnitsBeforeMaxed`, `estimatedDailyCapacityUnits`, `maxingCyclesObserved`) anchor on `maxedAt`
+- recovery metrics (`avgRecoveryTimeMs`) anchor on `reactivated` timestamps and stay `null` unless at least one completed maxed→reactivated pair lands in-window
+- `estimatedDailyCapacityUnits` is the `p50` of per-cycle `usageUnits / cycleDurationDays` and stays `null` unless at least 2 valid cycles exist
+- `maxingCyclesObserved` is always numeric; `0` means no maxed cycles were observed in the requested window
+- `utilizationRate24h` is trailing 24h `usageUnits / estimatedDailyCapacityUnits`; it stays `null` when capacity is unknown and may exceed `1`
+- `source` is accepted for contract consistency but is non-operative for lifecycle/capacity/utilization fields; derived health values are always credential-global
 
 Response example:
 ```json
@@ -278,20 +279,20 @@ Response example:
       "consecutiveFailures": 0,
       "lastFailedStatus": null,
       "lastFailedAt": null,
-      "maxedAt": null,
+      "maxedAt": "2026-03-07T12:00:00.000Z",
       "nextProbeAt": null,
-      "lastProbeAt": null,
+      "lastProbeAt": "2026-03-08T03:00:00.000Z",
       "monthlyContributionLimitUnits": 500000,
       "monthlyContributionUsedUnits": 123000,
       "monthlyWindowStartAt": "2026-03-01T00:00:00.000Z",
-      "maxedEvents7d": 0,
-      "requestsBeforeMaxedLastWindow": null,
-      "avgRequestsBeforeMaxed": null,
-      "avgUsageUnitsBeforeMaxed": null,
-      "avgRecoveryTimeMs": null,
-      "estimatedDailyCapacityUnits": null,
-      "maxingCyclesObserved": null,
-      "utilizationRate24h": null,
+      "maxedEvents7d": 2,
+      "requestsBeforeMaxedLastWindow": 340,
+      "avgRequestsBeforeMaxed": 287.5,
+      "avgUsageUnitsBeforeMaxed": 52000,
+      "avgRecoveryTimeMs": 1800000,
+      "estimatedDailyCapacityUnits": 156000,
+      "maxingCyclesObserved": 2,
+      "utilizationRate24h": 1.08,
       "createdAt": "2026-02-15T00:00:00.000Z",
       "expiresAt": "2026-06-01T00:00:00.000Z"
     }
@@ -479,15 +480,17 @@ Response example:
     "missingDebugLabels": 0,
     "unresolvedCredentialIdsInTokenModeUsage": 0,
     "nullCredentialIdsInRouting": 0,
-    "staleAggregateWindows": null,
-    "usageLedgerVsAggregateMismatchCount": null
+    "staleAggregateWindows": 1,
+    "usageLedgerVsAggregateMismatchCount": 0
   },
-  "ok": true
+  "ok": false
 }
 ```
 
 Notes:
-- `staleAggregateWindows` and `usageLedgerVsAggregateMismatchCount` are descoped and return `null` until implemented
+- `staleAggregateWindows` counts daily aggregate windows where raw usage has aged past the refresh SLA but the aggregate row is missing or older than the latest raw row
+- `usageLedgerVsAggregateMismatchCount` counts closed daily aggregate windows whose counts do not match raw `entry_type='usage'` ledger rows, including aggregate-only orphan rows
+- aggregate anomaly checks honor `provider` but ignore `source`
 
 ## Error Codes (C1)
 - `invalid_request` (400; 409 for deterministic contract conflicts such as token-credential write conflicts)

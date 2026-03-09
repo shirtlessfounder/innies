@@ -58,11 +58,11 @@ Registered in `api/src/jobs/registry.ts`.
 ### `daily-aggregates-incremental-5m`
 - Source: `dailyAggregatesJob.ts`
 - Default cadence: every 5 minutes
-- Action: incremental upsert into `in_daily_aggregates` from recent usage
+- Action: incremental upsert into `in_daily_aggregates` from recent usage using UTC day buckets
 
 ### `daily-aggregates-nightly-compaction`
 - Source: `dailyAggregatesJob.ts`
-- Default cadence: daily
+- Default cadence: runs on startup, then daily at the next 02:00 UTC boundary
 - Action: compact/touch previous day aggregate rows
 
 ### `reconciliation-daily-0200-utc`

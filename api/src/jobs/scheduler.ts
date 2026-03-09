@@ -1,7 +1,12 @@
 import type { JobDefinition, JobLogger, ScheduledJob } from './types.js';
 
+type TimerHandles = {
+  interval?: NodeJS.Timeout;
+  timeout?: NodeJS.Timeout;
+};
+
 export class JobScheduler {
-  private readonly timers = new Map<string, NodeJS.Timeout>();
+  private readonly timers = new Map<string, TimerHandles>();
 
   constructor(private readonly logger: JobLogger) {}
 
@@ -10,8 +15,13 @@ export class JobScheduler {
   }
 
   stopAll(): void {
-    for (const timer of this.timers.values()) {
-      clearInterval(timer);
+    for (const handles of this.timers.values()) {
+      if (handles.interval) {
+        clearInterval(handles.interval);
+      }
+      if (handles.timeout) {
+        clearTimeout(handles.timeout);
+      }
     }
 
     this.timers.clear();
@@ -30,19 +40,38 @@ export class JobScheduler {
       }
     };
 
-    const timer = setInterval(() => {
-      void run();
-    }, job.scheduleMs);
+    const handles: TimerHandles = {};
+    const startInterval = () => {
+      handles.interval = setInterval(() => {
+        void run();
+      }, job.scheduleMs);
+    };
 
-    this.timers.set(job.name, timer);
-    void run();
+    if (job.initialDelayMs !== undefined) {
+      handles.timeout = setTimeout(() => {
+        void run();
+        startInterval();
+      }, Math.max(1, Math.floor(job.initialDelayMs)));
+    } else {
+      startInterval();
+    }
+
+    this.timers.set(job.name, handles);
+    if (job.runOnStart !== false) {
+      void run();
+    }
 
     return {
       ...job,
       stop: () => {
         const active = this.timers.get(job.name);
+        if (active?.interval) {
+          clearInterval(active.interval);
+        }
+        if (active?.timeout) {
+          clearTimeout(active.timeout);
+        }
         if (active) {
-          clearInterval(active);
           this.timers.delete(job.name);
         }
       }
