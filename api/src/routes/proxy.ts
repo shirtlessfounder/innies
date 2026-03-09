@@ -841,7 +841,9 @@ async function recordTokenCredentialOutcome(input: {
     statusCode: upstreamStatus,
     threshold,
     nextProbeAt,
-    reason: `upstream_${upstreamStatus}_consecutive_failure`
+    reason: `upstream_${upstreamStatus}_consecutive_failure`,
+    requestId,
+    attemptNo
   });
 
   if (result?.status === 'maxed') {

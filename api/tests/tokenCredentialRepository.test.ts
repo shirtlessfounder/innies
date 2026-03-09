@@ -120,7 +120,8 @@ describe('tokenCredentialRepository', () => {
           org_id: '00000000-0000-0000-0000-000000000001',
           provider: 'anthropic',
           status: 'maxed',
-          consecutive_failures: 10
+          consecutive_failures: 10,
+          monthly_contribution_used_units: 4321
         }],
         rowCount: 1
       },
@@ -133,13 +134,23 @@ describe('tokenCredentialRepository', () => {
       statusCode: 401,
       threshold: 10,
       nextProbeAt: new Date('2026-03-04T00:00:00Z'),
-      reason: 'upstream_401_consecutive_failure'
+      reason: 'upstream_401_consecutive_failure',
+      requestId: 'req_123',
+      attemptNo: 2
     });
 
     expect(result).toEqual({ status: 'maxed', consecutiveFailures: 10, newlyMaxed: true });
     expect(db.queries[0].sql).toContain("then 'maxed'");
     expect(db.queries[1].sql).toContain('insert into in_token_credential_events');
     expect(db.queries[1].sql).toContain("'maxed'");
+    expect(db.queries[1].params?.[6]).toMatchObject({
+      requestId: 'req_123',
+      attemptNo: 2,
+      statusCode: 401,
+      threshold: 10,
+      consecutiveFailures: 10,
+      monthlyContributionUsedUnits: 4321
+    });
   });
 
   it('reactivates maxed credential and clears probe/failure fields', async () => {
@@ -147,7 +158,9 @@ describe('tokenCredentialRepository', () => {
       {
         rows: [{
           org_id: '00000000-0000-0000-0000-000000000001',
-          provider: 'anthropic'
+          provider: 'anthropic',
+          maxed_at: '2026-03-03T00:00:00Z',
+          last_probe_at: '2026-03-04T00:00:00Z'
         }],
         rowCount: 1
       },
@@ -162,6 +175,38 @@ describe('tokenCredentialRepository', () => {
     expect(db.queries[0].sql).toContain('next_probe_at = null');
     expect(db.queries[1].sql).toContain('insert into in_token_credential_events');
     expect(db.queries[1].sql).toContain("'reactivated'");
+    expect(db.queries[1].params?.[4]).toMatchObject({
+      previousMaxedAt: '2026-03-03T00:00:00.000Z',
+      probeSucceededAt: '2026-03-04T00:00:00.000Z'
+    });
+  });
+
+  it('records failed probe metadata with next probe and prior maxed timestamp', async () => {
+    const db = new SequenceSqlClient([
+      {
+        rows: [{
+          org_id: '00000000-0000-0000-0000-000000000001',
+          provider: 'openai',
+          maxed_at: '2026-03-02T00:00:00Z'
+        }],
+        rowCount: 1
+      },
+      { rows: [], rowCount: 1 }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    const ok = await repo.markProbeFailure(
+      'cred_1',
+      new Date('2026-03-05T00:00:00Z'),
+      'probe_failed:status_401:401'
+    );
+
+    expect(ok).toBe(true);
+    expect(db.queries[1].sql).toContain("'probe_failed'");
+    expect(db.queries[1].params?.[5]).toMatchObject({
+      nextProbeAt: '2026-03-05T00:00:00.000Z',
+      previousMaxedAt: '2026-03-02T00:00:00.000Z'
+    });
   });
 
   it('refreshes a credential in place without changing rotation_version', async () => {

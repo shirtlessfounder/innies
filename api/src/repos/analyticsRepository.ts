@@ -30,6 +30,24 @@ function windowSqlRaw(window: AnalyticsWindow, col = 'created_at'): string {
   }
 }
 
+function dayWindowSql(window: AnalyticsWindow, col = 'day'): string {
+  switch (window) {
+    case '24h': return `${col} >= ((now() at time zone 'utc') - interval '24 hours')::date`;
+    case '7d':  return `${col} >= ((now() at time zone 'utc') - interval '7 days')::date`;
+    case '1m':  return `${col} >= ((now() at time zone 'utc') - interval '30 days')::date`;
+    case 'all': return '1=1';
+    default:    return '1=1';
+  }
+}
+
+function usageDaySql(alias = 'ul'): string {
+  return `(${alias}.created_at at time zone 'utc')::date`;
+}
+
+function closedAggregateRefreshDeadlineSql(dayExpr: string): string {
+  return `(((${dayExpr} + 1)::timestamp at time zone 'utc') + interval '2 hours')`;
+}
+
 const SOURCE_CASE = `
   coalesce(
     nullif(re.route_decision->>'request_source', ''),
@@ -131,52 +149,216 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
   async getTokenHealth(filters: BaseFilters): Promise<unknown> {
     const params: SqlValue[] = [];
 
-    // Provider filter for the credential list itself
+    // Provider filter applies to the credential inventory. Source is intentionally ignored
+    // for health metrics so derived cycle/utilization fields stay credential-global.
     const credWhere: string[] = [];
     if (filters.provider) {
       params.push(filters.provider);
       credWhere.push(`tc.provider = $${params.length}`);
     }
     const credFilter = credWhere.length > 0 ? `WHERE ${credWhere.join(' AND ')}` : '';
+    const maxedWindowFilter = windowSqlRaw(filters.window, 'cr.maxed_at');
+    const recoveryWindowFilter = windowSqlRaw(filters.window, 'cr.reactivated_at');
 
     const sql = `
-      WITH maxed_events AS (
+      WITH credential_base AS (
+        SELECT
+          tc.id,
+          tc.debug_label,
+          tc.provider,
+          tc.status,
+          coalesce(tc.consecutive_failure_count, 0) AS consecutive_failure_count,
+          tc.last_failed_status,
+          tc.last_failed_at,
+          tc.maxed_at,
+          tc.next_probe_at,
+          tc.last_probe_at,
+          tc.monthly_contribution_limit_units,
+          coalesce(tc.monthly_contribution_used_units, 0) AS monthly_contribution_used_units,
+          tc.monthly_window_start_at,
+          tc.created_at,
+          tc.expires_at
+        FROM ${TABLES.tokenCredentials} tc
+        ${credFilter}
+      ),
+      maxed_events AS (
         SELECT
           tce.token_credential_id::text AS credential_id,
           count(*) AS maxed_events_7d
         FROM ${TABLES.tokenCredentialEvents} tce
+        JOIN credential_base cb ON cb.id = tce.token_credential_id
         WHERE tce.event_type = 'maxed'
           AND tce.created_at >= now() - interval '7 days'
         GROUP BY tce.token_credential_id
+      ),
+      maxed_cycles AS (
+        SELECT
+          cb.id::text AS credential_id,
+          cb.created_at AS credential_created_at,
+          me.created_at AS maxed_at,
+          coalesce(
+            (
+              SELECT re.created_at
+              FROM ${TABLES.tokenCredentialEvents} re
+              WHERE re.token_credential_id = me.token_credential_id
+                AND re.event_type = 'reactivated'
+                AND re.created_at < me.created_at
+              ORDER BY re.created_at DESC
+              LIMIT 1
+            ),
+            cb.created_at
+          ) AS cycle_start_at,
+          (
+            SELECT re.created_at
+            FROM ${TABLES.tokenCredentialEvents} re
+            WHERE re.token_credential_id = me.token_credential_id
+              AND re.event_type = 'reactivated'
+              AND re.created_at > me.created_at
+            ORDER BY re.created_at ASC
+            LIMIT 1
+          ) AS reactivated_at
+        FROM credential_base cb
+        JOIN ${TABLES.tokenCredentialEvents} me
+          ON me.token_credential_id = cb.id
+         AND me.event_type = 'maxed'
+      ),
+      cycle_rollups AS (
+        SELECT
+          mc.credential_id,
+          mc.maxed_at,
+          mc.cycle_start_at,
+          mc.reactivated_at,
+          coalesce(traffic.request_count, 0)::bigint AS request_count,
+          coalesce(traffic.usage_units, 0)::bigint AS usage_units,
+          coalesce(traffic.usage_row_count, 0)::bigint AS usage_row_count,
+          extract(epoch from (mc.maxed_at - mc.cycle_start_at)) / 86400.0 AS cycle_duration_days,
+          CASE
+            WHEN mc.reactivated_at IS NOT NULL
+            THEN extract(epoch from (mc.reactivated_at - mc.maxed_at)) * 1000.0
+            ELSE NULL
+          END AS recovery_time_ms
+        FROM maxed_cycles mc
+        LEFT JOIN LATERAL (
+          SELECT
+            count(DISTINCT re.request_id) AS request_count,
+            coalesce(sum(ul.usage_units), 0) AS usage_units,
+            count(ul.id) AS usage_row_count
+          FROM ${TABLES.routingEvents} re
+          LEFT JOIN ${TABLES.usageLedger} ul
+            ON ul.org_id = re.org_id
+            AND ul.request_id = re.request_id
+            AND ul.attempt_no = re.attempt_no
+            AND ul.entry_type = 'usage'
+          WHERE re.route_decision->>'tokenCredentialId' = mc.credential_id
+            AND re.created_at >= mc.cycle_start_at
+            AND re.created_at <= mc.maxed_at
+        ) traffic ON true
+      ),
+      maxed_window_rollups AS (
+        SELECT *
+        FROM cycle_rollups cr
+        WHERE ${maxedWindowFilter}
+      ),
+      recovery_window_rollups AS (
+        SELECT *
+        FROM cycle_rollups cr
+        WHERE cr.reactivated_at IS NOT NULL
+          AND ${recoveryWindowFilter}
+      ),
+      capacity_window_rollups AS (
+        SELECT
+          cr.*,
+          CASE
+            WHEN cr.cycle_duration_days >= 0.25
+              AND cr.usage_row_count > 0
+              AND cr.cycle_duration_days > 0
+            THEN cr.usage_units::numeric / cr.cycle_duration_days::numeric
+            ELSE NULL
+          END AS daily_capacity_units
+        FROM maxed_window_rollups cr
+      ),
+      maxed_summary AS (
+        SELECT
+          credential_id,
+          count(*)::bigint AS maxing_cycles_observed,
+          avg(request_count::numeric) AS avg_requests_before_maxed,
+          avg(usage_units::numeric) AS avg_usage_units_before_maxed,
+          (array_agg(request_count ORDER BY maxed_at DESC))[1]::bigint AS requests_before_maxed_last_window
+        FROM maxed_window_rollups
+        GROUP BY credential_id
+      ),
+      recovery_summary AS (
+        SELECT
+          credential_id,
+          avg(recovery_time_ms) AS avg_recovery_time_ms
+        FROM recovery_window_rollups
+        GROUP BY credential_id
+      ),
+      capacity_summary AS (
+        SELECT
+          credential_id,
+          count(*) FILTER (WHERE daily_capacity_units IS NOT NULL)::bigint AS valid_capacity_cycles,
+          percentile_cont(0.5) WITHIN GROUP (ORDER BY daily_capacity_units)
+            FILTER (WHERE daily_capacity_units IS NOT NULL) AS estimated_daily_capacity_units
+        FROM capacity_window_rollups
+        GROUP BY credential_id
+      ),
+      utilization_usage AS (
+        SELECT
+          re.route_decision->>'tokenCredentialId' AS credential_id,
+          coalesce(sum(ul.usage_units), 0)::bigint AS usage_units_24h
+        FROM ${TABLES.routingEvents} re
+        JOIN ${TABLES.usageLedger} ul
+          ON ul.org_id = re.org_id
+          AND ul.request_id = re.request_id
+          AND ul.attempt_no = re.attempt_no
+          AND ul.entry_type = 'usage'
+        JOIN credential_base cb
+          ON cb.id::text = re.route_decision->>'tokenCredentialId'
+        WHERE ul.created_at >= now() - interval '24 hours'
+        GROUP BY re.route_decision->>'tokenCredentialId'
       )
       SELECT
-        tc.id AS credential_id,
-        tc.debug_label,
-        tc.provider,
-        tc.status,
-        coalesce(tc.consecutive_failure_count, 0) AS consecutive_failure_count,
-        tc.last_failed_status,
-        tc.last_failed_at,
-        tc.maxed_at,
-        tc.next_probe_at,
-        tc.last_probe_at,
-        tc.monthly_contribution_limit_units,
-        coalesce(tc.monthly_contribution_used_units, 0) AS monthly_contribution_used_units,
-        tc.monthly_window_start_at,
+        cb.id AS credential_id,
+        cb.debug_label,
+        cb.provider,
+        cb.status,
+        cb.consecutive_failure_count,
+        cb.last_failed_status,
+        cb.last_failed_at,
+        cb.maxed_at,
+        cb.next_probe_at,
+        cb.last_probe_at,
+        cb.monthly_contribution_limit_units,
+        cb.monthly_contribution_used_units,
+        cb.monthly_window_start_at,
         coalesce(me.maxed_events_7d, 0) AS maxed_events_7d,
-        NULL AS requests_before_maxed_last_window,
-        NULL AS avg_requests_before_maxed,
-        NULL AS avg_usage_units_before_maxed,
-        NULL AS avg_recovery_time_ms,
-        NULL AS estimated_daily_capacity_units,
-        NULL AS maxing_cycles_observed,
-        NULL AS utilization_rate_24h,
-        tc.created_at,
-        tc.expires_at
-      FROM ${TABLES.tokenCredentials} tc
-      LEFT JOIN maxed_events me ON me.credential_id = tc.id::text
-      ${credFilter}
-      ORDER BY tc.provider, tc.debug_label NULLS LAST
+        ms.requests_before_maxed_last_window,
+        ms.avg_requests_before_maxed,
+        ms.avg_usage_units_before_maxed,
+        rs.avg_recovery_time_ms,
+        CASE
+          WHEN coalesce(cs.valid_capacity_cycles, 0) >= 2
+          THEN cs.estimated_daily_capacity_units
+          ELSE NULL
+        END AS estimated_daily_capacity_units,
+        coalesce(ms.maxing_cycles_observed, 0) AS maxing_cycles_observed,
+        CASE
+          WHEN coalesce(cs.valid_capacity_cycles, 0) >= 2
+            AND cs.estimated_daily_capacity_units IS NOT NULL
+            AND cs.estimated_daily_capacity_units <> 0
+          THEN coalesce(uu.usage_units_24h, 0)::numeric / cs.estimated_daily_capacity_units
+          ELSE NULL
+        END AS utilization_rate_24h,
+        cb.created_at,
+        cb.expires_at
+      FROM credential_base cb
+      LEFT JOIN maxed_events me ON me.credential_id = cb.id::text
+      LEFT JOIN maxed_summary ms ON ms.credential_id = cb.id::text
+      LEFT JOIN recovery_summary rs ON rs.credential_id = cb.id::text
+      LEFT JOIN capacity_summary cs ON cs.credential_id = cb.id::text
+      LEFT JOIN utilization_usage uu ON uu.credential_id = cb.id::text
+      ORDER BY cb.provider, cb.debug_label NULLS LAST, cb.id
     `;
 
     const result = await this.db.query(sql, params);
@@ -583,7 +765,23 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
       : '';
     const credParams: SqlValue[] = filters.provider ? [filters.provider] : [];
 
-    const [missingLabels, unresolvedCreds, nullCredRouting] = await Promise.all([
+    // Aggregate confidence checks are provider-shaped, not source-shaped.
+    const aggregateParams: SqlValue[] = [];
+    const aggregateUsageWhere = [
+      `ul.entry_type = 'usage'`,
+      windowSql(filters.window, 'ul')
+    ];
+    const aggregateDailyWhere = [
+      dayWindowSql(filters.window, 'da.day')
+    ];
+    if (filters.provider) {
+      aggregateParams.push(filters.provider);
+      aggregateUsageWhere.push(`ul.provider = $${aggregateParams.length}`);
+      aggregateDailyWhere.push(`da.provider = $${aggregateParams.length}`);
+    }
+    const currentUtcDaySql = `(now() at time zone 'utc')::date`;
+
+    const [missingLabels, unresolvedCreds, nullCredRouting, staleAggregates, aggregateMismatches] = await Promise.all([
       this.db.query(`
         SELECT count(*) AS cnt
         FROM ${TABLES.tokenCredentials}
@@ -605,15 +803,127 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         WHERE re.route_decision->>'tokenCredentialId' IS NULL
           AND re.seller_key_id IS NULL
           AND ${windowSqlRaw(filters.window, 're.created_at')}${routingExtra}
-      `, routingParams)
+      `, routingParams),
+      this.db.query(`
+        WITH raw_windows AS (
+          SELECT
+            ${usageDaySql('ul')} AS day,
+            ul.org_id,
+            ul.seller_key_id,
+            ul.provider,
+            ul.model,
+            max(ul.created_at) AS latest_raw_at
+          FROM ${TABLES.usageLedger} ul
+          WHERE ${aggregateUsageWhere.join(' AND ')}
+          GROUP BY 1,2,3,4,5
+        ),
+        joined AS (
+          SELECT
+            rw.day,
+            rw.latest_raw_at,
+            da.updated_at,
+            CASE
+              WHEN rw.day = ${currentUtcDaySql}
+              THEN rw.latest_raw_at + interval '20 minutes'
+              ELSE greatest(
+                rw.latest_raw_at + interval '20 minutes',
+                ${closedAggregateRefreshDeadlineSql('rw.day')}
+              )
+            END AS refresh_due_at
+          FROM raw_windows rw
+          LEFT JOIN ${TABLES.dailyAggregates} da
+            ON da.day = rw.day
+            AND da.org_id = rw.org_id
+            AND da.seller_key_id IS NOT DISTINCT FROM rw.seller_key_id
+            AND da.provider = rw.provider
+            AND da.model = rw.model
+        )
+        SELECT count(*) AS cnt
+        FROM joined
+        WHERE now() >= refresh_due_at
+          AND (
+            updated_at IS NULL
+            OR updated_at < latest_raw_at
+          )
+      `, aggregateParams),
+      this.db.query(`
+        WITH candidate_days AS (
+          SELECT DISTINCT day
+          FROM (
+            SELECT DISTINCT ${usageDaySql('ul')} AS day
+            FROM ${TABLES.usageLedger} ul
+            WHERE ${aggregateUsageWhere.join(' AND ')}
+            UNION
+            SELECT DISTINCT da.day
+            FROM ${TABLES.dailyAggregates} da
+            WHERE ${aggregateDailyWhere.join(' AND ')}
+          ) AS candidate_day_union
+        ),
+        closed_candidate_days AS (
+          SELECT day
+          FROM candidate_days
+          WHERE day < ${currentUtcDaySql}
+        ),
+        raw_windows AS (
+          SELECT
+            ${usageDaySql('ul')} AS day,
+            ul.org_id,
+            ul.seller_key_id,
+            ul.provider,
+            ul.model,
+            count(*) AS requests_count,
+            coalesce(sum(ul.usage_units), 0) AS usage_units,
+            coalesce(sum(ul.retail_equivalent_minor), 0) AS retail_equivalent_minor
+          FROM ${TABLES.usageLedger} ul
+          WHERE ul.entry_type = 'usage'
+            AND ${usageDaySql('ul')} IN (SELECT day FROM closed_candidate_days)
+            ${filters.provider ? 'AND ul.provider = $1' : ''}
+          GROUP BY 1,2,3,4,5
+        ),
+        aggregate_windows AS (
+          SELECT
+            da.day,
+            da.org_id,
+            da.seller_key_id,
+            da.provider,
+            da.model,
+            da.requests_count,
+            da.usage_units,
+            da.retail_equivalent_minor
+          FROM ${TABLES.dailyAggregates} da
+          WHERE ${aggregateDailyWhere.join(' AND ')}
+            AND da.day IN (SELECT day FROM closed_candidate_days)
+        ),
+        joined AS (
+          SELECT
+            coalesce(rw.requests_count, NULL) AS raw_requests_count,
+            coalesce(aw.requests_count, NULL) AS aggregate_requests_count,
+            coalesce(rw.usage_units, NULL) AS raw_usage_units,
+            coalesce(aw.usage_units, NULL) AS aggregate_usage_units,
+            coalesce(rw.retail_equivalent_minor, NULL) AS raw_retail_equivalent_minor,
+            coalesce(aw.retail_equivalent_minor, NULL) AS aggregate_retail_equivalent_minor
+          FROM raw_windows rw
+          FULL OUTER JOIN aggregate_windows aw
+            ON aw.day = rw.day
+            AND aw.org_id = rw.org_id
+            AND aw.seller_key_id IS NOT DISTINCT FROM rw.seller_key_id
+            AND aw.provider = rw.provider
+            AND aw.model = rw.model
+        )
+        SELECT count(*) AS cnt
+        FROM joined
+        WHERE raw_requests_count IS DISTINCT FROM aggregate_requests_count
+          OR raw_usage_units IS DISTINCT FROM aggregate_usage_units
+          OR raw_retail_equivalent_minor IS DISTINCT FROM aggregate_retail_equivalent_minor
+      `, aggregateParams)
     ]);
 
     const checks = {
       missing_debug_labels: Number((missingLabels.rows[0] as any)?.cnt ?? 0),
       unresolved_credential_ids_in_token_mode_usage: Number((unresolvedCreds.rows[0] as any)?.cnt ?? 0),
       null_credential_ids_in_routing: Number((nullCredRouting.rows[0] as any)?.cnt ?? 0),
-      stale_aggregate_windows: null as number | null,
-      usage_ledger_vs_aggregate_mismatch_count: null as number | null
+      stale_aggregate_windows: Number((staleAggregates.rows[0] as any)?.cnt ?? 0),
+      usage_ledger_vs_aggregate_mismatch_count: Number((aggregateMismatches.rows[0] as any)?.cnt ?? 0)
     };
 
     return {

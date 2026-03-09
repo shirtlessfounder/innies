@@ -383,6 +383,173 @@ describe('analytics routes', () => {
     });
   });
 
+  it('normalizes health query aliases and preserves non-null cycle/utilization metrics', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    analytics.getTokenHealth.mockResolvedValue([
+      {
+        credential_id: '11111111-1111-4111-8111-111111111111',
+        debug_label: 'alpha',
+        provider: 'codex',
+        status: 'active',
+        consecutive_failure_count: 1,
+        last_failed_status: 401,
+        last_failed_at: '2026-03-08T01:00:00.000Z',
+        maxed_at: '2026-03-07T12:00:00.000Z',
+        next_probe_at: null,
+        last_probe_at: '2026-03-08T03:00:00.000Z',
+        monthly_contribution_limit_units: 500000,
+        monthly_contribution_used_units: 123000,
+        monthly_window_start_at: '2026-03-01T00:00:00.000Z',
+        maxed_events_7d: 2,
+        requests_before_maxed_last_window: 340,
+        avg_requests_before_maxed: 287.5,
+        avg_usage_units_before_maxed: 52000,
+        avg_recovery_time_ms: 1800000,
+        estimated_daily_capacity_units: 156000,
+        maxing_cycles_observed: 2,
+        utilization_rate_24h: 1.08,
+        created_at: '2026-02-15T00:00:00.000Z',
+        expires_at: '2026-06-01T00:00:00.000Z'
+      }
+    ]);
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/tokens/health', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/tokens/health',
+      headers: {
+        authorization: 'Bearer admin_token'
+      },
+      query: {
+        window: '30d',
+        provider: 'CoDeX',
+        source: 'OPENCLAW'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(analytics.getTokenHealth).toHaveBeenCalledWith({
+      window: '1m',
+      provider: 'openai',
+      source: 'openclaw'
+    });
+    expect(res.body).toEqual({
+      window: '1m',
+      tokens: [
+        {
+          credentialId: '11111111-1111-4111-8111-111111111111',
+          debugLabel: 'alpha',
+          provider: 'openai',
+          status: 'active',
+          consecutiveFailures: 1,
+          lastFailedStatus: 401,
+          lastFailedAt: '2026-03-08T01:00:00.000Z',
+          maxedAt: '2026-03-07T12:00:00.000Z',
+          nextProbeAt: null,
+          lastProbeAt: '2026-03-08T03:00:00.000Z',
+          monthlyContributionLimitUnits: 500000,
+          monthlyContributionUsedUnits: 123000,
+          monthlyWindowStartAt: '2026-03-01T00:00:00.000Z',
+          maxedEvents7d: 2,
+          requestsBeforeMaxedLastWindow: 340,
+          avgRequestsBeforeMaxed: 287.5,
+          avgUsageUnitsBeforeMaxed: 52000,
+          avgRecoveryTimeMs: 1800000,
+          estimatedDailyCapacityUnits: 156000,
+          maxingCyclesObserved: 2,
+          utilizationRate24h: 1.08,
+          createdAt: '2026-02-15T00:00:00.000Z',
+          expiresAt: '2026-06-01T00:00:00.000Z'
+        }
+      ]
+    });
+  });
+
+  it('passes through thin-evidence health nulls while keeping cycle counts numeric', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    analytics.getTokenHealth.mockResolvedValue([
+      {
+        credential_id: '22222222-2222-4222-8222-222222222222',
+        debug_label: 'beta',
+        provider: 'anthropic',
+        status: 'active',
+        consecutive_failure_count: 0,
+        last_failed_status: null,
+        last_failed_at: null,
+        maxed_at: null,
+        next_probe_at: null,
+        last_probe_at: null,
+        monthly_contribution_limit_units: null,
+        monthly_contribution_used_units: 0,
+        monthly_window_start_at: null,
+        maxed_events_7d: 0,
+        requests_before_maxed_last_window: null,
+        avg_requests_before_maxed: null,
+        avg_usage_units_before_maxed: null,
+        avg_recovery_time_ms: null,
+        estimated_daily_capacity_units: null,
+        maxing_cycles_observed: 0,
+        utilization_rate_24h: null,
+        created_at: '2026-02-20T00:00:00.000Z',
+        expires_at: null
+      }
+    ]);
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/tokens/health', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/tokens/health',
+      headers: {
+        authorization: 'Bearer admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(analytics.getTokenHealth).toHaveBeenCalledWith({
+      window: '7d',
+      provider: undefined,
+      source: undefined
+    });
+    expect(res.body).toEqual({
+      window: '7d',
+      tokens: [
+        {
+          credentialId: '22222222-2222-4222-8222-222222222222',
+          debugLabel: 'beta',
+          provider: 'anthropic',
+          status: 'active',
+          consecutiveFailures: 0,
+          lastFailedStatus: null,
+          lastFailedAt: null,
+          maxedAt: null,
+          nextProbeAt: null,
+          lastProbeAt: null,
+          monthlyContributionLimitUnits: null,
+          monthlyContributionUsedUnits: 0,
+          monthlyWindowStartAt: null,
+          maxedEvents7d: 0,
+          requestsBeforeMaxedLastWindow: null,
+          avgRequestsBeforeMaxed: null,
+          avgUsageUnitsBeforeMaxed: null,
+          avgRecoveryTimeMs: null,
+          estimatedDailyCapacityUnits: null,
+          maxingCyclesObserved: 0,
+          utilizationRate24h: null,
+          createdAt: '2026-02-20T00:00:00.000Z',
+          expiresAt: null
+        }
+      ]
+    });
+  });
+
   it('passes through descoped null system fields', async () => {
     const apiKeys = createApiKeysRepo();
     const analytics = createAnalyticsRepo();
@@ -449,7 +616,7 @@ describe('analytics routes', () => {
     });
   });
 
-  it('passes through descoped null anomaly checks without forcing ok false', async () => {
+  it('returns implemented anomaly counts and flips ok false when any check is non-zero', async () => {
     const apiKeys = createApiKeysRepo();
     const analytics = createAnalyticsRepo();
     analytics.getAnomalies.mockResolvedValue({
@@ -457,8 +624,8 @@ describe('analytics routes', () => {
         missing_debug_labels: 0,
         unresolved_credential_ids_in_token_mode_usage: 0,
         null_credential_ids_in_routing: 0,
-        stale_aggregate_windows: null,
-        usage_ledger_vs_aggregate_mismatch_count: null
+        stale_aggregate_windows: 2,
+        usage_ledger_vs_aggregate_mismatch_count: 1
       }
     });
 
@@ -469,22 +636,31 @@ describe('analytics routes', () => {
       path: '/v1/admin/analytics/anomalies',
       headers: {
         authorization: 'Bearer admin_token'
+      },
+      query: {
+        provider: 'CoDeX',
+        source: 'direct'
       }
     });
     const res = createMockRes();
 
     await invokeHandlers(handlers, req, res);
 
+    expect(analytics.getAnomalies).toHaveBeenCalledWith({
+      window: '24h',
+      provider: 'openai',
+      source: 'direct'
+    });
     expect(res.body).toEqual({
       window: '24h',
       checks: {
         missingDebugLabels: 0,
         unresolvedCredentialIdsInTokenModeUsage: 0,
         nullCredentialIdsInRouting: 0,
-        staleAggregateWindows: null,
-        usageLedgerVsAggregateMismatchCount: null
+        staleAggregateWindows: 2,
+        usageLedgerVsAggregateMismatchCount: 1
       },
-      ok: true
+      ok: false
     });
   });
 
