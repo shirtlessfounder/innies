@@ -49,6 +49,8 @@ export interface ProxyResult {
   usageUnits?: number;
   contentType?: string;
   data: unknown;
+  routeDecision?: Record<string, unknown>;
+  ttfbMs?: number | null;
 }
 
 export interface PoolHealthSummary {

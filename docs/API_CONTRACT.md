@@ -79,16 +79,20 @@ Notes:
   - session/CLI pinning is controlled by `x-innies-provider-pin: true` or request metadata `innies_provider_pin=true`
 - Current token-mode routing metadata (from `in_routing_events.route_decision`) includes:
   - `reason`
+  - `request_source`
   - `provider_selection_reason`
   - `provider_preferred`
   - `provider_effective`
   - `provider_plan`
   - `provider_fallback_from`
   - `provider_fallback_reason`
+  - `openclaw_run_id`
+  - `openclaw_session_id`
 - Current reason values:
   - `preferred_provider_selected`
   - `fallback_provider_selected`
   - `cli_provider_pinned`
+- Analytics source classification prefers explicit `request_source` when present; legacy rows fall back to the older `provider_selection_reason` / `openclaw_run_id` heuristic.
 
 ### `POST /v1/messages`
 Anthropic-compatible passthrough endpoint (feature-flagged by `ANTHROPIC_COMPAT_ENDPOINT_ENABLED=true`).
@@ -210,6 +214,280 @@ Return usage summary for authenticated org.
 
 ### `GET /v1/admin/pool-health`
 Returns key status totals.
+
+### `GET /v1/admin/analytics/tokens`
+Admin-only per-token usage breakdown.
+
+Query params:
+- `window`: `24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
+- `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
+- `source`: `openclaw|cli-claude|cli-codex|direct`
+
+Response example:
+```json
+{
+  "window": "1m",
+  "tokens": [
+    {
+      "credentialId": "11111111-1111-4111-8111-111111111111",
+      "debugLabel": "dylan-anthropic-1",
+      "provider": "anthropic",
+      "status": "active",
+      "requests": 412,
+      "usageUnits": 89400,
+      "retailEquivalentMinor": 15200,
+      "inputTokens": 1240000,
+      "outputTokens": 62000,
+      "bySource": {
+        "openclaw": { "requests": 300, "usageUnits": 65000 },
+        "cli-claude": { "requests": 112, "usageUnits": 24400 },
+        "cli-codex": { "requests": 0, "usageUnits": 0 },
+        "direct": { "requests": 0, "usageUnits": 0 }
+      }
+    }
+  ]
+}
+```
+
+### `GET /v1/admin/analytics/tokens/health`
+Admin-only token health snapshot plus rolling maxing/utilization metrics.
+
+Query params:
+- `window`: `24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `7d`)
+- `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
+- `source`: `openclaw|cli-claude|cli-codex|direct`
+
+Notes:
+- current credential state fields (`status`, `maxedAt`, `nextProbeAt`, etc.) are point-in-time values
+- rolling fields (`requestsBeforeMaxedLastWindow`) use the requested `window`
+- `requestsBeforeMaxedLastWindow` is currently descoped and returns `null` until paired maxed-event analysis lands
+- Derived maxing metrics (`avgRequestsBeforeMaxed`, `avgUsageUnitsBeforeMaxed`, `avgRecoveryTimeMs`, `estimatedDailyCapacityUnits`, `maxingCyclesObserved`) are descoped and return `null` — they require paired event analysis not yet implemented
+- `utilizationRate24h` is currently descoped and returns `null` until actual 24h usage can be compared against a real capacity estimate
+- `source` is accepted for contract consistency; current health output is metadata plus descoped `null` derived fields, so credential metadata rows are always returned
+
+Response example:
+```json
+{
+  "window": "7d",
+  "tokens": [
+    {
+      "credentialId": "11111111-1111-4111-8111-111111111111",
+      "debugLabel": "dylan-anthropic-1",
+      "provider": "anthropic",
+      "status": "active",
+      "consecutiveFailures": 0,
+      "lastFailedStatus": null,
+      "lastFailedAt": null,
+      "maxedAt": null,
+      "nextProbeAt": null,
+      "lastProbeAt": null,
+      "monthlyContributionLimitUnits": 500000,
+      "monthlyContributionUsedUnits": 123000,
+      "monthlyWindowStartAt": "2026-03-01T00:00:00.000Z",
+      "maxedEvents7d": 0,
+      "requestsBeforeMaxedLastWindow": null,
+      "avgRequestsBeforeMaxed": null,
+      "avgUsageUnitsBeforeMaxed": null,
+      "avgRecoveryTimeMs": null,
+      "estimatedDailyCapacityUnits": null,
+      "maxingCyclesObserved": null,
+      "utilizationRate24h": null,
+      "createdAt": "2026-02-15T00:00:00.000Z",
+      "expiresAt": "2026-06-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+### `GET /v1/admin/analytics/tokens/routing`
+Admin-only routing/error/latency stats per token.
+
+Query params:
+- `window`: `24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
+- `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
+- `source`: `openclaw|cli-claude|cli-codex|direct`
+
+Response example:
+```json
+{
+  "window": "24h",
+  "tokens": [
+    {
+      "credentialId": "11111111-1111-4111-8111-111111111111",
+      "debugLabel": "dylan-anthropic-1",
+      "provider": "anthropic",
+      "totalAttempts": 200,
+      "successCount": 195,
+      "errorCount": 5,
+      "errorBreakdown": {
+        "401": 2,
+        "429": 3
+      },
+      "latencyP50Ms": 1200,
+      "latencyP95Ms": 4800,
+      "ttfbP50Ms": 280,
+      "ttfbP95Ms": 650,
+      "fallbackCount": 3,
+      "authFailures24h": 2,
+      "rateLimited24h": 3
+    }
+  ]
+}
+```
+
+### `GET /v1/admin/analytics/system`
+Admin-only pool-wide analytics summary.
+
+Query params:
+- `window`: `24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
+- `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
+- `source`: `openclaw|cli-claude|cli-codex|direct`
+
+Response example:
+```json
+{
+  "window": "24h",
+  "totalRequests": 1450,
+  "totalUsageUnits": 320000,
+  "byProvider": {
+    "anthropic": { "requests": 1200, "usageUnits": 280000 },
+    "openai": { "requests": 250, "usageUnits": 40000 }
+  },
+  "byModel": {
+    "claude-opus-4-6": { "requests": 1200, "usageUnits": 280000 },
+    "gpt-5.4": { "requests": 250, "usageUnits": 40000 }
+  },
+  "latencyP50Ms": 1400,
+  "latencyP95Ms": 5200,
+  "ttfbP50Ms": 310,
+  "ttfbP95Ms": 710,
+  "errorRate": 0.034,
+  "fallbackRate": 0.02,
+  "activeTokens": 8,
+  "maxedTokens": 1,
+  "totalTokens": 10,
+  "maxedEvents7d": 4,
+  "bySource": {
+    "openclaw": { "requests": 900, "usageUnits": 200000 },
+    "cli-claude": { "requests": 400, "usageUnits": 90000 },
+    "cli-codex": { "requests": 100, "usageUnits": 20000 },
+    "direct": { "requests": 50, "usageUnits": 10000 }
+  },
+  "translationOverhead": null,
+  "topBuyers": [
+    {
+      "apiKeyId": "22222222-2222-4222-8222-222222222222",
+      "orgId": "33333333-3333-4333-8333-333333333333",
+      "requests": 800,
+      "usageUnits": 180000,
+      "percentOfTotal": 0.56
+    }
+  ]
+}
+```
+
+Notes:
+- `translationOverhead` is currently `null`; translated-request attribution is not yet wired end-to-end
+- `topBuyers[*].percentOfTotal` is a `0..1` ratio, not a `0..100` percentage
+
+### `GET /v1/admin/analytics/timeseries`
+Admin-only chart-series endpoint.
+
+Query params:
+- `window`: `24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `1m`)
+- `granularity`: `hour|day` (default `hour` for `24h`, else `day`)
+- `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
+- `source`: `openclaw|cli-claude|cli-codex|direct`
+- `credentialId`: UUID filter
+
+Response example:
+```json
+{
+  "window": "1m",
+  "granularity": "day",
+  "series": [
+    {
+      "date": "2026-03-07",
+      "requests": 145,
+      "usageUnits": 32000,
+      "errorRate": 0.02,
+      "latencyP50Ms": 1300
+    }
+  ]
+}
+```
+
+### `GET /v1/admin/analytics/requests`
+Admin-only recent request drill-down. Response content is preview-only by default.
+
+Query params:
+- `window`: `24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
+- `limit`: `1..200` (default `50`)
+- `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
+- `source`: `openclaw|cli-claude|cli-codex|direct`
+- `credentialId`: UUID filter
+- `model`: exact model filter
+- `minLatencyMs`: integer `>= 0`
+
+Notes:
+- `prompt` and `response` are preview fields sourced from request-log storage
+- full prompt/response content is off by default and not part of the baseline contract
+- `REQUEST_LOG_STORE_FULL` is not yet wired; ignore it for Phase 1 contract purposes
+
+Response example:
+```json
+{
+  "window": "24h",
+  "limit": 50,
+  "requests": [
+    {
+      "requestId": "req_123",
+      "createdAt": "2026-03-07T14:32:00.000Z",
+      "credentialId": "11111111-1111-4111-8111-111111111111",
+      "credentialLabel": "dylan-anthropic-1",
+      "provider": "anthropic",
+      "model": "claude-opus-4-6",
+      "source": "openclaw",
+      "translated": false,
+      "streaming": true,
+      "upstreamStatus": 200,
+      "latencyMs": 1450,
+      "ttfbMs": 320,
+      "inputTokens": 12400,
+      "outputTokens": 680,
+      "usageUnits": 1340,
+      "prompt": "[first 500 chars]",
+      "response": "[first 500 chars]"
+    }
+  ]
+}
+```
+
+### `GET /v1/admin/analytics/anomalies`
+Admin-only analytics confidence and data-quality checks.
+
+Query params:
+- `window`: `24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
+- `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
+- `source`: `openclaw|cli-claude|cli-codex|direct`
+
+Response example:
+```json
+{
+  "window": "24h",
+  "checks": {
+    "missingDebugLabels": 0,
+    "unresolvedCredentialIdsInTokenModeUsage": 0,
+    "nullCredentialIdsInRouting": 0,
+    "staleAggregateWindows": null,
+    "usageLedgerVsAggregateMismatchCount": null
+  },
+  "ok": true
+}
+```
+
+Notes:
+- `staleAggregateWindows` and `usageLedgerVsAggregateMismatchCount` are descoped and return `null` until implemented
 
 ## Error Codes (C1)
 - `invalid_request` (400; 409 for deterministic contract conflicts such as token-credential write conflicts)

@@ -81,6 +81,7 @@ Primary signals:
 - App logs (job completion + retry/stream/routing audit lines)
 - `in_routing_events` for per-request routing/outcome analysis
 - `in_usage_ledger` for metering and reconciliation inputs
+- `docs/ANALYTICS_VALIDATION.md` for Phase 1 analytics SQL checks, source classification, and dashboard-consumer mapping
 
 ## Tests
 - Job behavior: `api/tests/jobs.test.ts`, `api/tests/tokenCredentialHealthJob.test.ts`

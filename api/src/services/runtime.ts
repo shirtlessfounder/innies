@@ -9,6 +9,8 @@ import { SellerKeyRepository } from '../repos/sellerKeyRepository.js';
 import { UsageLedgerRepository } from '../repos/usageLedgerRepository.js';
 import { UsageQueryRepository } from '../repos/usageQueryRepository.js';
 import { TokenCredentialRepository } from '../repos/tokenCredentialRepository.js';
+import { AnalyticsRepository } from '../repos/analyticsRepository.js';
+import { RequestLogRepository } from '../repos/requestLogRepository.js';
 import { buildDefaultJobs } from '../jobs/registry.js';
 import { JobScheduler } from '../jobs/scheduler.js';
 import { KeyPool } from './keyPool.js';
@@ -34,7 +36,9 @@ export const runtime = {
     sellerKeys: new SellerKeyRepository(sql),
     usageLedger: new UsageLedgerRepository(sql),
     usageQuery: new UsageQueryRepository(sql),
-    tokenCredentials: new TokenCredentialRepository(sql)
+    tokenCredentials: new TokenCredentialRepository(sql),
+    analytics: new AnalyticsRepository(sql),
+    requestLog: new RequestLogRepository(sql)
   },
   services: {
     idempotency: undefined as unknown as IdempotencyService,
