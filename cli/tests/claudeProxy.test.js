@@ -1,0 +1,78 @@
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import http from 'node:http';
+import test from 'node:test';
+import { startClaudeProxy } from '../src/commands/claudeProxy.js';
+
+function closeServer(server) {
+  return new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+test('claude proxy injects buyer auth and strips claude oauth auth', async () => {
+  let capturedRequest = null;
+  const upstream = http.createServer((req, res) => {
+    let body = '';
+    req.setEncoding('utf8');
+    req.on('data', (chunk) => {
+      body += chunk;
+    });
+    req.on('end', () => {
+      capturedRequest = {
+        method: req.method,
+        url: req.url,
+        headers: req.headers,
+        body
+      };
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'x-upstream-ok': '1'
+      });
+      res.end(JSON.stringify({ ok: true }));
+    });
+  });
+
+  upstream.listen(0, '127.0.0.1');
+  await once(upstream, 'listening');
+
+  const upstreamAddress = upstream.address();
+  const upstreamBaseUrl = `http://127.0.0.1:${upstreamAddress.port}`;
+  const proxy = await startClaudeProxy({
+    upstreamBaseUrl,
+    buyerToken: 'in_live_test',
+    correlationId: 'req_test_123'
+  });
+
+  const response = await fetch(`${proxy.baseUrl}/v1/messages?hello=1`, {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer sk-ant-oat01-test-token',
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+      'x-request-id': 'client-supplied'
+    },
+    body: JSON.stringify({ ping: 'pong' })
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true });
+  assert.ok(capturedRequest);
+  assert.equal(capturedRequest.method, 'POST');
+  assert.equal(capturedRequest.url, '/v1/messages?hello=1');
+  assert.equal(capturedRequest.body, '{"ping":"pong"}');
+  assert.equal(capturedRequest.headers.authorization, undefined);
+  assert.equal(capturedRequest.headers['x-api-key'], 'in_live_test');
+  assert.equal(capturedRequest.headers['x-request-id'], 'req_test_123');
+  assert.equal(capturedRequest.headers['x-innies-provider-pin'], 'true');
+  assert.equal(capturedRequest.headers['anthropic-version'], '2023-06-01');
+
+  await proxy.close();
+  await closeServer(upstream);
+});
