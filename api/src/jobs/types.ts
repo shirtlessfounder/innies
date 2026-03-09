@@ -11,6 +11,8 @@ export type JobLogger = {
 export type JobDefinition = {
   name: string;
   scheduleMs: number;
+  initialDelayMs?: number;
+  runOnStart?: boolean;
   run(ctx: JobRunContext): Promise<void>;
 };
 

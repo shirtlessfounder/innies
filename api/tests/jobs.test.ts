@@ -27,7 +27,7 @@ describe('jobs', () => {
     const db = new MockSqlClient({ rows: [], rowCount: 2 });
     const repo = new AggregatesRepository(db);
     const incremental = createDailyAggregatesIncrementalJob(repo);
-    const compaction = createDailyAggregatesCompactionJob(repo);
+    const compaction = createDailyAggregatesCompactionJob(repo, new Date('2026-03-02T01:15:00Z'));
     const { logger, infoCalls } = createLoggerSpy();
 
     await incremental.run({ now: new Date('2026-03-01T03:00:00Z'), logger });
@@ -35,7 +35,9 @@ describe('jobs', () => {
 
     expect(incremental.scheduleMs).toBe(5 * 60 * 1000);
     expect(compaction.scheduleMs).toBe(24 * 60 * 60 * 1000);
+    expect(compaction.initialDelayMs).toBe(45 * 60 * 1000);
     expect(infoCalls).toHaveLength(2);
+    expect(db.queries[0]?.sql).toContain("(created_at at time zone 'utc')::date");
   });
 
   it('runs reconciliation job at/after 02:00 UTC', async () => {

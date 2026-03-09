@@ -15,6 +15,8 @@ export interface RouteExecutionInput {
     data: unknown;
     usageUnits?: number;
     contentType?: string;
+    routeDecision?: Record<string, unknown>;
+    ttfbMs?: number | null;
   }>;
 }
 
@@ -76,6 +78,8 @@ export class RoutingService {
           usageUnits: result.usageUnits,
           contentType: result.contentType,
           data: result.data,
+          routeDecision: result.routeDecision,
+          ttfbMs: result.ttfbMs
         };
       } catch (rawErr) {
         const err = rawErr as UpstreamErrorLike;

@@ -3,9 +3,19 @@ import type { JobDefinition } from './types.js';
 
 const FIVE_MIN_MS = 5 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const COMPACTION_UTC_HOUR = 2;
 
 function toUtcDateString(date: Date): string {
   return date.toISOString().slice(0, 10);
+}
+
+function msUntilNextUtcHour(now: Date, utcHour: number): number {
+  const next = new Date(now);
+  next.setUTCHours(utcHour, 0, 0, 0);
+  if (next.getTime() <= now.getTime()) {
+    next.setUTCDate(next.getUTCDate() + 1);
+  }
+  return next.getTime() - now.getTime();
 }
 
 export function createDailyAggregatesIncrementalJob(repo: AggregatesRepository): JobDefinition {
@@ -23,10 +33,14 @@ export function createDailyAggregatesIncrementalJob(repo: AggregatesRepository):
   };
 }
 
-export function createDailyAggregatesCompactionJob(repo: AggregatesRepository): JobDefinition {
+export function createDailyAggregatesCompactionJob(
+  repo: AggregatesRepository,
+  now: Date = new Date()
+): JobDefinition {
   return {
     name: 'daily-aggregates-nightly-compaction',
     scheduleMs: DAY_MS,
+    initialDelayMs: msUntilNextUtcHour(now, COMPACTION_UTC_HOUR),
     async run(ctx) {
       const yesterday = new Date(ctx.now.getTime() - DAY_MS);
       const result = await repo.compactDay(toUtcDateString(yesterday));
