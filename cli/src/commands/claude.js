@@ -1,7 +1,4 @@
 import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { loadConfig, resolveProviderDefaultModel } from '../config.js';
 import { buildCorrelationId, fail } from '../utils.js';
 import {
@@ -10,37 +7,7 @@ import {
   resolveWrappedBinary,
   shouldCaptureCommandOutput
 } from './wrapperRuntime.js';
-
-/**
- * Temporarily shelve the claude.ai OAuth credentials so Claude Code
- * falls back to ANTHROPIC_API_KEY (the innies buyer token).
- * Returns a restore function that puts the credentials back.
- */
-function shelveClaudeOauthCredentials() {
-  const claudeDir = join(homedir(), '.claude');
-  const credPath = join(claudeDir, '.credentials.json');
-  const shelvedPath = join(claudeDir, '.credentials.innies-shelved.json');
-
-  if (!existsSync(credPath)) {
-    return () => {};
-  }
-
-  try {
-    const data = readFileSync(credPath, 'utf8');
-    writeFileSync(shelvedPath, data, 'utf8');
-    writeFileSync(credPath, '{}', 'utf8');
-    return () => {
-      try {
-        if (existsSync(shelvedPath)) {
-          const restored = readFileSync(shelvedPath, 'utf8');
-          writeFileSync(credPath, restored, 'utf8');
-        }
-      } catch {}
-    };
-  } catch {
-    return () => {};
-  }
-}
+import { startClaudeProxy } from './claudeProxy.js';
 
 function proxyBase(configBaseUrl) {
   return `${configBaseUrl}/v1/proxy`;
@@ -69,6 +36,11 @@ export async function runClaude(args) {
   const model = resolveProviderDefaultModel(config, 'anthropic');
   const proxyUrl = proxyBase(config.apiBaseUrl);
   const correlationId = buildCorrelationId();
+  const claudeBridge = await startClaudeProxy({
+    upstreamBaseUrl: config.apiBaseUrl,
+    buyerToken: config.token,
+    correlationId
+  });
   const claudeBinary = resolveWrappedBinary({
     binaryName: 'claude',
     displayName: 'Claude',
@@ -89,14 +61,10 @@ export async function runClaude(args) {
     INNIES_ROUTE_MODE: 'token',
     INNIES_CORRELATION_ID: correlationId,
     ANTHROPIC_API_KEY: config.token,
-    ANTHROPIC_BASE_URL: config.apiBaseUrl,
+    ANTHROPIC_BASE_URL: claudeBridge.baseUrl,
     OPENAI_API_KEY: config.token,
     OPENAI_BASE_URL: proxyUrl
   };
-
-  // Shelve claude.ai OAuth credentials so Claude Code uses ANTHROPIC_API_KEY
-  // (the innies buyer token) instead of the OAuth bearer token.
-  const restoreCredentials = shelveClaudeOauthCredentials();
 
   const captureOutput = shouldCaptureCommandOutput('INNIES_CAPTURE_CLAUDE_OUTPUT');
   let combinedOutput = '';
@@ -120,13 +88,19 @@ export async function runClaude(args) {
     });
   }
 
-  child.on('error', (error) => {
+  async function closeBridge() {
+    try {
+      await claudeBridge.close();
+    } catch {}
+  }
+
+  child.on('error', async (error) => {
+    await closeBridge();
     fail(`Failed to run claude: ${error.message}`);
   });
 
-  child.on('exit', (code, signal) => {
-    restoreCredentials();
-
+  child.on('close', async (code, signal) => {
+    await closeBridge();
     if (signal) {
       process.kill(process.pid, signal);
       return;
@@ -140,7 +114,6 @@ export async function runClaude(args) {
     process.exit(code ?? 0);
   });
 
-  // Also restore on unexpected termination
-  process.on('SIGINT', () => { restoreCredentials(); process.exit(130); });
-  process.on('SIGTERM', () => { restoreCredentials(); process.exit(143); });
+  process.on('SIGINT', () => { void closeBridge(); process.exit(130); });
+  process.on('SIGTERM', () => { void closeBridge(); process.exit(143); });
 }
