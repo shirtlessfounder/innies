@@ -4,6 +4,16 @@ import { sha256Hex } from '../utils/hash.js';
 import { resolveDefaultBuyerProvider } from '../utils/providerPreference.js';
 
 function readToken(req: Request): string | null {
+  // Prefer x-api-key over Authorization header.
+  // Claude Code may send both an OAuth bearer token (from claude.ai login)
+  // and x-api-key (from ANTHROPIC_API_KEY / innies token). The x-api-key
+  // is the innies buyer key we need for auth; the bearer token is for
+  // Anthropic's API and would fail validation here.
+  const xApiKey = req.header('x-api-key');
+  if (xApiKey) {
+    return xApiKey.trim();
+  }
+
   const auth = req.header('authorization');
   if (auth) {
     const match = auth.match(/^\s*bearer\s+(.+)\s*$/i);
@@ -12,8 +22,7 @@ function readToken(req: Request): string | null {
     }
   }
 
-  const xApiKey = req.header('x-api-key');
-  return xApiKey ? xApiKey.trim() : null;
+  return null;
 }
 
 export function requireApiKey(repo: ApiKeyRepository, allowedScopes: ApiKeyScope[]) {
