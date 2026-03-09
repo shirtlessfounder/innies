@@ -4,13 +4,19 @@ import { loadConfig } from '../config.js';
 import { fileExists } from '../utils.js';
 
 function findCommand(bin) {
-  const which = spawnSync('sh', ['-lc', `command -v ${bin}`], { encoding: 'utf8' });
-  if (which.status !== 0) {
-    return null;
+  // Try login shell first, then fall back to current shell's PATH.
+  // nvm/fnm/volta add to .bashrc/.zshrc but not sh's .profile,
+  // so sh -lc misses binaries installed via node version managers.
+  const attempts = [
+    ['sh', ['-lc', `command -v ${bin}`]],
+    ['bash', ['-lc', `command -v ${bin}`]],
+  ];
+  for (const [cmd, args] of attempts) {
+    const result = spawnSync(cmd, args, { encoding: 'utf8' });
+    const value = result.status === 0 ? result.stdout.trim() : '';
+    if (value.length > 0) return value;
   }
-
-  const value = which.stdout.trim();
-  return value.length > 0 ? value : null;
+  return null;
 }
 
 async function resolveBinary(bin, overrideEnvVar) {
