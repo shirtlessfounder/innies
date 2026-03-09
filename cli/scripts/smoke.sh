@@ -20,6 +20,8 @@ set -euo pipefail
   echo "INNIES_ROUTE_MODE:${INNIES_ROUTE_MODE:-}"
   echo "INNIES_API_BASE_URL:${INNIES_API_BASE_URL:-}"
   echo "INNIES_PROXY_URL:${INNIES_PROXY_URL:-}"
+  echo "ANTHROPIC_BASE_URL:${ANTHROPIC_BASE_URL:-}"
+  echo "ANTHROPIC_API_KEY:${ANTHROPIC_API_KEY:-}"
   echo "INNIES_TOKEN:${INNIES_TOKEN:-}"
   echo "INNIES_CORRELATION_ID:${INNIES_CORRELATION_ID:-}"
 } >> "$FAKE_CLAUDE_LOG"
@@ -158,6 +160,16 @@ fi
 
 if ! grep -q "INNIES_PROXY_URL:$MOCK_BASE_URL/v1/proxy" "$FAKE_CLAUDE_LOG"; then
   echo "smoke: missing INNIES_PROXY_URL wiring"
+  exit 1
+fi
+
+if ! grep -q 'ANTHROPIC_BASE_URL:http://127.0.0.1:' "$FAKE_CLAUDE_LOG"; then
+  echo "smoke: missing local claude auth bridge"
+  exit 1
+fi
+
+if ! grep -q 'ANTHROPIC_API_KEY:in_live_test' "$FAKE_CLAUDE_LOG"; then
+  echo "smoke: missing ANTHROPIC_API_KEY wiring"
   exit 1
 fi
 

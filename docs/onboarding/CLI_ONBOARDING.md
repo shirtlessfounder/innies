@@ -62,7 +62,7 @@ Refuses to overwrite a real Claude install. Use `innies claude` directly if link
 | Missing `claude`/`codex` binary | Install upstream CLI, rerun `innies doctor` |
 | `No active compatibility rule` | Model not in DB — add to `in_model_compatibility_rules` |
 | Codex "high demand" / reconnecting | Check `~/.codex/config.toml` has innies provider + websockets off |
-| Claude auth conflict warning | Cosmetic — routing works via `ANTHROPIC_BASE_URL` override |
+| Claude has active claude.ai login | Supported — `innies claude` uses a local bridge that injects buyer auth before forwarding to Innies |
 | `Stream disconnected` | Check server logs for `synthetic_output_item_count: 0` |
 
 ## Daily Flow
