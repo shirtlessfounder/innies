@@ -26,7 +26,17 @@ Product invariant:
 - Wrapper behavior remains compatible with current coding loop UX.
 - Published to npm as `innies@0.1.0`.
 
-3. Internal dashboard (v1)
+3. ✅ Per-token analytics (read endpoints + telemetry)
+- 7 analytics endpoints: tokens, health, routing, system, timeseries, requests, anomalies
+- Request source classification (openclaw / cli-claude / cli-codex / direct)
+- TTFB persistence in routing events
+- Request log with prompt/response previews (30-day retention)
+- Translation overhead comparison
+- Buyer consumption top-N
+- Token utilization rate
+- Per-token capacity estimation from maxing cycle history
+
+4. Internal dashboard (v1)
 - Latency and success rates
 - Routing/fallback visibility
 - Token health state (`active/maxed/probe`) and rotation visibility
@@ -56,8 +66,8 @@ Product invariant:
 ## Priority Order (Execution)
 1. ✅ Codex support.
 2. ✅ Easy per-buyer-key provider preference.
-3. 🚧 Per-token analytics gathering (aggregation jobs exist, no read endpoints/dashboard yet).
-4. ✅ CLI support (`innies claude`, `innies codex`). Published as `innies@0.1.0`.
+3. ✅ Per-token analytics (7 read endpoints, request log, TTFB, source classification, anomaly checks).
+4. ✅ CLI support (`innies claude`, `innies codex`). Published as `innies@0.1.3`.
 5. Internal usage dashboard.
 6. ✅ Easy token onboarding.
 7. ✅ Developer docs baseline.
@@ -69,20 +79,22 @@ Product invariant:
 - Durable runtime behavior belongs in `docs/API_CONTRACT.md`.
 - Temporary agent coordination docs, patch queues, audit scratch docs, and one-off validation notes should be folded back into this file or durable docs, then deleted.
 
-## Current Execution Focus (2026-03-07)
+## Current Execution Focus (2026-03-09)
 Active implementation focus:
-3. Per-token analytics gathering (read endpoints + dashboard views).
-5. Internal usage dashboard.
+5. Internal usage dashboard (final Phase 1 item).
 
 Completed:
 - ✅ Codex support (translation layer deployed to production)
 - ✅ Per-buyer-key provider preference (deterministic fallback with translation)
 - ✅ Token onboarding (admin endpoints + shell scripts)
 - ✅ Developer docs baseline (API contract + onboarding guides)
-- ✅ CLI support (`innies claude`, `innies codex`) — published as `innies@0.1.0`, validated locally by Dylan
+- ✅ CLI support (`innies claude`, `innies codex`) — published as `innies@0.1.3`, with local auth bridge for OAuth conflict resolution
+- ✅ Per-token analytics — 7 read endpoints, request log with prompt/response previews, TTFB persistence, source classification, anomaly checks, token capacity estimation
 
 Current gate status:
-- `cd api && npx vitest run` → 19 files, 127 tests, all green
+- `cd api && npx vitest run` → all tests green
+- Analytics endpoints deployed: tokens, health, routing, system, timeseries, requests, anomalies
+- Migration SQL ready: `docs/migrations/011_analytics_request_log_ttfb.sql`
 - Compat translation deployed to production (2026-03-06)
 - OpenClaw verified compatible (anthropic-messages API, server-side translation transparent)
 
