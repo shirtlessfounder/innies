@@ -282,15 +282,6 @@ export function TokenTable({
                 onClick={() => onSort('status', 'asc')}
               />
             </th>
-            <th className={styles.numeric} aria-sort={sortAria(sort.key === metricConfig.key, sort.direction)}>
-              <SortHeaderButton
-                active={sort.key === metricConfig.key}
-                direction={sort.direction}
-                label={metricConfig.label}
-                numeric
-                onClick={() => onSort(metricConfig.key, 'desc')}
-              />
-            </th>
             {metricConfig.showShare ? (
               <th className={styles.numeric} aria-sort={sortAria(sort.key === 'percentOfWindow', sort.direction)}>
                 <SortHeaderButton
@@ -302,6 +293,15 @@ export function TokenTable({
                 />
               </th>
             ) : null}
+            <th className={styles.numeric} aria-sort={sortAria(sort.key === metricConfig.key, sort.direction)}>
+              <SortHeaderButton
+                active={sort.key === metricConfig.key}
+                direction={sort.direction}
+                label={metricConfig.label}
+                numeric
+                onClick={() => onSort(metricConfig.key, 'desc')}
+              />
+            </th>
             {metricConfig.showDelta ? <th className={styles.numeric}>Delta</th> : null}
             {/* Re-enable Util 24h / Maxed 7d once the token table has room for the extra operator-only columns again. */}
             {/* <th className={styles.numeric} aria-sort={sortAria(sort.key === 'utilizationRate24h', sort.direction)}>
@@ -346,8 +346,8 @@ export function TokenTable({
               <td>{tokenLabelLabel(row)}</td>
               <td>{tokenProviderLabel(row.provider)}</td>
               <td><TokenStatusCell status={row.status} /></td>
-              <td className={styles.numeric}>{metricConfig.value(row)}</td>
               {metricConfig.showShare ? <td className={styles.numeric}>{formatPercent(row.percentOfWindow)}</td> : null}
+              <td className={styles.numeric}>{metricConfig.value(row)}</td>
               {metricConfig.showDelta ? (
                 <td className={styles.numeric}>
                   <DeltaCell value={deltaValue} flashToken={row.flashToken} />
@@ -412,15 +412,6 @@ export function BuyerTable({
                 onClick={() => onSort('effectiveProvider', 'asc')}
               />
             </th>
-            <th className={styles.numeric} aria-sort={sortAria(sort.key === metricConfig.key, sort.direction)}>
-              <SortHeaderButton
-                active={sort.key === metricConfig.key}
-                direction={sort.direction}
-                label={metricConfig.label}
-                numeric
-                onClick={() => onSort(metricConfig.key, 'desc')}
-              />
-            </th>
             {metricConfig.showShare ? (
               <th className={styles.numeric} aria-sort={sortAria(sort.key === 'percentOfWindow', sort.direction)}>
                 <SortHeaderButton
@@ -432,6 +423,15 @@ export function BuyerTable({
                 />
               </th>
             ) : null}
+            <th className={styles.numeric} aria-sort={sortAria(sort.key === metricConfig.key, sort.direction)}>
+              <SortHeaderButton
+                active={sort.key === metricConfig.key}
+                direction={sort.direction}
+                label={metricConfig.label}
+                numeric
+                onClick={() => onSort(metricConfig.key, 'desc')}
+              />
+            </th>
             {metricConfig.showDelta ? <th className={styles.numeric}>Delta</th> : null}
             <th aria-sort={sortAria(sort.key === 'lastSeenAt', sort.direction)}>
               <SortHeaderButton
@@ -476,8 +476,8 @@ export function BuyerTable({
                 </div>
               </td>
               <td>{buyerPreferenceLabel(row)}</td>
-              <td className={styles.numeric}>{metricConfig.value(row)}</td>
               {metricConfig.showShare ? <td className={styles.numeric}>{formatPercent(row.percentOfWindow)}</td> : null}
+              <td className={styles.numeric}>{metricConfig.value(row)}</td>
               {metricConfig.showDelta ? (
                 <td className={styles.numeric}>
                   <DeltaCell value={deltaValue} flashToken={row.flashToken} />
