@@ -83,6 +83,48 @@ export function summarizeSyntheticOpenAiOutputItems(data: unknown): { count: num
   };
 }
 
+export function hasTerminalOpenAiResponsesStreamEvent(raw: string): boolean {
+  const normalized = raw.toLowerCase();
+  return (
+    normalized.includes('"type":"response.completed"')
+    || normalized.includes('"type":"response.failed"')
+    || normalized.includes('"type":"response.incomplete"')
+    || normalized.includes('data: [done]')
+  );
+}
+
+export function buildSyntheticOpenAiStreamFailureSse(input: {
+  id?: string;
+  model?: string;
+  message: string;
+  code?: string;
+}): string {
+  const id = typeof input.id === 'string' && input.id.trim().length > 0
+    ? input.id
+    : `resp_${Date.now()}`;
+  const response: Record<string, unknown> = {
+    id,
+    status: 'failed',
+    output: [],
+    usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+    error: {
+      code: input.code ?? 'stream_disconnected',
+      message: input.message
+    }
+  };
+  if (typeof input.model === 'string' && input.model.trim().length > 0) {
+    response.model = input.model;
+  }
+
+  return [
+    sseData({
+      type: 'response.failed',
+      response
+    }),
+    sseData('[DONE]')
+  ].join('');
+}
+
 export function buildSyntheticOpenAiResponsesSse(data: unknown): string {
   const response = isRecord(data) ? data : {};
   const id = asString(response.id, `resp_${Date.now()}`);

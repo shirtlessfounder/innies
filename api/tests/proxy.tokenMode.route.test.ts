@@ -1,3 +1,4 @@
+import { Writable } from 'node:stream';
 import { describe, expect, it, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { z } from 'zod';
 import { AppError } from '../src/utils/errors.js';
@@ -109,6 +110,153 @@ function createStreamingMockRes(): MockRes & {
     }
     res.headersSent = true;
     res.writableEnded = true;
+  };
+  res.flushHeaders = () => {
+    res.headersSent = true;
+  };
+  res.flush = () => undefined;
+  res.socket = {
+    setKeepAlive: () => undefined,
+    setNoDelay: () => undefined
+  };
+
+  return res;
+}
+
+function createRealWritableStreamingMockRes(): MockRes & Writable & {
+  flushHeaders: () => void;
+  flush: () => void;
+  socket: {
+    setKeepAlive: () => void;
+    setNoDelay: () => void;
+  };
+} {
+  let body = '';
+  const res = new Writable({
+    write(chunk, _encoding, callback) {
+      const next = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+      body += next;
+      callback();
+    }
+  }) as MockRes & Writable & {
+    flushHeaders: () => void;
+    flush: () => void;
+    socket: {
+      setKeepAlive: () => void;
+      setNoDelay: () => void;
+    };
+  };
+
+  res.statusCode = 200;
+  res.headers = {};
+  res.headersSent = false;
+  Object.defineProperty(res, 'body', {
+    get() {
+      return body;
+    },
+    set(value: unknown) {
+      body = typeof value === 'string' ? value : String(value ?? '');
+    },
+    configurable: true
+  });
+  res.setHeader = function setHeader(name: string, value: string) {
+    this.headers[name.toLowerCase()] = value;
+  };
+  res.status = function status(code: number) {
+    this.statusCode = code;
+    return this;
+  };
+  res.json = function json(payload: unknown) {
+    this.setHeader('content-type', 'application/json');
+    this.headersSent = true;
+    this.end(JSON.stringify(payload));
+  };
+  res.send = function send(payload: unknown) {
+    this.headersSent = true;
+    this.end(typeof payload === 'string' ? payload : JSON.stringify(payload));
+  };
+  res.flushHeaders = () => {
+    res.headersSent = true;
+  };
+  res.flush = () => undefined;
+  res.socket = {
+    setKeepAlive: () => undefined,
+    setNoDelay: () => undefined
+  };
+
+  return res;
+}
+
+function createBackpressuredClosingStreamingMockRes(): MockRes & Writable & {
+  flushHeaders: () => void;
+  flush: () => void;
+  socket: {
+    setKeepAlive: () => void;
+    setNoDelay: () => void;
+  };
+} {
+  let body = '';
+  let writeCount = 0;
+  let res: MockRes & Writable & {
+    flushHeaders: () => void;
+    flush: () => void;
+    socket: {
+      setKeepAlive: () => void;
+      setNoDelay: () => void;
+    };
+  };
+  res = new Writable({
+    highWaterMark: 1,
+    write(chunk, _encoding, callback) {
+      const next = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+      body += next;
+      writeCount += 1;
+      if (writeCount === 2) {
+        setImmediate(() => {
+          res.destroy(Object.assign(new Error('client disconnected'), { code: 'ECONNRESET' }));
+          callback();
+        });
+        return;
+      }
+      callback();
+    }
+  }) as MockRes & Writable & {
+    flushHeaders: () => void;
+    flush: () => void;
+    socket: {
+      setKeepAlive: () => void;
+      setNoDelay: () => void;
+    };
+  };
+
+  res.on('error', () => undefined);
+  res.statusCode = 200;
+  res.headers = {};
+  res.headersSent = false;
+  Object.defineProperty(res, 'body', {
+    get() {
+      return body;
+    },
+    set(value: unknown) {
+      body = typeof value === 'string' ? value : String(value ?? '');
+    },
+    configurable: true
+  });
+  res.setHeader = function setHeader(name: string, value: string) {
+    this.headers[name.toLowerCase()] = value;
+  };
+  res.status = function status(code: number) {
+    this.statusCode = code;
+    return this;
+  };
+  res.json = function json(payload: unknown) {
+    this.setHeader('content-type', 'application/json');
+    this.headersSent = true;
+    this.end(JSON.stringify(payload));
+  };
+  res.send = function send(payload: unknown) {
+    this.headersSent = true;
+    this.end(typeof payload === 'string' ? payload : JSON.stringify(payload));
   };
   res.flushHeaders = () => {
     res.headersSent = true;
@@ -1532,6 +1680,252 @@ describe('proxy token-mode route behavior', () => {
     expect(String(res.body)).not.toContain(': keepalive');
     upstreamSpy.mockRestore();
   });
+
+  it('terminates codex passthrough streams with response.failed when upstream SSE drops before completion', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const oauthToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_codex_stream',
+      clientId: 'app_codex_stream'
+    });
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      supports_streaming: true
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'dddd1114-0000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: oauthToken,
+      refreshToken: 'rt_codex_stream',
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+
+    const encoder = new TextEncoder();
+    const upstreamStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"response.created","response":{"id":"resp_drop_1","status":"in_progress","usage":{"input_tokens":0,"output_tokens":0}}}\n\n'));
+        controller.enqueue(encoder.encode('data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_drop_1","role":"assistant","content":[],"status":"in_progress"}}\n\n'));
+        controller.enqueue(encoder.encode('data: {"type":"response.output_text.delta","output_index":0,"item_id":"msg_drop_1","content_index":0,"delta":"partial"}\n\n'));
+        controller.error(new Error('upstream reset'));
+      }
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(upstreamStream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/responses',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-innies-provider-pin': 'true'
+      },
+      body: {
+        model: 'gpt-5.4',
+        stream: true,
+        instructions: 'Reply with one word only.',
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] }]
+      }
+    });
+    const res = createRealWritableStreamingMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(String(res.body)).toContain('"type":"response.failed"');
+    expect(String(res.body)).toContain('data: [DONE]');
+    expect(res.writableEnded).toBe(true);
+    expect(runtimeModule.runtime.repos.tokenCredentials.recordSuccess).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.services.metering.recordUsage).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.repos.tokenCredentials.addMonthlyContributionUsage).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.repos.routingEvents.insert).toHaveBeenLastCalledWith(expect.objectContaining({
+      errorCode: 'stream_truncated',
+      upstreamStatus: 200
+    }));
+    upstreamSpy.mockRestore();
+  });
+
+  it('terminates anthropic passthrough streams with anthropic SSE when upstream SSE drops before completion', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'dddd1115-0000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'x_api_key',
+      accessToken: 'sk-ant-oat01-stream-drop',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+
+    const encoder = new TextEncoder();
+    const upstreamStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: message_start\ndata: {"type":"message_start","message":{"id":"msg_drop_2","type":"message","role":"assistant","model":"claude-3-5-sonnet-latest","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}\n\n'));
+        controller.enqueue(encoder.encode('event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}\n\n'));
+        controller.error(new Error('upstream reset'));
+      }
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(upstreamStream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        model: 'claude-3-5-sonnet-latest',
+        stream: true,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hello' }]
+      }
+    });
+    const res = createRealWritableStreamingMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(String(res.body)).toContain('event: message_stop');
+    expect(String(res.body)).toContain('[Innies stream error: upstream stream ended before completion]');
+    expect(String(res.body)).not.toContain('"type":"response.failed"');
+    expect(runtimeModule.runtime.repos.tokenCredentials.recordSuccess).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.services.metering.recordUsage).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.repos.tokenCredentials.addMonthlyContributionUsage).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.repos.routingEvents.insert).toHaveBeenLastCalledWith(expect.objectContaining({
+      errorCode: 'stream_truncated',
+      upstreamStatus: 200
+    }));
+    upstreamSpy.mockRestore();
+  });
+
+  it('does not meter or hang when the downstream client disconnects while backpressured', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const oauthToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_codex_backpressure',
+      clientId: 'app_codex_backpressure'
+    });
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      supports_streaming: true
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'dddd1116-0000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: oauthToken,
+      refreshToken: 'rt_codex_backpressure',
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+
+    const encoder = new TextEncoder();
+    const upstreamStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"response.created","response":{"id":"resp_backpressure_1","status":"in_progress","usage":{"input_tokens":0,"output_tokens":0}}}\n\n'));
+        controller.enqueue(encoder.encode('data: {"type":"response.output_text.delta","output_index":0,"item_id":"msg_backpressure_1","content_index":0,"delta":"partial"}\n\n'));
+        controller.close();
+      }
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(upstreamStream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/responses',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-innies-provider-pin': 'true'
+      },
+      body: {
+        model: 'gpt-5.4',
+        stream: true,
+        instructions: 'Reply with one word only.',
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] }]
+      }
+    });
+    const res = createBackpressuredClosingStreamingMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.destroyed).toBe(true);
+    expect(String(res.body)).not.toContain('"type":"response.failed"');
+    expect(runtimeModule.runtime.repos.tokenCredentials.recordSuccess).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.services.metering.recordUsage).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.repos.tokenCredentials.addMonthlyContributionUsage).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.services.idempotency.commit).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.repos.routingEvents.insert).toHaveBeenLastCalledWith(expect.objectContaining({
+      errorCode: 'stream_truncated',
+      upstreamStatus: 200
+    }));
+    upstreamSpy.mockRestore();
+  }, 1000);
 
   it('refreshes codex oauth credentials against auth.openai.com before failing over', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';

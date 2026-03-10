@@ -1,6 +1,7 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { HeaderNav } from '../components/HeaderNav';
+import { shouldShowAnalyticsIndexLink } from '../lib/analyticsAccess';
 import styles from './page.module.css';
 
 function InniesLogo() {
@@ -31,6 +32,18 @@ function ArrowIcon() {
 }
 
 export default function DashboardIndexPage() {
+  const showAnalyticsLink = shouldShowAnalyticsIndexLink();
+  const heroFrame = (
+    <Image
+      className={styles.heroImage}
+      src="/images/archive-computer.png"
+      alt="Winter lake landscape on archival computer"
+      width={2359}
+      height={1778}
+      priority
+    />
+  );
+
   return (
     <main className={styles.page}>
       <div className={styles.shell}>
@@ -48,16 +61,15 @@ export default function DashboardIndexPage() {
 
         <section className={styles.hero}>
           <div className={styles.heroInner}>
-            <Link href="/analytics" className={styles.frame} aria-label="Open analytics">
-              <Image
-                className={styles.heroImage}
-                src="/images/archive-computer.png"
-                alt="Winter lake landscape on archival computer"
-                width={2359}
-                height={1778}
-                priority
-              />
-            </Link>
+            {showAnalyticsLink ? (
+              <Link href="/analytics" className={styles.frame} aria-label="Open analytics">
+                {heroFrame}
+              </Link>
+            ) : (
+              <div className={styles.frame} aria-hidden="true">
+                {heroFrame}
+              </div>
+            )}
 
             <h1 className={styles.headline}>
               <span>MORE AI CODING.</span>

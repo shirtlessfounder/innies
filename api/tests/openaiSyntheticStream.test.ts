@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildSyntheticOpenAiResponsesSse } from '../src/utils/openaiSyntheticStream.js';
+import {
+  buildSyntheticOpenAiResponsesSse,
+  buildSyntheticOpenAiStreamFailureSse,
+  hasTerminalOpenAiResponsesStreamEvent
+} from '../src/utils/openaiSyntheticStream.js';
 
 describe('buildSyntheticOpenAiResponsesSse', () => {
   it('builds text output into native Responses SSE events', () => {
@@ -47,5 +51,18 @@ describe('buildSyntheticOpenAiResponsesSse', () => {
     expect(sse).toContain('"type":"response.output_item.done"');
     expect(sse).toContain('"call_id":"call_1"');
     expect(sse).toContain('"type":"response.completed"');
+  });
+
+  it('builds a terminal failure stream marker for passthrough disconnects', () => {
+    const sse = buildSyntheticOpenAiStreamFailureSse({
+      id: 'resp_failed_1',
+      model: 'gpt-5.4',
+      message: 'upstream stream ended before completion'
+    });
+
+    expect(sse).toContain('"type":"response.failed"');
+    expect(sse).toContain('"code":"stream_disconnected"');
+    expect(sse).toContain('data: [DONE]');
+    expect(hasTerminalOpenAiResponsesStreamEvent(sse)).toBe(true);
   });
 });
