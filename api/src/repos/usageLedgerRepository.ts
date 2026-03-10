@@ -99,7 +99,7 @@ export class UsageLedgerRepository {
       ) values (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
       )
-      on conflict on constraint uq_hr_usage_primary_once do nothing
+      on conflict (org_id, request_id, attempt_no) where entry_type = 'usage' do nothing
       returning *
     `;
 
