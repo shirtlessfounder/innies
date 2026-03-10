@@ -1,8 +1,8 @@
-export type AnalyticsWindow = '24h' | '7d' | '1m' | 'all';
+export type AnalyticsWindow = '5h' | '24h' | '7d' | '1m' | 'all';
 
 export type AnalyticsSource = 'openclaw' | 'cli-claude' | 'cli-codex' | 'direct';
 
-const CANONICAL_WINDOWS = new Set<AnalyticsWindow>(['24h', '7d', '1m', 'all']);
+const CANONICAL_WINDOWS = new Set<AnalyticsWindow>(['5h', '24h', '7d', '1m', 'all']);
 const ANALYTICS_SOURCES = new Set<AnalyticsSource>(['openclaw', 'cli-claude', 'cli-codex', 'direct']);
 
 function readString(value: unknown): string | null {
@@ -33,6 +33,18 @@ export function normalizeAnalyticsWindow(value: unknown, fallback: AnalyticsWind
   }
 
   return CANONICAL_WINDOWS.has(raw as AnalyticsWindow) ? (raw as AnalyticsWindow) : fallback;
+}
+
+export function formatDisplayKey(id: unknown, prefix: 'cred' | 'key' = 'key'): string | null {
+  const raw = readString(id);
+  if (!raw) return null;
+
+  const compact = raw.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  if (compact.length < 8) {
+    return `${prefix}_${compact}`;
+  }
+
+  return `${prefix}_${compact.slice(0, 4)}...${compact.slice(-4)}`;
 }
 
 export function extractTokenCredentialId(routeDecision: unknown): string | null {

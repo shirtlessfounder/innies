@@ -1,8 +1,10 @@
 import type { SqlClient, SqlValue } from './sqlClient.js';
 import { TABLES } from './tableNames.js';
 import type { AnalyticsRouteRepository } from '../routes/analytics.js';
+import { resolveDefaultBuyerProvider } from '../utils/providerPreference.js';
 
-type AnalyticsWindow = '24h' | '7d' | '1m' | 'all';
+type AnalyticsWindow = '5h' | '24h' | '7d' | '1m' | 'all';
+type AnalyticsGranularity = '5m' | '15m' | 'hour' | 'day';
 
 type BaseFilters = {
   window: AnalyticsWindow;
@@ -10,8 +12,20 @@ type BaseFilters = {
   source?: string;
 };
 
+type BuyerTimeSeriesFilters = BaseFilters & {
+  granularity: AnalyticsGranularity;
+  apiKeyIds?: string[];
+};
+
+type EventFilters = {
+  window: AnalyticsWindow;
+  provider?: string;
+  limit: number;
+};
+
 function windowSql(window: AnalyticsWindow, alias = 're'): string {
   switch (window) {
+    case '5h':  return `${alias}.created_at >= now() - interval '5 hours'`;
     case '24h': return `${alias}.created_at >= now() - interval '24 hours'`;
     case '7d':  return `${alias}.created_at >= now() - interval '7 days'`;
     case '1m':  return `${alias}.created_at >= now() - interval '30 days'`;
@@ -22,6 +36,7 @@ function windowSql(window: AnalyticsWindow, alias = 're'): string {
 
 function windowSqlRaw(window: AnalyticsWindow, col = 'created_at'): string {
   switch (window) {
+    case '5h':  return `${col} >= now() - interval '5 hours'`;
     case '24h': return `${col} >= now() - interval '24 hours'`;
     case '7d':  return `${col} >= now() - interval '7 days'`;
     case '1m':  return `${col} >= now() - interval '30 days'`;
@@ -32,6 +47,7 @@ function windowSqlRaw(window: AnalyticsWindow, col = 'created_at'): string {
 
 function dayWindowSql(window: AnalyticsWindow, col = 'day'): string {
   switch (window) {
+    case '5h':  return `${col} >= ((now() at time zone 'utc') - interval '5 hours')::date`;
     case '24h': return `${col} >= ((now() at time zone 'utc') - interval '24 hours')::date`;
     case '7d':  return `${col} >= ((now() at time zone 'utc') - interval '7 days')::date`;
     case '1m':  return `${col} >= ((now() at time zone 'utc') - interval '30 days')::date`;
@@ -46,6 +62,20 @@ function usageDaySql(alias = 'ul'): string {
 
 function closedAggregateRefreshDeadlineSql(dayExpr: string): string {
   return `(((${dayExpr} + 1)::timestamp at time zone 'utc') + interval '2 hours')`;
+}
+
+function timeBucketSql(granularity: AnalyticsGranularity, col = 're.created_at'): string {
+  switch (granularity) {
+    case '5m':
+      return `to_timestamp(floor(extract(epoch from ${col}) / 300) * 300)`;
+    case '15m':
+      return `to_timestamp(floor(extract(epoch from ${col}) / 900) * 900)`;
+    case 'hour':
+      return `date_trunc('hour', ${col})`;
+    case 'day':
+    default:
+      return `date_trunc('day', ${col})`;
+  }
 }
 
 const SOURCE_CASE = `
@@ -107,7 +137,8 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
           tr.credential_id,
           tr.provider,
           tr.source,
-          count(*) AS request_count,
+          count(*) AS attempt_count,
+          count(DISTINCT tr.request_id) AS request_count,
           coalesce(sum(ul.usage_units), 0) AS usage_units,
           coalesce(sum(ul.retail_equivalent_minor), 0) AS retail_equivalent_minor,
           coalesce(sum(ul.input_tokens), 0) AS input_tokens,
@@ -117,6 +148,7 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
           ON ul.org_id = tr.org_id
           AND ul.request_id = tr.request_id
           AND ul.attempt_no = tr.attempt_no
+          AND ul.entry_type = 'usage'
         GROUP BY tr.credential_id, tr.provider, tr.source
       )
       SELECT
@@ -124,6 +156,7 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         tc.debug_label,
         tu.provider,
         coalesce(tc.status, 'active') AS status,
+        sum(tu.attempt_count)::bigint AS attempts,
         sum(tu.request_count)::bigint AS requests,
         sum(tu.usage_units)::bigint AS usage_units,
         sum(tu.retail_equivalent_minor)::bigint AS retail_equivalent_minor,
@@ -132,6 +165,7 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         jsonb_agg(
           jsonb_build_object(
             'source', tu.source,
+            'attempts', tu.attempt_count,
             'requests', tu.request_count,
             'usage_units', tu.usage_units
           )
@@ -140,6 +174,109 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
       LEFT JOIN ${TABLES.tokenCredentials} tc ON tc.id::text = tu.credential_id
       GROUP BY tu.credential_id, tc.debug_label, tu.provider, tc.status
       ORDER BY sum(tu.usage_units) DESC
+    `;
+
+    const result = await this.db.query(sql, params);
+    return result.rows;
+  }
+
+  async getBuyers(filters: BaseFilters): Promise<unknown> {
+    const defaultProvider = resolveDefaultBuyerProvider();
+    const params: SqlValue[] = [defaultProvider];
+    const where: string[] = [];
+    applyBaseFilters(where, params, filters);
+
+    const sql = `
+      WITH buyer_inventory AS (
+        SELECT
+          ak.id,
+          ak.name,
+          ak.org_id,
+          ak.preferred_provider,
+          o.name AS org_name
+        FROM in_api_keys ak
+        LEFT JOIN ${TABLES.orgs} o ON o.id = ak.org_id
+        WHERE ak.scope = 'buyer_proxy'
+      ),
+      buyer_rollups AS (
+        SELECT
+          re.api_key_id,
+          count(DISTINCT re.request_id) AS request_count,
+          count(*) AS attempt_count,
+          coalesce(sum(ul.usage_units), 0) AS usage_units,
+          coalesce(sum(ul.retail_equivalent_minor), 0) AS retail_equivalent_minor,
+          max(re.created_at) AS last_seen_at,
+          CASE WHEN count(*) > 0
+            THEN round(count(*) FILTER (WHERE re.upstream_status >= 400 OR re.error_code IS NOT NULL)::numeric / count(*), 4)
+            ELSE 0
+          END AS error_rate
+        FROM ${TABLES.routingEvents} re
+        LEFT JOIN ${TABLES.usageLedger} ul
+          ON ul.org_id = re.org_id
+          AND ul.request_id = re.request_id
+          AND ul.attempt_no = re.attempt_no
+          AND ul.entry_type = 'usage'
+        WHERE ${where.join(' AND ')}
+          AND re.api_key_id IS NOT NULL
+        GROUP BY re.api_key_id
+      ),
+      buyer_sources AS (
+        SELECT
+          re.api_key_id,
+          (${SOURCE_CASE}) AS source,
+          count(DISTINCT re.request_id) AS request_count,
+          count(*) AS attempt_count,
+          coalesce(sum(ul.usage_units), 0) AS usage_units
+        FROM ${TABLES.routingEvents} re
+        LEFT JOIN ${TABLES.usageLedger} ul
+          ON ul.org_id = re.org_id
+          AND ul.request_id = re.request_id
+          AND ul.attempt_no = re.attempt_no
+          AND ul.entry_type = 'usage'
+        WHERE ${where.join(' AND ')}
+          AND re.api_key_id IS NOT NULL
+        GROUP BY re.api_key_id, (${SOURCE_CASE})
+      ),
+      buyer_source_rollups AS (
+        SELECT
+          api_key_id,
+          jsonb_agg(jsonb_build_object(
+            'source', source,
+            'attempts', attempt_count,
+            'requests', request_count,
+            'usage_units', usage_units
+          )) AS by_source
+        FROM buyer_sources
+        GROUP BY api_key_id
+      ),
+      usage_total AS (
+        SELECT coalesce(sum(usage_units), 0)::bigint AS total_usage_units
+        FROM buyer_rollups
+      )
+      SELECT
+        bi.id AS api_key_id,
+        bi.name AS label,
+        bi.org_id,
+        bi.org_name,
+        bi.preferred_provider,
+        coalesce(bi.preferred_provider, $1::text) AS effective_provider,
+        coalesce(br.request_count, 0)::bigint AS request_count,
+        coalesce(br.attempt_count, 0)::bigint AS attempt_count,
+        coalesce(br.usage_units, 0)::bigint AS usage_units,
+        coalesce(br.retail_equivalent_minor, 0)::bigint AS retail_equivalent_minor,
+        CASE
+          WHEN ut.total_usage_units > 0
+          THEN round(coalesce(br.usage_units, 0)::numeric / ut.total_usage_units, 4)
+          ELSE 0
+        END AS percent_of_total,
+        br.last_seen_at,
+        coalesce(br.error_rate, 0) AS error_rate,
+        bsr.by_source
+      FROM buyer_inventory bi
+      LEFT JOIN buyer_rollups br ON br.api_key_id = bi.id
+      LEFT JOIN buyer_source_rollups bsr ON bsr.api_key_id = bi.id
+      CROSS JOIN usage_total ut
+      ORDER BY coalesce(br.usage_units, 0) DESC, bi.name ASC, bi.id ASC
     `;
 
     const result = await this.db.query(sql, params);
@@ -488,6 +625,7 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         ON ul.org_id = re.org_id
         AND ul.request_id = re.request_id
         AND ul.attempt_no = re.attempt_no
+        AND ul.entry_type = 'usage'
       WHERE ${where.join(' AND ')}
     `;
 
@@ -519,7 +657,10 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         coalesce(sum(ul.usage_units), 0) AS usage_units
       FROM ${TABLES.routingEvents} re
       LEFT JOIN ${TABLES.usageLedger} ul
-        ON ul.org_id = re.org_id AND ul.request_id = re.request_id AND ul.attempt_no = re.attempt_no
+        ON ul.org_id = re.org_id
+        AND ul.request_id = re.request_id
+        AND ul.attempt_no = re.attempt_no
+        AND ul.entry_type = 'usage'
       WHERE ${byProviderWhere.join(' AND ')}
       GROUP BY re.provider
     `;
@@ -535,7 +676,10 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         coalesce(sum(ul.usage_units), 0) AS usage_units
       FROM ${TABLES.routingEvents} re
       LEFT JOIN ${TABLES.usageLedger} ul
-        ON ul.org_id = re.org_id AND ul.request_id = re.request_id AND ul.attempt_no = re.attempt_no
+        ON ul.org_id = re.org_id
+        AND ul.request_id = re.request_id
+        AND ul.attempt_no = re.attempt_no
+        AND ul.entry_type = 'usage'
       WHERE ${byModelWhere.join(' AND ')}
       GROUP BY re.model
     `;
@@ -551,7 +695,10 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         coalesce(sum(ul.usage_units), 0) AS usage_units
       FROM ${TABLES.routingEvents} re
       LEFT JOIN ${TABLES.usageLedger} ul
-        ON ul.org_id = re.org_id AND ul.request_id = re.request_id AND ul.attempt_no = re.attempt_no
+        ON ul.org_id = re.org_id
+        AND ul.request_id = re.request_id
+        AND ul.attempt_no = re.attempt_no
+        AND ul.entry_type = 'usage'
       WHERE ${bySourceWhere.join(' AND ')}
       GROUP BY (${SOURCE_CASE})
     `;
@@ -568,7 +715,10 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         coalesce(sum(ul.usage_units), 0) AS usage_units
       FROM ${TABLES.routingEvents} re
       LEFT JOIN ${TABLES.usageLedger} ul
-        ON ul.org_id = re.org_id AND ul.request_id = re.request_id AND ul.attempt_no = re.attempt_no
+        ON ul.org_id = re.org_id
+        AND ul.request_id = re.request_id
+        AND ul.attempt_no = re.attempt_no
+        AND ul.entry_type = 'usage'
       WHERE ${topBuyersWhere.join(' AND ')}
         AND re.api_key_id IS NOT NULL
       GROUP BY re.api_key_id, re.org_id
@@ -621,7 +771,7 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
     };
   }
 
-  async getTimeSeries(filters: BaseFilters & { granularity: 'hour' | 'day'; credentialId?: string }): Promise<unknown> {
+  async getTimeSeries(filters: BaseFilters & { granularity: AnalyticsGranularity; credentialId?: string }): Promise<unknown> {
     const params: SqlValue[] = [];
     const where: string[] = [];
     applyBaseFilters(where, params, filters);
@@ -631,11 +781,11 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
       where.push(`re.route_decision->>'tokenCredentialId' = $${params.length}`);
     }
 
-    const truncFn = filters.granularity === 'hour' ? 'hour' : 'day';
+    const bucketExpr = timeBucketSql(filters.granularity, 're.created_at');
 
     const sql = `
       SELECT
-        date_trunc('${truncFn}', re.created_at) AS bucket,
+        ${bucketExpr} AS bucket,
         count(distinct re.request_id) AS request_count,
         coalesce(sum(ul.usage_units), 0) AS usage_units,
         CASE WHEN count(*) > 0
@@ -649,9 +799,44 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         ON ul.org_id = re.org_id
         AND ul.request_id = re.request_id
         AND ul.attempt_no = re.attempt_no
+        AND ul.entry_type = 'usage'
       WHERE ${where.join(' AND ')}
-      GROUP BY date_trunc('${truncFn}', re.created_at)
+      GROUP BY ${bucketExpr}
       ORDER BY bucket ASC
+    `;
+
+    const result = await this.db.query(sql, params);
+    return result.rows;
+  }
+
+  async getBuyerTimeSeries(filters: BuyerTimeSeriesFilters): Promise<unknown> {
+    const params: SqlValue[] = [];
+    const where: string[] = [];
+    applyBaseFilters(where, params, filters);
+    where.push(`re.api_key_id IS NOT NULL`);
+
+    if (filters.apiKeyIds && filters.apiKeyIds.length > 0) {
+      params.push(filters.apiKeyIds);
+      where.push(`re.api_key_id = ANY($${params.length}::uuid[])`);
+    }
+
+    const bucketExpr = timeBucketSql(filters.granularity, 're.created_at');
+
+    const sql = `
+      SELECT
+        ${bucketExpr} AS bucket,
+        re.api_key_id,
+        count(distinct re.request_id) AS request_count,
+        coalesce(sum(ul.usage_units), 0) AS usage_units
+      FROM ${TABLES.routingEvents} re
+      LEFT JOIN ${TABLES.usageLedger} ul
+        ON ul.org_id = re.org_id
+        AND ul.request_id = re.request_id
+        AND ul.attempt_no = re.attempt_no
+        AND ul.entry_type = 'usage'
+      WHERE ${where.join(' AND ')}
+      GROUP BY ${bucketExpr}, re.api_key_id
+      ORDER BY bucket ASC, re.api_key_id ASC
     `;
 
     const result = await this.db.query(sql, params);
@@ -689,6 +874,7 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
     const sql = `
       SELECT
         re.request_id,
+        re.attempt_no,
         re.created_at,
         re.route_decision->>'tokenCredentialId' AS credential_id,
         tc.debug_label AS credential_label,
@@ -710,6 +896,7 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         ON ul.org_id = re.org_id
         AND ul.request_id = re.request_id
         AND ul.attempt_no = re.attempt_no
+        AND ul.entry_type = 'usage'
       LEFT JOIN ${TABLES.tokenCredentials} tc
         ON tc.id::text = re.route_decision->>'tokenCredentialId'
       LEFT JOIN ${TABLES.requestLog} rl
@@ -724,6 +911,7 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
     const result = await this.db.query(sql, params);
     return result.rows.map((row: any) => ({
       request_id: row.request_id,
+      attempt_no: row.attempt_no,
       created_at: row.created_at,
       credential_id: row.credential_id,
       credential_label: row.credential_label,
@@ -741,6 +929,51 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
       prompt_preview: row.prompt_preview,
       response_preview: row.response_preview
     }));
+  }
+
+  async getEvents(filters: EventFilters): Promise<unknown> {
+    const params: SqlValue[] = [];
+    const where: string[] = [windowSqlRaw(filters.window, 'tce.created_at')];
+
+    if (filters.provider) {
+      params.push(filters.provider);
+      where.push(`tce.provider = $${params.length}`);
+    }
+
+    const limit = Math.max(1, Math.min(200, filters.limit));
+    params.push(limit);
+
+    const sql = `
+      SELECT
+        tce.id,
+        tce.event_type,
+        tce.created_at,
+        tce.provider,
+        tce.token_credential_id::text AS credential_id,
+        tc.debug_label AS credential_label,
+        tce.status_code,
+        tce.reason,
+        tce.metadata,
+        CASE
+          WHEN tce.event_type = 'reactivated' THEN 'info'
+          ELSE 'warn'
+        END AS severity,
+        CASE
+          WHEN tce.event_type = 'maxed' THEN 'credential maxed'
+          WHEN tce.event_type = 'reactivated' THEN 'credential reactivated'
+          WHEN tce.event_type = 'probe_failed' THEN 'probe failed'
+          ELSE tce.event_type
+        END AS summary
+      FROM ${TABLES.tokenCredentialEvents} tce
+      LEFT JOIN ${TABLES.tokenCredentials} tc
+        ON tc.id = tce.token_credential_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY tce.created_at DESC
+      LIMIT $${params.length}
+    `;
+
+    const result = await this.db.query(sql, params);
+    return result.rows;
   }
 
   async getAnomalies(filters: BaseFilters): Promise<unknown> {
