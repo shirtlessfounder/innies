@@ -17,6 +17,8 @@ export type TokenSortKey =
   | 'status'
   | 'attempts'
   | 'usageUnits'
+  | 'latencyP50Ms'
+  | 'errorRate'
   | 'percentOfWindow'
   | 'utilizationRate24h'
   | 'maxedEvents7d';
@@ -27,6 +29,8 @@ export type BuyerSortKey =
   | 'effectiveProvider'
   | 'requests'
   | 'usageUnits'
+  | 'latencyP50Ms'
+  | 'errorRate'
   | 'percentOfWindow'
   | 'lastSeenAt';
 
@@ -79,6 +83,10 @@ function compareTokenRows(
       return directionValue(sort.direction, compareNullableStrings(left.status, right.status));
     case 'attempts':
       return directionValue(sort.direction, compareNullableNumbers(left.attempts, right.attempts));
+    case 'latencyP50Ms':
+      return directionValue(sort.direction, compareNullableNumbers(left.latencyP50Ms, right.latencyP50Ms));
+    case 'errorRate':
+      return directionValue(sort.direction, compareNullableNumbers(left.errorRate, right.errorRate));
     case 'percentOfWindow':
       return directionValue(sort.direction, compareNullableNumbers(left.percentOfWindow, right.percentOfWindow));
     case 'utilizationRate24h':
@@ -105,6 +113,10 @@ function compareBuyerRows(
       return directionValue(sort.direction, compareNullableStrings(buyerPreferenceLabel(left), buyerPreferenceLabel(right)));
     case 'requests':
       return directionValue(sort.direction, compareNullableNumbers(left.requests, right.requests));
+    case 'latencyP50Ms':
+      return directionValue(sort.direction, compareNullableNumbers(left.latencyP50Ms, right.latencyP50Ms));
+    case 'errorRate':
+      return directionValue(sort.direction, compareNullableNumbers(left.errorRate, right.errorRate));
     case 'percentOfWindow':
       return directionValue(sort.direction, compareNullableNumbers(left.percentOfWindow, right.percentOfWindow));
     case 'lastSeenAt':

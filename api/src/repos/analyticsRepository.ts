@@ -827,7 +827,13 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         ${bucketExpr} AS bucket,
         re.api_key_id,
         count(distinct re.request_id) AS request_count,
-        coalesce(sum(ul.usage_units), 0) AS usage_units
+        coalesce(sum(ul.usage_units), 0) AS usage_units,
+        CASE WHEN count(*) > 0
+          THEN round(count(*) FILTER (WHERE re.upstream_status >= 400 OR re.error_code IS NOT NULL)::numeric / count(*), 4)
+          ELSE 0
+        END AS error_rate,
+        percentile_cont(0.50) WITHIN GROUP (ORDER BY re.latency_ms)
+          FILTER (WHERE re.latency_ms IS NOT NULL) AS latency_p50_ms
       FROM ${TABLES.routingEvents} re
       LEFT JOIN ${TABLES.usageLedger} ul
         ON ul.org_id = re.org_id

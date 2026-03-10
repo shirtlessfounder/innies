@@ -80,6 +80,7 @@ type CurrentTokenRoutingRow = {
   debugLabel?: string | null;
   provider?: string;
   totalAttempts?: number;
+  errorCount?: number;
   latencyP50Ms?: number | null;
   authFailures24h?: number;
   rateLimited24h?: number;
@@ -120,6 +121,7 @@ type CurrentBuyersResponse = {
     percentOfTotal?: number;
     percentOfWindow?: number;
     lastSeenAt?: string | null;
+    latencyP50Ms?: number | null;
     errorRate?: number | null;
   }>;
 };
@@ -140,6 +142,8 @@ type CurrentBuyerSeriesResponse = {
     date?: string;
     requests?: number;
     usageUnits?: number;
+    errorRate?: number;
+    latencyP50Ms?: number | null;
   }>;
 };
 
@@ -158,6 +162,7 @@ type CurrentDashboardTokenRow = {
   monthlyContributionUsedUnits?: number;
   monthlyContributionLimitUnits?: number | null;
   latencyP50Ms?: number | null;
+  errorRate?: number | null;
   authFailures24h?: number;
   rateLimited24h?: number;
 };
@@ -176,6 +181,7 @@ type CurrentDashboardBuyerRow = {
   percentOfWindow?: number;
   percentOfTotal?: number;
   lastSeenAt?: string | null;
+  latencyP50Ms?: number | null;
   errorRate?: number | null;
 };
 
@@ -410,6 +416,7 @@ async function normalizeBuyerRows(
         summary.totalUsageUnits > 0 ? toNumber(buyer.usageUnits) / summary.totalUsageUnits : 0,
       ),
       lastSeenAt: toStringOrNull(buyer.lastSeenAt),
+      latencyP50Ms: toNullableNumber(buyer.latencyP50Ms),
       errorRate: toNullableNumber(buyer.errorRate),
       deltaRequests: 0,
       deltaUsageUnits: 0,
@@ -437,6 +444,7 @@ async function normalizeBuyerRows(
           summary.totalUsageUnits > 0 ? toNumber(buyer.usageUnits) / summary.totalUsageUnits : 0,
         ),
         lastSeenAt: null,
+        latencyP50Ms: null,
         errorRate: null,
         deltaRequests: 0,
         deltaUsageUnits: 0,
@@ -464,6 +472,7 @@ function normalizeDashboardTokenRows(
         provider: toStringOrNull(row.provider) ?? 'unknown',
         status: toStringOrNull(row.status) ?? 'unknown',
         attempts: toNumber(row.attempts, toNumber(row.requests)),
+        requests: toNumber(row.requests),
         usageUnits,
         percentOfWindow: toNumber(
           row.percentOfWindow,
@@ -474,6 +483,7 @@ function normalizeDashboardTokenRows(
         monthlyContributionUsedUnits: toNumber(row.monthlyContributionUsedUnits),
         monthlyContributionLimitUnits: toNullableNumber(row.monthlyContributionLimitUnits),
         latencyP50Ms: toNullableNumber(row.latencyP50Ms),
+        errorRate: toNullableNumber(row.errorRate),
         authFailures24h: toNumber(row.authFailures24h),
         rateLimited24h: toNumber(row.rateLimited24h),
         deltaAttempts: 0,
@@ -506,6 +516,7 @@ function normalizeDashboardBuyerRows(
           summary.totalUsageUnits > 0 ? usageUnits / summary.totalUsageUnits : 0,
         ),
         lastSeenAt: toStringOrNull(buyer.lastSeenAt),
+        latencyP50Ms: toNullableNumber(buyer.latencyP50Ms),
         errorRate: toNullableNumber(buyer.errorRate),
         deltaRequests: 0,
         deltaUsageUnits: 0,
@@ -533,6 +544,9 @@ function buildTokenRows(
     const routing = routingMap.get(credentialId);
     const usageUnits = toNumber(usage?.usageUnits);
     const attempts = toNumber(routing?.totalAttempts, toNumber(usage?.requests));
+    const requests = toNumber(usage?.requests);
+    const errorCount = toNumber(routing?.errorCount);
+    const errorRate = attempts > 0 ? errorCount / attempts : null;
 
     return {
       credentialId,
@@ -541,6 +555,7 @@ function buildTokenRows(
       provider: toStringOrNull(health?.provider ?? usage?.provider ?? routing?.provider) ?? 'unknown',
       status: toStringOrNull(health?.status ?? usage?.status) ?? 'unknown',
       attempts,
+      requests,
       usageUnits,
       percentOfWindow: summary.totalUsageUnits > 0 ? usageUnits / summary.totalUsageUnits : 0,
       utilizationRate24h: toNullableNumber(health?.utilizationRate24h),
@@ -548,6 +563,7 @@ function buildTokenRows(
       monthlyContributionUsedUnits: toNumber(health?.monthlyContributionUsedUnits),
       monthlyContributionLimitUnits: toNullableNumber(health?.monthlyContributionLimitUnits),
       latencyP50Ms: toNullableNumber(routing?.latencyP50Ms),
+      errorRate: toNullableNumber(errorRate),
       authFailures24h: toNumber(routing?.authFailures24h),
       rateLimited24h: toNumber(routing?.rateLimited24h),
       deltaAttempts: 0,
@@ -720,19 +736,6 @@ export async function getAnalyticsSeries(input: {
     };
   }
 
-  if (input.metric === 'latencyP50Ms' || input.metric === 'errorRate') {
-    return {
-      window: input.window,
-      effectiveWindow,
-      entityType: input.entityType,
-      entityId: input.entityId,
-      metric: input.metric,
-      series: [],
-      partial: true,
-      warning: `Buyer ${input.metric} history is not available in the current backend response.`,
-    };
-  }
-
   const payload = await fetchOptionalAdminJson<CurrentBuyerSeriesResponse>('/v1/admin/analytics/buyers/timeseries', {
     window: effectiveWindow,
     apiKeyId: input.entityId,
@@ -747,7 +750,7 @@ export async function getAnalyticsSeries(input: {
       metric: input.metric,
       series: [],
       partial: true,
-      warning: 'Buyer historical series is not available until backend /buyers/timeseries ships.',
+      warning: 'Buyer historical series endpoint is not available from the current backend.',
     };
   }
 

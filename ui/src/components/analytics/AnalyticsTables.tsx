@@ -7,7 +7,7 @@ import type {
   SortState,
   TokenSortKey,
 } from '../../lib/analytics/sort';
-import { type AnalyticsBuyerRow, type AnalyticsTokenRow } from '../../lib/analytics/types';
+import { type AnalyticsBuyerRow, type AnalyticsMetric, type AnalyticsTokenRow } from '../../lib/analytics/types';
 import {
   buyerIdentityLabel,
   buyerOrgIdLabel,
@@ -15,6 +15,7 @@ import {
   buyerPreferenceLabel,
   buyerSeriesLabel,
   formatCount,
+  formatNullableNumber,
   formatPercent,
   formatTimestamp,
   tokenIdentityLabel,
@@ -78,6 +79,130 @@ function DeltaCell(input: {
   );
 }
 
+function tokenStatusTone(status: string): string {
+  const normalized = status.trim().toLowerCase();
+  switch (normalized) {
+    case 'active':
+      return styles.statusPillActive;
+    case 'rotating':
+      return styles.statusPillRotating;
+    case 'maxed':
+      return styles.statusPillMaxed;
+    case 'expired':
+      return styles.statusPillExpired;
+    case 'revoked':
+      return styles.statusPillRevoked;
+    default:
+      return styles.statusPillUnknown;
+  }
+}
+
+function TokenStatusCell({ status }: { status: string }) {
+  return (
+    <span className={[styles.statusPill, tokenStatusTone(status)].join(' ')}>
+      {status}
+    </span>
+  );
+}
+
+function tokenMetricConfig(metric: AnalyticsMetric): {
+  key: TokenSortKey;
+  label: string;
+  value: (row: AnalyticsTokenRow) => string;
+  deltaValue: (row: AnalyticsTokenRow) => number;
+  showDelta: boolean;
+  showShare: boolean;
+} {
+  switch (metric) {
+    case 'requests':
+      return {
+        key: 'attempts',
+        label: 'Attempts',
+        value: (row) => formatCount(row.attempts),
+        deltaValue: (row) => row.deltaAttempts,
+        showDelta: true,
+        showShare: false,
+      };
+    case 'latencyP50Ms':
+      return {
+        key: 'latencyP50Ms',
+        label: 'Latency P50',
+        value: (row) => formatNullableNumber(row.latencyP50Ms, 'ms'),
+        deltaValue: () => 0,
+        showDelta: false,
+        showShare: false,
+      };
+    case 'errorRate':
+      return {
+        key: 'errorRate',
+        label: 'Error Rate',
+        value: (row) => formatPercent(row.errorRate),
+        deltaValue: () => 0,
+        showDelta: false,
+        showShare: false,
+      };
+    case 'usageUnits':
+    default:
+      return {
+        key: 'usageUnits',
+        label: 'Usage',
+        value: (row) => formatCount(row.usageUnits),
+        deltaValue: (row) => row.deltaUsageUnits,
+        showDelta: true,
+        showShare: true,
+      };
+  }
+}
+
+function buyerMetricConfig(metric: AnalyticsMetric): {
+  key: BuyerSortKey;
+  label: string;
+  value: (row: AnalyticsBuyerRow) => string;
+  deltaValue: (row: AnalyticsBuyerRow) => number;
+  showDelta: boolean;
+  showShare: boolean;
+} {
+  switch (metric) {
+    case 'requests':
+      return {
+        key: 'requests',
+        label: 'Requests',
+        value: (row) => formatCount(row.requests),
+        deltaValue: (row) => row.deltaRequests,
+        showDelta: true,
+        showShare: false,
+      };
+    case 'latencyP50Ms':
+      return {
+        key: 'latencyP50Ms',
+        label: 'Latency P50',
+        value: (row) => formatNullableNumber(row.latencyP50Ms, 'ms'),
+        deltaValue: () => 0,
+        showDelta: false,
+        showShare: false,
+      };
+    case 'errorRate':
+      return {
+        key: 'errorRate',
+        label: 'Error Rate',
+        value: (row) => formatPercent(row.errorRate),
+        deltaValue: () => 0,
+        showDelta: false,
+        showShare: false,
+      };
+    case 'usageUnits':
+    default:
+      return {
+        key: 'usageUnits',
+        label: 'Usage',
+        value: (row) => formatCount(row.usageUnits),
+        deltaValue: (row) => row.deltaUsageUnits,
+        showDelta: true,
+        showShare: true,
+      };
+  }
+}
+
 function VisibilityToggleButton(input: {
   hidden: boolean;
   onClick: () => void;
@@ -105,16 +230,20 @@ function VisibilityToggleButton(input: {
 export function TokenTable({
   rows,
   hiddenIds,
+  metric,
   onToggle,
   sort,
   onSort,
 }: {
   rows: AnalyticsTokenRow[];
   hiddenIds: string[];
+  metric: AnalyticsMetric;
   onToggle: (id: string) => void;
   sort: SortState<TokenSortKey>;
   onSort: (key: TokenSortKey, defaultDirection: SortDirection) => void;
 }) {
+  const metricConfig = tokenMetricConfig(metric);
+
   return (
     <div className={styles.tableWrap}>
       <table className={styles.table}>
@@ -133,7 +262,7 @@ export function TokenTable({
               <SortHeaderButton
                 active={sort.key === 'debugLabel'}
                 direction={sort.direction}
-                label="Label"
+                label="Seller"
                 onClick={() => onSort('debugLabel', 'asc')}
               />
             </th>
@@ -145,35 +274,37 @@ export function TokenTable({
                 onClick={() => onSort('provider', 'asc')}
               />
             </th>
-            <th className={styles.numeric} aria-sort={sortAria(sort.key === 'attempts', sort.direction)}>
+            <th aria-sort={sortAria(sort.key === 'status', sort.direction)}>
               <SortHeaderButton
-                active={sort.key === 'attempts'}
+                active={sort.key === 'status'}
                 direction={sort.direction}
-                label="Attempts"
-                numeric
-                onClick={() => onSort('attempts', 'desc')}
+                label="Status"
+                onClick={() => onSort('status', 'asc')}
               />
             </th>
-            <th className={styles.numeric} aria-sort={sortAria(sort.key === 'usageUnits', sort.direction)}>
+            <th className={styles.numeric} aria-sort={sortAria(sort.key === metricConfig.key, sort.direction)}>
               <SortHeaderButton
-                active={sort.key === 'usageUnits'}
+                active={sort.key === metricConfig.key}
                 direction={sort.direction}
-                label="Usage"
+                label={metricConfig.label}
                 numeric
-                onClick={() => onSort('usageUnits', 'desc')}
+                onClick={() => onSort(metricConfig.key, 'desc')}
               />
             </th>
-            <th className={styles.numeric} aria-sort={sortAria(sort.key === 'percentOfWindow', sort.direction)}>
-              <SortHeaderButton
-                active={sort.key === 'percentOfWindow'}
-                direction={sort.direction}
-                label="Share"
-                numeric
-                onClick={() => onSort('percentOfWindow', 'desc')}
-              />
-            </th>
-            <th className={styles.numeric}>Delta</th>
-            <th className={styles.numeric} aria-sort={sortAria(sort.key === 'utilizationRate24h', sort.direction)}>
+            {metricConfig.showShare ? (
+              <th className={styles.numeric} aria-sort={sortAria(sort.key === 'percentOfWindow', sort.direction)}>
+                <SortHeaderButton
+                  active={sort.key === 'percentOfWindow'}
+                  direction={sort.direction}
+                  label="Share"
+                  numeric
+                  onClick={() => onSort('percentOfWindow', 'desc')}
+                />
+              </th>
+            ) : null}
+            {metricConfig.showDelta ? <th className={styles.numeric}>Delta</th> : null}
+            {/* Re-enable Util 24h / Maxed 7d once the token table has room for the extra operator-only columns again. */}
+            {/* <th className={styles.numeric} aria-sort={sortAria(sort.key === 'utilizationRate24h', sort.direction)}>
               <SortHeaderButton
                 active={sort.key === 'utilizationRate24h'}
                 direction={sort.direction}
@@ -190,16 +321,18 @@ export function TokenTable({
                 numeric
                 onClick={() => onSort('maxedEvents7d', 'desc')}
               />
-            </th>
+            </th> */}
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
+          {rows.map((row) => {
+            const deltaValue = metricConfig.deltaValue(row);
+            return (
             <tr
               key={row.credentialId}
               className={[
                 hiddenIds.includes(row.credentialId) ? styles.rowHidden : '',
-                row.deltaUsageUnits > 0 ? styles.rowDeltaFlash : '',
+                metricConfig.showDelta && deltaValue > 0 ? styles.rowDeltaFlash : '',
               ].filter(Boolean).join(' ')}
             >
               <td>
@@ -212,16 +345,20 @@ export function TokenTable({
               <td>{tokenIdentityLabel(row)}</td>
               <td>{tokenLabelLabel(row)}</td>
               <td>{tokenProviderLabel(row.provider)}</td>
-              <td className={styles.numeric}>{formatCount(row.attempts)}</td>
-              <td className={styles.numeric}>{formatCount(row.usageUnits)}</td>
-              <td className={styles.numeric}>{formatPercent(row.percentOfWindow)}</td>
-              <td className={styles.numeric}>
-                <DeltaCell value={row.deltaUsageUnits} flashToken={row.flashToken} />
-              </td>
-              <td className={styles.numeric}>{formatPercent(row.utilizationRate24h)}</td>
-              <td className={styles.numeric}>{formatCount(row.maxedEvents7d)}</td>
+              <td><TokenStatusCell status={row.status} /></td>
+              <td className={styles.numeric}>{metricConfig.value(row)}</td>
+              {metricConfig.showShare ? <td className={styles.numeric}>{formatPercent(row.percentOfWindow)}</td> : null}
+              {metricConfig.showDelta ? (
+                <td className={styles.numeric}>
+                  <DeltaCell value={deltaValue} flashToken={row.flashToken} />
+                </td>
+              ) : null}
+              {/* Re-enable the hidden token-health cells when we bring the Util 24h / Maxed 7d headers back. */}
+              {/* <td className={styles.numeric}>{formatPercent(row.utilizationRate24h)}</td>
+              <td className={styles.numeric}>{formatCount(row.maxedEvents7d)}</td> */}
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -231,16 +368,20 @@ export function TokenTable({
 export function BuyerTable({
   rows,
   hiddenIds,
+  metric,
   onToggle,
   sort,
   onSort,
 }: {
   rows: AnalyticsBuyerRow[];
   hiddenIds: string[];
+  metric: AnalyticsMetric;
   onToggle: (id: string) => void;
   sort: SortState<BuyerSortKey>;
   onSort: (key: BuyerSortKey, defaultDirection: SortDirection) => void;
 }) {
+  const metricConfig = buyerMetricConfig(metric);
+
   return (
     <div className={styles.tableWrap}>
       <table className={styles.table}>
@@ -271,34 +412,27 @@ export function BuyerTable({
                 onClick={() => onSort('effectiveProvider', 'asc')}
               />
             </th>
-            <th className={styles.numeric} aria-sort={sortAria(sort.key === 'requests', sort.direction)}>
+            <th className={styles.numeric} aria-sort={sortAria(sort.key === metricConfig.key, sort.direction)}>
               <SortHeaderButton
-                active={sort.key === 'requests'}
+                active={sort.key === metricConfig.key}
                 direction={sort.direction}
-                label="Requests"
+                label={metricConfig.label}
                 numeric
-                onClick={() => onSort('requests', 'desc')}
+                onClick={() => onSort(metricConfig.key, 'desc')}
               />
             </th>
-            <th className={styles.numeric} aria-sort={sortAria(sort.key === 'usageUnits', sort.direction)}>
-              <SortHeaderButton
-                active={sort.key === 'usageUnits'}
-                direction={sort.direction}
-                label="Usage"
-                numeric
-                onClick={() => onSort('usageUnits', 'desc')}
-              />
-            </th>
-            <th className={styles.numeric}>Delta</th>
-            <th className={styles.numeric} aria-sort={sortAria(sort.key === 'percentOfWindow', sort.direction)}>
-              <SortHeaderButton
-                active={sort.key === 'percentOfWindow'}
-                direction={sort.direction}
-                label="Share"
-                numeric
-                onClick={() => onSort('percentOfWindow', 'desc')}
-              />
-            </th>
+            {metricConfig.showShare ? (
+              <th className={styles.numeric} aria-sort={sortAria(sort.key === 'percentOfWindow', sort.direction)}>
+                <SortHeaderButton
+                  active={sort.key === 'percentOfWindow'}
+                  direction={sort.direction}
+                  label="Share"
+                  numeric
+                  onClick={() => onSort('percentOfWindow', 'desc')}
+                />
+              </th>
+            ) : null}
+            {metricConfig.showDelta ? <th className={styles.numeric}>Delta</th> : null}
             <th aria-sort={sortAria(sort.key === 'lastSeenAt', sort.direction)}>
               <SortHeaderButton
                 active={sort.key === 'lastSeenAt'}
@@ -310,12 +444,14 @@ export function BuyerTable({
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
+          {rows.map((row) => {
+            const deltaValue = metricConfig.deltaValue(row);
+            return (
             <tr
               key={row.apiKeyId}
               className={[
                 hiddenIds.includes(row.apiKeyId) ? styles.rowHidden : '',
-                row.deltaUsageUnits > 0 ? styles.rowDeltaFlash : '',
+                metricConfig.showDelta && deltaValue > 0 ? styles.rowDeltaFlash : '',
               ].filter(Boolean).join(' ')}
             >
               <td>
@@ -340,15 +476,17 @@ export function BuyerTable({
                 </div>
               </td>
               <td>{buyerPreferenceLabel(row)}</td>
-              <td className={styles.numeric}>{formatCount(row.requests)}</td>
-              <td className={styles.numeric}>{formatCount(row.usageUnits)}</td>
-              <td className={styles.numeric}>
-                <DeltaCell value={row.deltaUsageUnits} flashToken={row.flashToken} />
-              </td>
-              <td className={styles.numeric}>{formatPercent(row.percentOfWindow)}</td>
+              <td className={styles.numeric}>{metricConfig.value(row)}</td>
+              {metricConfig.showShare ? <td className={styles.numeric}>{formatPercent(row.percentOfWindow)}</td> : null}
+              {metricConfig.showDelta ? (
+                <td className={styles.numeric}>
+                  <DeltaCell value={deltaValue} flashToken={row.flashToken} />
+                </td>
+              ) : null}
               <td>{formatTimestamp(row.lastSeenAt)}</td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>

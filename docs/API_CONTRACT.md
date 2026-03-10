@@ -500,7 +500,9 @@ Response example:
       "date": "2026-03-07T14:15:00.000Z",
       "apiKeyId": "22222222-2222-4222-8222-222222222222",
       "requests": 24,
-      "usageUnits": 4100
+      "usageUnits": 4100,
+      "errorRate": 0.0125,
+      "latencyP50Ms": 980
     }
   ]
 }
@@ -631,6 +633,8 @@ Query params:
 Notes:
 - returns a best-effort merged snapshot for the UI so summary/tables/anomalies/events share one `snapshotAt`
 - `tokens[*]` merges usage, health, and routing metrics by `credentialId`
+- `tokens[*].attempts` is attempt-level volume; `tokens[*].requests` is distinct `request_id` count for the same window
+- `buyers[*]` may include `latencyP50Ms` and `errorRate` when those buyer aggregates are available
 - snapshot `events` is currently capped to the 20 most recent lifecycle events
 
 Response example:
@@ -677,11 +681,28 @@ Response example:
       "monthlyContributionUsedUnits": 123000,
       "monthlyContributionLimitUnits": 500000,
       "latencyP50Ms": 1200,
+      "errorRate": 0.02,
       "authFailures24h": 2,
       "rateLimited24h": 3
     }
   ],
-  "buyers": [],
+  "buyers": [
+    {
+      "apiKeyId": "22222222-2222-4222-8222-222222222222",
+      "displayKey": "key_2222...2222",
+      "label": "shirtless",
+      "orgId": "33333333-3333-4333-8333-333333333333",
+      "orgLabel": "Innies Team",
+      "preferredProvider": "openai",
+      "effectiveProvider": "openai",
+      "requests": 72,
+      "usageUnits": 11000,
+      "percentOfWindow": 0.34,
+      "lastSeenAt": "2026-03-07T14:31:00.000Z",
+      "latencyP50Ms": 980,
+      "errorRate": 0.011
+    }
+  ],
   "anomalies": {
     "checks": {
       "missingDebugLabels": 0,
