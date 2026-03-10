@@ -1,6 +1,6 @@
 {
   "name": "innies",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "description": "CLI wrappers for routing Claude and Codex through the Innies proxy.",
   "repository": {
