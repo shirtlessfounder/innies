@@ -8,11 +8,26 @@
 
 html,
 body {
+  min-height: 100%;
   margin: 0;
   padding: 0;
 }
 
 body {
-  background: #f6f8fb;
-  color: #111827;
+  background: #dce3e9;
+  color: #0c1d33;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
 }
