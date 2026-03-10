@@ -4,3 +4,7 @@ dist/
 .env
 .env.local
 .env.*.local
+ui/.next/
+ui/.next-dev/
+ui/out/
+ui/*.tsbuildinfo
