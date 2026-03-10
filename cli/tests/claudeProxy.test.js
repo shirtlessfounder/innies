@@ -47,7 +47,8 @@ test('claude proxy injects buyer auth and strips claude oauth auth', async () =>
   const proxy = await startClaudeProxy({
     upstreamBaseUrl,
     buyerToken: 'in_live_test',
-    correlationId: 'req_test_123'
+    correlationId: 'req_test_123',
+    sessionModel: 'claude-opus-4-6'
   });
 
   const response = await fetch(`${proxy.baseUrl}/v1/messages?hello=1`, {
@@ -69,9 +70,65 @@ test('claude proxy injects buyer auth and strips claude oauth auth', async () =>
   assert.equal(capturedRequest.body, '{"ping":"pong"}');
   assert.equal(capturedRequest.headers.authorization, undefined);
   assert.equal(capturedRequest.headers['x-api-key'], 'in_live_test');
-  assert.equal(capturedRequest.headers['x-request-id'], 'req_test_123');
+  assert.equal(capturedRequest.headers['x-request-id'], 'client-supplied');
   assert.equal(capturedRequest.headers['x-innies-provider-pin'], 'true');
   assert.equal(capturedRequest.headers['anthropic-version'], '2023-06-01');
+
+  await proxy.close();
+  await closeServer(upstream);
+});
+
+test('claude proxy rewrites compat request model to the wrapped session model', async () => {
+  let capturedRequest = null;
+  const upstream = http.createServer((req, res) => {
+    let body = '';
+    req.setEncoding('utf8');
+    req.on('data', (chunk) => {
+      body += chunk;
+    });
+    req.on('end', () => {
+      capturedRequest = {
+        url: req.url,
+        headers: req.headers,
+        body
+      };
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+  });
+
+  upstream.listen(0, '127.0.0.1');
+  await once(upstream, 'listening');
+
+  const upstreamAddress = upstream.address();
+  const upstreamBaseUrl = `http://127.0.0.1:${upstreamAddress.port}`;
+  const proxy = await startClaudeProxy({
+    upstreamBaseUrl,
+    buyerToken: 'in_live_test',
+    correlationId: 'req_session_123',
+    sessionModel: 'claude-opus-4-6'
+  });
+
+  const response = await fetch(`${proxy.baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'claude-subagent-fast',
+      max_tokens: 32,
+      messages: [{ role: 'user', content: 'hi' }]
+    })
+  });
+
+  assert.equal(response.status, 200);
+  assert.ok(capturedRequest);
+  assert.match(String(capturedRequest.headers['x-request-id']), /^req_session_123:/);
+  assert.deepEqual(JSON.parse(capturedRequest.body), {
+    model: 'claude-opus-4-6',
+    max_tokens: 32,
+    messages: [{ role: 'user', content: 'hi' }]
+  });
 
   await proxy.close();
   await closeServer(upstream);

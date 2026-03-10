@@ -49,8 +49,10 @@ Behavior:
 - exits with the same exit code as `claude`
 - prints actionable error if `claude` cannot start
 - starts a loopback HTTP bridge and points `ANTHROPIC_BASE_URL` at it
-- bridge injects `x-api-key`, `x-request-id`, and `x-innies-provider-pin: true` for forwarded Innies requests
+- bridge injects `x-api-key` and `x-innies-provider-pin: true` for forwarded Innies requests
+- bridge preserves Claude-supplied `x-request-id` when present; otherwise it mints a unique per-request id scoped to the wrapped session
 - bridge strips Claude.ai OAuth `Authorization` before forwarding to Innies so active claude.ai sessions do not break buyer-key auth
+- bridge rewrites Anthropic compat request bodies to the wrapped session model so Claude subagents stay on the same pinned model lane
 - loop-safe binary resolution:
   - prefers non-wrapper Claude binary from `which -a claude`
   - supports `INNIES_CLAUDE_BIN` override
