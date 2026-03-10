@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import styles from '../app/page.module.css';
 
-const NAV_ITEMS = ['ONBOARDING', 'HOW IT WORKS', 'SAVINGS'] as const;
+const NAV_ITEMS = ['ONBOARDING', 'HOW IT WORKS', 'MONEY SAVINGS'] as const;
 
 function ChevronIcon() {
   return (

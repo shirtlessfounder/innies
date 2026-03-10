@@ -1,4 +1,5 @@
 import Image from 'next/image';
+import Link from 'next/link';
 import { HeaderNav } from '../components/HeaderNav';
 import styles from './page.module.css';
 
@@ -47,7 +48,7 @@ export default function DashboardIndexPage() {
 
         <section className={styles.hero}>
           <div className={styles.heroInner}>
-            <div className={styles.frame}>
+            <Link href="/analytics" className={styles.frame} aria-label="Open analytics">
               <Image
                 className={styles.heroImage}
                 src="/images/archive-computer.png"
@@ -56,7 +57,7 @@ export default function DashboardIndexPage() {
                 height={1778}
                 priority
               />
-            </div>
+            </Link>
 
             <h1 className={styles.headline}>
               <span>MORE AI CODING.</span>
