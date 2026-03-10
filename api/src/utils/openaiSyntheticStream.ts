@@ -25,6 +25,35 @@ function normalizeUsage(response: Record<string, unknown>): {
   };
 }
 
+function extractFallbackText(response: Record<string, unknown>): string {
+  if (typeof response.output_text === 'string' && response.output_text.trim().length > 0) {
+    return response.output_text;
+  }
+  if (typeof response.detail === 'string' && response.detail.trim().length > 0) {
+    return response.detail;
+  }
+  if (typeof response.message === 'string' && response.message.trim().length > 0) {
+    return response.message;
+  }
+  const nestedError = isRecord(response.error) ? response.error : null;
+  if (nestedError && typeof nestedError.message === 'string' && nestedError.message.trim().length > 0) {
+    return nestedError.message;
+  }
+  return '';
+}
+
+function looksLikeResponseEnvelope(response: Record<string, unknown>): boolean {
+  return (
+    Object.prototype.hasOwnProperty.call(response, 'id')
+    || Object.prototype.hasOwnProperty.call(response, 'status')
+    || Object.prototype.hasOwnProperty.call(response, 'output')
+    || Object.prototype.hasOwnProperty.call(response, 'output_text')
+    || Object.prototype.hasOwnProperty.call(response, 'detail')
+    || Object.prototype.hasOwnProperty.call(response, 'message')
+    || Object.prototype.hasOwnProperty.call(response, 'error')
+  );
+}
+
 function normalizeArguments(value: unknown): string {
   if (typeof value === 'string') return value;
   if (value === undefined || value === null) return '';
@@ -51,16 +80,25 @@ function normalizeOutputItems(response: Record<string, unknown>): Array<Record<s
     .filter((item): item is Record<string, unknown> => isRecord(item));
   if (output.length > 0) return output;
 
-  const fallbackText = typeof response.output_text === 'string' ? response.output_text : '';
-  if (fallbackText.trim().length === 0) return [];
+  if (!looksLikeResponseEnvelope(response)) return [];
+
+  const fallbackText = extractFallbackText(response);
 
   return [{
     type: 'message',
     id: `msg_${asString(response.id, String(Date.now()))}`,
     role: 'assistant',
-    content: [{ type: 'output_text', text: fallbackText }],
-    status: 'completed'
+    content: fallbackText.trim().length > 0
+      ? [{ type: 'output_text', text: fallbackText }]
+      : [],
+    status: typeof response.status === 'string' ? response.status : 'completed'
   }];
+}
+
+function terminalEventType(status: string): 'response.completed' | 'response.failed' | 'response.incomplete' {
+  if (status === 'failed') return 'response.failed';
+  if (status === 'incomplete') return 'response.incomplete';
+  return 'response.completed';
 }
 
 function sseData(payload: Record<string, unknown> | string): string {
@@ -81,6 +119,48 @@ export function summarizeSyntheticOpenAiOutputItems(data: unknown): { count: num
     count: output.length,
     types: Array.from(uniqueTypes).join(',')
   };
+}
+
+export function hasTerminalOpenAiResponsesStreamEvent(raw: string): boolean {
+  const normalized = raw.toLowerCase();
+  return (
+    normalized.includes('"type":"response.completed"')
+    || normalized.includes('"type":"response.failed"')
+    || normalized.includes('"type":"response.incomplete"')
+    || normalized.includes('data: [done]')
+  );
+}
+
+export function buildSyntheticOpenAiStreamFailureSse(input: {
+  id?: string;
+  model?: string;
+  message: string;
+  code?: string;
+}): string {
+  const id = typeof input.id === 'string' && input.id.trim().length > 0
+    ? input.id
+    : `resp_${Date.now()}`;
+  const response: Record<string, unknown> = {
+    id,
+    status: 'failed',
+    output: [],
+    usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+    error: {
+      code: input.code ?? 'stream_disconnected',
+      message: input.message
+    }
+  };
+  if (typeof input.model === 'string' && input.model.trim().length > 0) {
+    response.model = input.model;
+  }
+
+  return [
+    sseData({
+      type: 'response.failed',
+      response
+    }),
+    sseData('[DONE]')
+  ].join('');
 }
 
 export function buildSyntheticOpenAiResponsesSse(data: unknown): string {
@@ -229,7 +309,7 @@ export function buildSyntheticOpenAiResponsesSse(data: unknown): string {
   });
 
   events.push(sseData({
-    type: terminalStatus === 'failed' ? 'response.failed' : 'response.completed',
+    type: terminalEventType(terminalStatus),
     response: {
       ...(model ? { model } : {}),
       ...response,
