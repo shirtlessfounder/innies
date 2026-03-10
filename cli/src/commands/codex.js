@@ -67,6 +67,7 @@ export async function runCodex(args) {
 
   const env = {
     ...process.env,
+    MallocStackLogging: '',
     INNIES_CODEX_WRAPPED: '1',
     INNIES_TOKEN: config.token,
     INNIES_API_BASE_URL: config.apiBaseUrl,
