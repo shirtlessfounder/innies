@@ -25,14 +25,14 @@ type UseAnalyticsDashboardResult = {
 function pollIntervalMs(window: AnalyticsPageWindow): number {
   switch (window) {
     case '24h':
-      return 2500;
+      return 2000;
     case '1w':
-      return 5000;
+      return 4000;
     case '1m':
-      return 10000;
+      return 8000;
     case '5h':
     default:
-      return 2500;
+      return 2000;
   }
 }
 

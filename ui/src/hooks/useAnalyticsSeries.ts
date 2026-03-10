@@ -8,7 +8,6 @@ import type {
   AnalyticsSeries,
   AnalyticsSeriesSelection,
 } from '../lib/analytics/types';
-import { MAX_ANALYTICS_SERIES } from '../lib/analytics/types';
 
 type UseAnalyticsSeriesResult = {
   series: AnalyticsSeries[];
@@ -29,7 +28,7 @@ export function useAnalyticsSeries(input: {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
-  const selected = input.selections.slice(0, MAX_ANALYTICS_SERIES);
+  const selected = input.selections;
   const selectionKey = selected.map((entry) => `${entry.entityType}:${entry.entityId}:${entry.label}`).join('|');
 
   useEffect(() => {

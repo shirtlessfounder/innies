@@ -121,6 +121,15 @@ export type AnalyticsSeries = {
   partial: boolean;
 };
 
+export type AnalyticsAggregateSeries = {
+  id: string;
+  label: string;
+  points: AnalyticsSeriesPoint[];
+  partial: boolean;
+  color: string;
+  kind: 'total' | 'provider';
+};
+
 export type AnalyticsSeriesResponse = {
   window: AnalyticsPageWindow;
   effectiveWindow: AnalyticsApiWindow;
