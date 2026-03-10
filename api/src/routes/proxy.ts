@@ -12,7 +12,12 @@ import { readAndValidateIdempotencyKey } from '../utils/idempotencyKey.js';
 import { anthropicToOpenAi } from '../utils/anthropicToOpenai.js';
 import { mapOpenAiErrorToAnthropic, translateOpenAiToAnthropic } from '../utils/openaiToAnthropic.js';
 import { OpenAiToAnthropicStreamTransform } from '../utils/openaiToAnthropicStream.js';
-import { buildSyntheticOpenAiResponsesSse, summarizeSyntheticOpenAiOutputItems } from '../utils/openaiSyntheticStream.js';
+import {
+  buildSyntheticOpenAiResponsesSse,
+  buildSyntheticOpenAiStreamFailureSse,
+  hasTerminalOpenAiResponsesStreamEvent,
+  summarizeSyntheticOpenAiOutputItems
+} from '../utils/openaiSyntheticStream.js';
 import { extractRequestPreview, extractResponsePreview } from '../utils/requestLogPreview.js';
 import {
   isOpenAiOauthAccessToken,
@@ -1306,6 +1311,182 @@ function buildSyntheticAnthropicSse(data: unknown, model: string): string {
   return events.join('');
 }
 
+function buildSyntheticAnthropicStreamFailureSse(input: {
+  id?: string;
+  model: string;
+  message: string;
+}): string {
+  const id = input.id ?? `msg_${Date.now()}`;
+  return [
+    `event: message_start\ndata: ${JSON.stringify({
+      type: 'message_start',
+      message: {
+        id,
+        type: 'message',
+        role: 'assistant',
+        model: input.model,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 0 }
+      }
+    })}\n\n`,
+    `event: content_block_start\ndata: ${JSON.stringify({
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'text', text: '' }
+    })}\n\n`,
+    `event: content_block_delta\ndata: ${JSON.stringify({
+      type: 'content_block_delta',
+      index: 0,
+      delta: {
+        type: 'text_delta',
+        text: `[Innies stream error: ${input.message}]`
+      }
+    })}\n\n`,
+    `event: content_block_stop\ndata: ${JSON.stringify({
+      type: 'content_block_stop',
+      index: 0
+    })}\n\n`,
+    `event: message_delta\ndata: ${JSON.stringify({
+      type: 'message_delta',
+      delta: { stop_reason: 'end_turn', stop_sequence: null },
+      usage: { input_tokens: 0, output_tokens: 0 }
+    })}\n\n`,
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+  ].join('');
+}
+
+function createDownstreamClosedError(): Error {
+  const error = new Error('downstream closed');
+  (error as any).code = 'DOWNSTREAM_CLOSED';
+  return error;
+}
+
+function buildSyntheticPassthroughFailureSse(input: {
+  downstreamUsesAnthropicSse: boolean;
+  id: string;
+  model: string;
+  anthropicModel: string;
+}): string {
+  if (input.downstreamUsesAnthropicSse) {
+    return buildSyntheticAnthropicStreamFailureSse({
+      id: input.id,
+      model: input.anthropicModel,
+      message: 'upstream stream ended before completion'
+    });
+  }
+  return buildSyntheticOpenAiStreamFailureSse({
+    id: input.id,
+    model: input.model,
+    message: 'Innies upstream stream ended before completion'
+  });
+}
+
+function hasTerminalAnthropicStreamEvent(raw: string): boolean {
+  const normalized = raw.toLowerCase();
+  return normalized.includes('event: message_stop') || normalized.includes('"type":"message_stop"');
+}
+
+function isDownstreamClientDisconnect(res: Response, error: unknown): boolean {
+  const code = error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+    ? String((error as { code: string }).code)
+    : null;
+  if ((res as any).destroyed || (res as any).writableEnded) return true;
+  return code === 'EPIPE' || code === 'ECONNRESET' || code === 'DOWNSTREAM_CLOSED';
+}
+
+type StreamTerminalStatus = 'completed' | 'incomplete' | 'failed' | 'missing';
+
+function resolveOpenAiResponsesStreamTerminalStatus(raw: string): StreamTerminalStatus {
+  const normalized = raw.toLowerCase();
+  if (normalized.includes('"type":"response.failed"')) return 'failed';
+  if (normalized.includes('"type":"response.incomplete"')) return 'incomplete';
+  if (normalized.includes('"type":"response.completed"') || normalized.includes('data: [done]')) {
+    return 'completed';
+  }
+  return 'missing';
+}
+
+function resolveAnthropicStreamTerminalStatus(raw: string): StreamTerminalStatus {
+  if (raw.includes('[Translation error:')) return 'failed';
+  return hasTerminalAnthropicStreamEvent(raw) ? 'completed' : 'missing';
+}
+
+async function waitForResponseDrainOrClose(res: Response): Promise<void> {
+  const writable = res as any;
+  if (writable.destroyed || writable.writableEnded) {
+    throw createDownstreamClosedError();
+  }
+  if (typeof writable.once !== 'function') {
+    return;
+  }
+  const removeListener = typeof writable.off === 'function'
+    ? (event: string, handler: (...args: any[]) => void) => writable.off(event, handler)
+    : (typeof writable.removeListener === 'function'
+      ? (event: string, handler: (...args: any[]) => void) => writable.removeListener(event, handler)
+      : null);
+
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      removeListener?.('drain', onDrain);
+      removeListener?.('close', onClose);
+      removeListener?.('finish', onFinish);
+      removeListener?.('error', onError);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onClose = () => {
+      cleanup();
+      reject(createDownstreamClosedError());
+    };
+    const onFinish = () => {
+      cleanup();
+      reject(createDownstreamClosedError());
+    };
+    const onError = (error: unknown) => {
+      cleanup();
+      reject(error);
+    };
+
+    writable.once('drain', onDrain);
+    writable.once('close', onClose);
+    writable.once('finish', onFinish);
+    writable.once('error', onError);
+  });
+
+  if (writable.destroyed || writable.writableEnded) {
+    throw createDownstreamClosedError();
+  }
+}
+
+async function writeReadableToResponse(input: {
+  source: NodeJS.ReadableStream;
+  res: Response;
+  onChunk: (buffer: Buffer) => void;
+  onDownstreamWrite: () => void;
+}): Promise<void> {
+  for await (const chunk of input.source as AsyncIterable<Buffer | Uint8Array | string>) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    input.onChunk(buffer);
+
+    if ((input.res as any).destroyed || (input.res as any).writableEnded) {
+      throw createDownstreamClosedError();
+    }
+
+    input.onDownstreamWrite();
+    const writeResult = (input.res as any).write(buffer);
+    if (typeof (input.res as any).flush === 'function') {
+      (input.res as any).flush();
+    }
+    if (writeResult === false && typeof (input.res as any).once === 'function') {
+      await waitForResponseDrainOrClose(input.res);
+    }
+  }
+}
+
 function sendProxyReplayNotSupported(res: Response, requestId: string): void {
   res.setHeader('x-request-id', requestId);
   res.setHeader('x-idempotent-replay', 'true');
@@ -2498,13 +2679,35 @@ async function executeTokenModeStreaming(input: {
           const openAiSummary = useAnthropicSse
             ? null
             : summarizeSyntheticOpenAiOutputItems(syntheticMessage);
+          const invalidOpenAiSyntheticPayload = !useAnthropicSse && openAiSummary !== null && openAiSummary.count === 0;
+          if (invalidOpenAiSyntheticPayload) {
+            console.warn('[openai-stream-fallback-invalid]', {
+              requestId,
+              attemptNo,
+              credential_id: credential.id,
+              credential_label: credential.debugLabel ?? null,
+              provider,
+              model,
+              upstream_status: status,
+              upstream_content_type: contentType
+            });
+          }
           const syntheticPayload = useAnthropicSse
             ? `: keepalive\n\n${buildSyntheticAnthropicSse(
               compatTranslation ? downstreamMessage : syntheticMessage,
               compatTranslation ? compatTranslation.originalModel : model
             )}`
-            : `: keepalive\n\n${buildSyntheticOpenAiResponsesSse(syntheticMessage)}`;
-          const streamMode = useAnthropicSse ? 'synthetic_bridge' : 'synthetic_openai_responses_bridge';
+            : `: keepalive\n\n${invalidOpenAiSyntheticPayload
+              ? buildSyntheticOpenAiStreamFailureSse({
+                id: requestId,
+                model,
+                message: 'Innies received an invalid empty JSON fallback for a streaming Responses request',
+                code: 'invalid_stream_fallback'
+              })
+              : buildSyntheticOpenAiResponsesSse(syntheticMessage)}`;
+          const streamMode = useAnthropicSse
+            ? 'synthetic_bridge'
+            : (invalidOpenAiSyntheticPayload ? 'synthetic_openai_responses_error_bridge' : 'synthetic_openai_responses_bridge');
           const syntheticFormat = useAnthropicSse ? 'anthropic' : 'openai_responses';
           firstDownstreamWriteAt = Date.now();
           (res as any).write(syntheticPayload);
@@ -2668,23 +2871,14 @@ async function executeTokenModeStreaming(input: {
         ttfbMs: Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt))
       });
 
-      if (status >= 200 && status < 300) {
-        await recordTokenCredentialOutcome({
-          credential,
-          requestId,
-          attemptNo,
-          provider,
-          model,
-          upstreamStatus: status
-        });
-      }
-
       let totalBytes = 0;
       let totalChunks = 0;
       let sampled = '';
       let firstByteAt: number | null = null;
       let firstDownstreamWriteAt: number | null = null;
       let streamEndedAt: number | null = null;
+      let streamTruncated = false;
+      const downstreamUsesAnthropicSse = compatTranslation || provider === 'anthropic';
       const heartbeatMs = sseHeartbeatIntervalMs();
       const writeKeepalive = () => {
         if ((res as any).writableEnded || (res as any).destroyed) return;
@@ -2699,43 +2893,104 @@ async function executeTokenModeStreaming(input: {
       // Emit one frame immediately so clients with short first-byte deadlines do not timeout.
       writeKeepalive();
       const keepaliveTimer = setInterval(writeKeepalive, heartbeatMs);
-      const meter = new Transform({
-        transform(chunk, _encoding, callback) {
-          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-          if (firstByteAt === null) {
-            firstByteAt = Date.now();
-            console.info('[stream-first-byte]', {
-              requestId,
-              attemptNo,
-              provider,
-              model,
-              first_byte_ms: firstByteAt - startedAt
-            });
-          }
-          totalBytes += buffer.length;
-          totalChunks += 1;
-          sampled = (sampled + buffer.toString('utf8')).slice(-200_000);
-          callback(null, chunk);
-        }
-      });
+      let pipelineError: unknown = null;
       try {
-        if (compatTranslation) {
-          await pipeline(
-            Readable.fromWeb(upstreamResponse.body as any),
-            new OpenAiToAnthropicStreamTransform({
-              model: compatTranslation.originalModel
-            }),
-            meter,
-            res as any
-          );
-        } else {
-          await pipeline(Readable.fromWeb(upstreamResponse.body as any), meter, res as any);
+        const upstreamReadable = Readable.fromWeb(upstreamResponse.body as any);
+        const responseStream = compatTranslation
+          ? upstreamReadable.pipe(new OpenAiToAnthropicStreamTransform({
+            model: compatTranslation.originalModel
+          }))
+          : upstreamReadable;
+        await writeReadableToResponse({
+          source: responseStream,
+          res,
+          onChunk: (buffer) => {
+            if (firstByteAt === null) {
+              firstByteAt = Date.now();
+              console.info('[stream-first-byte]', {
+                requestId,
+                attemptNo,
+                provider,
+                model,
+                first_byte_ms: firstByteAt - startedAt
+              });
+            }
+            totalBytes += buffer.length;
+            totalChunks += 1;
+            sampled = (sampled + buffer.toString('utf8')).slice(-200_000);
+          },
+          onDownstreamWrite: () => {
+            if (firstDownstreamWriteAt === null) {
+              firstDownstreamWriteAt = Date.now();
+            }
+          }
+        });
+      } catch (error) {
+        pipelineError = error;
+        const downstreamClosed = isDownstreamClientDisconnect(res, error);
+        const terminalEventSeen = downstreamUsesAnthropicSse
+          ? hasTerminalAnthropicStreamEvent(sampled)
+          : hasTerminalOpenAiResponsesStreamEvent(sampled);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+
+        console.warn('[stream-pipeline-error]', {
+          requestId,
+          attemptNo,
+          provider,
+          model,
+          compat_translation: Boolean(compatTranslation),
+          downstream_closed: downstreamClosed,
+          terminal_event_seen: terminalEventSeen,
+          error_name: error instanceof Error ? error.name : null,
+          error_message: errorMessage,
+          error_code: error && typeof error === 'object' ? (error as any).code ?? null : null
+        });
+
+        if (!downstreamClosed && !terminalEventSeen && !(res as any).writableEnded && !(res as any).destroyed) {
+          streamTruncated = true;
+          if (firstDownstreamWriteAt === null) {
+            firstDownstreamWriteAt = Date.now();
+          }
+          const terminalSse = buildSyntheticPassthroughFailureSse({
+            downstreamUsesAnthropicSse,
+            id: requestId,
+            model,
+            anthropicModel: compatTranslation ? compatTranslation.originalModel : model
+          });
+          (res as any).write(terminalSse);
+          if (typeof (res as any).flush === 'function') {
+            (res as any).flush();
+          }
+          (res as any).end();
+          sampled = `${sampled}${terminalSse}`.slice(-200_000);
         }
-      } catch {
-        // Client disconnects are expected sometimes; continue with best-effort metering.
       } finally {
         clearInterval(keepaliveTimer);
         streamEndedAt = Date.now();
+      }
+      const terminalStatus = downstreamUsesAnthropicSse
+        ? resolveAnthropicStreamTerminalStatus(sampled)
+        : resolveOpenAiResponsesStreamTerminalStatus(sampled);
+      if (!pipelineError && terminalStatus === 'missing' && !(res as any).destroyed && !(res as any).writableEnded) {
+        streamTruncated = true;
+        if (firstDownstreamWriteAt === null) {
+          firstDownstreamWriteAt = Date.now();
+        }
+        const terminalSse = buildSyntheticPassthroughFailureSse({
+          downstreamUsesAnthropicSse,
+          id: requestId,
+          model,
+          anthropicModel: compatTranslation ? compatTranslation.originalModel : model
+        });
+        (res as any).write(terminalSse);
+        if (typeof (res as any).flush === 'function') {
+          (res as any).flush();
+        }
+        (res as any).end();
+        sampled = `${sampled}${terminalSse}`.slice(-200_000);
+      }
+      if (!(res as any).destroyed && !(res as any).writableEnded) {
+        (res as any).end();
       }
       if (typeof (res as any).body !== 'string') {
         (res as any).body = `: keepalive\n\n${sampled}`;
@@ -2754,28 +3009,17 @@ async function executeTokenModeStreaming(input: {
       const outputTokens = parsedOutputTokens ?? Math.max(0, usageUnits - inputTokens);
       const usedEstimate = parsedInputTokens === null || parsedOutputTokens === null;
       const meteringSource: MeteringSource = usedEstimate ? 'stream_estimate' : 'stream_usage';
+      const shouldRecordCredentialSuccess = (
+        status >= 200
+        && status < 300
+        && !streamTruncated
+        && terminalStatus !== 'failed'
+        && terminalStatus !== 'missing'
+      );
+      const shouldRecordUsage = !streamTruncated;
 
-      try {
-        if (idempotencySession && !idempotencySession.replay) {
-          await commitProxyMetadataIdempotency(
-            idempotencySession,
-            requestId,
-            { type: 'stream_non_replayable', requestId, usageUnits }
-          );
-        }
-
-        const monthlyUsageRecorded = await runtime.repos.tokenCredentials.addMonthlyContributionUsage(
-          credential.id,
-          usageUnits
-        );
-        if (!monthlyUsageRecorded) {
-          await logAttemptFailure({
-            kind: 'metering_degraded',
-            message: 'monthly contribution increment could not be recorded after successful upstream stream'
-          });
-        }
-
-        await runtime.services.metering.recordUsage({
+      if (streamTruncated || terminalStatus === 'failed') {
+        await runtime.repos.routingEvents.insert({
           requestId,
           attemptNo,
           orgId,
@@ -2783,14 +3027,64 @@ async function executeTokenModeStreaming(input: {
           sellerKeyId: undefined,
           provider,
           model,
-          inputTokens,
-          outputTokens,
-          usageUnits,
-          retailEquivalentMinor: usageUnits,
-          note: usedEstimate
-            ? `metering_source=${meteringSource} estimate=stream_bytes_v1 bytes=${totalBytes} chunks=${totalChunks} reconcile_pending=true`
-            : `metering_source=${meteringSource} source=stream_usage_payload bytes=${totalBytes} chunks=${totalChunks}`
+          streaming: true,
+          routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
+          upstreamStatus: status,
+          errorCode: streamTruncated ? 'stream_truncated' : 'stream_failed_terminal',
+          latencyMs: Date.now() - startedAt,
+          ttfbMs: Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt))
         });
+      }
+
+      if (shouldRecordCredentialSuccess) {
+        await recordTokenCredentialOutcome({
+          credential,
+          requestId,
+          attemptNo,
+          provider,
+          model,
+          upstreamStatus: status
+        });
+      }
+
+      try {
+        if (shouldRecordUsage && idempotencySession && !idempotencySession.replay) {
+          await commitProxyMetadataIdempotency(
+            idempotencySession,
+            requestId,
+            { type: 'stream_non_replayable', requestId, usageUnits }
+          );
+        }
+
+        if (shouldRecordUsage) {
+          const monthlyUsageRecorded = await runtime.repos.tokenCredentials.addMonthlyContributionUsage(
+            credential.id,
+            usageUnits
+          );
+          if (!monthlyUsageRecorded) {
+            await logAttemptFailure({
+              kind: 'metering_degraded',
+              message: 'monthly contribution increment could not be recorded after successful upstream stream'
+            });
+          }
+
+          await runtime.services.metering.recordUsage({
+            requestId,
+            attemptNo,
+            orgId,
+            apiKeyId,
+            sellerKeyId: undefined,
+            provider,
+            model,
+            inputTokens,
+            outputTokens,
+            usageUnits,
+            retailEquivalentMinor: usageUnits,
+            note: usedEstimate
+              ? `metering_source=${meteringSource} estimate=stream_bytes_v1 bytes=${totalBytes} chunks=${totalChunks} reconcile_pending=true`
+              : `metering_source=${meteringSource} source=stream_usage_payload bytes=${totalBytes} chunks=${totalChunks}`
+          });
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.warn('[post-stream-bookkeeping] passthrough_failed', {
@@ -2820,7 +3114,7 @@ async function executeTokenModeStreaming(input: {
           : null
       });
 
-      if (status >= 200 && status < 300) {
+      if (status >= 200 && status < 300 && shouldRecordUsage) {
         runtime.repos.requestLog.insert({
           requestId,
           attemptNo,
