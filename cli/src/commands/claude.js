@@ -20,6 +20,31 @@ function hasExplicitModelArg(args) {
   ));
 }
 
+export function resolveClaudeSessionModel(args, fallbackModel) {
+  for (let i = args.length - 1; i >= 0; i -= 1) {
+    const arg = args[i];
+    if (arg === '--model') {
+      const value = args[i + 1];
+      if (typeof value === 'string' && !value.startsWith('--')) {
+        const normalized = value.trim();
+        if (normalized.length > 0) {
+          return normalized;
+        }
+      }
+      continue;
+    }
+
+    if (arg.startsWith('--model=')) {
+      const normalized = arg.slice('--model='.length).trim();
+      if (normalized.length > 0) {
+        return normalized;
+      }
+    }
+  }
+
+  return fallbackModel;
+}
+
 function buildClaudeArgs(args, model) {
   if (hasExplicitModelArg(args)) {
     return args;
@@ -33,13 +58,15 @@ export async function runClaude(args) {
     fail('Not logged in. Run: innies login --token <in_token>');
   }
 
-  const model = resolveProviderDefaultModel(config, 'anthropic');
+  const defaultModel = resolveProviderDefaultModel(config, 'anthropic');
+  const model = resolveClaudeSessionModel(args, defaultModel);
   const proxyUrl = proxyBase(config.apiBaseUrl);
   const correlationId = buildCorrelationId();
   const claudeBridge = await startClaudeProxy({
     upstreamBaseUrl: config.apiBaseUrl,
     buyerToken: config.token,
-    correlationId
+    correlationId,
+    sessionModel: model
   });
   const claudeBinary = resolveWrappedBinary({
     binaryName: 'claude',
