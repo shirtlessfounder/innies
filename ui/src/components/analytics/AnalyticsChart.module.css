@@ -1,38 +1,35 @@
 .chartShell {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 0 18px 18px;
+  gap: 10px;
 }
 
 .chartWrap {
   position: relative;
   overflow: hidden;
-  min-height: 320px;
-  border: 1px solid rgba(50, 86, 96, 0.12);
-  border-radius: 18px;
+  min-height: 236px;
+  border: 1px solid rgba(28, 62, 74, 0.16);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.64) 0%, rgba(247, 250, 252, 0.74) 100%),
+    linear-gradient(180deg, rgba(248, 251, 253, 0.38) 0%, rgba(248, 251, 253, 0.18) 100%),
     repeating-linear-gradient(
       90deg,
-      rgba(109, 130, 138, 0.06) 0,
-      rgba(109, 130, 138, 0.06) 1px,
+      rgba(58, 87, 100, 0.06) 0,
+      rgba(58, 87, 100, 0.06) 1px,
       transparent 1px,
-      transparent 24px
+      transparent 28px
     ),
     repeating-linear-gradient(
       180deg,
-      rgba(109, 130, 138, 0.06) 0,
-      rgba(109, 130, 138, 0.06) 1px,
+      rgba(58, 87, 100, 0.06) 0,
+      rgba(58, 87, 100, 0.06) 1px,
       transparent 1px,
-      transparent 24px
+      transparent 28px
     );
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.38);
 }
 
 .chartSurface {
   width: 100%;
-  height: 320px;
+  height: 236px;
 }
 
 .chartOverlay,
@@ -40,38 +37,37 @@
   position: absolute;
   inset: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  text-align: center;
+  padding: 0;
   pointer-events: none;
 }
 
 .chartOverlay {
   align-items: flex-start;
-  justify-content: flex-end;
-  inset: 12px 14px auto auto;
-  padding: 0;
+  justify-content: flex-start;
+  inset: 12px auto auto 12px;
 }
 
 .chartStatus {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid rgba(50, 86, 96, 0.14);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.82);
-  color: rgba(17, 48, 58, 0.78);
-  font-size: 11px;
-  letter-spacing: 0.12em;
+  padding: 6px 8px;
+  border: 1px solid rgba(28, 62, 74, 0.14);
+  background: rgba(248, 251, 253, 0.78);
+  color: rgba(22, 51, 62, 0.76);
+  font-size: 10px;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
 }
 
 .emptyState {
-  color: rgba(17, 48, 58, 0.68);
-  font-size: 12px;
-  letter-spacing: 0.12em;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  text-align: center;
+  color: rgba(22, 51, 62, 0.58);
+  font-size: 11px;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   line-height: 1.7;
 }
@@ -79,18 +75,17 @@
 .legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
 }
 
 .legendItem {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid rgba(50, 86, 96, 0.1);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.56);
-  color: rgba(17, 48, 58, 0.8);
+  padding: 7px 9px;
+  border: 1px solid rgba(28, 62, 74, 0.12);
+  background: rgba(248, 251, 253, 0.22);
+  color: rgba(22, 51, 62, 0.8);
   font-size: 11px;
 }
 
@@ -107,14 +102,15 @@
 
 .legendPartial {
   color: #9a6700;
+  letter-spacing: 0.1em;
 }
 
 @media (max-width: 760px) {
   .chartWrap {
-    min-height: 280px;
+    min-height: 208px;
   }
 
   .chartSurface {
-    height: 280px;
+    height: 208px;
   }
 }

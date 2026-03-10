@@ -20,7 +20,7 @@ type AnalyticsChartProps = {
   loading?: boolean;
 };
 
-const CHART_COLORS = ['#0a6b7b', '#26667c', '#3b725a', '#8b5c0a', '#8b3a4f', '#5d4ba6'];
+const CHART_COLORS = ['#0b7285', '#2f6f62', '#8b5e16', '#8f3d4f', '#4d648d', '#576b2c'];
 
 function seriesColor(index: number): string {
   return CHART_COLORS[index % CHART_COLORS.length] ?? '#0a6b7b';
@@ -69,24 +69,24 @@ export function AnalyticsChart({ metric, series, loading = false }: AnalyticsCha
       autoSize: true,
       layout: {
         background: { type: ColorType.Solid, color: 'transparent' },
-        textColor: '#37525c',
+        textColor: '#294650',
         attributionLogo: false,
         fontFamily: "'SFMono-Regular', 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, monospace",
-        fontSize: 11,
+        fontSize: 10,
       },
       grid: {
-        vertLines: { color: 'rgba(50, 86, 96, 0.09)' },
-        horzLines: { color: 'rgba(50, 86, 96, 0.09)' },
+        vertLines: { color: 'rgba(28, 62, 74, 0.08)' },
+        horzLines: { color: 'rgba(28, 62, 74, 0.08)' },
       },
       rightPriceScale: {
-        borderColor: 'rgba(50, 86, 96, 0.12)',
+        borderColor: 'rgba(28, 62, 74, 0.14)',
         scaleMargins: {
-          top: 0.12,
-          bottom: 0.18,
+          top: 0.08,
+          bottom: 0.12,
         },
       },
       timeScale: {
-        borderColor: 'rgba(50, 86, 96, 0.12)',
+        borderColor: 'rgba(28, 62, 74, 0.14)',
         timeVisible: true,
         secondsVisible: false,
       },
@@ -136,8 +136,8 @@ export function AnalyticsChart({ metric, series, loading = false }: AnalyticsCha
         lineStyle: entry.partial ? LineStyle.Dashed : LineStyle.Solid,
         priceLineVisible: false,
         lastValueVisible: true,
-        crosshairMarkerRadius: 4,
-        crosshairMarkerBorderWidth: 2,
+        crosshairMarkerRadius: 3,
+        crosshairMarkerBorderWidth: 1,
         crosshairMarkerBackgroundColor: color,
         crosshairMarkerBorderColor: '#f8fbfc',
       });
