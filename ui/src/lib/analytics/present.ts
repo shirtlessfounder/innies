@@ -28,7 +28,7 @@ function remapTokenAlias(value: string): string {
 }
 
 function trimTokenDisplayKeySuffix(value: string): string {
-  return value.replace(/\s+\((?:key|cred)[^)]+\)$/i, '');
+  return value.replace(/\s+\((?:key|cred)[^)]+\)$/i, '').trim();
 }
 
 export function tokenProviderKey(provider: string | null | undefined): 'claude' | 'codex' | null {
@@ -130,7 +130,7 @@ export function formatChartAxisValue(metric: AnalyticsMetric, value: number): st
 }
 
 export function tokenIdentityLabel(row: AnalyticsTokenRow): string {
-  return row.displayKey;
+  return trimTokenDisplayKeySuffix(row.displayKey);
 }
 
 export function tokenLabelLabel(row: AnalyticsTokenRow): string {
@@ -169,12 +169,11 @@ export function buyerIdentityLabel(row: AnalyticsBuyerRow): string {
 }
 
 export function buyerSeriesLabel(row: AnalyticsBuyerRow): string {
-  const identity = buyerIdentityLabel(row);
-  return row.label ? `${identity} (${row.displayKey})` : identity;
+  return buyerIdentityLabel(row);
 }
 
 export function buyerOrgLabel(row: AnalyticsBuyerRow): string {
-  if (row.orgLabel === 'Team Seller Org') return 'innies team';
+  if (row.orgLabel === 'Team Seller Org') return 'innies';
   return row.orgLabel ?? formatShortIdentifier(row.orgId);
 }
 

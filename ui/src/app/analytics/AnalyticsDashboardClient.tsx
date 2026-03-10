@@ -40,7 +40,7 @@ import styles from './page.module.css';
 type SeriesMode = 'token' | 'buyer';
 
 const TOKEN_SERIES_METRICS: AnalyticsMetric[] = ['usageUnits', 'requests', 'latencyP50Ms', 'errorRate'];
-const BUYER_SERIES_METRICS: AnalyticsMetric[] = ['usageUnits', 'requests'];
+const BUYER_SERIES_METRICS: AnalyticsMetric[] = ['usageUnits', 'requests', 'latencyP50Ms', 'errorRate'];
 
 function toggleHidden(current: string[], id: string): string[] {
   if (current.includes(id)) {
@@ -107,6 +107,34 @@ function tokenProviderAggregateLabel(provider: 'claude' | 'codex'): string {
 
 function tokenProviderAggregateColor(provider: 'claude' | 'codex'): string {
   return provider === 'codex' ? '#1f6f8b' : '#5d7124';
+}
+
+function tokenMetricSortKey(metric: AnalyticsMetric): TokenSortKey {
+  switch (metric) {
+    case 'requests':
+      return 'attempts';
+    case 'latencyP50Ms':
+      return 'latencyP50Ms';
+    case 'errorRate':
+      return 'errorRate';
+    case 'usageUnits':
+    default:
+      return 'usageUnits';
+  }
+}
+
+function buyerMetricSortKey(metric: AnalyticsMetric): BuyerSortKey {
+  switch (metric) {
+    case 'requests':
+      return 'requests';
+    case 'latencyP50Ms':
+      return 'latencyP50Ms';
+    case 'errorRate':
+      return 'errorRate';
+    case 'usageUnits':
+    default:
+      return 'usageUnits';
+  }
 }
 
 function commandLabel(input: {
@@ -181,6 +209,20 @@ export function AnalyticsDashboardClient() {
     if (availableMetrics.includes(metric)) return;
     setMetric(availableMetrics[0]);
   }, [availableMetrics, metric]);
+
+  useEffect(() => {
+    const dynamicTokenKeys: TokenSortKey[] = ['usageUnits', 'attempts', 'latencyP50Ms', 'errorRate'];
+    const nextKey = tokenMetricSortKey(metric);
+    setTokenSort((current) => dynamicTokenKeys.includes(current.key)
+      ? { key: nextKey, direction: 'desc' }
+      : current);
+
+    const dynamicBuyerKeys: BuyerSortKey[] = ['usageUnits', 'requests', 'latencyP50Ms', 'errorRate'];
+    const nextBuyerKey = buyerMetricSortKey(metric);
+    setBuyerSort((current) => dynamicBuyerKeys.includes(current.key)
+      ? { key: nextBuyerKey, direction: 'desc' }
+      : current);
+  }, [metric]);
 
   const tokenSelections = activeTokenRows
     .map((row) => ({
@@ -425,6 +467,7 @@ export function AnalyticsDashboardClient() {
                 <div className={styles.sectionMeta}>{formatCount(activeTokenRows.length)} VISIBLE</div>
               </div>
               <TokenTable
+                metric={metric}
                 onSort={(key, defaultDirection) => setTokenSort((current) => toggleSort(current, key, defaultDirection))}
                 onToggle={(id) => setHiddenTokenIds((current) => toggleHidden(current, id))}
                 hiddenIds={hiddenTokenIds}
@@ -437,10 +480,13 @@ export function AnalyticsDashboardClient() {
               <div className={styles.sectionHeader}>
                 <div className={styles.sectionTitle}>BUYER KEYS</div>
                 <div className={styles.sectionMeta}>
-                  {snapshot.capabilities.buyersComplete ? 'REQUESTS > 0' : 'TOP BUYERS · REQUESTS > 0'}
+                  {snapshot.capabilities.buyersComplete
+                    ? `${formatCount(visibleBuyerRows.length)} ACTIVE`
+                    : `TOP BUYERS · ${formatCount(visibleBuyerRows.length)} ACTIVE`}
                 </div>
               </div>
               <BuyerTable
+                metric={metric}
                 onSort={(key, defaultDirection) => setBuyerSort((current) => toggleSort(current, key, defaultDirection))}
                 onToggle={(id) => setHiddenBuyerIds((current) => toggleHidden(current, id))}
                 hiddenIds={hiddenBuyerIds}
@@ -471,7 +517,7 @@ export function AnalyticsDashboardClient() {
 
             <section className={styles.section}>
               <div className={styles.sectionHeader}>
-                <div className={styles.sectionTitle}>EVENT LOG</div>
+                <div className={styles.sectionTitle}>OPS LOG</div>
                 <div className={styles.sectionMeta}>{formatCount(snapshot.events.length)} ENTRIES</div>
               </div>
               <div className={styles.eventList}>

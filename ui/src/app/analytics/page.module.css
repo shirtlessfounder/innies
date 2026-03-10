@@ -167,14 +167,14 @@
   height: 8px;
   border-radius: 999px;
   background: currentColor;
-  box-shadow: 0 0 10px rgba(11, 114, 133, 0.32);
+  box-shadow: 0 0 10px rgba(15, 81, 50, 0.32);
   animation: cursorBlink 1.25s steps(1, end) infinite;
 }
 
 .liveText {
   font-size: 11px;
   letter-spacing: 0.16em;
-  color: var(--console-ink-soft);
+  color: var(--console-live);
 }
 
 .toolbar {
@@ -603,13 +603,39 @@
   text-transform: uppercase;
 }
 
+.statusPill {
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.statusPillActive {
+  color: #16a34a;
+}
+
+.statusPillRotating {
+  color: #d97706;
+}
+
+.statusPillMaxed {
+  color: #ea580c;
+}
+
+.statusPillExpired,
+.statusPillRevoked {
+  color: #dc2626;
+}
+
+.statusPillUnknown {
+  color: var(--console-ink-soft);
+}
+
 .deltaIdle {
   color: rgba(22, 51, 62, 0.42);
 }
 
 .deltaLive {
   color: var(--console-live);
-  animation: deltaFlash 1.6s ease;
+  animation: deltaFlash 2s ease;
 }
 
 .eventItem {
@@ -643,9 +669,18 @@
     color: #0f5132;
     text-shadow: 0 0 0 rgba(15, 81, 50, 0);
   }
-  35% {
+  25%,
+  55% {
+    color: #16a34a;
+    text-shadow: 0 0 12px rgba(22, 163, 74, 0.18);
+  }
+  72% {
     color: #13804d;
-    text-shadow: 0 0 12px rgba(19, 128, 77, 0.18);
+    text-shadow: 0 0 8px rgba(19, 128, 77, 0.14);
+  }
+  88% {
+    color: #116240;
+    text-shadow: 0 0 4px rgba(17, 98, 64, 0.08);
   }
   100% {
     color: #0f5132;

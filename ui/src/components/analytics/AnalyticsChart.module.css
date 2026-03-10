@@ -45,9 +45,19 @@
   align-items: flex-start;
   justify-content: flex-start;
   inset: 12px auto auto 12px;
+  z-index: 2;
+}
+
+.chartStatusGroup {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  pointer-events: auto;
 }
 
 .chartStatus {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -58,6 +68,30 @@
   font-size: 10px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
+}
+
+.chartStatusButton {
+  position: relative;
+  appearance: none;
+  border: 1px solid rgba(28, 62, 74, 0.14);
+  padding: 4px 8px;
+  background: rgba(248, 251, 253, 0.56);
+  color: #16333e;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    transform 120ms ease;
+}
+
+.chartStatusButton:hover {
+  border-color: rgba(28, 62, 74, 0.24);
+  background: rgba(248, 251, 253, 0.82);
+  transform: translateY(-1px);
 }
 
 .chartTooltip {

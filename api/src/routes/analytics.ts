@@ -649,6 +649,7 @@ function normalizeBuyerRows(value: unknown) {
       retailEquivalentMinor: readOptionalNumber(record, ['retailEquivalentMinor', 'retail_equivalent_minor'], 0) ?? 0,
       percentOfTotal: readOptionalNumber(record, ['percentOfTotal', 'percent_of_total'], 0) ?? 0,
       lastSeenAt: readOptionalIsoDate(record, ['lastSeenAt', 'last_seen_at']),
+      latencyP50Ms: readOptionalNumber(record, ['latencyP50Ms', 'latency_p50_ms']),
       errorRate: readOptionalNumber(record, ['errorRate', 'error_rate'], 0) ?? 0,
       bySource: normalizeSourceBreakdown(pick(record, ['bySource', 'by_source']))
     };
@@ -660,7 +661,9 @@ function normalizeBuyerTimeSeries(value: unknown) {
     date: readIsoDate(pick(record, ['date', 'bucket', 'bucketStartAt', 'bucket_start_at']), 'series.date'),
     apiKeyId: readRequiredString(record, ['apiKeyId', 'api_key_id'], 'series.apiKeyId'),
     requests: readOptionalNumber(record, ['requests', 'request_count'], 0) ?? 0,
-    usageUnits: readOptionalNumber(record, ['usageUnits', 'usage_units'], 0) ?? 0
+    usageUnits: readOptionalNumber(record, ['usageUnits', 'usage_units'], 0) ?? 0,
+    errorRate: readOptionalNumber(record, ['errorRate', 'error_rate'], 0) ?? 0,
+    latencyP50Ms: readOptionalNumber(record, ['latencyP50Ms', 'latency_p50_ms'])
   }));
 }
 
@@ -760,6 +763,7 @@ function mergeDashboardTokens(input: {
     existing.debugLabel = existing.debugLabel ?? row.debugLabel;
     existing.provider = existing.provider ?? row.provider;
     existing.attempts = Math.max(Number(existing.attempts ?? 0), row.totalAttempts);
+    existing.errorRate = row.totalAttempts > 0 ? Number((row.errorCount / row.totalAttempts).toFixed(4)) : 0;
     existing.latencyP50Ms = row.latencyP50Ms;
     existing.authFailures24h = row.authFailures24h;
     existing.rateLimited24h = row.rateLimited24h;

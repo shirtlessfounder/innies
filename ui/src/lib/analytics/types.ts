@@ -27,6 +27,7 @@ export type AnalyticsTokenRow = {
   provider: string;
   status: string;
   attempts: number;
+  requests: number;
   usageUnits: number;
   percentOfWindow: number;
   utilizationRate24h: number | null;
@@ -34,6 +35,7 @@ export type AnalyticsTokenRow = {
   monthlyContributionUsedUnits: number;
   monthlyContributionLimitUnits: number | null;
   latencyP50Ms: number | null;
+  errorRate: number | null;
   authFailures24h: number;
   rateLimited24h: number;
   deltaAttempts: number;
@@ -53,6 +55,7 @@ export type AnalyticsBuyerRow = {
   usageUnits: number;
   percentOfWindow: number;
   lastSeenAt: string | null;
+  latencyP50Ms: number | null;
   errorRate: number | null;
   deltaRequests: number;
   deltaUsageUnits: number;

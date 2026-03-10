@@ -88,6 +88,7 @@ That means we cannot derive later:
 
 - `/buyers/timeseries`
   - buyer-key chart series over time
+  - request / usage / error / latency buckets per buyer
   - multi-buyer fan-in via repeated `apiKeyId`
 
 - `/requests`

@@ -47,6 +47,11 @@ type SeriesMeta = {
   aggregateKind: AnalyticsAggregateSeries['kind'] | null;
 };
 
+type LogicalRange = {
+  from: number;
+  to: number;
+};
+
 function seriesColor(index: number): string {
   return CHART_COLORS[index % CHART_COLORS.length] ?? '#0a6b7b';
 }
@@ -112,15 +117,51 @@ function formatTooltipTimestamp(time: Time | undefined): string {
   return '--';
 }
 
+function cloneLogicalRange(range: LogicalRange | null): LogicalRange | null {
+  if (!range) return null;
+  return { from: range.from, to: range.to };
+}
+
+function logicalRangesMatch(left: LogicalRange | null, right: LogicalRange | null): boolean {
+  if (!left || !right) return left === right;
+  return Math.abs(left.from - right.from) < 0.01 && Math.abs(left.to - right.to) < 0.01;
+}
+
 export function AnalyticsChart({ metric, series, aggregates = [], loading = false }: AnalyticsChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRefs = useRef<ISeriesApi<'Line'>[]>([]);
   const seriesMetaRef = useRef<Map<ISeriesApi<'Line'>, SeriesMeta>>(new Map());
   const metricRef = useRef(metric);
+  const baselineRangeRef = useRef<LogicalRange | null>(null);
+  const suppressRangeTrackingRef = useRef(0);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
+  const [showRecenter, setShowRecenter] = useState(false);
 
   metricRef.current = metric;
+
+  const suppressRangeTracking = (callback: () => void) => {
+    suppressRangeTrackingRef.current += 1;
+    try {
+      callback();
+    } finally {
+      globalThis.setTimeout(() => {
+        suppressRangeTrackingRef.current = Math.max(0, suppressRangeTrackingRef.current - 1);
+      }, 0);
+    }
+  };
+
+  const recenterChart = () => {
+    const chart = chartRef.current;
+    if (!chart) return;
+
+    const timeScale = chart.timeScale();
+    suppressRangeTracking(() => {
+      timeScale.fitContent();
+    });
+    baselineRangeRef.current = cloneLogicalRange(timeScale.getVisibleLogicalRange() as LogicalRange | null);
+    setShowRecenter(false);
+  };
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -174,6 +215,7 @@ export function AnalyticsChart({ metric, series, aggregates = [], loading = fals
     });
 
     chartRef.current = chart;
+    const timeScale = chart.timeScale();
 
     const handleCrosshairMove = (param: MouseEventParams<Time>) => {
       const container = containerRef.current;
@@ -220,10 +262,17 @@ export function AnalyticsChart({ metric, series, aggregates = [], loading = fals
       });
     };
 
+    const handleVisibleLogicalRangeChange = (nextRange: LogicalRange | null) => {
+      if (suppressRangeTrackingRef.current > 0) return;
+      setShowRecenter(!logicalRangesMatch(nextRange, baselineRangeRef.current));
+    };
+
     chart.subscribeCrosshairMove(handleCrosshairMove);
+    timeScale.subscribeVisibleLogicalRangeChange(handleVisibleLogicalRangeChange);
 
     return () => {
       chart.unsubscribeCrosshairMove(handleCrosshairMove);
+      timeScale.unsubscribeVisibleLogicalRangeChange(handleVisibleLogicalRangeChange);
       seriesRefs.current.forEach((entry) => chart.removeSeries(entry));
       seriesRefs.current = [];
       seriesMetaRef.current.clear();
@@ -235,6 +284,8 @@ export function AnalyticsChart({ metric, series, aggregates = [], loading = fals
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
+    const timeScale = chart.timeScale();
+    const visibleRange = cloneLogicalRange(timeScale.getVisibleLogicalRange() as LogicalRange | null);
 
     chart.applyOptions({
       localization: {
@@ -247,7 +298,11 @@ export function AnalyticsChart({ metric, series, aggregates = [], loading = fals
     seriesMetaRef.current.clear();
     setTooltip(null);
 
-    if (series.length === 0 && aggregates.length === 0) return;
+    if (series.length === 0 && aggregates.length === 0) {
+      baselineRangeRef.current = null;
+      setShowRecenter(false);
+      return;
+    }
 
     aggregates.forEach((entry) => {
       if (entry.points.length === 0) return;
@@ -302,7 +357,18 @@ export function AnalyticsChart({ metric, series, aggregates = [], loading = fals
       });
     });
 
-    chart.timeScale().fitContent();
+    if (visibleRange !== null) {
+      suppressRangeTracking(() => {
+        timeScale.setVisibleLogicalRange(visibleRange);
+      });
+      return;
+    }
+
+    suppressRangeTracking(() => {
+      timeScale.fitContent();
+    });
+    baselineRangeRef.current = cloneLogicalRange(timeScale.getVisibleLogicalRange() as LogicalRange | null);
+    setShowRecenter(false);
   }, [aggregates, metric, series]);
 
   const lastAggregateRowIndex = tooltip
@@ -316,9 +382,20 @@ export function AnalyticsChart({ metric, series, aggregates = [], loading = fals
 
         {(loading || series.length > 0 || aggregates.length > 0) ? (
           <div className={styles.chartOverlay}>
-            <div className={styles.chartStatus}>
-              <span>{metricTitle(metric)}</span>
-              {loading ? <span>Updating</span> : null}
+            <div className={styles.chartStatusGroup}>
+              <div className={styles.chartStatus}>
+                <span>{metricTitle(metric)}</span>
+                {loading ? <span>Updating</span> : null}
+              </div>
+              {showRecenter ? (
+                <button
+                  className={styles.chartStatusButton}
+                  onClick={recenterChart}
+                  type="button"
+                >
+                  Recenter
+                </button>
+              ) : null}
             </div>
           </div>
         ) : null}
