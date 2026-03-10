@@ -1,0 +1,74 @@
+.page {
+  height: 100svh;
+  min-height: 100svh;
+  padding: 0;
+  overflow: hidden;
+  background: #e3e9ee;
+}
+
+.shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 100svh;
+  height: 100svh;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 18%, rgba(255, 255, 255, 0.88) 0%, rgba(255, 255, 255, 0.52) 24%, rgba(220, 227, 233, 0.24) 45%, rgba(181, 191, 200, 0.28) 100%),
+    linear-gradient(90deg, rgba(59, 90, 105, 0.045) 0%, rgba(220, 227, 233, 0) 7%, rgba(255, 255, 255, 0.16) 50%, rgba(220, 227, 233, 0) 93%, rgba(59, 90, 105, 0.045) 100%),
+    linear-gradient(180deg, #eef2f4 0%, #dce3e9 100%);
+  box-shadow:
+    0 24px 56px rgba(12, 29, 51, 0.08),
+    42px 0 56px rgba(12, 29, 51, 0.14),
+    -42px 0 56px rgba(12, 29, 51, 0.14);
+}
+
+.shell::before,
+.shell::after {
+  position: absolute;
+  inset: 0;
+  content: '';
+  pointer-events: none;
+}
+
+.shell::before {
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0)),
+    repeating-linear-gradient(
+      90deg,
+      rgba(109, 130, 138, 0.062) 0,
+      rgba(109, 130, 138, 0.062) 1px,
+      transparent 1px,
+      transparent 26px
+    ),
+    repeating-linear-gradient(
+      180deg,
+      rgba(109, 130, 138, 0.062) 0,
+      rgba(109, 130, 138, 0.062) 1px,
+      transparent 1px,
+      transparent 26px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(109, 130, 138, 0.106) 0,
+      rgba(109, 130, 138, 0.106) 1px,
+      transparent 1px,
+      transparent 130px
+    ),
+    repeating-linear-gradient(
+      180deg,
+      rgba(109, 130, 138, 0.106) 0,
+      rgba(109, 130, 138, 0.106) 1px,
+      transparent 1px,
+      transparent 130px
+    );
+  opacity: 0.5;
+}
+
+.shell::after {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.28), transparent 48%),
+    radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.22) 0.6px, transparent 0.7px);
+  background-size: auto, 9px 9px;
+  opacity: 0.28;
+}
