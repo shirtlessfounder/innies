@@ -202,6 +202,22 @@
   letter-spacing: 0.01em;
   background: rgba(220, 227, 233, 0.5);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  transition:
+    transform 180ms ease,
+    background-color 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    color 180ms ease;
+}
+
+.accessLink:hover,
+.accessLink:focus-visible {
+  transform: translateY(-1px);
+  border-color: rgba(36, 56, 50, 0.4);
+  background: rgba(232, 237, 240, 0.82);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.62),
+    0 10px 20px rgba(36, 56, 50, 0.12);
 }
 
 .hero {
@@ -226,7 +242,7 @@
   justify-content: center;
   width: 100%;
   max-width: 880px;
-  transform: translateY(-10px);
+  transform: translateY(-40px);
 }
 
 .frame {
@@ -251,7 +267,7 @@
   margin: 0 0 18px;
   color: #3b5a69;
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-  font-size: clamp(2.32rem, 3.95vw, 3.68rem);
+  font-size: clamp(2.14rem, 3.6vw, 3.35rem);
   font-weight: 500;
   letter-spacing: -0.02em;
   line-height: 0.95;
@@ -262,10 +278,10 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
-  margin: 0 0 28px;
+  margin: 0 0 40px;
   color: rgba(59, 90, 105, 0.86);
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-  font-size: clamp(1.08rem, 1.3vw, 1.28rem);
+  font-size: clamp(0.98rem, 1.12vw, 1.14rem);
   font-weight: 400;
   line-height: 1.22;
 }
@@ -288,6 +304,21 @@
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
     0 12px 24px rgba(36, 56, 50, 0.18);
+  transition:
+    transform 200ms ease,
+    background-color 200ms ease,
+    border-color 200ms ease,
+    box-shadow 200ms ease;
+}
+
+.primaryCta:hover,
+.primaryCta:focus-visible {
+  transform: translateY(-2px);
+  border-color: rgba(197, 212, 206, 0.58);
+  background: #2b433c;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 16px 28px rgba(36, 56, 50, 0.24);
 }
 
 .ctaIcon {
@@ -344,12 +375,12 @@
 
   .headline {
     margin-bottom: 16px;
-    font-size: clamp(1.82rem, 8vw, 2.58rem);
+    font-size: clamp(1.68rem, 7.3vw, 2.34rem);
   }
 
   .subcopy {
-    margin-bottom: 24px;
-    font-size: 1rem;
+    margin-bottom: 32px;
+    font-size: 0.93rem;
   }
 
   .subcopy span {
