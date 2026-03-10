@@ -1,7 +1,79 @@
-import type { AnalyticsBuyerRow, AnalyticsMetric } from './types';
+import type { AnalyticsBuyerRow, AnalyticsMetric, AnalyticsTokenRow } from './types';
+
+function formatShortIdentifier(value: string): string {
+  const compact = value.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  if (compact.length < 8) return value;
+  return `${compact.slice(0, 4)}...${compact.slice(-4)}`;
+}
+
+function trimBuyerPrefix(value: string): string {
+  return value.startsWith('buyer-') ? value.slice('buyer-'.length) : value;
+}
+
+function remapTokenAlias(value: string): string {
+  switch (value) {
+    case 'dylan-codex':
+    case 'oauth-main-1':
+      return 'shirtless';
+    case 'niyant-codex':
+    case 'oauth-main-2':
+      return 'hands';
+    case 'oauth-main-3':
+      return 'oogway';
+    case 'oauth-main-4':
+      return 'aelix';
+    default:
+      return value;
+  }
+}
+
+function trimTokenDisplayKeySuffix(value: string): string {
+  return value.replace(/\s+\((?:key|cred)[^)]+\)$/i, '');
+}
+
+export function tokenProviderKey(provider: string | null | undefined): 'claude' | 'codex' | null {
+  switch (provider?.trim().toLowerCase()) {
+    case 'anthropic':
+      return 'claude';
+    case 'openai':
+      return 'codex';
+    default:
+      return null;
+  }
+}
 
 export function formatCount(value: number | null | undefined): string {
   if (value === null || value === undefined) return '--';
+  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(value);
+}
+
+export function formatCompactCount(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '--';
+
+  const absolute = Math.abs(value);
+  if (absolute < 1000) {
+    return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(value);
+  }
+
+  const thresholds = [
+    { value: 1_000_000_000, suffix: 'B' },
+    { value: 1_000_000, suffix: 'M' },
+    { value: 1_000, suffix: 'K' },
+  ] as const;
+
+  for (const threshold of thresholds) {
+    if (absolute < threshold.value) continue;
+
+    const scaled = value / threshold.value;
+    const digits = Math.abs(scaled) >= 100 ? 0 : Math.abs(scaled) >= 10 ? 1 : 2;
+    const rounded = Number(scaled.toFixed(digits));
+
+    return `${new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: digits,
+    }).format(rounded)}${threshold.suffix}`;
+  }
+
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(value);
 }
 
@@ -51,14 +123,75 @@ export function seriesValueLabel(metric: AnalyticsMetric, value: number): string
   return formatCount(value);
 }
 
+export function formatChartAxisValue(metric: AnalyticsMetric, value: number): string {
+  if (metric === 'errorRate') return formatPercent(value);
+  if (metric === 'latencyP50Ms') return `${formatCompactCount(value)}ms`;
+  return formatCompactCount(value);
+}
+
+export function tokenIdentityLabel(row: AnalyticsTokenRow): string {
+  return row.displayKey;
+}
+
+export function tokenLabelLabel(row: AnalyticsTokenRow): string {
+  if (!row.debugLabel) return '--';
+  return remapTokenAlias(trimTokenDisplayKeySuffix(row.debugLabel));
+}
+
+export function tokenSeriesLabel(row: AnalyticsTokenRow): string {
+  const base = row.debugLabel ? tokenLabelLabel(row) : tokenIdentityLabel(row);
+  switch (tokenProviderKey(row.provider)) {
+    case 'claude':
+      return `${base}-claude`;
+    case 'codex':
+      return `${base}-codex`;
+    default:
+      return base;
+  }
+}
+
+export function tokenProviderLabel(provider: string | null | undefined): string {
+  switch (tokenProviderKey(provider)) {
+    case 'claude':
+      return 'claude';
+    case 'codex':
+      return 'codex';
+    case undefined:
+    case null:
+      return '--';
+    default:
+      return provider ?? '--';
+  }
+}
+
 export function buyerIdentityLabel(row: AnalyticsBuyerRow): string {
-  return row.label ?? row.displayKey;
+  return trimBuyerPrefix(row.label ?? row.displayKey);
 }
 
 export function buyerSeriesLabel(row: AnalyticsBuyerRow): string {
-  return row.label ? `${row.label} (${row.displayKey})` : row.displayKey;
+  const identity = buyerIdentityLabel(row);
+  return row.label ? `${identity} (${row.displayKey})` : identity;
 }
 
 export function buyerOrgLabel(row: AnalyticsBuyerRow): string {
-  return row.orgLabel ?? row.orgId;
+  if (row.orgLabel === 'Team Seller Org') return 'innies team';
+  return row.orgLabel ?? formatShortIdentifier(row.orgId);
+}
+
+export function buyerOrgIdLabel(row: AnalyticsBuyerRow): string {
+  return formatShortIdentifier(row.orgId);
+}
+
+export function buyerPreferenceLabel(row: AnalyticsBuyerRow): string {
+  switch (row.effectiveProvider) {
+    case 'anthropic':
+      return 'claude';
+    case 'openai':
+      return 'codex';
+    case null:
+    case undefined:
+      return '--';
+    default:
+      return row.effectiveProvider;
+  }
 }

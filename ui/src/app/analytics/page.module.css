@@ -87,6 +87,22 @@
   color: var(--console-ink-soft);
 }
 
+.homeLink,
+.homeLink:link,
+.homeLink:visited,
+.homeLink:active,
+.homeLink:focus,
+.homeLink:focus-visible {
+  color: inherit;
+  text-decoration: none;
+  text-underline-offset: 0.22em;
+  text-decoration-thickness: 1px;
+}
+
+.homeLink:hover {
+  text-decoration: underline;
+}
+
 .title {
   margin: 0;
   font-size: clamp(30px, 4vw, 52px);
@@ -164,15 +180,46 @@
 .toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  justify-content: flex-start;
+  gap: 16px;
   flex-wrap: wrap;
+}
+
+.toolbarMain {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.toolbarActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .segmented {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.toolbarMain > .segmented + .segmented {
+  position: relative;
+  padding-left: 20px;
+}
+
+.toolbarMain > .segmented + .segmented::before {
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  content: '';
+  background: var(--console-line-strong);
 }
 
 .windowButton,
@@ -306,7 +353,9 @@
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
   border-top: 1px solid var(--console-line-strong);
+  border-right: 1px solid var(--console-line-strong);
   border-bottom: 1px solid var(--console-line-strong);
+  border-left: 1px solid var(--console-line-strong);
 }
 
 .summaryItem {
@@ -348,6 +397,16 @@
   background: rgba(248, 251, 253, 0.2);
 }
 
+.seriesRowTotal {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  border-color: rgba(27, 47, 56, 0.24);
+  background: rgba(27, 47, 56, 0.08);
+}
+
+.seriesRowHidden {
+  opacity: 0.56;
+}
+
 .seriesLabel,
 .seriesValue {
   min-width: 0;
@@ -369,6 +428,41 @@
   letter-spacing: 0.12em;
 }
 
+.seriesToggle {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--console-line);
+  background: rgba(248, 251, 253, 0.24);
+  color: var(--console-accent);
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease,
+    color 120ms ease,
+    transform 120ms ease,
+    opacity 120ms ease;
+}
+
+.seriesToggle:hover {
+  border-color: var(--console-line-strong);
+  background: rgba(248, 251, 253, 0.52);
+  transform: translateY(-1px);
+}
+
+.seriesToggleHidden {
+  color: var(--console-ink-soft);
+}
+
+.seriesToggleIcon {
+  width: 16px;
+  height: 16px;
+}
+
 .tableGrid,
 .eventGrid {
   display: grid;
@@ -376,7 +470,7 @@
 }
 
 .tableGrid {
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .eventGrid {
@@ -386,7 +480,9 @@
 .tableWrap {
   overflow: auto;
   border-top: 1px solid var(--console-line);
+  border-right: 1px solid var(--console-line);
   border-bottom: 1px solid var(--console-line);
+  border-left: 1px solid var(--console-line);
   background:
     linear-gradient(180deg, rgba(248, 251, 253, 0.32) 0%, rgba(248, 251, 253, 0.18) 100%);
 }
@@ -458,22 +554,32 @@
   background: rgba(248, 251, 253, 0.5);
 }
 
+.table th:first-child,
+.table td:first-child {
+  width: 52px;
+  text-align: center;
+}
+
 .numeric {
   text-align: right !important;
 }
 
-.rowSelected {
-  background: var(--console-accent-soft);
+.rowHidden {
+  opacity: 0.52;
+  background: rgba(22, 51, 62, 0.05);
 }
 
-.rowSelected:hover {
-  background: rgba(11, 114, 133, 0.16) !important;
+.rowDeltaFlash {
+  background: rgba(15, 81, 50, 0.12);
 }
 
-.table input[type='checkbox'] {
-  width: 14px;
-  height: 14px;
-  accent-color: #0b7285;
+.rowDeltaFlash:hover {
+  background: rgba(15, 81, 50, 0.14) !important;
+}
+
+.rowHidden:hover {
+  opacity: 0.72;
+  background: rgba(22, 51, 62, 0.08) !important;
 }
 
 .identityCell {
@@ -558,6 +664,7 @@
   }
 }
 
+
 @media (max-width: 1160px) {
   .summaryStrip {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -580,6 +687,22 @@
 
   .liveMeta {
     align-items: flex-start;
+  }
+
+  .toolbar {
+    gap: 12px;
+  }
+
+  .toolbarMain > .segmented + .segmented {
+    padding-left: 0;
+  }
+
+  .toolbarMain > .segmented + .segmented::before {
+    display: none;
+  }
+
+  .toolbarActions {
+    margin-left: 0;
   }
 
   .summaryStrip {

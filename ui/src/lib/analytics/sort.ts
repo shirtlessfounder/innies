@@ -1,3 +1,11 @@
+import {
+  buyerIdentityLabel,
+  buyerOrgLabel,
+  buyerPreferenceLabel,
+  tokenIdentityLabel,
+  tokenLabelLabel,
+  tokenProviderLabel,
+} from './present';
 import type { AnalyticsBuyerRow, AnalyticsTokenRow } from './types';
 
 export type SortDirection = 'asc' | 'desc';
@@ -9,6 +17,7 @@ export type TokenSortKey =
   | 'status'
   | 'attempts'
   | 'usageUnits'
+  | 'percentOfWindow'
   | 'utilizationRate24h'
   | 'maxedEvents7d';
 
@@ -54,14 +63,6 @@ function directionValue(direction: SortDirection, comparison: number): number {
   return direction === 'asc' ? comparison : comparison * -1;
 }
 
-function buyerIdentityLabel(row: AnalyticsBuyerRow): string {
-  return row.label ?? row.displayKey;
-}
-
-function buyerOrgLabel(row: AnalyticsBuyerRow): string {
-  return row.orgLabel ?? row.orgId;
-}
-
 function compareTokenRows(
   left: AnalyticsTokenRow,
   right: AnalyticsTokenRow,
@@ -69,15 +70,17 @@ function compareTokenRows(
 ): number {
   switch (sort.key) {
     case 'displayKey':
-      return directionValue(sort.direction, compareNullableStrings(left.displayKey, right.displayKey));
+      return directionValue(sort.direction, compareNullableStrings(tokenIdentityLabel(left), tokenIdentityLabel(right)));
     case 'debugLabel':
-      return directionValue(sort.direction, compareNullableStrings(left.debugLabel ?? left.displayKey, right.debugLabel ?? right.displayKey));
+      return directionValue(sort.direction, compareNullableStrings(tokenLabelLabel(left), tokenLabelLabel(right)));
     case 'provider':
-      return directionValue(sort.direction, compareNullableStrings(left.provider, right.provider));
+      return directionValue(sort.direction, compareNullableStrings(tokenProviderLabel(left.provider), tokenProviderLabel(right.provider)));
     case 'status':
       return directionValue(sort.direction, compareNullableStrings(left.status, right.status));
     case 'attempts':
       return directionValue(sort.direction, compareNullableNumbers(left.attempts, right.attempts));
+    case 'percentOfWindow':
+      return directionValue(sort.direction, compareNullableNumbers(left.percentOfWindow, right.percentOfWindow));
     case 'utilizationRate24h':
       return directionValue(sort.direction, compareNullableNumbers(left.utilizationRate24h, right.utilizationRate24h));
     case 'maxedEvents7d':
@@ -99,7 +102,7 @@ function compareBuyerRows(
     case 'org':
       return directionValue(sort.direction, compareNullableStrings(buyerOrgLabel(left), buyerOrgLabel(right)));
     case 'effectiveProvider':
-      return directionValue(sort.direction, compareNullableStrings(left.effectiveProvider, right.effectiveProvider));
+      return directionValue(sort.direction, compareNullableStrings(buyerPreferenceLabel(left), buyerPreferenceLabel(right)));
     case 'requests':
       return directionValue(sort.direction, compareNullableNumbers(left.requests, right.requests));
     case 'percentOfWindow':
@@ -137,7 +140,7 @@ export function sortTokenRows(rows: AnalyticsTokenRow[], sort: SortState<TokenSo
   return [...rows].sort((left, right) => {
     const primary = compareTokenRows(left, right, sort);
     if (primary !== 0) return primary;
-    return compareNullableStrings(left.displayKey, right.displayKey);
+    return compareNullableStrings(tokenIdentityLabel(left), tokenIdentityLabel(right));
   });
 }
 

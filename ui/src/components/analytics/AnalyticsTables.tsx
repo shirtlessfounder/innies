@@ -1,5 +1,6 @@
 'use client';
 
+import { TbEye, TbEyeClosed } from 'react-icons/tb';
 import type {
   BuyerSortKey,
   SortDirection,
@@ -9,11 +10,17 @@ import type {
 import { type AnalyticsBuyerRow, type AnalyticsTokenRow } from '../../lib/analytics/types';
 import {
   buyerIdentityLabel,
+  buyerOrgIdLabel,
   buyerOrgLabel,
+  buyerPreferenceLabel,
   buyerSeriesLabel,
   formatCount,
   formatPercent,
   formatTimestamp,
+  tokenIdentityLabel,
+  tokenLabelLabel,
+  tokenProviderLabel,
+  tokenSeriesLabel,
 } from '../../lib/analytics/present';
 import styles from '../../app/analytics/page.module.css';
 
@@ -71,15 +78,39 @@ function DeltaCell(input: {
   );
 }
 
+function VisibilityToggleButton(input: {
+  hidden: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      aria-label={`${input.hidden ? 'Show' : 'Hide'} ${input.label} on chart`}
+      className={[
+        styles.seriesToggle,
+        input.hidden ? styles.seriesToggleHidden : '',
+      ].filter(Boolean).join(' ')}
+      onClick={input.onClick}
+      type="button"
+    >
+      {input.hidden ? (
+        <TbEyeClosed className={styles.seriesToggleIcon} aria-hidden="true" />
+      ) : (
+        <TbEye className={styles.seriesToggleIcon} aria-hidden="true" />
+      )}
+    </button>
+  );
+}
+
 export function TokenTable({
   rows,
-  selectedIds,
+  hiddenIds,
   onToggle,
   sort,
   onSort,
 }: {
   rows: AnalyticsTokenRow[];
-  selectedIds: string[];
+  hiddenIds: string[];
   onToggle: (id: string) => void;
   sort: SortState<TokenSortKey>;
   onSort: (key: TokenSortKey, defaultDirection: SortDirection) => void;
@@ -89,7 +120,7 @@ export function TokenTable({
       <table className={styles.table}>
         <thead>
           <tr>
-            <th />
+            <th>Hide</th>
             <th aria-sort={sortAria(sort.key === 'displayKey', sort.direction)}>
               <SortHeaderButton
                 active={sort.key === 'displayKey'}
@@ -110,7 +141,7 @@ export function TokenTable({
               <SortHeaderButton
                 active={sort.key === 'provider'}
                 direction={sort.direction}
-                label="Provider"
+                label="AI"
                 onClick={() => onSort('provider', 'asc')}
               />
             </th>
@@ -130,6 +161,15 @@ export function TokenTable({
                 label="Usage"
                 numeric
                 onClick={() => onSort('usageUnits', 'desc')}
+              />
+            </th>
+            <th className={styles.numeric} aria-sort={sortAria(sort.key === 'percentOfWindow', sort.direction)}>
+              <SortHeaderButton
+                active={sort.key === 'percentOfWindow'}
+                direction={sort.direction}
+                label="Share"
+                numeric
+                onClick={() => onSort('percentOfWindow', 'desc')}
               />
             </th>
             <th className={styles.numeric}>Delta</th>
@@ -155,20 +195,26 @@ export function TokenTable({
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.credentialId} className={selectedIds.includes(row.credentialId) ? styles.rowSelected : undefined}>
+            <tr
+              key={row.credentialId}
+              className={[
+                hiddenIds.includes(row.credentialId) ? styles.rowHidden : '',
+                row.deltaUsageUnits > 0 ? styles.rowDeltaFlash : '',
+              ].filter(Boolean).join(' ')}
+            >
               <td>
-                <input
-                  aria-label={`Track ${row.displayKey}`}
-                  checked={selectedIds.includes(row.credentialId)}
-                  onChange={() => onToggle(row.credentialId)}
-                  type="checkbox"
+                <VisibilityToggleButton
+                  hidden={hiddenIds.includes(row.credentialId)}
+                  label={tokenSeriesLabel(row)}
+                  onClick={() => onToggle(row.credentialId)}
                 />
               </td>
-              <td>{row.displayKey}</td>
-              <td>{row.debugLabel ?? '--'}</td>
-              <td>{row.provider}</td>
+              <td>{tokenIdentityLabel(row)}</td>
+              <td>{tokenLabelLabel(row)}</td>
+              <td>{tokenProviderLabel(row.provider)}</td>
               <td className={styles.numeric}>{formatCount(row.attempts)}</td>
               <td className={styles.numeric}>{formatCount(row.usageUnits)}</td>
+              <td className={styles.numeric}>{formatPercent(row.percentOfWindow)}</td>
               <td className={styles.numeric}>
                 <DeltaCell value={row.deltaUsageUnits} flashToken={row.flashToken} />
               </td>
@@ -184,13 +230,13 @@ export function TokenTable({
 
 export function BuyerTable({
   rows,
-  selectedIds,
+  hiddenIds,
   onToggle,
   sort,
   onSort,
 }: {
   rows: AnalyticsBuyerRow[];
-  selectedIds: string[];
+  hiddenIds: string[];
   onToggle: (id: string) => void;
   sort: SortState<BuyerSortKey>;
   onSort: (key: BuyerSortKey, defaultDirection: SortDirection) => void;
@@ -200,7 +246,7 @@ export function BuyerTable({
       <table className={styles.table}>
         <thead>
           <tr>
-            <th />
+            <th>Hide</th>
             <th aria-sort={sortAria(sort.key === 'label', sort.direction)}>
               <SortHeaderButton
                 active={sort.key === 'label'}
@@ -221,7 +267,7 @@ export function BuyerTable({
               <SortHeaderButton
                 active={sort.key === 'effectiveProvider'}
                 direction={sort.direction}
-                label="Provider"
+                label="Pref"
                 onClick={() => onSort('effectiveProvider', 'asc')}
               />
             </th>
@@ -265,13 +311,18 @@ export function BuyerTable({
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.apiKeyId} className={selectedIds.includes(row.apiKeyId) ? styles.rowSelected : undefined}>
+            <tr
+              key={row.apiKeyId}
+              className={[
+                hiddenIds.includes(row.apiKeyId) ? styles.rowHidden : '',
+                row.deltaUsageUnits > 0 ? styles.rowDeltaFlash : '',
+              ].filter(Boolean).join(' ')}
+            >
               <td>
-                <input
-                  aria-label={`Track ${buyerSeriesLabel(row)}`}
-                  checked={selectedIds.includes(row.apiKeyId)}
-                  onChange={() => onToggle(row.apiKeyId)}
-                  type="checkbox"
+                <VisibilityToggleButton
+                  hidden={hiddenIds.includes(row.apiKeyId)}
+                  label={buyerSeriesLabel(row)}
+                  onClick={() => onToggle(row.apiKeyId)}
                 />
               </td>
               <td>
@@ -282,13 +333,13 @@ export function BuyerTable({
               </td>
               <td>
                 <div className={styles.identityCell}>
-                  <span className={styles.identityPrimary}>{buyerOrgLabel(row)}</span>
+                  <span className={styles.identityPrimary} title={buyerOrgLabel(row)}>{buyerOrgLabel(row)}</span>
                   {row.orgLabel && row.orgId !== row.orgLabel ? (
-                    <span className={styles.identitySecondary}>{row.orgId}</span>
+                    <span className={styles.identitySecondary} title={row.orgId}>{buyerOrgIdLabel(row)}</span>
                   ) : null}
                 </div>
               </td>
-              <td>{row.effectiveProvider ?? '--'}</td>
+              <td>{buyerPreferenceLabel(row)}</td>
               <td className={styles.numeric}>{formatCount(row.requests)}</td>
               <td className={styles.numeric}>{formatCount(row.usageUnits)}</td>
               <td className={styles.numeric}>
