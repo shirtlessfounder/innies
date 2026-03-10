@@ -1,4 +1,3 @@
-import { once } from 'node:events';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { Router, type Response } from 'express';
@@ -1358,6 +1357,32 @@ function buildSyntheticAnthropicStreamFailureSse(input: {
   ].join('');
 }
 
+function createDownstreamClosedError(): Error {
+  const error = new Error('downstream closed');
+  (error as any).code = 'DOWNSTREAM_CLOSED';
+  return error;
+}
+
+function buildSyntheticPassthroughFailureSse(input: {
+  downstreamUsesAnthropicSse: boolean;
+  id: string;
+  model: string;
+  anthropicModel: string;
+}): string {
+  if (input.downstreamUsesAnthropicSse) {
+    return buildSyntheticAnthropicStreamFailureSse({
+      id: input.id,
+      model: input.anthropicModel,
+      message: 'upstream stream ended before completion'
+    });
+  }
+  return buildSyntheticOpenAiStreamFailureSse({
+    id: input.id,
+    model: input.model,
+    message: 'Innies upstream stream ended before completion'
+  });
+}
+
 function hasTerminalAnthropicStreamEvent(raw: string): boolean {
   const normalized = raw.toLowerCase();
   return normalized.includes('event: message_stop') || normalized.includes('"type":"message_stop"');
@@ -1388,6 +1413,55 @@ function resolveAnthropicStreamTerminalStatus(raw: string): StreamTerminalStatus
   return hasTerminalAnthropicStreamEvent(raw) ? 'completed' : 'missing';
 }
 
+async function waitForResponseDrainOrClose(res: Response): Promise<void> {
+  const writable = res as any;
+  if (writable.destroyed || writable.writableEnded) {
+    throw createDownstreamClosedError();
+  }
+  if (typeof writable.once !== 'function') {
+    return;
+  }
+  const removeListener = typeof writable.off === 'function'
+    ? (event: string, handler: (...args: any[]) => void) => writable.off(event, handler)
+    : (typeof writable.removeListener === 'function'
+      ? (event: string, handler: (...args: any[]) => void) => writable.removeListener(event, handler)
+      : null);
+
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      removeListener?.('drain', onDrain);
+      removeListener?.('close', onClose);
+      removeListener?.('finish', onFinish);
+      removeListener?.('error', onError);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onClose = () => {
+      cleanup();
+      reject(createDownstreamClosedError());
+    };
+    const onFinish = () => {
+      cleanup();
+      reject(createDownstreamClosedError());
+    };
+    const onError = (error: unknown) => {
+      cleanup();
+      reject(error);
+    };
+
+    writable.once('drain', onDrain);
+    writable.once('close', onClose);
+    writable.once('finish', onFinish);
+    writable.once('error', onError);
+  });
+
+  if (writable.destroyed || writable.writableEnded) {
+    throw createDownstreamClosedError();
+  }
+}
+
 async function writeReadableToResponse(input: {
   source: NodeJS.ReadableStream;
   res: Response;
@@ -1399,9 +1473,7 @@ async function writeReadableToResponse(input: {
     input.onChunk(buffer);
 
     if ((input.res as any).destroyed || (input.res as any).writableEnded) {
-      const error = new Error('downstream closed');
-      (error as any).code = 'DOWNSTREAM_CLOSED';
-      throw error;
+      throw createDownstreamClosedError();
     }
 
     input.onDownstreamWrite();
@@ -1410,7 +1482,7 @@ async function writeReadableToResponse(input: {
       (input.res as any).flush();
     }
     if (writeResult === false && typeof (input.res as any).once === 'function') {
-      await once(input.res as any, 'drain');
+      await waitForResponseDrainOrClose(input.res);
     }
   }
 }
@@ -2879,17 +2951,12 @@ async function executeTokenModeStreaming(input: {
           if (firstDownstreamWriteAt === null) {
             firstDownstreamWriteAt = Date.now();
           }
-          const terminalSse = compatTranslation
-            ? buildSyntheticAnthropicStreamFailureSse({
-              id: requestId,
-              model: compatTranslation.originalModel,
-              message: 'upstream stream ended before completion'
-            })
-            : buildSyntheticOpenAiStreamFailureSse({
-              id: requestId,
-              model,
-              message: 'Innies upstream stream ended before completion'
-            });
+          const terminalSse = buildSyntheticPassthroughFailureSse({
+            downstreamUsesAnthropicSse,
+            id: requestId,
+            model,
+            anthropicModel: compatTranslation ? compatTranslation.originalModel : model
+          });
           (res as any).write(terminalSse);
           if (typeof (res as any).flush === 'function') {
             (res as any).flush();
@@ -2909,17 +2976,12 @@ async function executeTokenModeStreaming(input: {
         if (firstDownstreamWriteAt === null) {
           firstDownstreamWriteAt = Date.now();
         }
-        const terminalSse = compatTranslation
-          ? buildSyntheticAnthropicStreamFailureSse({
-            id: requestId,
-            model: compatTranslation.originalModel,
-            message: 'upstream stream ended before completion'
-          })
-          : buildSyntheticOpenAiStreamFailureSse({
-            id: requestId,
-            model,
-            message: 'Innies upstream stream ended before completion'
-          });
+        const terminalSse = buildSyntheticPassthroughFailureSse({
+          downstreamUsesAnthropicSse,
+          id: requestId,
+          model,
+          anthropicModel: compatTranslation ? compatTranslation.originalModel : model
+        });
         (res as any).write(terminalSse);
         if (typeof (res as any).flush === 'function') {
           (res as any).flush();
