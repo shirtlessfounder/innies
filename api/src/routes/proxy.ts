@@ -1126,6 +1126,33 @@ function normalizeTokenModeUpstreamPayload(input: {
   // ChatGPT Codex backend rejects OpenAI token-limit params on this path.
   delete normalized.max_output_tokens;
   delete normalized.max_tokens;
+  if (normalized.instructions == null) {
+    normalized.instructions = '';
+  }
+  if (Array.isArray(normalized.tools)) {
+    normalized.tools = normalized.tools.map((tool) => {
+      if (!tool || typeof tool !== 'object' || Array.isArray(tool)) return tool;
+      const record = tool as Record<string, unknown>;
+      const nested = record.function;
+      if (record.type !== 'function' || !nested || typeof nested !== 'object' || Array.isArray(nested)) {
+        return tool;
+      }
+      return {
+        type: 'function',
+        ...(nested as Record<string, unknown>)
+      };
+    });
+  }
+  if (normalized.tool_choice && typeof normalized.tool_choice === 'object' && !Array.isArray(normalized.tool_choice)) {
+    const toolChoice = normalized.tool_choice as Record<string, unknown>;
+    const nested = toolChoice.function;
+    if (toolChoice.type === 'function' && nested && typeof nested === 'object' && !Array.isArray(nested)) {
+      normalized.tool_choice = {
+        type: 'function',
+        ...(nested as Record<string, unknown>)
+      };
+    }
+  }
 
   return {
     ...normalized,

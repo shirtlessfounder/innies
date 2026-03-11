@@ -348,6 +348,16 @@
   gap: 8px;
 }
 
+.systemNotesList {
+  overflow: auto;
+  max-height: 296px;
+}
+
+.opsLogList {
+  overflow: auto;
+  max-height: 676px;
+}
+
 .noticeText,
 .noticeError,
 .emptyStateText {
@@ -490,6 +500,7 @@
 
 .tableWrap {
   overflow: auto;
+  max-height: 626px;
   border-top: 1px solid var(--console-line);
   border-right: 1px solid var(--console-line);
   border-bottom: 1px solid var(--console-line);

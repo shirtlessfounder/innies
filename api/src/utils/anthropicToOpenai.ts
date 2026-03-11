@@ -241,11 +241,9 @@ function translateTools(tools: unknown): OpenAiTool[] | undefined {
     .filter((tool): tool is Record<string, unknown> => isRecord(tool) && typeof tool.name === 'string')
     .map((tool) => ({
       type: 'function',
-      function: {
-        name: String(tool.name),
-        ...(typeof tool.description === 'string' ? { description: tool.description } : {}),
-        ...(isRecord(tool.input_schema) ? { parameters: tool.input_schema } : {})
-      }
+      name: String(tool.name),
+      ...(typeof tool.description === 'string' ? { description: tool.description } : {}),
+      ...(isRecord(tool.input_schema) ? { parameters: tool.input_schema } : {})
     }));
   return translated.length > 0 ? translated : undefined;
 }
@@ -258,7 +256,7 @@ function translateToolChoice(toolChoice: unknown): unknown {
   if (toolChoice.type === 'tool' && typeof toolChoice.name === 'string') {
     return {
       type: 'function',
-      function: { name: toolChoice.name }
+      name: toolChoice.name
     };
   }
   return undefined;
@@ -292,11 +290,9 @@ export function translateAnthropicToOpenAi(input: TranslateAnthropicToOpenAiInpu
   const upstreamModel = resolveCompatCodexDefaultModel(input.compatCodexDefaultModel);
   const translated: Record<string, unknown> = {
     model: upstreamModel,
-    input: translateMessages(rawPayload.messages)
+    input: translateMessages(rawPayload.messages),
+    instructions: normalizeSystemInstructions(rawPayload.system) ?? ''
   };
-
-  const instructions = normalizeSystemInstructions(rawPayload.system);
-  if (instructions) translated.instructions = instructions;
 
   const maxOutputTokens = typeof rawPayload.max_output_tokens === 'number'
     ? rawPayload.max_output_tokens

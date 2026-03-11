@@ -512,7 +512,7 @@ export function AnalyticsDashboardClient() {
                 <div className={styles.sectionTitle}>SYSTEM NOTES</div>
                 <div className={styles.sectionMeta}>{formatCount(snapshot.warnings.length)} FLAGS</div>
               </div>
-              <div className={styles.noticeList}>
+              <div className={`${styles.noticeList} ${styles.systemNotesList}`}>
                 {snapshot.warnings.length === 0 ? (
                   <div className={styles.noticeText}>Snapshot bridge stable. No current integration warnings.</div>
                 ) : (
@@ -530,7 +530,7 @@ export function AnalyticsDashboardClient() {
                 <div className={styles.sectionTitle}>OPS LOG</div>
                 <div className={styles.sectionMeta}>{formatCount(snapshot.events.length)} ENTRIES</div>
               </div>
-              <div className={styles.eventList}>
+              <div className={`${styles.eventList} ${styles.opsLogList}`}>
                 {snapshot.events.length === 0 ? (
                   <div className={styles.noticeText}>No active warnings in the current snapshot.</div>
                 ) : (

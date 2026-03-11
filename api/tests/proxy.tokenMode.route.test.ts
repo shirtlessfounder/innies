@@ -1523,6 +1523,7 @@ describe('proxy token-mode route behavior', () => {
     expect(JSON.parse(String(init.body))).toMatchObject({
       model: 'gpt-5.4',
       input: 'hello',
+      instructions: '',
       store: false
     });
     upstreamSpy.mockRestore();
@@ -2188,8 +2189,8 @@ describe('proxy token-mode route behavior', () => {
     expect(JSON.parse(String(init.body))).toMatchObject({
       model: 'gpt-5.4',
       input: [{ type: 'message', role: 'user', content: 'hi' }],
-      tools: [{ type: 'function', function: { name: 'lookup_repo' } }],
-      tool_choice: { type: 'function', function: { name: 'lookup_repo' } }
+      tools: [{ type: 'function', name: 'lookup_repo' }],
+      tool_choice: { type: 'function', name: 'lookup_repo' }
     });
 
     const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls[0]?.[0]?.routeDecision;
@@ -2276,6 +2277,8 @@ describe('proxy token-mode route behavior', () => {
         payload: {
           model: 'claude-opus-4-6',
           max_tokens: 64,
+          tools: [{ name: 'lookup_repo', description: 'lookup repo', input_schema: { type: 'object', properties: { name: { type: 'string' } } } }],
+          tool_choice: { type: 'tool', name: 'lookup_repo' },
           messages: [{ role: 'user', content: 'hi' }]
         }
       }
@@ -2291,7 +2294,18 @@ describe('proxy token-mode route behavior', () => {
     expect(String(targetUrl)).toBe('https://chatgpt.com/backend-api/codex/responses');
     expect(JSON.parse(String(init.body))).toMatchObject({
       model: 'gpt-5.4',
-      store: false
+      store: false,
+      instructions: '',
+      tools: [{
+        type: 'function',
+        name: 'lookup_repo',
+        description: 'lookup repo',
+        parameters: { type: 'object', properties: { name: { type: 'string' } } }
+      }],
+      tool_choice: {
+        type: 'function',
+        name: 'lookup_repo'
+      }
     });
     expect(JSON.parse(String(init.body)).max_tokens).toBeUndefined();
     expect(JSON.parse(String(init.body)).max_output_tokens).toBeUndefined();

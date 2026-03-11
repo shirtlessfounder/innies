@@ -51,15 +51,13 @@ describe('translateAnthropicToOpenAi', () => {
       temperature: 0.2,
       top_p: 0.9,
       stop: ['STOP'],
-      tool_choice: { type: 'function', function: { name: 'lookup_repo' } },
+      tool_choice: { type: 'function', name: 'lookup_repo' },
       reasoning: { effort: 'high' },
       tools: [{
         type: 'function',
-        function: {
-          name: 'lookup_repo',
-          description: 'lookup repo metadata',
-          parameters: { type: 'object', properties: { name: { type: 'string' } } }
-        }
+        name: 'lookup_repo',
+        description: 'lookup repo metadata',
+        parameters: { type: 'object', properties: { name: { type: 'string' } } }
       }]
     });
     expect(translated.payload.input).toEqual([
@@ -358,6 +356,23 @@ describe('translateAnthropicToOpenAi', () => {
     expect(translated.payload.instructions).toBe(codeBlock);
     const userMsg = (translated.payload.input as any[]).find((i: any) => i.role === 'user');
     expect(userMsg.content).toBe('  leading spaces and trailing newline\n');
+  });
+
+  it('emits empty instructions when anthropic system is absent', () => {
+    const translated = translateAnthropicToOpenAi({
+      payload: {
+        model: 'claude-opus-4-6',
+        max_tokens: 64,
+        messages: [
+          { role: 'user', content: 'hello' }
+        ]
+      }
+    });
+
+    expect(translated.payload.instructions).toBe('');
+    expect(translated.payload.input).toEqual([
+      { type: 'message', role: 'user', content: 'hello' }
+    ]);
   });
 
   it('preserves whitespace fidelity for multi-line system and message text blocks', () => {
