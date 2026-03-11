@@ -2202,7 +2202,7 @@ describe('proxy token-mode route behavior', () => {
     delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
   });
 
-  it('rewrites translated max_output_tokens to max_tokens for openai oauth compat requests', async () => {
+  it('strips translated token-limit params for openai oauth compat requests', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     process.env.COMPAT_CODEX_DEFAULT_MODEL = 'gpt-5.4';
     const oauthToken = createFakeOpenAiOauthToken({
@@ -2291,9 +2291,9 @@ describe('proxy token-mode route behavior', () => {
     expect(String(targetUrl)).toBe('https://chatgpt.com/backend-api/codex/responses');
     expect(JSON.parse(String(init.body))).toMatchObject({
       model: 'gpt-5.4',
-      max_tokens: 64,
       store: false
     });
+    expect(JSON.parse(String(init.body)).max_tokens).toBeUndefined();
     expect(JSON.parse(String(init.body)).max_output_tokens).toBeUndefined();
 
     upstreamSpy.mockRestore();

@@ -177,18 +177,18 @@
 }
 
 .paneRows {
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
+  min-width: 0;
 }
 
 .paneLine {
   display: grid;
-  grid-template-columns: 44px max-content;
+  grid-template-columns: 32px minmax(0, 1fr);
   align-items: start;
-  gap: 12px;
-  width: max-content;
+  gap: 10px;
+  width: 100%;
   min-width: 100%;
-  padding: 0 12px;
+  padding: 0 8px 0 12px;
   min-height: 24px;
 }
 
@@ -197,9 +197,14 @@
 }
 
 .lineNumber {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
   color: rgba(22, 51, 62, 0.38);
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
   line-height: 1.6;
+  padding-right: 14px;
   text-align: right;
   user-select: none;
 }
@@ -207,8 +212,9 @@
 .lineText {
   display: block;
   min-width: 0;
-  white-space: pre;
-  word-break: normal;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   tab-size: 2;
   font-size: 12px;
   line-height: 1.6;
