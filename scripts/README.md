@@ -44,6 +44,7 @@ Behavior:
 - `innies-requeue-token-probe` accepts either the token credential UUID or an exact `debugLabel`; it needs `DATABASE_URL`
 - `innies-requeue-token-probe` prints the currently maxed credentials first so you can pick a live `debugLabel` or UUID
 - `innies-requeue-token-probe` also needs `INNIES_ADMIN_API_KEY` (or prompts for it) because it calls the admin API probe endpoint directly
+- `innies-requeue-token-probe` now prints a plain-English result summary (`REACTIVATED` vs `STILL MAXED`) before the raw JSON response
 - `label` maps to API field `debugLabel`
 - set/get preference accept either the buyer-key UUID or the live buyer key value; live-key lookup uses `DATABASE_URL`
 - script-side default provider display for `null` preference follows `BUYER_PROVIDER_PREFERENCE_DEFAULT` (legacy alias `INNIES_BUYER_PROVIDER_PREFERENCE_DEFAULT` also works)
