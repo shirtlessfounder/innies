@@ -384,7 +384,7 @@ function tokenCredentialMaxedFailureThreshold(): number {
 }
 
 function tokenCredentialProbeIntervalHours(): number {
-  const parsed = Number(process.env.TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS || 4);
+  const parsed = Number(process.env.TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS || 2);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 4;
 }
 

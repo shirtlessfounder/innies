@@ -762,7 +762,7 @@ Response example:
   - Schedule default: hourly (`TOKEN_CREDENTIAL_PROBE_SCHEDULE_MS=3600000`).
   - Probe timeout default: `10000ms` (`TOKEN_CREDENTIAL_PROBE_TIMEOUT_MS=10000`).
   - Probe batch default: `20` creds (`TOKEN_CREDENTIAL_PROBE_MAX_KEYS=20`).
-  - Next probe interval default: 4h (`TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS=4`).
+  - Next probe interval default: 2h (`TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS=2`).
   - Probe model default: `claude-opus-4-6` (`TOKEN_CREDENTIAL_PROBE_MODEL` override).
 - Token-mode policy guard:
   - when `TOKEN_MODE_ENABLED_ORGS` is configured, non-allowlisted orgs are blocked deterministically (no legacy fallback)
