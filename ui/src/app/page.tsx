@@ -26,9 +26,9 @@ export default function DashboardIndexPage() {
           <section className={styles.hero}>
             <div className={styles.heroInner}>
               {showAnalyticsLink ? (
-                <Link href="/analytics" className={styles.frame} aria-label="Open analytics">
+                <a href="/analytics" className={styles.frame} aria-label="Open analytics">
                   {heroFrame}
-                </Link>
+                </a>
               ) : (
                 <div className={styles.frame} aria-hidden="true">
                   {heroFrame}
