@@ -132,6 +132,31 @@ describe('translateAnthropicToOpenAi', () => {
     expect(toolOutputs).toHaveLength(0);
   });
 
+  it('drops anthropic thinking history instead of synthesizing responses reasoning input items', () => {
+    const translated = translateAnthropicToOpenAi({
+      payload: {
+        model: 'claude-opus-4-6',
+        max_tokens: 64,
+        messages: [
+          { role: 'user', content: 'hello' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: 'private chain of thought' },
+              { type: 'text', text: 'working' }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(translated.payload.input).toEqual([
+      { type: 'message', role: 'user', content: 'hello' },
+      { type: 'message', role: 'assistant', content: 'working' }
+    ]);
+    expect((translated.payload.input as Array<Record<string, unknown>>).some((item) => item.type === 'reasoning')).toBe(false);
+  });
+
   it('skips tool_use with missing id instead of generating synthetic ID', () => {
     const translated = translateAnthropicToOpenAi({
       payload: {
