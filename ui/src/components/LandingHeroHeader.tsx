@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { useAnalyticsDashboard } from '../hooks/useAnalyticsDashboard';
+import { usePublicLiveMeta } from '../hooks/usePublicLiveMeta';
 import { formatTimestamp } from '../lib/analytics/present';
 import styles from '../app/page.module.css';
 
@@ -57,7 +57,7 @@ export function LandingHeroHeader(input: {
     </div>
   );
 
-  const dashboard = useAnalyticsDashboard('24h');
+  const liveMeta = usePublicLiveMeta();
   const [commandIndex, setCommandIndex] = useState(0);
   const [commandText, setCommandText] = useState('');
   const [phase, setPhase] = useState<'typing' | 'holding' | 'deleting'>('typing');
@@ -132,11 +132,11 @@ export function LandingHeroHeader(input: {
       </div>
 
       <div className={styles.liveMeta}>
-        <span className={`${styles.liveBadge} ${styles[`liveBadge_${dashboard.liveStatus}`]}`}>
+        <span className={`${styles.liveBadge} ${styles[`liveBadge_${liveMeta.liveStatus}`]}`}>
           <span className={styles.liveDot} />
-          {dashboard.liveStatus.toUpperCase()}
+          {liveMeta.liveStatus.toUpperCase()}
         </span>
-        <span className={styles.liveText}>LAST {formatTimestamp(dashboard.lastSuccessfulUpdateAt)} UTC</span>
+        <span className={styles.liveText}>LAST {formatTimestamp(liveMeta.lastSuccessfulUpdateAt)} UTC</span>
       </div>
     </header>
   );
