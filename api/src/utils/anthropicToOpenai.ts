@@ -198,14 +198,9 @@ function translateAssistantMessage(message: Record<string, unknown>, items: Open
     }
     if (rawBlock.type === 'thinking') {
       flushPendingText();
-      const thinking = typeof rawBlock.thinking === 'string'
-        ? rawBlock.thinking
-        : typeof rawBlock.text === 'string'
-          ? rawBlock.text
-          : undefined;
-      if (thinking && thinking.trim().length > 0) {
-        items.push({ type: 'reasoning', content: thinking.trim() });
-      }
+      // Anthropic thinking history is provider-specific and does not map cleanly
+      // onto OpenAI reasoning input items. Drop it rather than synthesize an
+      // invalid reasoning record for fallback requests.
       continue;
     }
     if (rawBlock.type === 'tool_use') {
