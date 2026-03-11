@@ -433,24 +433,19 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
   padding: 0;
-  border: 1px solid var(--console-line);
-  background: rgba(248, 251, 253, 0.24);
+  border: 0;
+  background: transparent;
   color: var(--console-accent);
   cursor: pointer;
   transition:
-    border-color 120ms ease,
-    background 120ms ease,
     color 120ms ease,
     transform 120ms ease,
     opacity 120ms ease;
 }
 
 .seriesToggle:hover {
-  border-color: var(--console-line-strong);
-  background: rgba(248, 251, 253, 0.52);
+  color: #085d6d;
   transform: translateY(-1px);
 }
 
@@ -459,8 +454,8 @@
 }
 
 .seriesToggleIcon {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
 }
 
 .tableGrid,
