@@ -1523,8 +1523,9 @@ describe('proxy token-mode route behavior', () => {
     expect(JSON.parse(String(init.body))).toMatchObject({
       model: 'gpt-5.4',
       input: 'hello',
-      instructions: '',
-      store: false
+      instructions: 'You are a helpful assistant.',
+      store: false,
+      stream: true
     });
     upstreamSpy.mockRestore();
   });
@@ -2190,7 +2191,9 @@ describe('proxy token-mode route behavior', () => {
       model: 'gpt-5.4',
       input: [{ type: 'message', role: 'user', content: 'hi' }],
       tools: [{ type: 'function', name: 'lookup_repo' }],
-      tool_choice: { type: 'function', name: 'lookup_repo' }
+      tool_choice: { type: 'function', name: 'lookup_repo' },
+      instructions: 'You are a helpful assistant.',
+      stream: true
     });
 
     const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls[0]?.[0]?.routeDecision;
@@ -2295,7 +2298,8 @@ describe('proxy token-mode route behavior', () => {
     expect(JSON.parse(String(init.body))).toMatchObject({
       model: 'gpt-5.4',
       store: false,
-      instructions: '',
+      instructions: 'You are a helpful assistant.',
+      stream: true,
       tools: [{
         type: 'function',
         name: 'lookup_repo',
@@ -2309,6 +2313,118 @@ describe('proxy token-mode route behavior', () => {
     });
     expect(JSON.parse(String(init.body)).max_tokens).toBeUndefined();
     expect(JSON.parse(String(init.body)).max_output_tokens).toBeUndefined();
+
+    upstreamSpy.mockRestore();
+    delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
+  });
+
+  it('buffers codex oauth SSE success back into anthropic JSON for non-stream compat requests', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.COMPAT_CODEX_DEFAULT_MODEL = 'gpt-5.4';
+    const oauthToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_codex_compat_sse',
+      clientId: 'app_codex_compat_sse'
+    });
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string, model: string) => {
+      if (provider === 'openai' && model === 'gpt-5.4') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: true } as any;
+      }
+      if (provider === 'anthropic' && model === 'claude-opus-4-6') {
+        return { provider: 'anthropic', model: 'claude-opus-4-6', supports_streaming: false } as any;
+      }
+      return null as any;
+    });
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider !== 'openai') return [];
+      return [{
+        id: 'dddd3336-0000-4000-8000-000000000000',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: oauthToken,
+        refreshToken: 'rt_codex_compat_sse',
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any];
+    });
+
+    const upstreamSse = [
+      'data: {"type":"response.created","response":{"id":"resp_compat_sse_1","model":"gpt-5.4","status":"in_progress"}}\n\n',
+      'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_compat_sse_1","role":"assistant","content":[{"type":"output_text","text":"working on it"}],"status":"completed"}}\n\n',
+      'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_compat_sse_1","call_id":"call_compat_sse_1","name":"lookup_repo","arguments":"{\\"name\\":\\"innies\\"}","status":"completed"}}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_compat_sse_1","status":"completed","usage":{"input_tokens":5,"output_tokens":7}}}\n\n',
+      'data: [DONE]\n\n'
+    ].join('');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(upstreamSse, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: false,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 64,
+          tools: [{ name: 'lookup_repo', description: 'lookup repo', input_schema: { type: 'object', properties: { name: { type: 'string' } } } }],
+          tool_choice: { type: 'tool', name: 'lookup_repo' },
+          messages: [{ role: 'user', content: 'hi' }]
+        }
+      }
+    });
+    (req as any).inniesCompatMode = true;
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('resp_compat_sse_1');
+    expect((res.body as any).content).toEqual([
+      { type: 'text', text: 'working on it' },
+      { type: 'tool_use', id: 'call_compat_sse_1', name: 'lookup_repo', input: { name: 'innies' } }
+    ]);
+    expect((res.body as any).stop_reason).toBe('tool_use');
+    expect((res.body as any).usage).toEqual({ input_tokens: 5, output_tokens: 7 });
+
+    const [targetUrl, init] = upstreamSpy.mock.calls[0] as [URL, RequestInit];
+    expect(String(targetUrl)).toBe('https://chatgpt.com/backend-api/codex/responses');
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      model: 'gpt-5.4',
+      instructions: 'You are a helpful assistant.',
+      stream: true,
+      store: false,
+      tools: [{ type: 'function', name: 'lookup_repo' }],
+      tool_choice: { type: 'function', name: 'lookup_repo' }
+    });
 
     upstreamSpy.mockRestore();
     delete process.env.COMPAT_CODEX_DEFAULT_MODEL;

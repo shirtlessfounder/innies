@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSyntheticOpenAiResponsesSse,
   buildSyntheticOpenAiStreamFailureSse,
+  extractTerminalOpenAiResponseFromSse,
   hasTerminalOpenAiResponsesStreamEvent,
   summarizeSyntheticOpenAiOutputItems
 } from '../src/utils/openaiSyntheticStream.js';
@@ -96,5 +97,28 @@ describe('buildSyntheticOpenAiResponsesSse', () => {
     expect(sse).toContain('"code":"stream_disconnected"');
     expect(sse).toContain('data: [DONE]');
     expect(hasTerminalOpenAiResponsesStreamEvent(sse)).toBe(true);
+  });
+
+  it('extracts the terminal response envelope from responses SSE', () => {
+    const sse = [
+      'data: {"type":"response.created","response":{"id":"resp_sse_1","model":"gpt-5.4","status":"in_progress"}}\n\n',
+      'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"hello"}],"status":"completed"}}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_sse_1","status":"completed","usage":{"input_tokens":5,"output_tokens":7}}}\n\n',
+      'data: [DONE]\n\n'
+    ].join('');
+
+    expect(extractTerminalOpenAiResponseFromSse(sse)).toEqual({
+      id: 'resp_sse_1',
+      model: 'gpt-5.4',
+      status: 'completed',
+      usage: { input_tokens: 5, output_tokens: 7 },
+      output: [{
+        type: 'message',
+        id: 'msg_1',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'hello' }],
+        status: 'completed'
+      }]
+    });
   });
 });
