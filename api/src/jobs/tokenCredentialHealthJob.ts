@@ -151,7 +151,7 @@ export function createTokenCredentialHealthJob(repo: TokenCredentialRepository):
 
       const maxKeys = readIntEnv('TOKEN_CREDENTIAL_PROBE_MAX_KEYS', 20);
       const timeoutMs = readIntEnv('TOKEN_CREDENTIAL_PROBE_TIMEOUT_MS', 10000);
-      const probeIntervalHours = readIntEnv('TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS', 4);
+      const probeIntervalHours = readIntEnv('TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS', 2);
       const candidates = await repo.listMaxedForProbe(maxKeys);
 
       let reactivated = 0;
