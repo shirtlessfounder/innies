@@ -2,6 +2,11 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireApiKey } from '../middleware/auth.js';
 import { runtime } from '../services/runtime.js';
+import {
+  probeAndUpdateTokenCredential,
+  readTokenCredentialProbeIntervalHours,
+  readTokenCredentialProbeTimeoutMs
+} from '../services/tokenCredentialProbe.js';
 import { AppError } from '../utils/errors.js';
 import { sha256Hex, stableJson } from '../utils/hash.js';
 import { readAndValidateIdempotencyKey } from '../utils/idempotencyKey.js';
@@ -585,6 +590,90 @@ router.patch('/v1/admin/token-credentials/:id/refresh-token', requireApiKey(runt
       id,
       hasRefreshToken: parsed.refreshToken !== null
     };
+
+    await runtime.services.idempotency.commit(idemStart, {
+      responseCode: 200,
+      responseBody,
+      responseDigest: sha256Hex(stableJson(responseBody)),
+      responseRef: id
+    });
+
+    res.status(200).json(responseBody);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/admin/token-credentials/:id/probe', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const id = z.string().uuid().parse(req.params.id);
+    const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
+    const requestHash = sha256Hex(stableJson({ id, apiKeyId: req.auth?.apiKeyId }));
+    const tenantScope = req.auth?.orgId ?? `admin:${req.auth?.apiKeyId}`;
+
+    const idemStart = await runtime.services.idempotency.start({
+      scope: 'admin_token_credentials_probe_v1',
+      tenantScope,
+      idempotencyKey,
+      requestHash
+    });
+
+    if (idemStart.replay) {
+      if (!idemStart.responseBody) {
+        throw new AppError('idempotency_replay_unavailable', 409, 'Idempotent replay not available for this request');
+      }
+      res.setHeader('x-idempotent-replay', 'true');
+      res.status(idemStart.responseCode).json(idemStart.responseBody);
+      return;
+    }
+
+    const existing = await runtime.repos.tokenCredentials.getById(id);
+    if (!existing) {
+      throw new AppError('invalid_request', 404, 'Token credential not found');
+    }
+    if (existing.status !== 'maxed') {
+      throw new AppError('invalid_request', 409, 'Token credential must be maxed before manual probe', {
+        status: existing.status
+      });
+    }
+    if (existing.expiresAt.getTime() <= Date.now()) {
+      throw new AppError('invalid_request', 409, 'Token credential is expired and cannot be probed');
+    }
+
+    const probeOutcome = await probeAndUpdateTokenCredential(runtime.repos.tokenCredentials, existing, {
+      timeoutMs: readTokenCredentialProbeTimeoutMs(),
+      probeIntervalHours: readTokenCredentialProbeIntervalHours()
+    });
+
+    const responseBody = {
+      ok: true,
+      id,
+      provider: existing.provider,
+      debugLabel: existing.debugLabel,
+      probeOk: probeOutcome.ok,
+      reactivated: probeOutcome.reactivated,
+      status: probeOutcome.status,
+      upstreamStatus: probeOutcome.statusCode,
+      reason: probeOutcome.reason,
+      nextProbeAt: probeOutcome.nextProbeAt ? probeOutcome.nextProbeAt.toISOString() : null
+    } as const;
+
+    await logSensitiveAction(runtime.repos.auditLogs, req.auth, {
+      action: 'token_credential.probe',
+      targetType: 'token_credential',
+      targetId: id,
+      orgId: existing.orgId,
+      metadata: {
+        provider: existing.provider,
+        debugLabel: existing.debugLabel,
+        probeOk: probeOutcome.ok,
+        reactivated: probeOutcome.reactivated,
+        status: probeOutcome.status,
+        upstreamStatus: probeOutcome.statusCode,
+        reason: probeOutcome.reason,
+        nextProbeAt: responseBody.nextProbeAt
+      }
+    });
 
     await runtime.services.idempotency.commit(idemStart, {
       responseCode: 200,

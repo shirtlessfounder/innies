@@ -643,7 +643,6 @@ export class TokenCredentialRepository {
     cooldownUntil: Date;
     threshold: number;
     nextProbeAt: Date;
-    forceMax?: boolean;
     reason?: string;
     requestId?: string | null;
     attemptNo?: number | null;
@@ -668,31 +667,31 @@ export class TokenCredentialRepository {
             last_rate_limited_at = now(),
             status = case
               when status in ('active', 'rotating')
-                and ($6::boolean or coalesce(consecutive_rate_limit_count, 0) + 1 >= $4)
+                and coalesce(consecutive_rate_limit_count, 0) + 1 >= $4
               then 'maxed'
               else status
             end,
             maxed_at = case
               when status in ('active', 'rotating')
-                and ($6::boolean or coalesce(consecutive_rate_limit_count, 0) + 1 >= $4)
+                and coalesce(consecutive_rate_limit_count, 0) + 1 >= $4
               then now()
               else maxed_at
             end,
             rate_limited_until = case
               when status = 'active'
-                and not ($6::boolean or coalesce(consecutive_rate_limit_count, 0) + 1 >= $4)
+                and not (coalesce(consecutive_rate_limit_count, 0) + 1 >= $4)
                 and coalesce(consecutive_rate_limit_count, 0) + 1 >= $2
               then greatest(coalesce(rate_limited_until, '-infinity'::timestamptz), $3)
               else rate_limited_until
             end,
             next_probe_at = case
               when status in ('active', 'rotating')
-                and ($6::boolean or coalesce(consecutive_rate_limit_count, 0) + 1 >= $4)
+                and coalesce(consecutive_rate_limit_count, 0) + 1 >= $4
               then $5
               else next_probe_at
             end,
             last_refresh_error = case
-              when $7::text is not null then $7
+              when $6::text is not null then $6
               else last_refresh_error
             end,
             updated_at = now()
@@ -726,7 +725,6 @@ export class TokenCredentialRepository {
         input.cooldownUntil,
         input.threshold,
         input.nextProbeAt,
-        Boolean(input.forceMax),
         input.reason ?? null
       ]);
       if (result.rowCount !== 1) return null;
@@ -763,8 +761,7 @@ export class TokenCredentialRepository {
               statusCode: input.statusCode,
               threshold: input.threshold,
               cooldownThreshold: input.cooldownThreshold,
-              consecutiveRateLimits: Number(row.consecutive_rate_limits),
-              forceMax: Boolean(input.forceMax)
+              consecutiveRateLimits: Number(row.consecutive_rate_limits)
             }
           ]
         );

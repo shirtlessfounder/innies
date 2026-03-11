@@ -276,6 +276,64 @@ resolve_buyer_key_id() {
   printf '%s' "$resolved_id"
 }
 
+ensure_database_url() {
+  if [[ -z "$DATABASE_URL" ]]; then
+    echo 'error: DATABASE_URL is required for this command' >&2
+    exit 1
+  fi
+}
+
+ensure_psql() {
+  if ! command -v psql >/dev/null 2>&1; then
+    echo 'error: psql is required for this command' >&2
+    exit 1
+  fi
+}
+
+resolve_token_credential_id() {
+  local input="$1"
+  local matches=""
+  local line_count
+
+  input="$(trim "$input")"
+  require_nonempty 'token credential id or debug label' "$input"
+
+  if is_uuid "$input"; then
+    printf '%s' "$input"
+    return
+  fi
+
+  ensure_database_url
+  ensure_psql
+
+  matches="$(
+    psql "$DATABASE_URL" -X -A -F $'\t' -t -v ON_ERROR_STOP=1 -v debug_label="$input" 2>/dev/null <<'SQL'
+select id, provider, status
+from in_token_credentials
+where debug_label = :'debug_label'
+  and status <> 'revoked'
+order by updated_at desc;
+SQL
+  )"
+  matches="$(printf '%s\n' "$matches" | sed '/^[[:space:]]*$/d')"
+
+  if [[ -z "$matches" ]]; then
+    echo "error: no token credential found for debug label '$input'" >&2
+    exit 1
+  fi
+
+  line_count="$(printf '%s\n' "$matches" | wc -l | tr -d '[:space:]')"
+  if [[ "$line_count" != "1" ]]; then
+    echo "error: multiple token credentials found for debug label '$input'; use a UUID instead" >&2
+    printf '%s\n' "$matches" | while IFS=$'\t' read -r match_id match_provider match_status; do
+      echo "  - $match_id ($match_provider, $match_status)" >&2
+    done
+    exit 1
+  fi
+
+  printf '%s\n' "$matches" | cut -f1
+}
+
 print_response() {
   local status="$1"
   local headers_file="$2"

@@ -4,6 +4,7 @@ import { AppError } from '../src/utils/errors.js';
 
 type RuntimeModule = typeof import('../src/services/runtime.js');
 type AdminRouteModule = typeof import('../src/routes/admin.js');
+type ProbeModule = typeof import('../src/services/tokenCredentialProbe.js');
 
 type MockReq = {
   method: string;
@@ -118,20 +119,24 @@ function getRouteHandlers(router: any, routePath: string): Array<(req: any, res:
 
 describe('admin token credential routes idempotent replay', () => {
   let runtimeModule: RuntimeModule;
+  let probeModule: ProbeModule;
   let createHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let rotateHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let revokeHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let refreshTokenHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let probeHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
 
   beforeAll(async () => {
     process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@127.0.0.1:5432/innies_test';
     process.env.SELLER_SECRET_ENC_KEY_B64 = process.env.SELLER_SECRET_ENC_KEY_B64 || Buffer.alloc(32, 7).toString('base64');
     runtimeModule = await import('../src/services/runtime.js');
+    probeModule = await import('../src/services/tokenCredentialProbe.js');
     const mod = await import('../src/routes/admin.js') as AdminRouteModule;
     createHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials');
     rotateHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/rotate');
     revokeHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/revoke');
     refreshTokenHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/refresh-token');
+    probeHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/probe');
   });
 
   beforeEach(() => {
@@ -162,9 +167,22 @@ describe('admin token credential routes idempotent replay', () => {
     } as any);
     vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'revoke').mockResolvedValue(true);
     vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'setRefreshToken').mockResolvedValue(true);
+    vi.spyOn(probeModule, 'probeAndUpdateTokenCredential').mockResolvedValue({
+      ok: true,
+      statusCode: 200,
+      reason: 'ok',
+      reactivated: true,
+      status: 'active',
+      nextProbeAt: null
+    });
+    vi.spyOn(runtimeModule.runtime.repos.auditLogs, 'createEvent').mockResolvedValue({ id: 'audit_1' } as any);
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
       id: 'z',
-      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d'
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      debugLabel: 'oauth-main-1',
+      status: 'maxed',
+      expiresAt: new Date('2026-03-20T00:00:00.000Z')
     } as any);
   });
 
@@ -172,7 +190,7 @@ describe('admin token credential routes idempotent replay', () => {
     vi.restoreAllMocks();
   });
 
-  it('replays create/rotate/revoke/refresh-token deterministically without executing mutations', async () => {
+  it('replays create/rotate/revoke/refresh-token/probe deterministically without executing mutations', async () => {
     const headers = {
       authorization: 'Bearer in_admin_token',
       'content-type': 'application/json',
@@ -246,11 +264,25 @@ describe('admin token credential routes idempotent replay', () => {
     expect(resRefresh.headers['x-idempotent-replay']).toBe('true');
     expect((resRefresh.body as any).replayed).toBe(true);
 
+    const reqProbe = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/probe',
+      headers,
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const resProbe = createMockRes();
+    await invoke(probeHandlers[0], reqProbe, resProbe);
+    await invoke(probeHandlers[1], reqProbe, resProbe);
+    expect(resProbe.statusCode).toBe(200);
+    expect(resProbe.headers['x-idempotent-replay']).toBe('true');
+    expect((resProbe.body as any).replayed).toBe(true);
+
     expect(runtimeModule.runtime.services.tokenCredentials.create).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.tokenCredentials.rotate).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.tokenCredentials.revoke).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.tokenCredentials.setRefreshToken).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.repos.tokenCredentials.getById).not.toHaveBeenCalled();
+    expect(probeModule.probeAndUpdateTokenCredential).not.toHaveBeenCalled();
   });
 
   it('allows creating additional credentials for same org/provider', async () => {
@@ -517,5 +549,106 @@ describe('admin token credential routes idempotent replay', () => {
       expect.any(Object)
     );
     expect(commitSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('probes a maxed credential immediately and returns active on success', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_probe_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123458',
+        requestHash: 'probe_h_1'
+      }
+    } as any);
+
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      debugLabel: 'niyant-codex',
+      status: 'maxed',
+      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+    } as any);
+    const probeSpy = vi.spyOn(probeModule, 'probeAndUpdateTokenCredential').mockResolvedValue({
+      ok: true,
+      statusCode: 200,
+      reason: 'ok',
+      reactivated: true,
+      status: 'active',
+      nextProbeAt: null
+    });
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/probe',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123458'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const res = createMockRes();
+
+    await invoke(probeHandlers[0], req, res);
+    await invoke(probeHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any)).toEqual({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      provider: 'openai',
+      debugLabel: 'niyant-codex',
+      probeOk: true,
+      reactivated: true,
+      status: 'active',
+      upstreamStatus: 200,
+      reason: 'ok',
+      nextProbeAt: null
+    });
+    expect(probeSpy).toHaveBeenCalledTimes(1);
+    expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects manual probe when the credential is not maxed', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_probe_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123459',
+        requestHash: 'probe_h_2'
+      }
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      debugLabel: 'niyant-codex',
+      status: 'active',
+      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+    } as any);
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/probe',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123459'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const res = createMockRes();
+
+    await invoke(probeHandlers[0], req, res);
+    await invoke(probeHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(409);
+    expect((res.body as any).code).toBe('invalid_request');
+    expect(String((res.body as any).message)).toContain('must be maxed');
+    expect(probeModule.probeAndUpdateTokenCredential).not.toHaveBeenCalled();
   });
 });
