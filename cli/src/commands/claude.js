@@ -53,9 +53,27 @@ function buildClaudeArgs(args, model) {
 }
 
 export async function runClaude(args) {
-  const config = await loadConfig(true);
-  if (!config) {
+  // Extract --token flag before passing args to claude
+  let inlineToken = null;
+  const filteredArgs = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--token' && i + 1 < args.length) {
+      inlineToken = args[++i];
+    } else if (args[i].startsWith('--token=')) {
+      inlineToken = args[i].slice('--token='.length);
+    } else {
+      filteredArgs.push(args[i]);
+    }
+  }
+  args = filteredArgs;
+
+  let config = await loadConfig(true);
+  if (!config && !inlineToken) {
     fail('Not logged in. Run: innies login --token <in_token>');
+  }
+  if (inlineToken) {
+    config = config || { apiBaseUrl: 'https://api.innies.computer', providerDefaults: {} };
+    config.token = inlineToken;
   }
 
   const defaultModel = resolveProviderDefaultModel(config, 'anthropic');
@@ -80,6 +98,7 @@ export async function runClaude(args) {
 
   const env = {
     ...process.env,
+    MallocStackLogging: '',
     INNIES_CLAUDE_WRAPPED: '1',
     INNIES_TOKEN: config.token,
     INNIES_API_BASE_URL: config.apiBaseUrl,
