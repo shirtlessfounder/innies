@@ -516,9 +516,7 @@ describe('anthropic compat route', () => {
     expect(JSON.parse(String(init.body))).toMatchObject({
       model: 'gpt-5.4',
       instructions: 'You are a helpful assistant.',
-      input: [{ type: 'message', role: 'user', content: 'hi' }],
-      store: false,
-      stream: true
+      input: [{ type: 'message', role: 'user', content: 'hi' }]
     });
 
     upstreamSpy.mockRestore();
@@ -895,6 +893,102 @@ describe('anthropic compat route', () => {
     expect(routeDecision?.provider_preferred).toBe('openai');
     expect(routeDecision?.provider_effective).toBe('openai');
     upstreamSpy.mockRestore();
+    delete process.env.OPENAI_UPSTREAM_BASE_URL;
+    delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
+  });
+
+  it('translates mislabelled codex SSE bodies into anthropic SSE when buyer preference is openai', async () => {
+    process.env.OPENAI_UPSTREAM_BASE_URL = 'https://openai.internal.test';
+    process.env.COMPAT_CODEX_DEFAULT_MODEL = 'gpt-5.4';
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string, model: string) => {
+      if (provider === 'openai' && model === 'gpt-5.4') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: true } as any;
+      }
+      if (provider === 'anthropic' && model === 'claude-opus-4-6') {
+        return { provider: 'anthropic', model: 'claude-opus-4-6', supports_streaming: true } as any;
+      }
+      return null as any;
+    });
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider !== 'openai') return [];
+      return [{
+        id: 'openai-stream-cred-mislabelled',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: 'openai-stream-token',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any];
+    });
+    const streamLatencySpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const upstreamSse = [
+      'data: {"type":"response.created","response":{"id":"resp_compat_mislabelled","status":"in_progress","usage":{"input_tokens":0,"output_tokens":0}}}\n\n',
+      'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_compat_mislabelled","role":"assistant","content":[{"type":"output_text","text":"hello from codex"}],"status":"completed"}}\n\n',
+      'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_compat_mislabelled","call_id":"call_compat_mislabelled","name":"lookup_repo","arguments":"{\\"name\\":\\"innies\\"}","status":"completed"}}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_compat_mislabelled","status":"completed","usage":{"input_tokens":9,"output_tokens":4}}}\n\n',
+      'data: [DONE]\n\n'
+    ].join('');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(upstreamSse, {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: { authorization: 'Bearer in_test_token', 'content-type': 'application/json' },
+      body: {
+        model: 'claude-opus-4-6',
+        stream: true,
+        max_tokens: 32,
+        tools: [{ name: 'lookup_repo', description: 'lookup repo', input_schema: { type: 'object', properties: { name: { type: 'string' } } } }],
+        tool_choice: { type: 'tool', name: 'lookup_repo' },
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    const body = String(res.body ?? '');
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/event-stream');
+    expect(body).toContain('event: content_block_start');
+    expect(body).toContain('"type":"text_delta","text":"hello from codex"');
+    expect(body).toContain('"type":"tool_use","id":"call_compat_mislabelled","name":"lookup_repo"');
+    expect(body).toContain('"type":"input_json_delta","partial_json":"{\\"name\\":\\"innies\\"}"');
+    expect(body).toContain('"stop_reason":"tool_use"');
+
+    const latencyCalls = streamLatencySpy.mock.calls.filter((call) => call[0] === '[stream-latency]');
+    expect(latencyCalls.length).toBeGreaterThan(0);
+    const lastLatency = latencyCalls[latencyCalls.length - 1]?.[1] as any;
+    expect(lastLatency?.stream_mode).toBe('synthetic_bridge');
+    expect(lastLatency?.synthetic_content_block_count).toBe(2);
+    expect(lastLatency?.synthetic_content_block_types).toBe('text,tool_use');
+
+    upstreamSpy.mockRestore();
+    streamLatencySpy.mockRestore();
     delete process.env.OPENAI_UPSTREAM_BASE_URL;
     delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
   });

@@ -2652,10 +2652,14 @@ async function executeTokenModeStreaming(input: {
       const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
       const isStreaming = contentType.includes('text/event-stream');
       if (!isStreaming) {
-        const { data, rawText, looksLikeSse } = await readUpstreamBody({
+        const { data: rawData, rawText, looksLikeSse } = await readUpstreamBody({
           upstreamResponse,
           contentType
         });
+        const extractedSseResponse = status >= 200 && status < 300 && looksLikeSse
+          ? extractTerminalOpenAiResponseFromSse(rawText)
+          : null;
+        const data = extractedSseResponse ?? rawData;
         // Map ALL error statuses on translated paths to Anthropic-shaped error envelopes.
         const downstreamMappedError = compatTranslation && status >= 400
           ? mapOpenAiErrorToAnthropic(status, data)
