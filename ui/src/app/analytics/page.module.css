@@ -621,6 +621,10 @@
   color: #d97706;
 }
 
+.statusPillRateLimited {
+  color: #b45309;
+}
+
 .statusPillMaxed {
   color: #ea580c;
 }

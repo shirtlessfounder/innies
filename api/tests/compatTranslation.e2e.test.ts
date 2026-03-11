@@ -198,6 +198,12 @@ describe('compat translation e2e', () => {
       status: 'active',
       consecutiveFailures: 1
     } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'recordRateLimitAndMaybeMax').mockResolvedValue({
+      status: 'active',
+      consecutiveRateLimits: 1,
+      rateLimitedUntil: null,
+      newlyMaxed: false
+    } as any);
     vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
       replay: false,
       input: {

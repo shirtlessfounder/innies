@@ -141,6 +141,30 @@ display_provider_name() {
   esac
 }
 
+alternate_provider() {
+  case "${1:-}" in
+    anthropic) printf 'openai' ;;
+    openai) printf 'anthropic' ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+resolve_default_buyer_provider() {
+  local raw="${BUYER_PROVIDER_PREFERENCE_DEFAULT:-${INNIES_BUYER_PROVIDER_PREFERENCE_DEFAULT:-anthropic}}"
+  canonical_provider "$raw"
+}
+
+effective_preference_provider() {
+  local preferred="${1:-}"
+  if [[ "$preferred" == 'null' || -z "$preferred" ]]; then
+    resolve_default_buyer_provider
+    return
+  fi
+  canonical_provider "$preferred"
+}
+
 choose_provider() {
   local label="$1"
   local value
@@ -159,7 +183,7 @@ choose_provider() {
 choose_preference() {
   local value
   while true; do
-    if ! value="$(prompt 'preferred provider (Claude Code/Codex/null)')"; then
+    if ! value="$(prompt 'preferred provider (Claude Code/Codex/null; fallback auto-switches to the other provider)')"; then
       exit 1
     fi
     if value="$(canonical_provider "$value")"; then

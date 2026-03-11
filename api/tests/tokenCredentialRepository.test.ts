@@ -75,6 +75,7 @@ describe('tokenCredentialRepository', () => {
     expect(found?.accessToken).toBe('access-live');
     expect(found?.refreshToken).toBe('refresh-live');
     expect(db.queries[0].sql).toContain("and expires_at > now()");
+    expect(db.queries[0].sql).toContain('rate_limited_until is null or rate_limited_until <= now()');
   });
 
   it('rotates active credential with deterministic status updates', async () => {
@@ -153,6 +154,91 @@ describe('tokenCredentialRepository', () => {
     });
   });
 
+  it('records repeated 429s into the short rate-limit cooldown without maxing', async () => {
+    const db = new SequenceSqlClient([
+      {
+        rows: [{
+          previous_status: 'active',
+          org_id: '00000000-0000-0000-0000-000000000001',
+          provider: 'anthropic',
+          status: 'active',
+          consecutive_rate_limits: 5,
+          rate_limited_until: '2026-03-04T00:05:00Z'
+        }],
+        rowCount: 1
+      }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    const result = await repo.recordRateLimitAndMaybeMax({
+      id: 'cred_1',
+      statusCode: 429,
+      cooldownThreshold: 5,
+      cooldownUntil: new Date('2026-03-04T00:05:00Z'),
+      threshold: 15,
+      nextProbeAt: new Date('2026-03-04T04:00:00Z'),
+      reason: 'upstream_429_consecutive_rate_limit',
+      requestId: 'req_429',
+      attemptNo: 3
+    });
+
+    expect(result).toEqual({
+      status: 'active',
+      consecutiveRateLimits: 5,
+      rateLimitedUntil: new Date('2026-03-04T00:05:00.000Z'),
+      newlyMaxed: false
+    });
+    expect(db.queries[0].sql).toContain('consecutive_rate_limit_count');
+    expect(db.queries[0].sql).toContain('rate_limited_until');
+  });
+
+  it('promotes repeated 429s into maxed when the hard threshold is reached', async () => {
+    const db = new SequenceSqlClient([
+      {
+        rows: [{
+          previous_status: 'active',
+          org_id: '00000000-0000-0000-0000-000000000001',
+          provider: 'anthropic',
+          status: 'maxed',
+          consecutive_rate_limits: 15,
+          rate_limited_until: null
+        }],
+        rowCount: 1
+      },
+      { rows: [], rowCount: 1 }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    const result = await repo.recordRateLimitAndMaybeMax({
+      id: 'cred_1',
+      statusCode: 429,
+      cooldownThreshold: 5,
+      cooldownUntil: new Date('2026-03-04T00:05:00Z'),
+      threshold: 15,
+      nextProbeAt: new Date('2026-03-04T04:00:00Z'),
+      reason: 'upstream_429_consecutive_rate_limit',
+      requestId: 'req_429_hard',
+      attemptNo: 4
+    });
+
+    expect(result).toEqual({
+      status: 'maxed',
+      consecutiveRateLimits: 15,
+      rateLimitedUntil: null,
+      newlyMaxed: true
+    });
+    expect(db.queries[1].sql).toContain("'maxed'");
+    expect(db.queries[1].params?.[6]).toMatchObject({
+      requestId: 'req_429_hard',
+      attemptNo: 4,
+      statusCode: 429,
+      threshold: 15,
+      cooldownThreshold: 5,
+      consecutiveRateLimits: 15,
+      forceMax: false
+    });
+  });
+
   it('reactivates maxed credential and clears probe/failure fields', async () => {
     const db = new SequenceSqlClient([
       {
@@ -172,6 +258,7 @@ describe('tokenCredentialRepository', () => {
     expect(ok).toBe(true);
     expect(db.queries[0].sql).toContain("status = 'active'");
     expect(db.queries[0].sql).toContain('consecutive_failure_count = 0');
+    expect(db.queries[0].sql).toContain('consecutive_rate_limit_count = 0');
     expect(db.queries[0].sql).toContain('next_probe_at = null');
     expect(db.queries[1].sql).toContain('insert into in_token_credential_events');
     expect(db.queries[1].sql).toContain("'reactivated'");
@@ -242,5 +329,6 @@ describe('tokenCredentialRepository', () => {
 
     expect(updated?.rotationVersion).toBe(7);
     expect(db.queries[0].sql).not.toContain('rotation_version = rotation_version + 1');
+    expect(db.queries[0].sql).toContain('consecutive_rate_limit_count = 0');
   });
 });

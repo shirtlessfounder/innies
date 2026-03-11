@@ -70,6 +70,7 @@ Notes:
 - Current token-mode provider resolution:
   - buyer-key preference source is the authenticated key’s stored preference
   - buyer-key preference is the main cross-provider steering control for OpenClaw and other model-agnostic clients
+  - non-pinned buyer traffic always builds a two-provider plan: `[effective preferred provider, alternate provider]`
   - `codex` normalizes to canonical `openai` at ingress
   - OpenAI/Codex OAuth credentials are sent to the ChatGPT Codex backend (`/backend-api/codex/responses`), not the public `api.openai.com/v1/responses` path
   - Codex OAuth requests force `store=false` on Responses payloads
@@ -194,6 +195,7 @@ Response shape:
 Default behavior:
 - if no explicit preference is set, effective provider defaults to `anthropic`
 - override default via `BUYER_PROVIDER_PREFERENCE_DEFAULT` (`anthropic|openai|codex`, where `codex` maps to `openai`)
+- non-pinned buyer routing still gets the alternate provider as fallback automatically; changing the preferred provider flips the fallback order as well
 - intended primary consumer: OpenClaw and other model-agnostic clients that should route across providers via buyer-key preference rather than a provider-pinned entrypoint
 
 ### `PATCH /v1/admin/buyer-keys/:id/provider-preference`
@@ -746,17 +748,21 @@ Response example:
   - model/request-invalid -> hard-fail (no failover loop)
 - Token credential maxing/quarantine:
   - Credentials can be auto-marked `maxed` after repeated upstream auth-like failures.
-  - Default maxing statuses are `401` only (`TOKEN_CREDENTIAL_MAX_ON_STATUSES=401`).
+  - Default maxing statuses are `401`/`403` allowlisted via `TOKEN_CREDENTIAL_MAX_ON_STATUSES`, with default config still `401`.
   - Default threshold is `10` consecutive matching failures (`TOKEN_CREDENTIAL_MAXED_CONSECUTIVE_FAILURES=10`).
+  - OAuth/session creds use a `3x` auth-failure threshold before auto-max (`30` by default).
+  - OAuth/session creds also track repeated `429` responses separately:
+    - `5` consecutive `429`s -> temporary routing penalty (`TOKEN_CREDENTIAL_RATE_LIMIT_COOLDOWN_CONSECUTIVE_FAILURES=5`, `TOKEN_CREDENTIAL_RATE_LIMIT_COOLDOWN_MINUTES=5`)
+    - `15` consecutive `429`s, or explicit provider exhaustion messaging -> auto-max (`TOKEN_CREDENTIAL_RATE_LIMIT_MAX_CONSECUTIVE_FAILURES=15`)
   - Auto-maxed credentials are removed from active routing pool until probe reactivation.
-  - Successful routed request on an active/rotating credential resets consecutive failure count.
+  - Successful routed request on an active/rotating credential resets both auth-failure and `429` counters and clears temporary rate-limit penalties.
 - Token credential probe/reactivation:
   - Background job: `token-credential-healthcheck-hourly`.
   - Enabled by default (`TOKEN_CREDENTIAL_PROBE_ENABLED=true`).
   - Schedule default: hourly (`TOKEN_CREDENTIAL_PROBE_SCHEDULE_MS=3600000`).
   - Probe timeout default: `10000ms` (`TOKEN_CREDENTIAL_PROBE_TIMEOUT_MS=10000`).
   - Probe batch default: `20` creds (`TOKEN_CREDENTIAL_PROBE_MAX_KEYS=20`).
-  - Next probe interval default: 24h (`TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS=24`).
+  - Next probe interval default: 4h (`TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS=4`).
   - Probe model default: `claude-opus-4-6` (`TOKEN_CREDENTIAL_PROBE_MODEL` override).
 - Token-mode policy guard:
   - when `TOKEN_MODE_ENABLED_ORGS` is configured, non-allowlisted orgs are blocked deterministically (no legacy fallback)

@@ -100,7 +100,7 @@ export default async function OnboardPage() {
             analyticsPromptLabel="message"
             analyticsPromptLinkLabel="@shirtessfounder"
             analyticsPromptLinkHref="https://t.me/shirtlessfounder"
-            analyticsPromptSuffix="on telegram with your oauth tokens to onboard to innies"
+            analyticsPromptSuffix="on telegram with your oauth tokens to onboard"
           />
 
           <section className={styles.workspaceSection}>
