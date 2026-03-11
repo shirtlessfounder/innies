@@ -11,6 +11,14 @@
 
 ## Quickstart
 
+**Option A: Inline token (fastest, no config)**
+```bash
+npm install -g innies
+innies claude --token in_live_REPLACE_ME
+innies codex --token in_live_REPLACE_ME
+```
+
+**Option B: Login once, run without token**
 ```bash
 npm install -g innies
 innies login --token in_live_REPLACE_ME
@@ -57,7 +65,7 @@ Refuses to overwrite a real Claude install. Use `innies claude` directly if link
 
 | Symptom | Fix |
 |---------|-----|
-| `Missing --token` | `innies login --token in_live_...` |
+| `Missing --token` | `innies login --token in_live_...` or pass `--token` inline |
 | `Token must start with in_` | Use Innies buyer key, not provider token |
 | Missing `claude`/`codex` binary | Install upstream CLI, rerun `innies doctor` |
 | `No active compatibility rule` | Model not in DB — add to `in_model_compatibility_rules` |

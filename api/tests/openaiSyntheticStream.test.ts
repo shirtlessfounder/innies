@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSyntheticOpenAiResponsesSse,
   buildSyntheticOpenAiStreamFailureSse,
-  hasTerminalOpenAiResponsesStreamEvent
+  hasTerminalOpenAiResponsesStreamEvent,
+  summarizeSyntheticOpenAiOutputItems
 } from '../src/utils/openaiSyntheticStream.js';
 
 describe('buildSyntheticOpenAiResponsesSse', () => {
@@ -51,6 +52,37 @@ describe('buildSyntheticOpenAiResponsesSse', () => {
     expect(sse).toContain('"type":"response.output_item.done"');
     expect(sse).toContain('"call_id":"call_1"');
     expect(sse).toContain('"type":"response.completed"');
+  });
+
+  it('synthesizes a placeholder message item when a response-like payload has no output items', () => {
+    const summary = summarizeSyntheticOpenAiOutputItems({
+      id: 'resp_empty_1',
+      status: 'completed',
+      usage: { input_tokens: 2, output_tokens: 0 }
+    });
+    const sse = buildSyntheticOpenAiResponsesSse({
+      id: 'resp_empty_1',
+      status: 'completed',
+      usage: { input_tokens: 2, output_tokens: 0 }
+    });
+
+    expect(summary.count).toBe(1);
+    expect(summary.types).toBe('message');
+    expect(sse).toContain('"type":"response.output_item.added"');
+    expect(sse).toContain('"type":"response.output_item.done"');
+    expect(sse).toContain('"type":"response.completed"');
+  });
+
+  it('emits response.incomplete for incomplete terminal status', () => {
+    const sse = buildSyntheticOpenAiResponsesSse({
+      id: 'resp_incomplete_1',
+      status: 'incomplete',
+      detail: 'tool output truncated'
+    });
+
+    expect(sse).toContain('"type":"response.output_item.added"');
+    expect(sse).toContain('"type":"response.incomplete"');
+    expect(sse).not.toContain('"type":"response.completed"');
   });
 
   it('builds a terminal failure stream marker for passthrough disconnects', () => {
