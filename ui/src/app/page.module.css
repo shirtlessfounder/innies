@@ -556,8 +556,7 @@
   }
 
   .liveMeta {
-    align-items: flex-start;
-    padding-top: 0;
+    display: none;
   }
 
   .header {
