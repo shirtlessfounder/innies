@@ -1710,6 +1710,118 @@ describe('proxy token-mode route behavior', () => {
     upstreamSpy.mockRestore();
   });
 
+  it('translates mislabelled upstream codex SSE bodies into anthropic SSE for compat streaming requests', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const oauthToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_codex_stream_compat',
+      clientId: 'app_codex_stream_compat'
+    });
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string, model: string) => {
+      if (provider === 'openai' && model === 'gpt-5.4') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: true } as any;
+      }
+      if (provider === 'anthropic' && model === 'claude-opus-4-6') {
+        return { provider: 'anthropic', model: 'claude-opus-4-6', supports_streaming: true } as any;
+      }
+      return null as any;
+    });
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider !== 'openai') return [];
+      return [{
+        id: 'dddd1113-compat-0000-4000-8000-000000000000',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: oauthToken,
+        refreshToken: 'rt_codex_stream_compat',
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any];
+    });
+
+    const streamLatencySpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const upstreamSse = [
+      'data: {"type":"response.created","response":{"id":"resp_compat_mislabelled_proxy","status":"in_progress","usage":{"input_tokens":0,"output_tokens":0}}}\n\n',
+      'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_compat_mislabelled_proxy","role":"assistant","content":[{"type":"output_text","text":"working on it"}],"status":"completed"}}\n\n',
+      'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_compat_mislabelled_proxy","call_id":"call_compat_mislabelled_proxy","name":"lookup_repo","arguments":"{\\"name\\":\\"innies\\"}","status":"completed"}}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_compat_mislabelled_proxy","status":"completed","usage":{"input_tokens":5,"output_tokens":7}}}\n\n',
+      'data: [DONE]\n\n'
+    ].join('');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(upstreamSse, {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: true,
+        payload: {
+          model: 'claude-opus-4-6',
+          stream: true,
+          max_tokens: 64,
+          tools: [{ name: 'lookup_repo', description: 'lookup repo', input_schema: { type: 'object', properties: { name: { type: 'string' } } } }],
+          tool_choice: { type: 'tool', name: 'lookup_repo' },
+          messages: [{ role: 'user', content: 'hi' }]
+        }
+      }
+    });
+    (req as any).inniesCompatMode = true;
+    const res = createStreamingMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/event-stream');
+    expect(String(res.body)).toContain('"type":"text_delta","text":"working on it"');
+    expect(String(res.body)).toContain('"type":"tool_use","id":"call_compat_mislabelled_proxy","name":"lookup_repo"');
+    expect(String(res.body)).toContain('"type":"input_json_delta","partial_json":"{\\"name\\":\\"innies\\"}"');
+
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls.at(-1)?.[0]?.routeDecision;
+    expect(routeDecision?.translated).toBe(true);
+    expect(routeDecision?.translated_path).toBe('/v1/responses');
+    expect(routeDecision?.provider_preferred).toBe('openai');
+    expect(routeDecision?.provider_effective).toBe('openai');
+
+    const latencyCalls = streamLatencySpy.mock.calls.filter((call) => call[0] === '[stream-latency]');
+    expect(latencyCalls.length).toBeGreaterThan(0);
+    const lastLatency = latencyCalls[latencyCalls.length - 1]?.[1] as any;
+    expect(lastLatency?.stream_mode).toBe('synthetic_bridge');
+    expect(lastLatency?.synthetic_content_block_count).toBe(2);
+    expect(lastLatency?.synthetic_content_block_types).toBe('text,tool_use');
+
+    upstreamSpy.mockRestore();
+    streamLatencySpy.mockRestore();
+  });
+
   it('terminates codex passthrough streams with response.failed when upstream SSE drops before completion', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     const oauthToken = createFakeOpenAiOauthToken({
@@ -2192,8 +2304,7 @@ describe('proxy token-mode route behavior', () => {
       input: [{ type: 'message', role: 'user', content: 'hi' }],
       tools: [{ type: 'function', name: 'lookup_repo' }],
       tool_choice: { type: 'function', name: 'lookup_repo' },
-      instructions: 'You are a helpful assistant.',
-      stream: true
+      instructions: 'You are a helpful assistant.'
     });
 
     const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls[0]?.[0]?.routeDecision;
