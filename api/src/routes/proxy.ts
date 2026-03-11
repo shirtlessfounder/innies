@@ -729,6 +729,32 @@ function logCompatAudit(input: {
   console.info('[compat-audit] attempt', input);
 }
 
+function logCompatTranslatedUpstreamError(input: {
+  requestId: string;
+  credentialId: string;
+  credentialLabel?: string | null;
+  provider: string;
+  model: string;
+  translatedPath: string;
+  translatedModel: string;
+  upstreamStatus: number;
+  upstreamContentType?: string;
+  upstreamError: unknown;
+}): void {
+  console.warn('[compat-translated-upstream-error]', {
+    request_id: input.requestId,
+    credential_id: input.credentialId,
+    credential_label: input.credentialLabel ?? null,
+    provider: input.provider,
+    model: input.model,
+    translated_path: input.translatedPath,
+    translated_model: input.translatedModel,
+    upstream_status: input.upstreamStatus,
+    upstream_content_type: input.upstreamContentType ?? null,
+    upstream_error: input.upstreamError
+  });
+}
+
 function logRetryAudit(input: {
   orgId: string;
   provider: string;
@@ -2046,6 +2072,20 @@ async function executeTokenModeNonStreaming(input: {
       const downstreamMappedError = compatTranslation && status >= 400
         ? mapOpenAiErrorToAnthropic(status, data)
         : null;
+      if (compatTranslation && status >= 400) {
+        logCompatTranslatedUpstreamError({
+          requestId,
+          credentialId: credential.id,
+          credentialLabel: credential.debugLabel,
+          provider,
+          model,
+          translatedPath: compatTranslation.translatedPath,
+          translatedModel: compatTranslation.translatedModel,
+          upstreamStatus: status,
+          upstreamContentType: contentType,
+          upstreamError: data
+        });
+      }
       const downstreamData = compatTranslation && status >= 200 && status < 300
         ? translateOpenAiToAnthropic({
           data,
@@ -2581,6 +2621,20 @@ async function executeTokenModeStreaming(input: {
         const downstreamMappedError = compatTranslation && status >= 400
           ? mapOpenAiErrorToAnthropic(status, data)
           : null;
+        if (compatTranslation && status >= 400) {
+          logCompatTranslatedUpstreamError({
+            requestId,
+            credentialId: credential.id,
+            credentialLabel: credential.debugLabel,
+            provider,
+            model,
+            translatedPath: compatTranslation.translatedPath,
+            translatedModel: compatTranslation.translatedModel,
+            upstreamStatus: status,
+            upstreamContentType: contentType,
+            upstreamError: data
+          });
+        }
         const downstreamData = compatTranslation && status >= 200 && status < 300
           ? translateOpenAiToAnthropic({
             data,
