@@ -16,8 +16,47 @@ const TYPE_DELAY_MS = 85;
 const DELETE_DELAY_MS = 55;
 const HOLD_DELAY_MS = 1200;
 const SWITCH_DELAY_MS = 220;
+const ANALYTICS_COMMAND_LABEL = 'watch analytics --window 24h --mode token --metric usage';
 
-export function LandingHeroHeader() {
+export function LandingHeroHeader(input: {
+  promptMode?: 'landing' | 'analytics';
+  title?: string;
+  analyticsPromptLabel?: string;
+  analyticsPromptLinkLabel?: string;
+  analyticsPromptLinkHref?: string;
+  analyticsPromptSuffix?: string;
+}) {
+  const promptMode = input.promptMode ?? 'landing';
+  const analyticsPromptLabel = input.analyticsPromptLabel ?? ANALYTICS_COMMAND_LABEL;
+  const analyticsPrompt = (
+    <div className={styles.promptLine}>
+      <span className={styles.promptPrefix}>innies:~$</span>
+      <span className={styles.promptCommand}>
+        <span>{analyticsPromptLabel}</span>
+        {input.analyticsPromptLinkLabel && input.analyticsPromptLinkHref ? (
+          <>
+            <span aria-hidden="true">&nbsp;</span>
+            <a
+              className={styles.promptLink}
+              href={input.analyticsPromptLinkHref}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {input.analyticsPromptLinkLabel}
+            </a>
+            {input.analyticsPromptSuffix ? (
+              <>
+                <span aria-hidden="true">&nbsp;</span>
+                <span>{input.analyticsPromptSuffix}</span>
+              </>
+            ) : null}
+          </>
+        ) : null}
+        <span className={styles.promptCursor} aria-hidden="true" />
+      </span>
+    </div>
+  );
+
   const dashboard = useAnalyticsDashboard('24h');
   const [commandIndex, setCommandIndex] = useState(0);
   const [commandText, setCommandText] = useState('');
@@ -67,27 +106,29 @@ export function LandingHeroHeader() {
             INNIES.COMPUTER
           </Link>
         </div>
-        <h1 className={styles.consoleTitle}>welcome to innies</h1>
-        <div className={styles.promptStack}>
-          {STATIC_HEADER_ROWS.map((line) => (
-            <div key={line} className={styles.promptLine}>
+        <h1 className={styles.consoleTitle}>{input.title ?? 'welcome to innies'}</h1>
+        {promptMode === 'analytics' ? analyticsPrompt : (
+          <div className={styles.promptStack}>
+            {STATIC_HEADER_ROWS.map((line) => (
+              <div key={line} className={styles.promptLine}>
+                <span className={styles.promptPrefix}>innies:~$</span>
+                <span className={styles.promptCommand}>
+                  <span>{line}</span>
+                </span>
+              </div>
+            ))}
+            <div className={styles.promptLine}>
               <span className={styles.promptPrefix}>innies:~$</span>
-              <span className={styles.promptCommand}>
-                <span>{line}</span>
+              <span
+                aria-label="innies claude, innies codex, innies openclaw"
+                className={styles.promptCommand}
+              >
+                <span aria-hidden="true">{commandText}</span>
+                <span className={styles.promptCursor} aria-hidden="true" />
               </span>
             </div>
-          ))}
-          <div className={styles.promptLine}>
-            <span className={styles.promptPrefix}>innies:~$</span>
-            <span
-              aria-label="innies claude, innies codex, innies openclaw"
-              className={styles.promptCommand}
-            >
-              <span aria-hidden="true">{commandText}</span>
-              <span className={styles.promptCursor} aria-hidden="true" />
-            </span>
           </div>
-        </div>
+        )}
       </div>
 
       <div className={styles.liveMeta}>

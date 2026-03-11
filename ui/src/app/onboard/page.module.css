@@ -1,0 +1,289 @@
+.workspaceSection {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--console-line-strong);
+}
+
+.workspaceMeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--console-ink-soft);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.workspaceLabel {
+  color: var(--console-ink);
+}
+
+.workspaceLabel::before {
+  content: '> ';
+  color: var(--console-accent);
+}
+
+.workspaceHint {
+  text-align: right;
+}
+
+.workspaceGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  height: min(68svh, 860px);
+  min-height: 560px;
+}
+
+.pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  border: 1px solid var(--console-line);
+  background: transparent;
+  color: var(--console-ink);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    0 12px 26px rgba(22, 51, 62, 0.08);
+  overflow: hidden;
+}
+
+.paneChrome {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--console-line);
+  background: var(--console-panel-strong);
+}
+
+.paneLights {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.paneLights span {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: rgba(22, 51, 62, 0.12);
+}
+
+.paneLights span:nth-child(1) {
+  background: rgba(180, 35, 24, 0.46);
+}
+
+.paneLights span:nth-child(2) {
+  background: rgba(154, 103, 0, 0.48);
+}
+
+.paneLights span:nth-child(3) {
+  background: rgba(15, 81, 50, 0.5);
+}
+
+.paneTab,
+.paneCount {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.paneChromeActions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.paneTab {
+  color: var(--console-ink);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.paneCount {
+  color: var(--console-ink-soft);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.copyButton {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--console-ink-soft);
+  cursor: pointer;
+  transition:
+    transform 120ms ease,
+    color 120ms ease,
+    opacity 120ms ease;
+}
+
+.copyButton:hover,
+.copyButton:focus-visible {
+  transform: translateY(-1px);
+  color: var(--console-ink);
+  opacity: 1;
+}
+
+.copyButtonCopied {
+  color: var(--console-live);
+}
+
+.copyIcon {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.2;
+}
+
+.copyButton:not(.copyButtonCopied) {
+  opacity: 0.72;
+}
+
+.paneBody {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: auto;
+  padding: 10px 0;
+  background:
+    linear-gradient(180deg, rgba(248, 251, 253, 0.32) 0%, rgba(248, 251, 253, 0.18) 100%),
+    repeating-linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.14) 0,
+      rgba(255, 255, 255, 0.14) 1px,
+      transparent 1px,
+      transparent 26px
+    );
+}
+
+.paneRows {
+  width: max-content;
+  min-width: 100%;
+}
+
+.paneLine {
+  display: grid;
+  grid-template-columns: 44px max-content;
+  align-items: start;
+  gap: 12px;
+  width: max-content;
+  min-width: 100%;
+  padding: 0 12px;
+  min-height: 24px;
+}
+
+.paneLine:hover {
+  background: rgba(11, 114, 133, 0.08);
+}
+
+.lineNumber {
+  color: rgba(22, 51, 62, 0.38);
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: right;
+  user-select: none;
+}
+
+.lineText {
+  display: block;
+  min-width: 0;
+  white-space: pre;
+  word-break: normal;
+  tab-size: 2;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--console-ink);
+}
+
+.line_blank {
+  opacity: 0.4;
+}
+
+.line_heading1,
+.line_heading2,
+.line_heading3 {
+  color: var(--console-ink);
+}
+
+.line_heading1 {
+  font-weight: 700;
+}
+
+.line_heading2,
+.line_heading3 {
+  font-weight: 600;
+}
+
+.line_list {
+  color: #113a4a;
+}
+
+.line_quote {
+  color: #466778;
+}
+
+.line_codeFence {
+  color: var(--console-accent);
+}
+
+.line_code {
+  color: #0f5132;
+}
+
+.line_table {
+  color: #816327;
+}
+
+@media (max-width: 1180px) {
+  .workspaceGrid {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
+  }
+
+  .pane {
+    min-height: 420px;
+  }
+}
+
+@media (max-width: 720px) {
+  .workspaceMeta {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .workspaceHint {
+    text-align: left;
+  }
+
+  .paneChrome {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .paneCount {
+    display: none;
+  }
+}

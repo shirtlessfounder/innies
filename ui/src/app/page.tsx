@@ -35,9 +35,9 @@ export default function DashboardIndexPage() {
                 </div>
               )}
 
-              <a href="https://t.me/shirtlessfounder" className={styles.primaryCta}>
+              <Link href="/onboard" className={styles.primaryCta}>
                 <span>ONBOARD YOUR INNIE</span>
-              </a>
+              </Link>
             </div>
           </section>
         </div>
