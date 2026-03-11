@@ -1357,32 +1357,6 @@ function buildSyntheticAnthropicStreamFailureSse(input: {
   ].join('');
 }
 
-function createDownstreamClosedError(): Error {
-  const error = new Error('downstream closed');
-  (error as any).code = 'DOWNSTREAM_CLOSED';
-  return error;
-}
-
-function buildSyntheticPassthroughFailureSse(input: {
-  downstreamUsesAnthropicSse: boolean;
-  id: string;
-  model: string;
-  anthropicModel: string;
-}): string {
-  if (input.downstreamUsesAnthropicSse) {
-    return buildSyntheticAnthropicStreamFailureSse({
-      id: input.id,
-      model: input.anthropicModel,
-      message: 'upstream stream ended before completion'
-    });
-  }
-  return buildSyntheticOpenAiStreamFailureSse({
-    id: input.id,
-    model: input.model,
-    message: 'Innies upstream stream ended before completion'
-  });
-}
-
 function hasTerminalAnthropicStreamEvent(raw: string): boolean {
   const normalized = raw.toLowerCase();
   return normalized.includes('event: message_stop') || normalized.includes('"type":"message_stop"');
@@ -1411,6 +1385,32 @@ function resolveOpenAiResponsesStreamTerminalStatus(raw: string): StreamTerminal
 function resolveAnthropicStreamTerminalStatus(raw: string): StreamTerminalStatus {
   if (raw.includes('[Translation error:')) return 'failed';
   return hasTerminalAnthropicStreamEvent(raw) ? 'completed' : 'missing';
+}
+
+function createDownstreamClosedError(): Error {
+  const error = new Error('downstream closed');
+  (error as any).code = 'DOWNSTREAM_CLOSED';
+  return error;
+}
+
+function buildSyntheticPassthroughFailureSse(input: {
+  downstreamUsesAnthropicSse: boolean;
+  id: string;
+  model: string;
+  anthropicModel: string;
+}): string {
+  if (input.downstreamUsesAnthropicSse) {
+    return buildSyntheticAnthropicStreamFailureSse({
+      id: input.id,
+      model: input.anthropicModel,
+      message: 'upstream stream ended before completion'
+    });
+  }
+  return buildSyntheticOpenAiStreamFailureSse({
+    id: input.id,
+    model: input.model,
+    message: 'Innies upstream stream ended before completion'
+  });
 }
 
 async function waitForResponseDrainOrClose(res: Response): Promise<void> {
@@ -2679,35 +2679,13 @@ async function executeTokenModeStreaming(input: {
           const openAiSummary = useAnthropicSse
             ? null
             : summarizeSyntheticOpenAiOutputItems(syntheticMessage);
-          const invalidOpenAiSyntheticPayload = !useAnthropicSse && openAiSummary !== null && openAiSummary.count === 0;
-          if (invalidOpenAiSyntheticPayload) {
-            console.warn('[openai-stream-fallback-invalid]', {
-              requestId,
-              attemptNo,
-              credential_id: credential.id,
-              credential_label: credential.debugLabel ?? null,
-              provider,
-              model,
-              upstream_status: status,
-              upstream_content_type: contentType
-            });
-          }
           const syntheticPayload = useAnthropicSse
             ? `: keepalive\n\n${buildSyntheticAnthropicSse(
               compatTranslation ? downstreamMessage : syntheticMessage,
               compatTranslation ? compatTranslation.originalModel : model
             )}`
-            : `: keepalive\n\n${invalidOpenAiSyntheticPayload
-              ? buildSyntheticOpenAiStreamFailureSse({
-                id: requestId,
-                model,
-                message: 'Innies received an invalid empty JSON fallback for a streaming Responses request',
-                code: 'invalid_stream_fallback'
-              })
-              : buildSyntheticOpenAiResponsesSse(syntheticMessage)}`;
-          const streamMode = useAnthropicSse
-            ? 'synthetic_bridge'
-            : (invalidOpenAiSyntheticPayload ? 'synthetic_openai_responses_error_bridge' : 'synthetic_openai_responses_bridge');
+            : `: keepalive\n\n${buildSyntheticOpenAiResponsesSse(syntheticMessage)}`;
+          const streamMode = useAnthropicSse ? 'synthetic_bridge' : 'synthetic_openai_responses_bridge';
           const syntheticFormat = useAnthropicSse ? 'anthropic' : 'openai_responses';
           firstDownstreamWriteAt = Date.now();
           (res as any).write(syntheticPayload);
@@ -2878,7 +2856,7 @@ async function executeTokenModeStreaming(input: {
       let firstDownstreamWriteAt: number | null = null;
       let streamEndedAt: number | null = null;
       let streamTruncated = false;
-      const downstreamUsesAnthropicSse = compatTranslation || provider === 'anthropic';
+      const downstreamUsesAnthropicSse = Boolean(compatTranslation) || provider === 'anthropic';
       const heartbeatMs = sseHeartbeatIntervalMs();
       const writeKeepalive = () => {
         if ((res as any).writableEnded || (res as any).destroyed) return;
@@ -3009,16 +2987,22 @@ async function executeTokenModeStreaming(input: {
       const outputTokens = parsedOutputTokens ?? Math.max(0, usageUnits - inputTokens);
       const usedEstimate = parsedInputTokens === null || parsedOutputTokens === null;
       const meteringSource: MeteringSource = usedEstimate ? 'stream_estimate' : 'stream_usage';
+      const streamCompleted = !streamTruncated && terminalStatus === 'completed';
       const shouldRecordCredentialSuccess = (
         status >= 200
         && status < 300
-        && !streamTruncated
-        && terminalStatus !== 'failed'
-        && terminalStatus !== 'missing'
+        && streamCompleted
       );
-      const shouldRecordUsage = !streamTruncated;
+      const shouldRecordUsage = (
+        status >= 200
+        && status < 300
+        && streamCompleted
+      );
+      const streamFailureCode = !streamCompleted
+        ? (terminalStatus === 'failed' && !streamTruncated ? 'stream_failed_terminal' : 'stream_truncated')
+        : null;
 
-      if (streamTruncated || terminalStatus === 'failed') {
+      if (streamFailureCode) {
         await runtime.repos.routingEvents.insert({
           requestId,
           attemptNo,
@@ -3030,7 +3014,7 @@ async function executeTokenModeStreaming(input: {
           streaming: true,
           routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
           upstreamStatus: status,
-          errorCode: streamTruncated ? 'stream_truncated' : 'stream_failed_terminal',
+          errorCode: streamFailureCode,
           latencyMs: Date.now() - startedAt,
           ttfbMs: Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt))
         });

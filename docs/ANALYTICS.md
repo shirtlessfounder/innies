@@ -60,6 +60,7 @@ That means we cannot derive later:
 
 - `/tokens`
   - per OAuth token burn totals
+  - safe display ids plus attempt vs distinct-request counts
 
 - `/tokens/health`
   - current token state
@@ -78,9 +79,28 @@ That means we cannot derive later:
 
 - `/timeseries`
   - request / usage / error / latency over time
+  - supports `5h` windows and sub-hour `5m|15m` buckets
+
+- `/buyers`
+  - full buyer-key inventory analytics
+  - includes zero-usage buyer keys
+  - effective provider, last seen, source mix, error rate
+
+- `/buyers/timeseries`
+  - buyer-key chart series over time
+  - request / usage / error / latency buckets per buyer
+  - multi-buyer fan-in via repeated `apiKeyId`
 
 - `/requests`
   - recent request drilldown with previews
+  - attempt-level rows with `attemptNo`
+
+- `/events`
+  - token lifecycle event feed
+  - currently durable `maxed|reactivated|probe_failed` reads
+
+- `/dashboard`
+  - one merged snapshot for summary + tokens + buyers + anomalies + events
 
 - `/anomalies`
   - aggregate staleness / mismatch and attribution checks

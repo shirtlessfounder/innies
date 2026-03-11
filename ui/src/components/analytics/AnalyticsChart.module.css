@@ -1,0 +1,244 @@
+.chartShell {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chartWrap {
+  position: relative;
+  overflow: hidden;
+  min-height: 354px;
+  border: 1px solid rgba(28, 62, 74, 0.16);
+  background:
+    linear-gradient(180deg, rgba(248, 251, 253, 0.38) 0%, rgba(248, 251, 253, 0.18) 100%),
+    repeating-linear-gradient(
+      90deg,
+      rgba(58, 87, 100, 0.06) 0,
+      rgba(58, 87, 100, 0.06) 1px,
+      transparent 1px,
+      transparent 28px
+    ),
+    repeating-linear-gradient(
+      180deg,
+      rgba(58, 87, 100, 0.06) 0,
+      rgba(58, 87, 100, 0.06) 1px,
+      transparent 1px,
+      transparent 28px
+    );
+}
+
+.chartSurface {
+  width: 100%;
+  height: 354px;
+}
+
+.chartOverlay,
+.emptyState {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  padding: 0;
+  pointer-events: none;
+}
+
+.chartOverlay {
+  align-items: flex-start;
+  justify-content: flex-start;
+  inset: 12px auto auto 12px;
+  z-index: 2;
+}
+
+.chartStatusGroup {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.chartStatus {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid rgba(28, 62, 74, 0.14);
+  background: rgba(248, 251, 253, 0.78);
+  color: rgba(22, 51, 62, 0.76);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.chartStatusButton {
+  position: relative;
+  appearance: none;
+  border: 1px solid rgba(28, 62, 74, 0.14);
+  padding: 4px 8px;
+  background: rgba(248, 251, 253, 0.56);
+  color: #16333e;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    transform 120ms ease;
+}
+
+.chartStatusButton:hover {
+  border-color: rgba(28, 62, 74, 0.24);
+  background: rgba(248, 251, 253, 0.82);
+  transform: translateY(-1px);
+}
+
+.chartTooltip {
+  position: absolute;
+  z-index: 3;
+  min-width: 220px;
+  max-width: min(280px, calc(100% - 24px));
+  padding: 10px 11px;
+  border: 1px solid rgba(28, 62, 74, 0.2);
+  background: rgba(248, 251, 253, 0.94);
+  box-shadow: 0 16px 36px rgba(22, 51, 62, 0.16);
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+}
+
+.chartTooltipTime {
+  margin-bottom: 8px;
+  color: rgba(22, 51, 62, 0.62);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.chartTooltipRows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chartTooltipRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: rgba(22, 51, 62, 0.86);
+}
+
+.chartTooltipRowDivider {
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(28, 62, 74, 0.1);
+}
+
+.chartTooltipLabelWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chartTooltipSwatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.chartTooltipLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.chartTooltipPartial {
+  color: #9a6700;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.chartTooltipValue {
+  flex: 0 0 auto;
+  color: #16333e;
+  font-variant-numeric: tabular-nums;
+}
+
+.emptyState {
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  text-align: center;
+  color: rgba(22, 51, 62, 0.58);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  line-height: 1.7;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid rgba(28, 62, 74, 0.12);
+  background: rgba(248, 251, 253, 0.22);
+  color: rgba(22, 51, 62, 0.8);
+  font-size: 11px;
+}
+
+.legendItemTotal {
+  border-color: rgba(27, 47, 56, 0.2);
+  background: rgba(27, 47, 56, 0.08);
+}
+
+.legendSwatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.legendSwatchAggregate {
+  width: 14px;
+  height: 3px;
+}
+
+.legendSwatchTotal {
+  width: 14px;
+  height: 3px;
+  border-radius: 999px;
+  background: #1b2f38;
+}
+
+.legendLabel {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.legendPartial {
+  color: #9a6700;
+  letter-spacing: 0.1em;
+}
+
+@media (max-width: 760px) {
+  .chartWrap {
+    min-height: 312px;
+  }
+
+  .chartSurface {
+    height: 312px;
+  }
+}
