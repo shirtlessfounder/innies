@@ -1,3 +1,5 @@
+/// <reference path="../types/express.d.ts" />
+
 import type { NextFunction, Request, Response } from 'express';
 import { ApiKeyRepository, type ApiKeyScope } from '../repos/apiKeyRepository.js';
 import { sha256Hex } from '../utils/hash.js';

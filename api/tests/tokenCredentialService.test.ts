@@ -8,9 +8,8 @@ describe('tokenCredentialService', () => {
       rotate: vi.fn(async () => ({ id: 'cred_2', rotationVersion: 2, previousId: 'cred_1' })),
       revoke: vi.fn(async () => true)
     };
-    const auditLogs = {
-      createEvent: vi.fn(async () => ({ id: 'audit_1' }))
-    };
+    const createEvent = vi.fn(async () => ({ id: 'audit_1' }));
+    const auditLogs = { createEvent };
     const service = new TokenCredentialService(repo as any, auditLogs as any);
 
     await service.create({
@@ -34,9 +33,9 @@ describe('tokenCredentialService', () => {
     expect(repo.create).toHaveBeenCalledTimes(1);
     expect(repo.rotate).toHaveBeenCalledTimes(1);
     expect(repo.revoke).toHaveBeenCalledTimes(1);
-    expect(auditLogs.createEvent).toHaveBeenCalledTimes(3);
-    expect(auditLogs.createEvent.mock.calls[0][0].action).toBe('token_credential.create');
-    expect(auditLogs.createEvent.mock.calls[1][0].action).toBe('token_credential.rotate');
-    expect(auditLogs.createEvent.mock.calls[2][0].action).toBe('token_credential.revoke');
+    expect(createEvent).toHaveBeenCalledTimes(3);
+    expect(createEvent).toHaveBeenNthCalledWith(1, expect.objectContaining({ action: 'token_credential.create' }));
+    expect(createEvent).toHaveBeenNthCalledWith(2, expect.objectContaining({ action: 'token_credential.rotate' }));
+    expect(createEvent).toHaveBeenNthCalledWith(3, expect.objectContaining({ action: 'token_credential.revoke' }));
   });
 });

@@ -1,3 +1,5 @@
+/// <reference path="../types/express.d.ts" />
+
 import { Router } from 'express';
 import { z } from 'zod';
 import { requireApiKey } from '../middleware/auth.js';

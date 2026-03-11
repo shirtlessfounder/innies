@@ -212,7 +212,7 @@ describe('proxy seller-mode route behavior', () => {
       id: 'seller-key-1',
       secret: 'sk-seller-live'
     } as any);
-    vi.spyOn(runtimeModule.runtime.repos.sellerKeys, 'addCapacityUsage').mockResolvedValue(true);
+    vi.spyOn(runtimeModule.runtime.repos.sellerKeys, 'addCapacityUsage').mockResolvedValue(undefined);
     vi.spyOn(runtimeModule.runtime.repos.routingEvents, 'insert').mockResolvedValue(undefined);
     vi.spyOn(runtimeModule.runtime.services.metering, 'recordUsage').mockResolvedValue({
       id: 'usage_1',
