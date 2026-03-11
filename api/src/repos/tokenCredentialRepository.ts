@@ -24,9 +24,12 @@ type TokenCredentialRow = {
   monthly_window_start_at: string | Date;
   debug_label: string | null;
   consecutive_failure_count?: number | null;
+  consecutive_rate_limit_count?: number | null;
   last_failed_status?: number | null;
   last_failed_at?: string | Date | null;
+  last_rate_limited_at?: string | Date | null;
   maxed_at?: string | Date | null;
+  rate_limited_until?: string | Date | null;
   next_probe_at?: string | Date | null;
   last_probe_at?: string | Date | null;
 };
@@ -49,9 +52,12 @@ export type TokenCredential = {
   monthlyWindowStartAt: Date;
   debugLabel: string | null;
   consecutiveFailureCount: number;
+  consecutiveRateLimitCount: number;
   lastFailedStatus: number | null;
   lastFailedAt: Date | null;
+  lastRateLimitedAt: Date | null;
   maxedAt: Date | null;
+  rateLimitedUntil: Date | null;
   nextProbeAt: Date | null;
   lastProbeAt: Date | null;
 };
@@ -104,9 +110,12 @@ function mapRow(row: TokenCredentialRow): TokenCredential {
     monthlyWindowStartAt: new Date(row.monthly_window_start_at),
     debugLabel: row.debug_label,
     consecutiveFailureCount: Number(row.consecutive_failure_count ?? 0),
+    consecutiveRateLimitCount: Number(row.consecutive_rate_limit_count ?? 0),
     lastFailedStatus: row.last_failed_status === null || row.last_failed_status === undefined ? null : Number(row.last_failed_status),
     lastFailedAt: row.last_failed_at ? new Date(row.last_failed_at) : null,
+    lastRateLimitedAt: row.last_rate_limited_at ? new Date(row.last_rate_limited_at) : null,
     maxedAt: row.maxed_at ? new Date(row.maxed_at) : null,
+    rateLimitedUntil: row.rate_limited_until ? new Date(row.rate_limited_until) : null,
     nextProbeAt: row.next_probe_at ? new Date(row.next_probe_at) : null,
     lastProbeAt: row.last_probe_at ? new Date(row.last_probe_at) : null
   };
@@ -191,9 +200,12 @@ export class TokenCredentialRepository {
         monthly_window_start_at,
         debug_label,
         consecutive_failure_count,
+        consecutive_rate_limit_count,
         last_failed_status,
         last_failed_at,
+        last_rate_limited_at,
         maxed_at,
+        rate_limited_until,
         next_probe_at,
         last_probe_at
       from ${TABLES.tokenCredentials}
@@ -201,6 +213,7 @@ export class TokenCredentialRepository {
         and provider = $2
         and status = 'active'
         and expires_at > now()
+        and (rate_limited_until is null or rate_limited_until <= now())
         and (
           monthly_contribution_limit_units is null
           or (
@@ -238,9 +251,12 @@ export class TokenCredentialRepository {
         monthly_window_start_at,
         debug_label,
         consecutive_failure_count,
+        consecutive_rate_limit_count,
         last_failed_status,
         last_failed_at,
+        last_rate_limited_at,
         maxed_at,
+        rate_limited_until,
         next_probe_at,
         last_probe_at
       from ${TABLES.tokenCredentials}
@@ -286,6 +302,8 @@ export class TokenCredentialRepository {
           then ${currentUtcMonthStartExpr()}
           else monthly_window_start_at
         end,
+        consecutive_rate_limit_count = 0,
+        rate_limited_until = null,
         status = 'active',
         rotated_at = now(),
         updated_at = now()
@@ -308,9 +326,12 @@ export class TokenCredentialRepository {
         monthly_window_start_at,
         debug_label,
         consecutive_failure_count,
+        consecutive_rate_limit_count,
         last_failed_status,
         last_failed_at,
+        last_rate_limited_at,
         maxed_at,
+        rate_limited_until,
         next_probe_at,
         last_probe_at
     `;
@@ -615,13 +636,159 @@ export class TokenCredentialRepository {
     });
   }
 
+  async recordRateLimitAndMaybeMax(input: {
+    id: string;
+    statusCode: number;
+    cooldownThreshold: number;
+    cooldownUntil: Date;
+    threshold: number;
+    nextProbeAt: Date;
+    forceMax?: boolean;
+    reason?: string;
+    requestId?: string | null;
+    attemptNo?: number | null;
+  }): Promise<{
+    status: TokenCredentialStatus;
+    consecutiveRateLimits: number;
+    rateLimitedUntil: Date | null;
+    newlyMaxed: boolean;
+  } | null> {
+    return this.db.transaction(async (tx) => {
+      const sql = `
+        with previous as (
+          select status, org_id, provider, rate_limited_until
+          from ${TABLES.tokenCredentials}
+          where id = $1
+          for update
+        ),
+        updated as (
+          update ${TABLES.tokenCredentials}
+          set
+            consecutive_rate_limit_count = coalesce(consecutive_rate_limit_count, 0) + 1,
+            last_rate_limited_at = now(),
+            status = case
+              when status in ('active', 'rotating')
+                and ($7::boolean or coalesce(consecutive_rate_limit_count, 0) + 1 >= $5)
+              then 'maxed'
+              else status
+            end,
+            maxed_at = case
+              when status in ('active', 'rotating')
+                and ($7::boolean or coalesce(consecutive_rate_limit_count, 0) + 1 >= $5)
+              then now()
+              else maxed_at
+            end,
+            rate_limited_until = case
+              when status = 'active'
+                and not ($7::boolean or coalesce(consecutive_rate_limit_count, 0) + 1 >= $5)
+                and coalesce(consecutive_rate_limit_count, 0) + 1 >= $3
+              then greatest(coalesce(rate_limited_until, '-infinity'::timestamptz), $4)
+              else rate_limited_until
+            end,
+            next_probe_at = case
+              when status in ('active', 'rotating')
+                and ($7::boolean or coalesce(consecutive_rate_limit_count, 0) + 1 >= $5)
+              then $6
+              else next_probe_at
+            end,
+            last_refresh_error = case
+              when $8::text is not null then $8
+              else last_refresh_error
+            end,
+            updated_at = now()
+          where id = $1
+            and status in ('active', 'rotating', 'maxed')
+          returning
+            status,
+            coalesce(consecutive_rate_limit_count, 0) as consecutive_rate_limits,
+            rate_limited_until
+        )
+        select
+          previous.status as previous_status,
+          previous.org_id,
+          previous.provider,
+          updated.status,
+          updated.consecutive_rate_limits,
+          updated.rate_limited_until
+        from updated
+        join previous on true
+      `;
+      const result = await tx.query<{
+        previous_status: TokenCredentialStatus;
+        org_id: string;
+        provider: string;
+        status: TokenCredentialStatus;
+        consecutive_rate_limits: number;
+        rate_limited_until: string | Date | null;
+      }>(sql, [
+        input.id,
+        input.statusCode,
+        input.cooldownThreshold,
+        input.cooldownUntil,
+        input.threshold,
+        input.nextProbeAt,
+        Boolean(input.forceMax),
+        input.reason ?? null
+      ]);
+      if (result.rowCount !== 1) return null;
+
+      const row = result.rows[0];
+      const newlyMaxed = (row.previous_status === 'active' || row.previous_status === 'rotating')
+        && row.status === 'maxed';
+
+      if (newlyMaxed) {
+        await tx.query(
+          `
+            insert into ${TABLES.tokenCredentialEvents} (
+              id,
+              token_credential_id,
+              org_id,
+              provider,
+              event_type,
+              status_code,
+              reason,
+              metadata,
+              created_at
+            ) values ($1,$2,$3,$4,'maxed',$5,$6,$7,now())
+          `,
+          [
+            newId(),
+            input.id,
+            row.org_id,
+            row.provider,
+            input.statusCode,
+            input.reason ?? null,
+            {
+              requestId: input.requestId ?? null,
+              attemptNo: input.attemptNo ?? null,
+              statusCode: input.statusCode,
+              threshold: input.threshold,
+              cooldownThreshold: input.cooldownThreshold,
+              consecutiveRateLimits: Number(row.consecutive_rate_limits),
+              forceMax: Boolean(input.forceMax)
+            }
+          ]
+        );
+      }
+
+      return {
+        status: row.status,
+        consecutiveRateLimits: Number(row.consecutive_rate_limits),
+        rateLimitedUntil: row.rate_limited_until ? new Date(row.rate_limited_until) : null,
+        newlyMaxed
+      };
+    });
+  }
+
   async recordSuccess(id: string): Promise<boolean> {
     const sql = `
       update ${TABLES.tokenCredentials}
       set
         consecutive_failure_count = 0,
+        consecutive_rate_limit_count = 0,
         last_failed_status = null,
         last_failed_at = null,
+        rate_limited_until = null,
         updated_at = now()
       where id = $1
         and status in ('active', 'rotating')
@@ -650,9 +817,12 @@ export class TokenCredentialRepository {
         monthly_window_start_at,
         debug_label,
         consecutive_failure_count,
+        consecutive_rate_limit_count,
         last_failed_status,
         last_failed_at,
+        last_rate_limited_at,
         maxed_at,
+        rate_limited_until,
         next_probe_at,
         last_probe_at
       from ${TABLES.tokenCredentials}
@@ -726,8 +896,10 @@ export class TokenCredentialRepository {
         set
           status = 'active',
           consecutive_failure_count = 0,
+          consecutive_rate_limit_count = 0,
           last_failed_status = null,
           last_failed_at = null,
+          rate_limited_until = null,
           next_probe_at = null,
           last_probe_at = now(),
           updated_at = now()

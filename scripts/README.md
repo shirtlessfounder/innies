@@ -41,6 +41,10 @@ Behavior:
   - `clear` to remove the stored refresh token
 - `label` maps to API field `debugLabel`
 - set/get preference accept either the buyer-key UUID or the live buyer key value; live-key lookup uses `DATABASE_URL`
+- script-side default provider display for `null` preference follows `BUYER_PROVIDER_PREFERENCE_DEFAULT` (legacy alias `INNIES_BUYER_PROVIDER_PREFERENCE_DEFAULT` also works)
+- non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
+- `innies-set-preference` prints the effective preferred provider plus the automatic fallback provider before sending the update
+- `innies-check-preference` now expects and validates the two-provider plan in DB evidence mode
 
 ## Env
 

@@ -387,6 +387,16 @@ function normalizeTokenStatus(value: unknown, field: string): typeof TOKEN_STATU
   throw new AppError('internal_error', 500, `Analytics repository returned invalid ${field}`);
 }
 
+function deriveDashboardTokenStatus(status: string, rateLimitedUntil: string | null): string {
+  if (status === 'active' && rateLimitedUntil) {
+    const expiresAt = Date.parse(rateLimitedUntil);
+    if (Number.isFinite(expiresAt) && expiresAt > Date.now()) {
+      return 'rate_limited';
+    }
+  }
+  return status;
+}
+
 function normalizeEventSeverity(value: unknown): typeof ANALYTICS_EVENT_SEVERITIES[number] {
   const normalized = readTrimmedString(value)?.toLowerCase();
   if (normalized && (ANALYTICS_EVENT_SEVERITIES as readonly string[]).includes(normalized)) {
@@ -534,9 +544,12 @@ function normalizeTokenHealthRows(value: unknown) {
     provider: normalizeProvider(pick(record, ['provider']), 'provider'),
     status: normalizeTokenStatus(pick(record, ['status']), 'status'),
     consecutiveFailures: readOptionalNumber(record, ['consecutiveFailures', 'consecutive_failure_count'], 0) ?? 0,
+    consecutiveRateLimitCount: readOptionalNumber(record, ['consecutiveRateLimitCount', 'consecutive_rate_limit_count'], 0) ?? 0,
     lastFailedStatus: readOptionalNumber(record, ['lastFailedStatus', 'last_failed_status']),
     lastFailedAt: readOptionalIsoDate(record, ['lastFailedAt', 'last_failed_at']),
+    lastRateLimitedAt: readOptionalIsoDate(record, ['lastRateLimitedAt', 'last_rate_limited_at']),
     maxedAt: readOptionalIsoDate(record, ['maxedAt', 'maxed_at']),
+    rateLimitedUntil: readOptionalIsoDate(record, ['rateLimitedUntil', 'rate_limited_until']),
     nextProbeAt: readOptionalIsoDate(record, ['nextProbeAt', 'next_probe_at']),
     lastProbeAt: readOptionalIsoDate(record, ['lastProbeAt', 'last_probe_at']),
     monthlyContributionLimitUnits: readOptionalNumber(record, ['monthlyContributionLimitUnits', 'monthly_contribution_limit_units']),
@@ -744,6 +757,7 @@ function mergeDashboardTokens(input: {
     existing.maxedEvents7d = row.maxedEvents7d;
     existing.monthlyContributionUsedUnits = row.monthlyContributionUsedUnits;
     existing.monthlyContributionLimitUnits = row.monthlyContributionLimitUnits;
+    existing.status = deriveDashboardTokenStatus(row.status, row.rateLimitedUntil);
     byId.set(row.credentialId, existing);
   }
 

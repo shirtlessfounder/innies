@@ -83,6 +83,8 @@ function tokenStatusTone(status: string): string {
       return styles.statusPillActive;
     case 'rotating':
       return styles.statusPillRotating;
+    case 'rate_limited':
+      return styles.statusPillRateLimited;
     case 'maxed':
       return styles.statusPillMaxed;
     case 'expired':
@@ -97,7 +99,7 @@ function tokenStatusTone(status: string): string {
 function TokenStatusCell({ status }: { status: string }) {
   return (
     <span className={[styles.statusPill, tokenStatusTone(status)].join(' ')}>
-      {status}
+      {status.replaceAll('_', ' ')}
     </span>
   );
 }

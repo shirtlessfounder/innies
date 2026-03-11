@@ -375,6 +375,12 @@ describe('proxy token-mode route behavior', () => {
       status: 'active',
       consecutiveFailures: 1
     } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'recordRateLimitAndMaybeMax').mockResolvedValue({
+      status: 'active',
+      consecutiveRateLimits: 1,
+      rateLimitedUntil: null,
+      newlyMaxed: false
+    } as any);
     vi.spyOn(runtimeModule.runtime.services.metering, 'recordUsage').mockResolvedValue({
       id: 'usage_1',
       entry_type: 'usage'
@@ -401,7 +407,8 @@ describe('proxy token-mode route behavior', () => {
         authorization: 'Bearer in_test_token',
         'content-type': 'application/json',
         'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
-        'anthropic-version': '2023-06-01'
+        'anthropic-version': '2023-06-01',
+        'x-innies-provider-pin': 'true'
       },
       body: {
         provider: 'anthropic',
@@ -474,7 +481,7 @@ describe('proxy token-mode route behavior', () => {
     expect(res.statusCode).toBe(401);
     expect((res.body as any).code).toBe('unauthorized');
     expect(String((res.body as any).message)).toContain('All token credentials unauthorized or expired');
-    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    expect(upstreamSpy).toHaveBeenCalled();
     const fetchArgs = upstreamSpy.mock.calls[0];
     const headers = (fetchArgs?.[1] as RequestInit)?.headers as Record<string, string>;
     expect(headers.authorization).toBe('Bearer sk-ant-oat01-test-token');
@@ -1068,9 +1075,8 @@ describe('proxy token-mode route behavior', () => {
     upstreamSpy.mockRestore();
   });
 
-  it('does not auto-max credential on 429 by default', async () => {
+  it('tracks oauth 429s through the rate-limit lifecycle instead of the auth-failure max path', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
-    delete process.env.TOKEN_CREDENTIAL_MAX_ON_STATUSES;
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
       id: 'bbbb8888-8888-4888-8888-888888888888',
       orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
@@ -1089,6 +1095,7 @@ describe('proxy token-mode route behavior', () => {
       monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
     const recordFailureSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'recordFailureAndMaybeMax');
+    const recordRateLimitSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'recordRateLimitAndMaybeMax');
     const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'slow down' } }), {
         status: 429,
@@ -1119,12 +1126,19 @@ describe('proxy token-mode route behavior', () => {
 
     expect(res.statusCode).toBe(429);
     expect(recordFailureSpy).not.toHaveBeenCalled();
+    expect(recordRateLimitSpy).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'bbbb8888-8888-4888-8888-888888888888',
+      statusCode: 429,
+      cooldownThreshold: 5,
+      threshold: 15,
+      forceMax: false,
+      reason: 'upstream_429_consecutive_rate_limit'
+    }));
     upstreamSpy.mockRestore();
   });
 
-  it('ignores unsupported 429 max-status overrides and does not auto-max the credential', async () => {
+  it('force-maxes oauth 429 responses when the provider body clearly signals exhaustion', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
-    process.env.TOKEN_CREDENTIAL_MAX_ON_STATUSES = '401,429';
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
       id: 'cccc9999-9999-4999-8999-999999999999',
       orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
@@ -1142,12 +1156,18 @@ describe('proxy token-mode route behavior', () => {
       monthlyContributionUsedUnits: 0,
       monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
-    const recordFailureSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'recordFailureAndMaybeMax').mockResolvedValue({
+    const recordFailureSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'recordFailureAndMaybeMax');
+    const recordRateLimitSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'recordRateLimitAndMaybeMax').mockResolvedValue({
       status: 'maxed',
-      consecutiveFailures: 10
+      consecutiveRateLimits: 6,
+      rateLimitedUntil: null,
+      newlyMaxed: true
     } as any);
     const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'slow down' } }), {
+      new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'rate_limit_error', message: 'You have hit your usage limit. Try again at 6 PM.' }
+      }), {
         status: 429,
         headers: { 'content-type': 'application/json' }
       })
@@ -1176,8 +1196,15 @@ describe('proxy token-mode route behavior', () => {
 
     expect(res.statusCode).toBe(429);
     expect(recordFailureSpy).not.toHaveBeenCalled();
+    expect(recordRateLimitSpy).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'cccc9999-9999-4999-8999-999999999999',
+      statusCode: 429,
+      cooldownThreshold: 5,
+      threshold: 15,
+      forceMax: true,
+      reason: 'upstream_429_provider_exhausted'
+    }));
     upstreamSpy.mockRestore();
-    delete process.env.TOKEN_CREDENTIAL_MAX_ON_STATUSES;
   });
 
   it('routes standard openai credentials with bearer auth and openai upstream base URL', async () => {
@@ -2643,6 +2670,84 @@ describe('proxy token-mode route behavior', () => {
     expect(routeDecision?.reason).toBe('preferred_provider_selected');
     expect(routeDecision?.provider_preferred).toBe('openai');
     expect(routeDecision?.provider_effective).toBe('openai');
+    upstreamSpy.mockRestore();
+  });
+
+  it('always adds the alternate provider as fallback for defaulted buyer preference', async () => {
+    process.env.BUYER_PROVIDER_PREFERENCE_DEFAULT = 'anthropic';
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: null
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string) => {
+      if (provider === 'anthropic') return null as any;
+      if (provider === 'openai') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: false } as any;
+      }
+      return null as any;
+    });
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider !== 'openai') return [];
+      return [{
+        id: 'eeee1111-0000-4000-8000-000000000000',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: 'sk-openai-default-fallback',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any];
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'resp_default_fallback_ok', usage: { input_tokens: 1, output_tokens: 2 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'gpt-5.4',
+        streaming: false,
+        payload: { model: 'gpt-5.4', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('resp_default_fallback_ok');
+    expect(listSpy.mock.calls.map((call) => call[1])).toEqual(['openai']);
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls[0]?.[0]?.routeDecision;
+    expect(routeDecision?.reason).toBe('fallback_provider_selected');
+    expect(routeDecision?.provider_preferred).toBe('anthropic');
+    expect(routeDecision?.provider_effective).toBe('openai');
+    expect(routeDecision?.provider_fallback_from).toBe('anthropic');
+    expect(routeDecision?.provider_fallback_reason).toBe('model_invalid');
     upstreamSpy.mockRestore();
   });
 });

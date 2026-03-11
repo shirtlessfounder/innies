@@ -46,6 +46,15 @@ canonicalize_provider() {
   esac
 }
 
+alternate_provider() {
+  local provider
+  provider="$(canonicalize_provider "$1")"
+  case "$provider" in
+    anthropic) printf 'openai' ;;
+    openai) printf 'anthropic' ;;
+  esac
+}
+
 resolve_api_url() {
   if [[ -n "${INNIES_BASE_URL:-}" ]]; then
     printf '%s' "${INNIES_BASE_URL%/}"
@@ -179,6 +188,8 @@ validate_preference_metadata() {
   local scenario="$1"
   local request_id="$2"
   local expected_provider="$3"
+  local expected_fallback
+  expected_fallback="$(alternate_provider "$expected_provider")"
   local summary
   summary="$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -tA -F $'\t' -c "
     select
@@ -196,14 +207,19 @@ validate_preference_metadata() {
       count(*) filter (
         where jsonb_typeof(route_decision->'provider_plan') = 'array'
           and route_decision->'provider_plan' ? '$expected_provider'
+          and route_decision->'provider_plan' ? '$expected_fallback'
+      ),
+      count(*) filter (
+        where jsonb_typeof(route_decision->'provider_plan') = 'array'
+          and jsonb_array_length(route_decision->'provider_plan') >= 2
       )
     from in_routing_events
     where org_id = '$INNIES_ORG_ID'
       and request_id = '$request_id'
   ")"
 
-  local exact_matches preferred_matches effective_matches provider_plan_matches
-  IFS=$'\t' read -r exact_matches preferred_matches effective_matches provider_plan_matches <<< "$summary"
+  local exact_matches preferred_matches effective_matches provider_plan_matches provider_plan_width_matches
+  IFS=$'\t' read -r exact_matches preferred_matches effective_matches provider_plan_matches provider_plan_width_matches <<< "$summary"
   if [[ "${exact_matches:-0}" -eq 0 ]]; then
     echo "validation_error=expected_preference_not_exercised scenario=$scenario request_id=$request_id expected_provider=$expected_provider" >&2
     return 1
@@ -217,7 +233,11 @@ validate_preference_metadata() {
     return 1
   fi
   if [[ "${provider_plan_matches:-0}" -eq 0 ]]; then
-    echo "validation_error=provider_plan_missing_expected scenario=$scenario request_id=$request_id expected_provider=$expected_provider" >&2
+    echo "validation_error=provider_plan_missing_expected_or_fallback scenario=$scenario request_id=$request_id expected_provider=$expected_provider expected_fallback=$expected_fallback" >&2
+    return 1
+  fi
+  if [[ "${provider_plan_width_matches:-0}" -eq 0 ]]; then
+    echo "validation_error=provider_plan_missing_second_provider scenario=$scenario request_id=$request_id expected_provider=$expected_provider expected_fallback=$expected_fallback" >&2
     return 1
   fi
 }

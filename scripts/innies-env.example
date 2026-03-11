@@ -8,6 +8,9 @@ INNIES_ORG_ID=00000000-0000-0000-0000-000000000000
 # Optional, used by innies-check-preference for DB evidence
 DATABASE_URL=postgres://user:pass@host:5432/dbname?sslmode=verify-full
 
+# Optional, used by script output when buyer preference is null
+BUYER_PROVIDER_PREFERENCE_DEFAULT=anthropic
+
 # Required by innies-check-preference
 INNIES_IDEMPOTENCY_PREFIX=prefdemo
 INNIES_MODEL_ANTHROPIC=claude-opus-4-6

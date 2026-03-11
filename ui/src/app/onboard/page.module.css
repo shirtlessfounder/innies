@@ -48,9 +48,6 @@
   border: 1px solid var(--console-line);
   background: transparent;
   color: var(--console-ink);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.42),
-    0 12px 26px rgba(22, 51, 62, 0.08);
   overflow: hidden;
 }
 

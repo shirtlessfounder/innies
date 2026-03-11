@@ -286,19 +286,10 @@ function parseProviderPreferencePlan(input: {
     };
   }
 
-  const storedPreference = input.preferredProviderSource === 'explicit' && input.preferredProvider
-    ? [canonicalizeProvider(input.preferredProvider)]
-    : [];
-  if (storedPreference.length === 0) {
-    const defaultProvider = resolveDefaultBuyerProvider();
-    const deduped = Array.from(new Set([defaultProvider, requestProvider]));
-    return {
-      providerPlan: deduped,
-      preferredProvider: deduped[0]
-    };
-  }
-
-  const deduped = Array.from(new Set([...storedPreference, requestProvider, alternateProvider(storedPreference[0])]));
+  const preferredProvider = input.preferredProvider
+    ? canonicalizeProvider(input.preferredProvider)
+    : resolveDefaultBuyerProvider();
+  const deduped = Array.from(new Set([preferredProvider, alternateProvider(preferredProvider)]));
   return {
     providerPlan: deduped,
     preferredProvider: deduped[0]
@@ -396,6 +387,21 @@ function tokenCredentialProbeIntervalHours(): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 4;
 }
 
+function tokenCredentialRateLimitCooldownThreshold(): number {
+  const parsed = Number(process.env.TOKEN_CREDENTIAL_RATE_LIMIT_COOLDOWN_CONSECUTIVE_FAILURES || 5);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 5;
+}
+
+function tokenCredentialRateLimitMaxThreshold(): number {
+  const parsed = Number(process.env.TOKEN_CREDENTIAL_RATE_LIMIT_MAX_CONSECUTIVE_FAILURES || 15);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 15;
+}
+
+function tokenCredentialRateLimitCooldownMinutes(): number {
+  const parsed = Number(process.env.TOKEN_CREDENTIAL_RATE_LIMIT_COOLDOWN_MINUTES || 5);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 5;
+}
+
 function tokenCredentialMaxStatuses(): Set<number> {
   const raw = process.env.TOKEN_CREDENTIAL_MAX_ON_STATUSES || '401';
   const parsed = new Set<number>();
@@ -409,6 +415,57 @@ function tokenCredentialMaxStatuses(): Set<number> {
 
 function isOauthCredential(credential: TokenCredential, provider: string): boolean {
   return isOpenAiOauthToken(credential, provider) || isAnthropicOauthToken(credential, provider);
+}
+
+function collectErrorStrings(value: unknown, out: string[]): void {
+  if (typeof value === 'string') {
+    out.push(value);
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectErrorStrings(item, out));
+    return;
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const key of ['message', 'detail', 'type', 'code', 'error']) {
+    if (key in record) collectErrorStrings(record[key], out);
+  }
+}
+
+function readUpstreamErrorText(value: unknown): string {
+  if (typeof value === 'string') return value.toLowerCase();
+  const parts: string[] = [];
+  collectErrorStrings(value, parts);
+  if (parts.length === 0) {
+    try {
+      return JSON.stringify(value).toLowerCase();
+    } catch {
+      return '';
+    }
+  }
+  return parts.join(' ').toLowerCase();
+}
+
+function looksLikeProviderExhaustion(payload: unknown): boolean {
+  const text = readUpstreamErrorText(payload);
+  if (!text) return false;
+
+  const strongSignals = [
+    'usage limit',
+    'usage limits',
+    'message limit',
+    'daily limit',
+    'monthly limit',
+    'try again at',
+    'insufficient_quota',
+    'current quota',
+    'credit balance is too low',
+    'billing hard limit',
+    'spending limit'
+  ];
+  return strongSignals.some((signal) => text.includes(signal));
 }
 
 const ANTHROPIC_DEFAULT_BETAS = [
@@ -821,6 +878,14 @@ function buildCompatTerminalErrorResult(input: {
   };
 }
 
+async function readUpstreamErrorPayload(response: globalThis.Response): Promise<unknown> {
+  const contentType = response.headers.get('content-type') ?? '';
+  if (contentType.includes('application/json')) {
+    return response.json().catch(() => ({}));
+  }
+  return response.text().catch(() => '');
+}
+
 async function recordTokenCredentialOutcome(input: {
   credential: TokenCredential;
   requestId: string;
@@ -828,10 +893,65 @@ async function recordTokenCredentialOutcome(input: {
   provider: string;
   model: string;
   upstreamStatus: number;
+  upstreamErrorData?: unknown;
 }): Promise<void> {
-  const { credential, requestId, attemptNo, provider, model, upstreamStatus } = input;
+  const { credential, requestId, attemptNo, provider, model, upstreamStatus, upstreamErrorData } = input;
   if (upstreamStatus >= 200 && upstreamStatus < 300) {
     await runtime.repos.tokenCredentials.recordSuccess(credential.id);
+    return;
+  }
+  if (upstreamStatus === 429) {
+    if (!isOauthCredential(credential, provider)) return;
+
+    const cooldownThreshold = tokenCredentialRateLimitCooldownThreshold();
+    const threshold = tokenCredentialRateLimitMaxThreshold();
+    const cooldownUntil = new Date(Date.now() + (tokenCredentialRateLimitCooldownMinutes() * 60 * 1000));
+    const nextProbeAt = new Date(Date.now() + (tokenCredentialProbeIntervalHours() * 60 * 60 * 1000));
+    const forceMax = looksLikeProviderExhaustion(upstreamErrorData);
+    const result = await runtime.repos.tokenCredentials.recordRateLimitAndMaybeMax({
+      id: credential.id,
+      statusCode: upstreamStatus,
+      cooldownThreshold,
+      cooldownUntil,
+      threshold,
+      nextProbeAt,
+      forceMax,
+      reason: forceMax ? 'upstream_429_provider_exhausted' : 'upstream_429_consecutive_rate_limit',
+      requestId,
+      attemptNo
+    });
+
+    if (result?.status === 'maxed') {
+      console.warn('[token-credential] auto-maxed-rate-limit', {
+        request_id: requestId,
+        attempt_no: attemptNo,
+        provider,
+        model,
+        credential_id: credential.id,
+        credential_label: credential.debugLabel ?? null,
+        status: upstreamStatus,
+        consecutive_rate_limits: result.consecutiveRateLimits,
+        threshold,
+        force_max: forceMax,
+        next_probe_at: nextProbeAt.toISOString()
+      });
+      return;
+    }
+
+    if (result?.rateLimitedUntil && result.consecutiveRateLimits >= cooldownThreshold) {
+      console.warn('[token-credential] cooldown-rate-limit', {
+        request_id: requestId,
+        attempt_no: attemptNo,
+        provider,
+        model,
+        credential_id: credential.id,
+        credential_label: credential.debugLabel ?? null,
+        consecutive_rate_limits: result.consecutiveRateLimits,
+        cooldown_threshold: cooldownThreshold,
+        max_threshold: threshold,
+        rate_limited_until: result.rateLimitedUntil.toISOString()
+      });
+    }
     return;
   }
   if (!tokenCredentialMaxStatuses().has(upstreamStatus)) return;
@@ -1834,11 +1954,8 @@ async function executeTokenModeNonStreaming(input: {
       }
 
       if (status === 429) {
+        const rateLimitData = await readUpstreamErrorPayload(upstreamResponse);
         if (compatTranslation) {
-          const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
-          const rateLimitData = contentType.includes('application/json')
-            ? await upstreamResponse.json().catch(() => ({}))
-            : await upstreamResponse.text();
           terminalCompatError = mapOpenAiErrorToAnthropic(status, rateLimitData);
           terminalCompatCredentialId = credential.id;
           terminalCompatAttemptNo = attemptNo;
@@ -1849,7 +1966,8 @@ async function executeTokenModeNonStreaming(input: {
           attemptNo,
           provider,
           model,
-          upstreamStatus: status
+          upstreamStatus: status,
+          upstreamErrorData: rateLimitData
         });
         await logAttemptFailure({ kind: 'rate_limited', statusCode: 429, message: 'rate limited' }, ttfbMs);
         logRetryAudit({
@@ -2404,11 +2522,8 @@ async function executeTokenModeStreaming(input: {
       }
 
       if (status === 429) {
+        const rateLimitData = await readUpstreamErrorPayload(upstreamResponse);
         if (compatTranslation) {
-          const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
-          const rateLimitData = contentType.includes('application/json')
-            ? await upstreamResponse.json().catch(() => ({}))
-            : await upstreamResponse.text();
           terminalCompatError = mapOpenAiErrorToAnthropic(status, rateLimitData);
           terminalCompatCredentialId = credential.id;
           terminalCompatAttemptNo = attemptNo;
@@ -2419,7 +2534,8 @@ async function executeTokenModeStreaming(input: {
           attemptNo,
           provider,
           model,
-          upstreamStatus: status
+          upstreamStatus: status,
+          upstreamErrorData: rateLimitData
         });
         await logAttemptFailure({ kind: 'rate_limited', statusCode: 429, message: 'rate limited' }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
         logRetryAudit({

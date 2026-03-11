@@ -36,7 +36,7 @@ export default function DashboardIndexPage() {
               )}
 
               <Link href="/onboard" className={styles.primaryCta}>
-                <span>ONBOARD YOUR INNIE</span>
+                <span>ONBOARD YOUR INNIES</span>
               </Link>
             </div>
           </section>

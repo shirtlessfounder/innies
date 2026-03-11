@@ -69,6 +69,9 @@ type CurrentTokenHealthRow = {
   debugLabel?: string | null;
   provider?: string;
   status?: string;
+  consecutiveRateLimitCount?: number;
+  lastRateLimitedAt?: string | null;
+  rateLimitedUntil?: string | null;
   utilizationRate24h?: number | null;
   maxedEvents7d?: number;
   monthlyContributionUsedUnits?: number;
@@ -153,6 +156,9 @@ type CurrentDashboardTokenRow = {
   debugLabel?: string | null;
   provider?: string;
   status?: string;
+  consecutiveRateLimitCount?: number;
+  lastRateLimitedAt?: string | null;
+  rateLimitedUntil?: string | null;
   attempts?: number;
   requests?: number;
   usageUnits?: number;
@@ -243,6 +249,17 @@ function toNullableNumber(value: unknown): number | null {
 
 function toStringOrNull(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+function deriveTokenStatus(status: string | null, rateLimitedUntil: string | null): string {
+  const normalized = status ?? 'unknown';
+  if (normalized === 'active' && rateLimitedUntil) {
+    const expiresAt = Date.parse(rateLimitedUntil);
+    if (Number.isFinite(expiresAt) && expiresAt > Date.now()) {
+      return 'rate_limited';
+    }
+  }
+  return normalized;
 }
 
 function mapSeverity(value: unknown): AnalyticsEventRow['severity'] {
@@ -470,7 +487,7 @@ function normalizeDashboardTokenRows(
         displayKey: row.displayKey ?? formatDisplayKey('cred', row.credentialId),
         debugLabel: toStringOrNull(row.debugLabel),
         provider: toStringOrNull(row.provider) ?? 'unknown',
-        status: toStringOrNull(row.status) ?? 'unknown',
+        status: deriveTokenStatus(toStringOrNull(row.status), toStringOrNull(row.rateLimitedUntil)),
         attempts: toNumber(row.attempts, toNumber(row.requests)),
         requests: toNumber(row.requests),
         usageUnits,
@@ -547,13 +564,15 @@ function buildTokenRows(
     const requests = toNumber(usage?.requests);
     const errorCount = toNumber(routing?.errorCount);
     const errorRate = attempts > 0 ? errorCount / attempts : null;
+    const rawStatus = toStringOrNull(health?.status ?? usage?.status);
+    const rateLimitedUntil = toStringOrNull(health?.rateLimitedUntil);
 
     return {
       credentialId,
       displayKey: formatDisplayKey('cred', credentialId),
       debugLabel: toStringOrNull(health?.debugLabel ?? usage?.debugLabel ?? routing?.debugLabel),
       provider: toStringOrNull(health?.provider ?? usage?.provider ?? routing?.provider) ?? 'unknown',
-      status: toStringOrNull(health?.status ?? usage?.status) ?? 'unknown',
+      status: deriveTokenStatus(rawStatus, rateLimitedUntil),
       attempts,
       requests,
       usageUnits,
