@@ -408,20 +408,17 @@ describe('anthropic compat route', () => {
         { type: 'message', role: 'user', content: 'hi there' }
       ],
       instructions: 'be concise',
-      max_output_tokens: 2048,
       tools: [
         {
           type: 'function',
-          function: {
-            name: 'lookup',
-            description: 'lookup docs',
-            parameters: { type: 'object', properties: { q: { type: 'string' } } }
-          }
+          name: 'lookup',
+          description: 'lookup docs',
+          parameters: { type: 'object', properties: { q: { type: 'string' } } }
         }
       ],
       tool_choice: {
         type: 'function',
-        function: { name: 'lookup' }
+        name: 'lookup'
       },
       reasoning: { effort: 'high' },
       store: false
@@ -838,8 +835,8 @@ describe('anthropic compat route', () => {
     expect(JSON.parse(String(init.body))).toMatchObject({
       model: 'gpt-5.4',
       input: [{ type: 'message', role: 'user', content: 'hi' }],
-      tools: [{ type: 'function', function: { name: 'lookup_repo' } }],
-      tool_choice: { type: 'function', function: { name: 'lookup_repo' } }
+      tools: [{ type: 'function', name: 'lookup_repo' }],
+      tool_choice: { type: 'function', name: 'lookup_repo' }
     });
     const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls[0]?.[0]?.routeDecision;
     expect(routeDecision?.translated).toBe(true);
