@@ -1122,8 +1122,16 @@ function normalizeTokenModeUpstreamPayload(input: {
   if (parsed.pathname !== '/v1/responses') return payload;
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
 
+  const normalized = { ...(payload as Record<string, unknown>) };
+  if (typeof normalized.max_output_tokens === 'number') {
+    if (typeof normalized.max_tokens !== 'number') {
+      normalized.max_tokens = normalized.max_output_tokens;
+    }
+    delete normalized.max_output_tokens;
+  }
+
   return {
-    ...(payload as Record<string, unknown>),
+    ...normalized,
     // Codex ChatGPT backend rejects persisted Responses requests.
     store: false,
     ...(streaming ? { stream: true } : {})
