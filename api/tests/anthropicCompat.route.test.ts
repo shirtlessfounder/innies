@@ -421,7 +421,8 @@ describe('anthropic compat route', () => {
         name: 'lookup'
       },
       reasoning: { effort: 'high' },
-      store: false
+      store: false,
+      stream: true
     });
 
     const routeDecision = ((runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls.at(-1)?.[0]?.routeDecision ?? {}) as Record<string, unknown>;
@@ -468,6 +469,56 @@ describe('anthropic compat route', () => {
         type: 'authentication_error',
         message: 'bad oauth token'
       }
+    });
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('collapses translated codex SSE into anthropic JSON for non-stream compat requests', async () => {
+    setupTranslatedCompatOpenAiRoute(runtimeModule);
+    const upstreamSse = [
+      'data: {"type":"response.created","response":{"id":"resp_compat_sse","status":"in_progress"}}\n\n',
+      'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_compat_sse","role":"assistant","content":[{"type":"output_text","text":"hello from codex"}],"status":"completed"}}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_compat_sse","status":"completed","usage":{"input_tokens":5,"output_tokens":7},"output":[{"type":"message","id":"msg_compat_sse","role":"assistant","content":[{"type":"output_text","text":"hello from codex"}],"status":"completed"}]}}\n\n',
+      'data: [DONE]\n\n'
+    ].join('');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(upstreamSse, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+    }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 32,
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).content).toEqual([{ type: 'text', text: 'hello from codex' }]);
+    expect((res.body as any).stop_reason).toBe('end_turn');
+    expect((res.body as any).usage).toEqual({ input_tokens: 5, output_tokens: 7 });
+
+    const [, init] = upstreamSpy.mock.calls[0] as [URL, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      model: 'gpt-5.4',
+      instructions: 'You are a helpful assistant.',
+      input: [{ type: 'message', role: 'user', content: 'hi' }],
+      store: false,
+      stream: true
     });
 
     upstreamSpy.mockRestore();

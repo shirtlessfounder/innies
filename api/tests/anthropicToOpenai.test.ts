@@ -358,7 +358,7 @@ describe('translateAnthropicToOpenAi', () => {
     expect(userMsg.content).toBe('  leading spaces and trailing newline\n');
   });
 
-  it('emits empty instructions when anthropic system is absent', () => {
+  it('emits fallback instructions when anthropic system is absent', () => {
     const translated = translateAnthropicToOpenAi({
       payload: {
         model: 'claude-opus-4-6',
@@ -369,7 +369,7 @@ describe('translateAnthropicToOpenAi', () => {
       }
     });
 
-    expect(translated.payload.instructions).toBe('');
+    expect(translated.payload.instructions).toBe('You are a helpful assistant.');
     expect(translated.payload.input).toEqual([
       { type: 'message', role: 'user', content: 'hello' }
     ]);

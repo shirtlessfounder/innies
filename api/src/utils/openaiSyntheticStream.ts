@@ -131,6 +131,72 @@ export function hasTerminalOpenAiResponsesStreamEvent(raw: string): boolean {
   );
 }
 
+export function extractTerminalOpenAiResponseFromSse(raw: string): Record<string, unknown> | null {
+  const outputItems = new Map<number, Record<string, unknown>>();
+  let fallbackOutputIndex = 0;
+  let createdResponse: Record<string, unknown> | null = null;
+  let terminalResponse: Record<string, unknown> | null = null;
+
+  for (const chunk of raw.split(/\r?\n\r?\n/)) {
+    const dataLines = chunk
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart())
+      .filter((line) => line.length > 0);
+    if (dataLines.length === 0) continue;
+
+    const data = dataLines.join('\n');
+    if (data === '[DONE]') continue;
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(data);
+    } catch {
+      continue;
+    }
+    if (!isRecord(payload) || typeof payload.type !== 'string') continue;
+
+    if (payload.type === 'response.created' && isRecord(payload.response)) {
+      createdResponse = payload.response;
+      continue;
+    }
+
+    if (payload.type === 'response.output_item.done' && isRecord(payload.item)) {
+      const outputIndex = typeof payload.output_index === 'number'
+        ? payload.output_index
+        : fallbackOutputIndex;
+      outputItems.set(outputIndex, payload.item);
+      fallbackOutputIndex = Math.max(fallbackOutputIndex, outputIndex + 1);
+      continue;
+    }
+
+    if (
+      (payload.type === 'response.completed'
+        || payload.type === 'response.failed'
+        || payload.type === 'response.incomplete')
+      && isRecord(payload.response)
+    ) {
+      terminalResponse = payload.response;
+    }
+  }
+
+  if (!createdResponse && !terminalResponse && outputItems.size === 0) {
+    return null;
+  }
+
+  const response: Record<string, unknown> = {
+    ...(createdResponse ?? {}),
+    ...(terminalResponse ?? {})
+  };
+  if (outputItems.size > 0 && !Array.isArray(response.output)) {
+    response.output = Array.from(outputItems.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([, item]) => item);
+  }
+
+  return response;
+}
+
 export function buildSyntheticOpenAiStreamFailureSse(input: {
   id?: string;
   model?: string;

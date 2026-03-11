@@ -15,6 +15,7 @@ import { OpenAiToAnthropicStreamTransform } from '../utils/openaiToAnthropicStre
 import {
   buildSyntheticOpenAiResponsesSse,
   buildSyntheticOpenAiStreamFailureSse,
+  extractTerminalOpenAiResponseFromSse,
   hasTerminalOpenAiResponsesStreamEvent,
   summarizeSyntheticOpenAiOutputItems
 } from '../utils/openaiSyntheticStream.js';
@@ -1126,8 +1127,8 @@ function normalizeTokenModeUpstreamPayload(input: {
   // ChatGPT Codex backend rejects OpenAI token-limit params on this path.
   delete normalized.max_output_tokens;
   delete normalized.max_tokens;
-  if (normalized.instructions == null) {
-    normalized.instructions = '';
+  if (typeof normalized.instructions !== 'string' || normalized.instructions.trim().length === 0) {
+    normalized.instructions = 'You are a helpful assistant.';
   }
   if (Array.isArray(normalized.tools)) {
     normalized.tools = normalized.tools.map((tool) => {
@@ -1158,7 +1159,8 @@ function normalizeTokenModeUpstreamPayload(input: {
     ...normalized,
     // Codex ChatGPT backend rejects persisted Responses requests.
     store: false,
-    ...(streaming ? { stream: true } : {})
+    // Codex ChatGPT backend currently requires streaming on this path.
+    stream: true
   };
 }
 
@@ -2097,9 +2099,14 @@ async function executeTokenModeNonStreaming(input: {
       }
 
       const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
-      const data = contentType.includes('application/json')
-        ? await upstreamResponse.json().catch(() => ({}))
-        : await upstreamResponse.text();
+      const { data: rawData, rawText, looksLikeSse } = await readUpstreamBody({
+        upstreamResponse,
+        contentType
+      });
+      const extractedSseResponse = status >= 200 && status < 300 && looksLikeSse
+        ? extractTerminalOpenAiResponseFromSse(rawText)
+        : null;
+      const data = extractedSseResponse ?? rawData;
       // Map ALL error statuses on translated paths to Anthropic-shaped error envelopes.
       const downstreamMappedError = compatTranslation && status >= 400
         ? mapOpenAiErrorToAnthropic(status, data)
@@ -2124,7 +2131,7 @@ async function executeTokenModeNonStreaming(input: {
           model: compatTranslation.originalModel
         })
         : (downstreamMappedError?.body ?? data);
-      const downstreamContentType = compatTranslation ? 'application/json' : contentType;
+      const downstreamContentType = compatTranslation || extractedSseResponse ? 'application/json' : contentType;
       if (strictUpstreamPassthrough && status >= 400) {
         const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
         logCompatAudit({

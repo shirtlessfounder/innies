@@ -1,4 +1,5 @@
 const COMPAT_CODEX_DEFAULT_MODEL_FALLBACK = 'gpt-5.4';
+const COMPAT_CODEX_DEFAULT_INSTRUCTIONS_FALLBACK = 'You are a helpful assistant.';
 
 type AnthropicContentBlock = Record<string, unknown>;
 type OpenAiItem = Record<string, unknown>;
@@ -291,7 +292,7 @@ export function translateAnthropicToOpenAi(input: TranslateAnthropicToOpenAiInpu
   const translated: Record<string, unknown> = {
     model: upstreamModel,
     input: translateMessages(rawPayload.messages),
-    instructions: normalizeSystemInstructions(rawPayload.system) ?? ''
+    instructions: normalizeSystemInstructions(rawPayload.system) ?? COMPAT_CODEX_DEFAULT_INSTRUCTIONS_FALLBACK
   };
 
   const maxOutputTokens = typeof rawPayload.max_output_tokens === 'number'
