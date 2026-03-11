@@ -282,14 +282,17 @@ export function AnalyticsDashboardClient() {
         <div className={styles.headerBlock}>
           <div className={styles.kicker}>
             <Link className={styles.homeLink} href="/">
-              INNIES
+              INNIES.COMPUTER
             </Link>
             <span> / ANALYTICS</span>
           </div>
           <h1 className={styles.title}>monitor the innies</h1>
           <div className={styles.promptLine}>
-            <span className={styles.promptPrefix}>ops@innies:~$</span>
-            <span>{commandLabel({ window: dashboard.window, seriesMode, metric })}</span>
+            <span className={styles.promptPrefix}>innies:~$</span>
+            <span className={styles.promptCommand}>
+              <span>{commandLabel({ window: dashboard.window, seriesMode, metric })}</span>
+              <span className={styles.promptCursor} aria-hidden="true" />
+            </span>
           </div>
         </div>
 
@@ -423,6 +426,15 @@ export function AnalyticsDashboardClient() {
                       key={`${entry.entityType}-${entry.entityId}`}
                       className={`${styles.seriesRow} ${hidden ? styles.seriesRowHidden : ''}`}
                     >
+                      <SeriesVisibilityButton
+                        hidden={hidden}
+                        label={entry.label}
+                        onClick={() => (
+                          seriesMode === 'token'
+                            ? setHiddenTokenIds((current) => toggleHidden(current, entry.entityId))
+                            : setHiddenBuyerIds((current) => toggleHidden(current, entry.entityId))
+                        )}
+                      />
                       <span className={styles.seriesLabel}>{entry.label}</span>
                       <span className={styles.seriesValue}>{seriesValueLabel(metric, latest)}</span>
                       {entry.partial ? <span className={styles.partialBadge}>PARTIAL</span> : null}
@@ -469,7 +481,6 @@ export function AnalyticsDashboardClient() {
               <TokenTable
                 metric={metric}
                 onSort={(key, defaultDirection) => setTokenSort((current) => toggleSort(current, key, defaultDirection))}
-                onToggle={(id) => setHiddenTokenIds((current) => toggleHidden(current, id))}
                 hiddenIds={hiddenTokenIds}
                 rows={activeTokenRows}
                 sort={tokenSort}
@@ -488,7 +499,6 @@ export function AnalyticsDashboardClient() {
               <BuyerTable
                 metric={metric}
                 onSort={(key, defaultDirection) => setBuyerSort((current) => toggleSort(current, key, defaultDirection))}
-                onToggle={(id) => setHiddenBuyerIds((current) => toggleHidden(current, id))}
                 hiddenIds={hiddenBuyerIds}
                 rows={visibleBuyerRows}
                 sort={buyerSort}
