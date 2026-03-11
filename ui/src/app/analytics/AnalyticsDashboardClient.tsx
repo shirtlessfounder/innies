@@ -49,9 +49,9 @@ function toggleHidden(current: string[], id: string): string[] {
   return [...current, id];
 }
 
-function isActiveTokenStatus(status: string): boolean {
+function isVisibleTokenStatus(status: string): boolean {
   const normalized = status.trim().toLowerCase();
-  return normalized === 'active' || normalized === 'rotating';
+  return normalized !== 'expired' && normalized !== 'revoked';
 }
 
 function sortSeriesPoints(left: AnalyticsSeriesPoint, right: AnalyticsSeriesPoint): number {
@@ -183,19 +183,19 @@ export function AnalyticsDashboardClient() {
   useEffect(() => {
     if (!snapshot) return;
 
-    const activeTokenIds = snapshot.tokens
-      .filter((row) => isActiveTokenStatus(row.status))
+    const visibleTokenIds = snapshot.tokens
+      .filter((row) => isVisibleTokenStatus(row.status))
       .map((row) => row.credentialId);
     const visibleBuyerIds = snapshot.buyers
       .filter((row) => row.requests > 0)
       .map((row) => row.apiKeyId);
 
-    setHiddenTokenIds((current) => current.filter((id) => activeTokenIds.includes(id)));
+    setHiddenTokenIds((current) => current.filter((id) => visibleTokenIds.includes(id)));
     setHiddenBuyerIds((current) => current.filter((id) => visibleBuyerIds.includes(id)));
   }, [snapshot]);
 
-  const activeTokenRows = sortTokenRows(
-    (snapshot?.tokens ?? []).filter((row) => isActiveTokenStatus(row.status)),
+  const visibleTokenRows = sortTokenRows(
+    (snapshot?.tokens ?? []).filter((row) => isVisibleTokenStatus(row.status)),
     tokenSort,
   );
   const visibleBuyerRows = sortBuyerRows(
@@ -224,7 +224,7 @@ export function AnalyticsDashboardClient() {
       : current);
   }, [metric]);
 
-  const tokenSelections = activeTokenRows
+  const tokenSelections = visibleTokenRows
     .map((row) => ({
       entityType: 'token' as const,
       entityId: row.credentialId,
@@ -245,7 +245,7 @@ export function AnalyticsDashboardClient() {
     selections: seriesMode === 'token' ? tokenSelections : buyerSelections,
   });
   const tokenProviderById = new Map(
-    activeTokenRows.map((row) => [row.credentialId, tokenProviderKey(row.provider)] as const),
+    visibleTokenRows.map((row) => [row.credentialId, tokenProviderKey(row.provider)] as const),
   );
   const hiddenSeriesIds = seriesMode === 'token' ? hiddenTokenIds : hiddenBuyerIds;
   const visibleSeries = series.series.filter((entry) => !hiddenSeriesIds.includes(entry.entityId));
@@ -475,14 +475,14 @@ export function AnalyticsDashboardClient() {
           <div className={styles.tableGrid}>
             <section className={`${styles.section} ${styles.tableSection}`}>
               <div className={styles.sectionHeader}>
-                <div className={styles.sectionTitle}>ACTIVE TOKEN CREDS</div>
-                <div className={styles.sectionMeta}>{formatCount(activeTokenRows.length)} VISIBLE</div>
+                <div className={styles.sectionTitle}>TOKEN CREDS</div>
+                <div className={styles.sectionMeta}>{formatCount(visibleTokenRows.length)} VISIBLE</div>
               </div>
               <TokenTable
                 metric={metric}
                 onSort={(key, defaultDirection) => setTokenSort((current) => toggleSort(current, key, defaultDirection))}
                 hiddenIds={hiddenTokenIds}
-                rows={activeTokenRows}
+                rows={visibleTokenRows}
                 sort={tokenSort}
               />
             </section>
