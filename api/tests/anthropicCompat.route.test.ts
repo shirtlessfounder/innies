@@ -993,6 +993,90 @@ describe('anthropic compat route', () => {
     delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
   });
 
+  it('maps mislabelled failed codex SSE bodies into anthropic error responses when buyer preference is openai', async () => {
+    process.env.OPENAI_UPSTREAM_BASE_URL = 'https://openai.internal.test';
+    process.env.COMPAT_CODEX_DEFAULT_MODEL = 'gpt-5.4';
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string, model: string) => {
+      if (provider === 'openai' && model === 'gpt-5.4') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: true } as any;
+      }
+      if (provider === 'anthropic' && model === 'claude-opus-4-6') {
+        return { provider: 'anthropic', model: 'claude-opus-4-6', supports_streaming: true } as any;
+      }
+      return null as any;
+    });
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider !== 'openai') return [];
+      return [{
+        id: 'openai-stream-cred-failed-mislabelled',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: 'openai-stream-token',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any];
+    });
+    const upstreamSse = [
+      'data: {"type":"response.created","response":{"id":"resp_compat_failed","status":"in_progress"}}\n\n',
+      'data: {"type":"response.failed","response":{"id":"resp_compat_failed","status":"failed","error":{"message":"upstream boom"}}}\n\n',
+      'data: [DONE]\n\n'
+    ].join('');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(upstreamSse, {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: { authorization: 'Bearer in_test_token', 'content-type': 'application/json' },
+      body: {
+        model: 'claude-opus-4-6',
+        stream: true,
+        max_tokens: 32,
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(500);
+    expect(res.headers['content-type']).toContain('application/json');
+    expect((res.body as any)).toEqual({
+      type: 'error',
+      error: {
+        type: 'api_error',
+        message: 'upstream boom'
+      }
+    });
+
+    upstreamSpy.mockRestore();
+    delete process.env.OPENAI_UPSTREAM_BASE_URL;
+    delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
+  });
+
   it('derives run correlation id when compat request omits OpenClaw IDs', async () => {
     const routingSpy = vi.spyOn(runtimeModule.runtime.repos.routingEvents, 'insert');
     const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(

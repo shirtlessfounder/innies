@@ -121,4 +121,27 @@ describe('buildSyntheticOpenAiResponsesSse', () => {
       }]
     });
   });
+
+  it('merges collected output items into terminal responses that already include an empty output array', () => {
+    const sse = [
+      'data: {"type":"response.created","response":{"id":"resp_sse_2","model":"gpt-5.4","status":"in_progress"}}\n\n',
+      'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_2","role":"assistant","content":[{"type":"output_text","text":"hello again"}],"status":"completed"}}\n\n',
+      'data: {"type":"response.failed","response":{"id":"resp_sse_2","status":"failed","output":[],"error":{"message":"upstream boom"}}}\n\n',
+      'data: [DONE]\n\n'
+    ].join('');
+
+    expect(extractTerminalOpenAiResponseFromSse(sse)).toEqual({
+      id: 'resp_sse_2',
+      model: 'gpt-5.4',
+      status: 'failed',
+      error: { message: 'upstream boom' },
+      output: [{
+        type: 'message',
+        id: 'msg_2',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'hello again' }],
+        status: 'completed'
+      }]
+    });
+  });
 });

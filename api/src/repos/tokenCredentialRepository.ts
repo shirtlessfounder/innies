@@ -668,31 +668,31 @@ export class TokenCredentialRepository {
             last_rate_limited_at = now(),
             status = case
               when status in ('active', 'rotating')
-                and ($7::boolean or coalesce(consecutive_rate_limit_count, 0) + 1 >= $5)
+                and ($6::boolean or coalesce(consecutive_rate_limit_count, 0) + 1 >= $4)
               then 'maxed'
               else status
             end,
             maxed_at = case
               when status in ('active', 'rotating')
-                and ($7::boolean or coalesce(consecutive_rate_limit_count, 0) + 1 >= $5)
+                and ($6::boolean or coalesce(consecutive_rate_limit_count, 0) + 1 >= $4)
               then now()
               else maxed_at
             end,
             rate_limited_until = case
               when status = 'active'
-                and not ($7::boolean or coalesce(consecutive_rate_limit_count, 0) + 1 >= $5)
-                and coalesce(consecutive_rate_limit_count, 0) + 1 >= $3
-              then greatest(coalesce(rate_limited_until, '-infinity'::timestamptz), $4)
+                and not ($6::boolean or coalesce(consecutive_rate_limit_count, 0) + 1 >= $4)
+                and coalesce(consecutive_rate_limit_count, 0) + 1 >= $2
+              then greatest(coalesce(rate_limited_until, '-infinity'::timestamptz), $3)
               else rate_limited_until
             end,
             next_probe_at = case
               when status in ('active', 'rotating')
-                and ($7::boolean or coalesce(consecutive_rate_limit_count, 0) + 1 >= $5)
-              then $6
+                and ($6::boolean or coalesce(consecutive_rate_limit_count, 0) + 1 >= $4)
+              then $5
               else next_probe_at
             end,
             last_refresh_error = case
-              when $8::text is not null then $8
+              when $7::text is not null then $7
               else last_refresh_error
             end,
             updated_at = now()
@@ -722,7 +722,6 @@ export class TokenCredentialRepository {
         rate_limited_until: string | Date | null;
       }>(sql, [
         input.id,
-        input.statusCode,
         input.cooldownThreshold,
         input.cooldownUntil,
         input.threshold,

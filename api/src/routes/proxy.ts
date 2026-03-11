@@ -2107,11 +2107,16 @@ async function executeTokenModeNonStreaming(input: {
         ? extractTerminalOpenAiResponseFromSse(rawText)
         : null;
       const data = extractedSseResponse ?? rawData;
-      // Map ALL error statuses on translated paths to Anthropic-shaped error envelopes.
-      const downstreamMappedError = compatTranslation && status >= 400
-        ? mapOpenAiErrorToAnthropic(status, data)
+      const extractedStatus = typeof (extractedSseResponse as any)?.status === 'string'
+        ? String((extractedSseResponse as any).status)
         : null;
-      if (compatTranslation && status >= 400) {
+      const extractedFailed = extractedStatus === 'failed';
+      const effectiveStatus = extractedFailed ? 500 : status;
+      // Map ALL error statuses on translated paths to Anthropic-shaped error envelopes.
+      const downstreamMappedError = compatTranslation && (status >= 400 || extractedFailed)
+        ? mapOpenAiErrorToAnthropic(effectiveStatus, data)
+        : null;
+      if (compatTranslation && (status >= 400 || extractedFailed)) {
         logCompatTranslatedUpstreamError({
           requestId,
           credentialId: credential.id,
@@ -2120,12 +2125,25 @@ async function executeTokenModeNonStreaming(input: {
           model,
           translatedPath: compatTranslation.translatedPath,
           translatedModel: compatTranslation.translatedModel,
-          upstreamStatus: status,
+          upstreamStatus: effectiveStatus,
           upstreamContentType: contentType,
           upstreamError: data
         });
       }
-      const downstreamData = compatTranslation && status >= 200 && status < 300
+      if (extractedFailed && !strictUpstreamPassthrough) {
+        if (compatTranslation && downstreamMappedError) {
+          terminalCompatError = downstreamMappedError;
+          terminalCompatCredentialId = credential.id;
+          terminalCompatAttemptNo = attemptNo;
+        }
+        await logAttemptFailure({
+          kind: 'upstream_failed_stream',
+          statusCode: effectiveStatus,
+          message: 'upstream responses stream reported failure'
+        }, ttfbMs);
+        break;
+      }
+      const downstreamData = compatTranslation && status >= 200 && status < 300 && !extractedFailed
         ? translateOpenAiToAnthropic({
           data,
           model: compatTranslation.originalModel
@@ -2152,7 +2170,7 @@ async function executeTokenModeNonStreaming(input: {
       const outputTokens = Number((data as any)?.usage?.output_tokens ?? 0);
       const usageUnits = Math.max(0, inputTokens + outputTokens);
 
-      if (status >= 200 && status < 300) {
+      if (status >= 200 && status < 300 && !extractedFailed) {
         await recordTokenCredentialOutcome({
           credential,
           requestId,
@@ -2217,7 +2235,7 @@ async function executeTokenModeNonStreaming(input: {
         requestId,
         keyId: credential.id,
         attemptNo,
-        upstreamStatus: downstreamMappedError?.status ?? status,
+        upstreamStatus: downstreamMappedError?.status ?? effectiveStatus,
         usageUnits,
         contentType: downstreamContentType,
         data: downstreamData,
@@ -2660,11 +2678,16 @@ async function executeTokenModeStreaming(input: {
           ? extractTerminalOpenAiResponseFromSse(rawText)
           : null;
         const data = extractedSseResponse ?? rawData;
-        // Map ALL error statuses on translated paths to Anthropic-shaped error envelopes.
-        const downstreamMappedError = compatTranslation && status >= 400
-          ? mapOpenAiErrorToAnthropic(status, data)
+        const extractedStatus = typeof (extractedSseResponse as any)?.status === 'string'
+          ? String((extractedSseResponse as any).status)
           : null;
-        if (compatTranslation && status >= 400) {
+        const extractedFailed = extractedStatus === 'failed';
+        const effectiveStatus = extractedFailed ? 500 : status;
+        // Map ALL error statuses on translated paths to Anthropic-shaped error envelopes.
+        const downstreamMappedError = compatTranslation && (status >= 400 || extractedFailed)
+          ? mapOpenAiErrorToAnthropic(effectiveStatus, data)
+          : null;
+        if (compatTranslation && (status >= 400 || extractedFailed)) {
           logCompatTranslatedUpstreamError({
             requestId,
             credentialId: credential.id,
@@ -2673,12 +2696,25 @@ async function executeTokenModeStreaming(input: {
             model,
             translatedPath: compatTranslation.translatedPath,
             translatedModel: compatTranslation.translatedModel,
-            upstreamStatus: status,
+            upstreamStatus: effectiveStatus,
             upstreamContentType: contentType,
             upstreamError: data
           });
         }
-        const downstreamData = compatTranslation && status >= 200 && status < 300
+        if (extractedFailed && !strictUpstreamPassthrough) {
+          if (compatTranslation && downstreamMappedError) {
+            terminalCompatError = downstreamMappedError;
+            terminalCompatCredentialId = credential.id;
+            terminalCompatAttemptNo = attemptNo;
+          }
+          await logAttemptFailure({
+            kind: 'upstream_failed_stream',
+            statusCode: effectiveStatus,
+            message: 'upstream responses stream reported failure'
+          }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
+          break;
+        }
+        const downstreamData = compatTranslation && status >= 200 && status < 300 && !extractedFailed
           ? translateOpenAiToAnthropic({
             data,
             model: compatTranslation.originalModel
@@ -2715,8 +2751,8 @@ async function executeTokenModeStreaming(input: {
           model,
           streaming: true,
             routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
-          upstreamStatus: status,
-          errorCode: status >= 500 ? 'upstream_5xx_passthrough' : undefined,
+          upstreamStatus: effectiveStatus,
+          errorCode: extractedFailed ? 'upstream_failed_stream' : (status >= 500 ? 'upstream_5xx_passthrough' : undefined),
           latencyMs: Date.now() - startedAt,
           ttfbMs: Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt))
         });
@@ -2726,6 +2762,7 @@ async function executeTokenModeStreaming(input: {
         if (
           status >= 200 &&
           status < 300 &&
+          !extractedFailed &&
           typeof (res as any).write === 'function' &&
           typeof (res as any).end === 'function'
         ) {
@@ -2989,7 +3026,7 @@ async function executeTokenModeStreaming(input: {
               ? Math.max(0, streamEndedAt - firstDownstreamWriteAt)
               : null
           });
-          if (status >= 200 && status < 300) {
+          if (status >= 200 && status < 300 && !extractedFailed) {
             runtime.repos.requestLog.insert({
               requestId,
               attemptNo,
@@ -3017,7 +3054,7 @@ async function executeTokenModeStreaming(input: {
           requestId,
           keyId: credential.id,
           attemptNo,
-          upstreamStatus: downstreamMappedError?.status ?? status,
+          upstreamStatus: downstreamMappedError?.status ?? effectiveStatus,
           usageUnits,
           contentType: compatTranslation ? 'application/json' : contentType,
           data: downstreamData,
