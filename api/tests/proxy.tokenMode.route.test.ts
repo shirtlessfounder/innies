@@ -1840,7 +1840,7 @@ describe('proxy token-mode route behavior', () => {
     upstreamSpy.mockRestore();
   });
 
-  it('does not hang when the downstream client disconnects while backpressured', async () => {
+  it('does not meter or hang when the downstream client disconnects while backpressured', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     const oauthToken = createFakeOpenAiOauthToken({
       accountId: 'acct_codex_backpressure',
@@ -1916,6 +1916,14 @@ describe('proxy token-mode route behavior', () => {
 
     expect(res.destroyed).toBe(true);
     expect(String(res.body)).not.toContain('"type":"response.failed"');
+    expect(runtimeModule.runtime.repos.tokenCredentials.recordSuccess).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.services.metering.recordUsage).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.repos.tokenCredentials.addMonthlyContributionUsage).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.services.idempotency.commit).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.repos.routingEvents.insert).toHaveBeenLastCalledWith(expect.objectContaining({
+      errorCode: 'stream_truncated',
+      upstreamStatus: 200
+    }));
     upstreamSpy.mockRestore();
   }, 1000);
 

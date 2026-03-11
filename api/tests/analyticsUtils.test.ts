@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyAnalyticsSource,
   extractTokenCredentialId,
+  formatDisplayKey,
   getP50P95,
   getPercentile,
   normalizeAnalyticsWindow,
@@ -11,6 +12,7 @@ import {
 describe('analytics utils', () => {
   describe('normalizeAnalyticsWindow', () => {
     it('keeps canonical windows', () => {
+      expect(normalizeAnalyticsWindow('5h')).toBe('5h');
       expect(normalizeAnalyticsWindow('24h')).toBe('24h');
       expect(normalizeAnalyticsWindow('7d')).toBe('7d');
       expect(normalizeAnalyticsWindow('1m')).toBe('1m');
@@ -38,6 +40,18 @@ describe('analytics utils', () => {
     it('ignores sellerKeyId-only rows for token analytics identity', () => {
       expect(extractTokenCredentialId({ sellerKeyId: 'seller_123' })).toBeNull();
       expect(extractTokenCredentialId({ sellerKeyId: 'seller_123', tokenCredentialId: 'cred_456' })).toBe('cred_456');
+    });
+  });
+
+  describe('formatDisplayKey', () => {
+    it('formats stable short credential and api-key display fallbacks', () => {
+      expect(formatDisplayKey('11111111-1111-4111-8111-111111111111', 'cred')).toBe('cred_1111...1111');
+      expect(formatDisplayKey('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', 'key')).toBe('key_aaaa...eeee');
+    });
+
+    it('returns null for empty values', () => {
+      expect(formatDisplayKey(undefined)).toBeNull();
+      expect(formatDisplayKey('')).toBeNull();
     });
   });
 

@@ -23,6 +23,7 @@
   - `docs/onboarding/OPENCLAW_ONBOARDING.md` — OpenClaw integration guide.
   - `docs/onboarding/CLAUDE_CODEX_OAUTH_TOKENS.md` — OAuth credential setup.
 - Internal performance + usage dashboard.
+  - Temporary UI note: the analytics token table is currently hiding `Util 24h` and `Maxed 7d` to keep the operator layout tighter; restore both columns once the dashboard has room for the extra health fields again.
 - ✅ Per-token analytics:
   - Aggregation jobs (daily incremental + nightly compaction).
   - 7 read endpoints: tokens, health, routing, system, timeseries, requests, anomalies.

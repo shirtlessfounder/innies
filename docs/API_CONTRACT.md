@@ -221,9 +221,14 @@ Returns key status totals.
 Admin-only per-token usage breakdown.
 
 Query params:
-- `window`: `24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
+- `window`: `5h|24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
 - `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
 - `source`: `openclaw|cli-claude|cli-codex|direct`
+
+Notes:
+- `attempts` is attempt-level volume for the selected window
+- `requests` is distinct `request_id` count for the selected window
+- `displayKey` is a safe display fallback, not a raw token secret
 
 Response example:
 ```json
@@ -232,9 +237,11 @@ Response example:
   "tokens": [
     {
       "credentialId": "11111111-1111-4111-8111-111111111111",
+      "displayKey": "cred_1111...1111",
       "debugLabel": "dylan-anthropic-1",
       "provider": "anthropic",
       "status": "active",
+      "attempts": 430,
       "requests": 412,
       "usageUnits": 89400,
       "retailEquivalentMinor": 15200,
@@ -255,7 +262,7 @@ Response example:
 Admin-only token health snapshot plus rolling maxing/utilization metrics.
 
 Query params:
-- `window`: `24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `7d`)
+- `window`: `5h|24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `7d`)
 - `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
 - `source`: `openclaw|cli-claude|cli-codex|direct`
 
@@ -275,6 +282,7 @@ Response example:
   "tokens": [
     {
       "credentialId": "11111111-1111-4111-8111-111111111111",
+      "displayKey": "cred_1111...1111",
       "debugLabel": "dylan-anthropic-1",
       "provider": "anthropic",
       "status": "active",
@@ -306,7 +314,7 @@ Response example:
 Admin-only routing/error/latency stats per token.
 
 Query params:
-- `window`: `24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
+- `window`: `5h|24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
 - `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
 - `source`: `openclaw|cli-claude|cli-codex|direct`
 
@@ -317,6 +325,7 @@ Response example:
   "tokens": [
     {
       "credentialId": "11111111-1111-4111-8111-111111111111",
+      "displayKey": "cred_1111...1111",
       "debugLabel": "dylan-anthropic-1",
       "provider": "anthropic",
       "totalAttempts": 200,
@@ -342,7 +351,7 @@ Response example:
 Admin-only pool-wide analytics summary.
 
 Query params:
-- `window`: `24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
+- `window`: `5h|24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
 - `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
 - `source`: `openclaw|cli-claude|cli-codex|direct`
 
@@ -397,8 +406,12 @@ Notes:
 Admin-only chart-series endpoint.
 
 Query params:
-- `window`: `24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `1m`)
-- `granularity`: `hour|day` (default `hour` for `24h`, else `day`)
+- `window`: `5h|24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `1m`)
+- `granularity`: `5m|15m|hour|day`
+  - default `5m` for `5h`
+  - default `15m` for `24h`
+  - default `hour` for `7d`
+  - default `day` for `1m|all`
 - `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
 - `source`: `openclaw|cli-claude|cli-codex|direct`
 - `credentialId`: UUID filter
@@ -406,11 +419,11 @@ Query params:
 Response example:
 ```json
 {
-  "window": "1m",
-  "granularity": "day",
+  "window": "24h",
+  "granularity": "15m",
   "series": [
     {
-      "date": "2026-03-07",
+      "date": "2026-03-07T14:15:00.000Z",
       "requests": 145,
       "usageUnits": 32000,
       "errorRate": 0.02,
@@ -420,11 +433,88 @@ Response example:
 }
 ```
 
+### `GET /v1/admin/analytics/buyers`
+Admin-only buyer-key inventory analytics.
+
+Query params:
+- `window`: `5h|24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
+- `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
+- `source`: `openclaw|cli-claude|cli-codex|direct`
+
+Notes:
+- inventory-based: includes all `buyer_proxy` keys, including zero-usage rows
+- `displayKey` is a safe display fallback, not a raw buyer secret
+- `lastSeenAt` is derived from routed traffic, not auth middleware `last_used_at`
+- `effectiveProvider` applies the buyer-key default when `preferredProvider` is `null`
+
+Response example:
+```json
+{
+  "window": "24h",
+  "buyers": [
+    {
+      "apiKeyId": "22222222-2222-4222-8222-222222222222",
+      "displayKey": "key_2222...2222",
+      "label": "openclaw-main",
+      "orgId": "33333333-3333-4333-8333-333333333333",
+      "orgLabel": "OpenClaw",
+      "preferredProvider": null,
+      "effectiveProvider": "anthropic",
+      "requests": 800,
+      "attempts": 820,
+      "usageUnits": 180000,
+      "retailEquivalentMinor": 5100,
+      "percentOfTotal": 0.56,
+      "lastSeenAt": "2026-03-07T14:32:00.000Z",
+      "errorRate": 0.0122,
+      "bySource": {
+        "openclaw": { "requests": 800, "usageUnits": 180000 },
+        "cli-claude": { "requests": 0, "usageUnits": 0 },
+        "cli-codex": { "requests": 0, "usageUnits": 0 },
+        "direct": { "requests": 0, "usageUnits": 0 }
+      }
+    }
+  ]
+}
+```
+
+### `GET /v1/admin/analytics/buyers/timeseries`
+Admin-only buyer-key chart-series endpoint.
+
+Query params:
+- `window`: `5h|24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `1m`)
+- `granularity`: `5m|15m|hour|day`
+  - default `5m` for `5h`
+  - default `15m` for `24h`
+  - default `hour` for `7d`
+  - default `day` for `1m|all`
+- `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
+- `source`: `openclaw|cli-claude|cli-codex|direct`
+- `apiKeyId`: UUID filter; repeat param to request multiple buyer series
+
+Response example:
+```json
+{
+  "window": "24h",
+  "granularity": "15m",
+  "series": [
+    {
+      "date": "2026-03-07T14:15:00.000Z",
+      "apiKeyId": "22222222-2222-4222-8222-222222222222",
+      "requests": 24,
+      "usageUnits": 4100,
+      "errorRate": 0.0125,
+      "latencyP50Ms": 980
+    }
+  ]
+}
+```
+
 ### `GET /v1/admin/analytics/requests`
 Admin-only recent request drill-down. Response content is preview-only by default.
 
 Query params:
-- `window`: `24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
+- `window`: `5h|24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
 - `limit`: `1..200` (default `50`)
 - `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
 - `source`: `openclaw|cli-claude|cli-codex|direct`
@@ -433,6 +523,8 @@ Query params:
 - `minLatencyMs`: integer `>= 0`
 
 Notes:
+- attempt-level endpoint: `requestId` may repeat across retries/failovers
+- `attemptNo` identifies the specific attempt row
 - `prompt` and `response` are preview fields sourced from request-log storage
 - full prompt/response content is off by default and not part of the baseline contract
 - `REQUEST_LOG_STORE_FULL` is not yet wired; ignore it for Phase 1 contract purposes
@@ -445,6 +537,7 @@ Response example:
   "requests": [
     {
       "requestId": "req_123",
+      "attemptNo": 2,
       "createdAt": "2026-03-07T14:32:00.000Z",
       "credentialId": "11111111-1111-4111-8111-111111111111",
       "credentialLabel": "dylan-anthropic-1",
@@ -466,11 +559,48 @@ Response example:
 }
 ```
 
+### `GET /v1/admin/analytics/events`
+Admin-only token lifecycle event feed.
+
+Query params:
+- `window`: `5h|24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
+- `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
+- `limit`: `1..200` (default `50`)
+
+Notes:
+- currently reads durable token lifecycle events from `in_token_credential_events`
+- does not synthesize anomaly events; use `/anomalies` separately for data-quality checks
+
+Response example:
+```json
+{
+  "window": "24h",
+  "limit": 50,
+  "events": [
+    {
+      "id": "event_1",
+      "type": "maxed",
+      "createdAt": "2026-03-07T14:32:00.000Z",
+      "provider": "anthropic",
+      "credentialId": "11111111-1111-4111-8111-111111111111",
+      "credentialLabel": "dylan-anthropic-1",
+      "summary": "credential maxed",
+      "severity": "warn",
+      "statusCode": 401,
+      "reason": "upstream_401_consecutive_failure",
+      "metadata": {
+        "threshold": 10
+      }
+    }
+  ]
+}
+```
+
 ### `GET /v1/admin/analytics/anomalies`
 Admin-only analytics confidence and data-quality checks.
 
 Query params:
-- `window`: `24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
+- `window`: `5h|24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
 - `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
 - `source`: `openclaw|cli-claude|cli-codex|direct`
 
@@ -493,6 +623,101 @@ Notes:
 - `staleAggregateWindows` counts daily aggregate windows where raw usage has aged past the refresh SLA but the aggregate row is missing or older than the latest raw row
 - `usageLedgerVsAggregateMismatchCount` counts closed daily aggregate windows whose counts do not match raw `entry_type='usage'` ledger rows, including aggregate-only orphan rows
 - aggregate anomaly checks honor `provider` but ignore `source`
+
+### `GET /v1/admin/analytics/dashboard`
+Admin-only analytics snapshot for the internal dashboard.
+
+Query params:
+- `window`: `5h|24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `24h`)
+- `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
+- `source`: `openclaw|cli-claude|cli-codex|direct`
+
+Notes:
+- returns a best-effort merged snapshot for the UI so summary/tables/anomalies/events share one `snapshotAt`
+- `tokens[*]` merges usage, health, and routing metrics by `credentialId`
+- `tokens[*].attempts` is attempt-level volume; `tokens[*].requests` is distinct `request_id` count for the same window
+- `buyers[*]` may include `latencyP50Ms` and `errorRate` when those buyer aggregates are available
+- snapshot `events` is currently capped to the 20 most recent lifecycle events
+
+Response example:
+```json
+{
+  "window": "5h",
+  "snapshotAt": "2026-03-07T14:35:00.000Z",
+  "summary": {
+    "totalRequests": 145,
+    "totalUsageUnits": 32000,
+    "activeTokens": 8,
+    "maxedTokens": 1,
+    "totalTokens": 10,
+    "maxedEvents7d": 4,
+    "errorRate": 0.034,
+    "fallbackRate": 0.02,
+    "byProvider": {
+      "anthropic": { "requests": 120, "usageUnits": 28000 },
+      "openai": { "requests": 25, "usageUnits": 4000 }
+    },
+    "byModel": {},
+    "bySource": {
+      "openclaw": { "requests": 90, "usageUnits": 20000 },
+      "cli-claude": { "requests": 40, "usageUnits": 9000 },
+      "cli-codex": { "requests": 10, "usageUnits": 2000 },
+      "direct": { "requests": 5, "usageUnits": 1000 }
+    },
+    "translationOverhead": null,
+    "topBuyers": []
+  },
+  "tokens": [
+    {
+      "credentialId": "11111111-1111-4111-8111-111111111111",
+      "displayKey": "cred_1111...1111",
+      "debugLabel": "dylan-anthropic-1",
+      "provider": "anthropic",
+      "status": "active",
+      "attempts": 148,
+      "requests": 145,
+      "usageUnits": 32000,
+      "percentOfWindow": 0.64,
+      "utilizationRate24h": 1.08,
+      "maxedEvents7d": 2,
+      "monthlyContributionUsedUnits": 123000,
+      "monthlyContributionLimitUnits": 500000,
+      "latencyP50Ms": 1200,
+      "errorRate": 0.02,
+      "authFailures24h": 2,
+      "rateLimited24h": 3
+    }
+  ],
+  "buyers": [
+    {
+      "apiKeyId": "22222222-2222-4222-8222-222222222222",
+      "displayKey": "key_2222...2222",
+      "label": "shirtless",
+      "orgId": "33333333-3333-4333-8333-333333333333",
+      "orgLabel": "Innies Team",
+      "preferredProvider": "openai",
+      "effectiveProvider": "openai",
+      "requests": 72,
+      "usageUnits": 11000,
+      "percentOfWindow": 0.34,
+      "lastSeenAt": "2026-03-07T14:31:00.000Z",
+      "latencyP50Ms": 980,
+      "errorRate": 0.011
+    }
+  ],
+  "anomalies": {
+    "checks": {
+      "missingDebugLabels": 0,
+      "unresolvedCredentialIdsInTokenModeUsage": 0,
+      "nullCredentialIdsInRouting": 0,
+      "staleAggregateWindows": 0,
+      "usageLedgerVsAggregateMismatchCount": 0
+    },
+    "ok": true
+  },
+  "events": []
+}
+```
 
 ## Error Codes (C1)
 - `invalid_request` (400; 409 for deterministic contract conflicts such as token-credential write conflicts)
