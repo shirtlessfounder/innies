@@ -1,76 +1,208 @@
 .page {
-  height: 100svh;
   min-height: 100svh;
-  padding: 0;
-  overflow: hidden;
   background: #e3e9ee;
 }
 
 .shell {
   position: relative;
-  display: flex;
-  flex-direction: column;
   min-height: 100svh;
-  height: 100svh;
-  overflow: hidden;
+  padding: 28px;
   background:
-    radial-gradient(circle at 50% 18%, rgba(255, 255, 255, 0.88) 0%, rgba(255, 255, 255, 0.52) 24%, rgba(220, 227, 233, 0.24) 45%, rgba(181, 191, 200, 0.28) 100%),
-    linear-gradient(90deg, rgba(59, 90, 105, 0.045) 0%, rgba(220, 227, 233, 0) 7%, rgba(255, 255, 255, 0.16) 50%, rgba(220, 227, 233, 0) 93%, rgba(59, 90, 105, 0.045) 100%),
-    linear-gradient(180deg, #eef2f4 0%, #dce3e9 100%);
-  box-shadow:
-    0 24px 56px rgba(12, 29, 51, 0.08),
-    42px 0 56px rgba(12, 29, 51, 0.14),
-    -42px 0 56px rgba(12, 29, 51, 0.14);
+    radial-gradient(circle at 50% 10%, rgba(255, 255, 255, 0.74) 0%, rgba(255, 255, 255, 0.16) 34%, rgba(227, 233, 238, 0) 60%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.42) 0%, rgba(227, 233, 238, 0.12) 18%, rgba(194, 206, 215, 0.18) 100%),
+    repeating-linear-gradient(
+      90deg,
+      rgba(58, 87, 100, 0.045) 0,
+      rgba(58, 87, 100, 0.045) 1px,
+      transparent 1px,
+      transparent 22px
+    ),
+    repeating-linear-gradient(
+      180deg,
+      rgba(58, 87, 100, 0.045) 0,
+      rgba(58, 87, 100, 0.045) 1px,
+      transparent 1px,
+      transparent 22px
+    );
 }
 
-.shell::before,
-.shell::after {
+.shell::before {
   position: absolute;
   inset: 0;
   content: '';
   pointer-events: none;
-}
-
-.shell::before {
   background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0)),
-    repeating-linear-gradient(
-      90deg,
-      rgba(109, 130, 138, 0.062) 0,
-      rgba(109, 130, 138, 0.062) 1px,
-      transparent 1px,
-      transparent 26px
-    ),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0)),
     repeating-linear-gradient(
       180deg,
-      rgba(109, 130, 138, 0.062) 0,
-      rgba(109, 130, 138, 0.062) 1px,
+      rgba(255, 255, 255, 0.14) 0,
+      rgba(255, 255, 255, 0.14) 1px,
       transparent 1px,
-      transparent 26px
-    ),
-    repeating-linear-gradient(
-      90deg,
-      rgba(109, 130, 138, 0.106) 0,
-      rgba(109, 130, 138, 0.106) 1px,
-      transparent 1px,
-      transparent 130px
-    ),
-    repeating-linear-gradient(
-      180deg,
-      rgba(109, 130, 138, 0.106) 0,
-      rgba(109, 130, 138, 0.106) 1px,
-      transparent 1px,
-      transparent 130px
+      transparent 5px
     );
-  opacity: 0.5;
+  opacity: 0.28;
 }
 
-.shell::after {
-  background:
-    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.28), transparent 48%),
-    radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.22) 0.6px, transparent 0.7px);
-  background-size: auto, 9px 9px;
-  opacity: 0.28;
+.console {
+  --console-ink: #16333e;
+  --console-ink-soft: rgba(22, 51, 62, 0.68);
+  --console-line: rgba(28, 62, 74, 0.14);
+  --console-line-strong: rgba(28, 62, 74, 0.26);
+  --console-panel: rgba(248, 251, 253, 0.46);
+  --console-panel-strong: rgba(248, 251, 253, 0.8);
+  --console-accent: #0b7285;
+  --console-accent-soft: rgba(11, 114, 133, 0.12);
+  --console-live: #0f5132;
+  --console-warn: #9a6700;
+  --console-error: #b42318;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: min(1520px, 100%);
+  min-height: calc(100svh - 56px);
+  margin: 0 auto;
+  color: var(--console-ink);
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'IBM Plex Mono', 'Menlo', 'Monaco', ui-monospace, monospace;
+}
+
+.consoleHeader {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 14px;
+  color: var(--console-ink);
+  font-family: inherit;
+}
+
+.headerBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.kicker {
+  font-size: 11px;
+  letter-spacing: 0.24em;
+  color: rgba(22, 51, 62, 0.68);
+}
+
+.homeLink,
+.homeLink:link,
+.homeLink:visited,
+.homeLink:active,
+.homeLink:focus,
+.homeLink:focus-visible {
+  color: inherit;
+  text-decoration: none;
+  text-underline-offset: 0.22em;
+  text-decoration-thickness: 1px;
+}
+
+.homeLink:hover {
+  text-decoration: underline;
+}
+
+.consoleTitle {
+  margin: 0;
+  font-size: clamp(30px, 4vw, 52px);
+  line-height: 0.92;
+  letter-spacing: -0.08em;
+  text-transform: lowercase;
+}
+
+.promptLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(22, 51, 62, 0.68);
+}
+
+.promptStack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.promptPrefix {
+  color: #0b7285;
+}
+
+.promptCommand {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.promptCursor {
+  width: 8px;
+  height: 15px;
+  background: #0f5132;
+  opacity: 1;
+  animation: cursorBlink 1.25s steps(1, end) infinite;
+}
+
+.liveMeta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  padding-top: 6px;
+  color: #16333e;
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'IBM Plex Mono', 'Menlo', 'Monaco', ui-monospace, monospace;
+}
+
+.liveBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid rgba(28, 62, 74, 0.26);
+  background: rgba(255, 255, 255, 0.42);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.liveBadge_live {
+  color: #0f5132;
+  border-color: rgba(15, 81, 50, 0.24);
+}
+
+.liveBadge_loading {
+  color: #0b7285;
+  border-color: rgba(11, 114, 133, 0.24);
+}
+
+.liveBadge_paused {
+  color: #6b7280;
+}
+
+.liveBadge_degraded {
+  color: #b42318;
+  border-color: rgba(180, 35, 24, 0.22);
+}
+
+.liveDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 10px rgba(15, 81, 50, 0.32);
+  animation: cursorBlink 1.25s steps(1, end) infinite;
+}
+
+.liveText {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: #0f5132;
 }
 
 .header {
@@ -229,7 +361,7 @@
   justify-content: center;
   flex: 1;
   min-height: 0;
-  padding: 0 40px 6px;
+  padding: 10px 2px 6px;
 }
 
 .heroInner {
@@ -242,14 +374,14 @@
   justify-content: center;
   width: 100%;
   max-width: 880px;
-  transform: translateY(-40px);
+  transform: translateY(-64px);
 }
 
 .frame {
   display: block;
-  width: min(38vw, 470px);
+  width: min(40vw, 500px);
   min-width: 300px;
-  margin-bottom: 34px;
+  margin-bottom: 8px;
   color: inherit;
   text-decoration: none;
   border-radius: 24px;
@@ -271,9 +403,16 @@
   display: block;
   width: 100%;
   height: auto;
+  transform-origin: 50% 82%;
+  will-change: transform;
   filter:
     drop-shadow(0 10px 10px rgba(255, 255, 255, 0.28))
     drop-shadow(0 26px 22px rgba(36, 56, 50, 0.18));
+}
+
+.frame:hover .heroImage,
+.frame:focus-visible .heroImage {
+  animation: heroQuake 480ms steps(1, end) infinite;
 }
 
 .headline {
@@ -306,43 +445,71 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  min-height: 46px;
-  padding: 0 32px;
-  border-radius: 999px;
-  border: 1px solid rgba(163, 177, 174, 0.5);
-  color: #eef4f1;
-  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-  font-size: 0.95rem;
-  font-weight: 800;
-  letter-spacing: 0.01em;
-  background: #243832;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 18px;
+  border-radius: 8px;
+  border: 1px solid rgba(10, 90, 105, 0.72);
+  color: #f3fbfd;
+  font-family: 'SFMono-Regular', 'JetBrains Mono', 'IBM Plex Mono', 'Menlo', 'Monaco', ui-monospace, monospace;
+  font-size: 0.92rem;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  background: linear-gradient(180deg, #0c7f94 0%, #0a5a69 100%);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 12px 24px rgba(36, 56, 50, 0.18);
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 10px 22px rgba(12, 29, 51, 0.14);
   transition:
-    transform 200ms ease,
-    background-color 200ms ease,
-    border-color 200ms ease,
-    box-shadow 200ms ease;
+    transform 120ms ease,
+    background 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease;
 }
 
 .primaryCta:hover,
 .primaryCta:focus-visible {
-  transform: translateY(-2px);
-  border-color: rgba(197, 212, 206, 0.58);
-  background: #2b433c;
+  transform: translateY(-1px);
+  border-color: rgba(10, 90, 105, 0.88);
+  background: linear-gradient(180deg, #1293ab 0%, #0c6677 100%);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    0 16px 28px rgba(36, 56, 50, 0.24);
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 14px 26px rgba(12, 29, 51, 0.18);
 }
 
-.ctaIcon {
-  width: 18px;
-  height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.55;
+@keyframes cursorBlink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0.32;
+  }
+}
+
+@keyframes heroQuake {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  16% {
+    transform: translate3d(-0.8px, 0.3px, 0) rotate(-0.18deg);
+  }
+  32% {
+    transform: translate3d(0.9px, -0.5px, 0) rotate(0.14deg);
+  }
+  48% {
+    transform: translate3d(-0.5px, 0.7px, 0) rotate(-0.12deg);
+  }
+  64% {
+    transform: translate3d(0.8px, 0.2px, 0) rotate(0.16deg);
+  }
+  80% {
+    transform: translate3d(-0.4px, -0.6px, 0) rotate(-0.1deg);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
 }
 
 @media (max-width: 980px) {
@@ -361,7 +528,17 @@
   }
 
   .shell {
-    min-height: 100vh;
+    padding: 18px;
+  }
+
+  .consoleHeader {
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .liveMeta {
+    align-items: flex-start;
+    padding-top: 0;
   }
 
   .header {
@@ -380,13 +557,13 @@
   }
 
   .hero {
-    padding: 0 20px 4px;
+    padding: 0 2px 4px;
   }
 
   .frame {
-    width: min(88vw, 372px);
+    width: min(90vw, 388px);
     min-width: 0;
-    margin-bottom: 30px;
+    margin-bottom: 12px;
   }
 
   .headline {
@@ -401,5 +578,20 @@
 
   .subcopy span {
     display: inline;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .frame,
+  .primaryCta,
+  .heroImage {
+    transition: none;
+  }
+
+  .frame:hover .heroImage,
+  .frame:focus-visible .heroImage,
+  .promptCursor,
+  .liveDot {
+    animation: none;
   }
 }
