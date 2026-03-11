@@ -190,6 +190,18 @@ describe('tokenCredentialRepository', () => {
     });
     expect(db.queries[0].sql).toContain('consecutive_rate_limit_count');
     expect(db.queries[0].sql).toContain('rate_limited_until');
+    expect(db.queries[0].sql).toContain('$6::boolean');
+    expect(db.queries[0].sql).toContain('$7::text is not null');
+    expect(db.queries[0].sql).not.toContain('$8');
+    expect(db.queries[0].params).toEqual([
+      'cred_1',
+      5,
+      new Date('2026-03-04T00:05:00Z'),
+      15,
+      new Date('2026-03-04T04:00:00Z'),
+      false,
+      'upstream_429_consecutive_rate_limit'
+    ]);
   });
 
   it('promotes repeated 429s into maxed when the hard threshold is reached', async () => {

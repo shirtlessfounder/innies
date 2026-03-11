@@ -188,10 +188,14 @@ export function extractTerminalOpenAiResponseFromSse(raw: string): Record<string
     ...(createdResponse ?? {}),
     ...(terminalResponse ?? {})
   };
-  if (outputItems.size > 0 && !Array.isArray(response.output)) {
-    response.output = Array.from(outputItems.entries())
-      .sort((a, b) => a[0] - b[0])
-      .map(([, item]) => item);
+  if (outputItems.size > 0) {
+    const mergedOutput = Array.isArray(response.output)
+      ? [...response.output]
+      : [];
+    for (const [outputIndex, item] of Array.from(outputItems.entries()).sort((a, b) => a[0] - b[0])) {
+      mergedOutput[outputIndex] = item;
+    }
+    response.output = mergedOutput.filter((item) => item !== undefined);
   }
 
   return response;
