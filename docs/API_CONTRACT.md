@@ -23,6 +23,7 @@
 - `POST /v1/admin/token-credentials`
 - `POST /v1/admin/token-credentials/rotate`
 - `POST /v1/admin/token-credentials/:id/revoke`
+- `POST /v1/admin/token-credentials/:id/probe`
 - `PATCH /v1/admin/buyer-keys/:id/provider-preference`
 - Header: `Idempotency-Key`
 - Format: UUIDv7 or opaque token length >= 32.
@@ -183,6 +184,23 @@ Optional field:
 
 ### `POST /v1/admin/token-credentials/:id/revoke`
 Revoke a token credential by id (admin only).
+
+### `POST /v1/admin/token-credentials/:id/probe`
+Probe a `maxed` token credential immediately (admin only).
+
+Response shape:
+- `probeOk`: whether the upstream probe succeeded
+- `reactivated`: whether Innies flipped the credential back to `active`
+- `status`: resulting Innies status (`active|maxed`)
+- `upstreamStatus`: HTTP status from upstream probe when available
+- `reason`: probe result reason (`ok|status_<code>|network:<message>|unsupported_provider:<provider>`)
+- `nextProbeAt`: next scheduled automatic probe time when the manual probe failed
+
+Notes:
+- intended operator use: immediately test whether a quarantined credential has recovered without waiting for the background healthcheck
+- only `maxed`, unexpired credentials can be manually probed
+- successful probe reactivates the credential immediately so routing can use it again
+- failed probe keeps the credential `maxed` and pushes `nextProbeAt` forward by the normal probe interval
 
 ### `GET /v1/admin/buyer-keys/:id/provider-preference`
 Read provider preference for a buyer API key (admin only).
@@ -753,7 +771,7 @@ Response example:
   - OAuth/session creds use a `3x` auth-failure threshold before auto-max (`30` by default).
   - OAuth/session creds also track repeated `429` responses separately:
     - `5` consecutive `429`s -> temporary routing penalty (`TOKEN_CREDENTIAL_RATE_LIMIT_COOLDOWN_CONSECUTIVE_FAILURES=5`, `TOKEN_CREDENTIAL_RATE_LIMIT_COOLDOWN_MINUTES=5`)
-    - `15` consecutive `429`s, or explicit provider exhaustion messaging -> auto-max (`TOKEN_CREDENTIAL_RATE_LIMIT_MAX_CONSECUTIVE_FAILURES=15`)
+    - `15` consecutive `429`s -> auto-max (`TOKEN_CREDENTIAL_RATE_LIMIT_MAX_CONSECUTIVE_FAILURES=15`)
   - Auto-maxed credentials are removed from active routing pool until probe reactivation.
   - Successful routed request on an active/rotating credential resets both auth-failure and `429` counters and clears temporary rate-limit penalties.
 - Token credential probe/reactivation:

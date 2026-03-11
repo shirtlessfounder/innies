@@ -19,19 +19,29 @@ Success means:
 
 ## Current State (2026-03-11)
 - Token credential ordering is request-id rotation via [api/src/routes/proxy.ts](../../api/src/routes/proxy.ts).
-- Routing eligibility from [api/src/repos/tokenCredentialRepository.ts](../../api/src/repos/tokenCredentialRepository.ts) filters by status, expiry, and monthly contribution limits only.
+- Routing eligibility from [api/src/repos/tokenCredentialRepository.ts](../../api/src/repos/tokenCredentialRepository.ts) already filters by status, expiry, `rate_limited_until`, and monthly contribution limits.
 - `innies codex` already injects a stable `x-request-id` per wrapped process via [cli/src/commands/codex.js](../../cli/src/commands/codex.js), so one Codex session is already pseudo-sticky.
+- `request_id` is still treated as request identity throughout routing events, request log, idempotency, and usage metering; there is not yet a distinct lease/session identifier for token-mode routing.
+- Existing credential health/cooldown state already exists for provider-side failures:
+  - `rate_limited_until` exclusion during routing
+  - 429 cooldown / auto-maxing
+  - consecutive failure auto-maxing
 - [api/src/services/orgQueue.ts](../../api/src/services/orgQueue.ts) exists, but it is not wired into token-mode runtime in [api/src/services/runtime.ts](../../api/src/services/runtime.ts).
 - The production issue is no longer just "bad truncation handling"; it is also "too many concurrent long-lived streams sharing one credential."
 
 ## Product / Runtime Decisions
 - The placement unit is the active session / live stream, not the user.
+- `request_id` remains request identity for logs, idempotency, and metering. Session affinity must use a distinct session key.
 - A new session gets a sticky lease to one credential for the session lifetime or TTL.
 - Default `max_live_streams_per_credential = 1` for OpenAI/Codex token-mode streaming in v1.
 - No mid-session credential migration in v1.
 - New sessions should route to the healthiest least-loaded credential, not request-id rotation.
-- If every healthy credential is at cap, Innies should wait briefly for capacity, then fail clearly with retry guidance instead of silently over-admitting.
-- Credentials that hit `429`, auth failures, or stream truncation should enter a cooldown window before new assignments.
+- Preserve current provider-plan semantics for unpinned buyer traffic:
+  - if preferred provider has no immediate admissible slot, try the alternate provider immediately
+  - only queue/reject after no provider in the plan can admit the request
+  - pinned traffic queues/rejects only within its pinned provider lane
+- If every admissible provider in the plan is full, Innies should wait briefly for capacity, then fail clearly with retry guidance instead of silently over-admitting.
+- Existing credential health remains canonical for provider/API-side failures (`401/403/429`, `rate_limited_until`, `maxed`). Scheduler-local cooldowns are only for transport/stream-level instability not already represented by current credential state.
 - Shared admission state must live outside process memory. Postgres-backed state is the default v1 choice because Innies already depends on Postgres.
 - The architecture should be provider-agnostic, but rollout priority is OpenAI/Codex token-mode streams first because that is the current user-facing incident.
 
@@ -64,11 +74,13 @@ Required behavior:
 Use session-level affinity, not per-user pinning.
 
 V1 rule:
-- reuse the existing CLI `x-request-id` as the session key for `innies codex`
-- if token-mode callers later need multiple independent streams inside one wrapper session, add an explicit `x-innies-session-id`
+- introduce a distinct `session_id` / lease key instead of reusing `request_id`
+- wrappers should send `x-innies-session-id`
+- OpenClaw traffic should use `x-openclaw-session-id` / `openclaw_session_id` when present
+- if a caller does not provide a session identifier, treat the request as a one-request ephemeral session with no lease reuse guarantee
 
 Non-goal for v1:
-- redesign the full request-id/correlation model for every client
+- redesign every request/correlation field in the system
 
 ### 3. Load-Aware Credential Selection
 Replace request-id rotation for token-mode streaming with lease-aware placement.
@@ -89,12 +101,18 @@ Add a short queue in front of credential admission.
 
 V1 behavior:
 - if a credential slot is immediately available, admit the stream
-- if all healthy credentials are full, wait briefly for a slot
+- for unpinned traffic, preserve the current provider plan:
+  - try the preferred provider first
+  - if preferred has no immediate admissible slot, try the alternate provider immediately
+  - only queue once no provider in the plan can admit immediately
+- for pinned traffic, queue only within the pinned provider lane
+- if every admissible provider is full, wait briefly for a slot
 - if the wait budget expires, return an explicit capacity error with retry guidance and `Retry-After`
 
 Design constraint:
 - queueing is only to smooth brief overlap and release races
 - queueing is not a substitute for unbounded concurrency
+- queueing must not silently replace today's immediate cross-provider fallback contract for unpinned buyer traffic
 
 ### 5. Stream Lifecycle Integration
 Tie leases to the actual lifetime of the downstream stream.
@@ -115,13 +133,16 @@ Primary code areas:
 Add cooldown-aware health penalties for credentials that misbehave under load.
 
 Penalty triggers:
-- upstream `429`
-- auth failure / invalid session state
 - repeated mid-stream truncation
 - repeated transport resets before terminal event
+- other transport-level churn that is not already represented by current credential health state
 
 Required behavior:
-- prevent immediate reassignment to a hot/bad credential
+- keep existing credential health state canonical for provider/API failures:
+  - `401/403/429` continue through current credential failure / cooldown / maxing logic
+  - `rate_limited_until` and `maxed` stay authoritative for eligibility
+- use a separate short-lived scheduler/admission cooldown for stream/transport instability
+- prevent immediate reassignment to a hot/bad credential after scheduler-level transport failures
 - back off more aggressively for repeated failures
 - keep cooldown decisions observable in routing events and admin views
 
@@ -183,6 +204,7 @@ Starting defaults, subject to tuning after canary data:
 Expected work areas:
 - new migration for lease state
 - new repository/service for lease acquisition, heartbeat, release, and expiry cleanup
+- wrapper/header changes to send a distinct `x-innies-session-id` for provider-pinned CLI sessions
 - token-mode routing changes in [api/src/routes/proxy.ts](../../api/src/routes/proxy.ts)
 - runtime wiring in [api/src/services/runtime.ts](../../api/src/services/runtime.ts)
 - optional admin/debug read endpoint for live capacity state

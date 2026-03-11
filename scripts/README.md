@@ -16,6 +16,7 @@ chmod +x scripts/install.sh
 innies-add-token
 innies-rotate-token
 innies-set-refresh-token
+innies-requeue-token-probe
 innies-set-preference
 innies-get-preference
 innies-check-preference
@@ -25,6 +26,7 @@ What they do:
 - `innies-add-token`: create a Claude Code or Codex OAuth credential
 - `innies-rotate-token`: rotate a Claude Code or Codex OAuth credential pool
 - `innies-set-refresh-token`: set or clear the stored OAuth refresh token for an existing credential id
+- `innies-requeue-token-probe`: directly probe a maxed token credential now; successful probes immediately reactivate it
 - `innies-set-preference`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
 - `innies-get-preference`: read the current buyer key preference
 - `innies-check-preference`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
@@ -39,6 +41,9 @@ Behavior:
 - `innies-set-refresh-token` accepts a credential UUID, then:
   - `paste` to read the refresh token from clipboard
   - `clear` to remove the stored refresh token
+- `innies-requeue-token-probe` accepts either the token credential UUID or an exact `debugLabel`; it needs `DATABASE_URL`
+- `innies-requeue-token-probe` prints the currently maxed credentials first so you can pick a live `debugLabel` or UUID
+- `innies-requeue-token-probe` also needs `INNIES_ADMIN_API_KEY` (or prompts for it) because it calls the admin API probe endpoint directly
 - `label` maps to API field `debugLabel`
 - set/get preference accept either the buyer-key UUID or the live buyer key value; live-key lookup uses `DATABASE_URL`
 - script-side default provider display for `null` preference follows `BUYER_PROVIDER_PREFERENCE_DEFAULT` (legacy alias `INNIES_BUYER_PROVIDER_PREFERENCE_DEFAULT` also works)

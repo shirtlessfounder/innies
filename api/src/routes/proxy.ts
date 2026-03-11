@@ -418,57 +418,6 @@ function isOauthCredential(credential: TokenCredential, provider: string): boole
   return isOpenAiOauthToken(credential, provider) || isAnthropicOauthToken(credential, provider);
 }
 
-function collectErrorStrings(value: unknown, out: string[]): void {
-  if (typeof value === 'string') {
-    out.push(value);
-    return;
-  }
-  if (!value || typeof value !== 'object') return;
-  if (Array.isArray(value)) {
-    value.forEach((item) => collectErrorStrings(item, out));
-    return;
-  }
-
-  const record = value as Record<string, unknown>;
-  for (const key of ['message', 'detail', 'type', 'code', 'error']) {
-    if (key in record) collectErrorStrings(record[key], out);
-  }
-}
-
-function readUpstreamErrorText(value: unknown): string {
-  if (typeof value === 'string') return value.toLowerCase();
-  const parts: string[] = [];
-  collectErrorStrings(value, parts);
-  if (parts.length === 0) {
-    try {
-      return JSON.stringify(value).toLowerCase();
-    } catch {
-      return '';
-    }
-  }
-  return parts.join(' ').toLowerCase();
-}
-
-function looksLikeProviderExhaustion(payload: unknown): boolean {
-  const text = readUpstreamErrorText(payload);
-  if (!text) return false;
-
-  const strongSignals = [
-    'usage limit',
-    'usage limits',
-    'message limit',
-    'daily limit',
-    'monthly limit',
-    'try again at',
-    'insufficient_quota',
-    'current quota',
-    'credit balance is too low',
-    'billing hard limit',
-    'spending limit'
-  ];
-  return strongSignals.some((signal) => text.includes(signal));
-}
-
 const ANTHROPIC_DEFAULT_BETAS = [
   'fine-grained-tool-streaming-2025-05-14',
   'interleaved-thinking-2025-05-14'
@@ -920,9 +869,8 @@ async function recordTokenCredentialOutcome(input: {
   provider: string;
   model: string;
   upstreamStatus: number;
-  upstreamErrorData?: unknown;
 }): Promise<void> {
-  const { credential, requestId, attemptNo, provider, model, upstreamStatus, upstreamErrorData } = input;
+  const { credential, requestId, attemptNo, provider, model, upstreamStatus } = input;
   if (upstreamStatus >= 200 && upstreamStatus < 300) {
     await runtime.repos.tokenCredentials.recordSuccess(credential.id);
     return;
@@ -934,7 +882,6 @@ async function recordTokenCredentialOutcome(input: {
     const threshold = tokenCredentialRateLimitMaxThreshold();
     const cooldownUntil = new Date(Date.now() + (tokenCredentialRateLimitCooldownMinutes() * 60 * 1000));
     const nextProbeAt = new Date(Date.now() + (tokenCredentialProbeIntervalHours() * 60 * 60 * 1000));
-    const forceMax = looksLikeProviderExhaustion(upstreamErrorData);
     const result = await runtime.repos.tokenCredentials.recordRateLimitAndMaybeMax({
       id: credential.id,
       statusCode: upstreamStatus,
@@ -942,8 +889,7 @@ async function recordTokenCredentialOutcome(input: {
       cooldownUntil,
       threshold,
       nextProbeAt,
-      forceMax,
-      reason: forceMax ? 'upstream_429_provider_exhausted' : 'upstream_429_consecutive_rate_limit',
+      reason: 'upstream_429_consecutive_rate_limit',
       requestId,
       attemptNo
     });
@@ -959,7 +905,6 @@ async function recordTokenCredentialOutcome(input: {
         status: upstreamStatus,
         consecutive_rate_limits: result.consecutiveRateLimits,
         threshold,
-        force_max: forceMax,
         next_probe_at: nextProbeAt.toISOString()
       });
       return;
@@ -2026,8 +1971,7 @@ async function executeTokenModeNonStreaming(input: {
           attemptNo,
           provider,
           model,
-          upstreamStatus: status,
-          upstreamErrorData: rateLimitData
+          upstreamStatus: status
         });
         await logAttemptFailure({ kind: 'rate_limited', statusCode: 429, message: 'rate limited' }, ttfbMs);
         logRetryAudit({
@@ -2631,8 +2575,7 @@ async function executeTokenModeStreaming(input: {
           attemptNo,
           provider,
           model,
-          upstreamStatus: status,
-          upstreamErrorData: rateLimitData
+          upstreamStatus: status
         });
         await logAttemptFailure({ kind: 'rate_limited', statusCode: 429, message: 'rate limited' }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
         logRetryAudit({

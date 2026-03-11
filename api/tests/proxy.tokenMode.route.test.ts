@@ -1131,13 +1131,12 @@ describe('proxy token-mode route behavior', () => {
       statusCode: 429,
       cooldownThreshold: 5,
       threshold: 15,
-      forceMax: false,
       reason: 'upstream_429_consecutive_rate_limit'
     }));
     upstreamSpy.mockRestore();
   });
 
-  it('force-maxes oauth 429 responses when the provider body clearly signals exhaustion', async () => {
+  it('does not bypass the 429 threshold even when the provider body signals exhaustion', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
       id: 'cccc9999-9999-4999-8999-999999999999',
@@ -1201,8 +1200,7 @@ describe('proxy token-mode route behavior', () => {
       statusCode: 429,
       cooldownThreshold: 5,
       threshold: 15,
-      forceMax: true,
-      reason: 'upstream_429_provider_exhausted'
+      reason: 'upstream_429_consecutive_rate_limit'
     }));
     upstreamSpy.mockRestore();
   });
