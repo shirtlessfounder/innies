@@ -1,11 +1,9 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { LandingHeroHeader } from '../components/LandingHeroHeader';
-import { shouldShowAnalyticsIndexLink } from '../lib/analyticsAccess';
 import styles from './page.module.css';
 
 export default function DashboardIndexPage() {
-  const showAnalyticsLink = shouldShowAnalyticsIndexLink();
   const heroFrame = (
     <div className={styles.heroArtwork}>
       <Image
@@ -36,15 +34,9 @@ export default function DashboardIndexPage() {
 
           <section className={styles.hero}>
             <div className={styles.heroInner}>
-              {showAnalyticsLink ? (
-                <a href="/analytics" className={styles.frame} aria-label="Open analytics">
-                  {heroFrame}
-                </a>
-              ) : (
-                <div className={styles.frame} aria-hidden="true">
-                  {heroFrame}
-                </div>
-              )}
+              <a href="/analytics" className={styles.frame} aria-label="Open analytics">
+                {heroFrame}
+              </a>
 
               <Link href="/onboard" className={styles.primaryCta}>
                 <span>ONBOARD YOUR INNIES</span>

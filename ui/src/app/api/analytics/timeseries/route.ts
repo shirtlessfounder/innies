@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createAnalyticsApiAccessResponse, getAnalyticsAccessFailure } from '../../../../lib/analyticsAccess';
 import {
   AnalyticsServerError,
   getAnalyticsSeries,
@@ -28,11 +27,6 @@ function normalizeEntityType(value: string | null | undefined): 'token' | 'buyer
 
 export async function GET(request: NextRequest) {
   try {
-    const accessFailure = getAnalyticsAccessFailure(request.headers);
-    if (accessFailure) {
-      return createAnalyticsApiAccessResponse(accessFailure);
-    }
-
     const window = normalizePageWindow(request.nextUrl.searchParams.get('window')) as AnalyticsPageWindow;
     const entityType = normalizeEntityType(request.nextUrl.searchParams.get('entityType'));
     const entityId = request.nextUrl.searchParams.get('entityId')?.trim();

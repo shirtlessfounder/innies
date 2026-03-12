@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createAnalyticsApiAccessResponse, getAnalyticsAccessFailure } from '../../../../lib/analyticsAccess';
 import {
   AnalyticsServerError,
   getAnalyticsDashboardSnapshot,
@@ -10,11 +9,6 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
   try {
-    const accessFailure = getAnalyticsAccessFailure(request.headers);
-    if (accessFailure) {
-      return createAnalyticsApiAccessResponse(accessFailure);
-    }
-
     const window = normalizePageWindow(request.nextUrl.searchParams.get('window'));
     const snapshot = await getAnalyticsDashboardSnapshot(window);
     return NextResponse.json(snapshot, {
