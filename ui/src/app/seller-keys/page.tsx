@@ -2,7 +2,7 @@ import { ShellCard } from '../../components/ShellCard';
 import { getSellerKeySummaries } from '../../lib/mockAdapters';
 
 export default async function SellerKeysPage() {
-  const keys = await getSellerKeySummaries();
+  const keys = await getSellerKeySummaries(); 
 
   return (
     <main style={{ maxWidth: 960, margin: '40px auto', fontFamily: 'ui-sans-serif, system-ui' }}>
