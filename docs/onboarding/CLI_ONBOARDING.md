@@ -38,22 +38,8 @@ Both wrappers inject a default `--model` unless you pass one explicitly:
 - Claude: `claude-opus-4-6`
 - Codex: `gpt-5.4`
 
-## Codex Config Requirement
-Codex ignores `OPENAI_BASE_URL`. Add this to `~/.codex/config.toml`:
-
-```toml
-model_provider = "innies"
-responses_websockets_v2 = false
-
-[model_providers.innies]
-name = "innies"
-base_url = "https://api.innies.computer/v1/proxy/v1"
-env_key = "OPENAI_API_KEY"
-wire_api = "responses"
-requires_openai_auth = false
-```
-
-Websockets must be disabled — they bypass the proxy.
+## Codex
+`innies codex` configures Codex for Innies automatically at runtime.
 
 ## Optional: Link Claude
 ```bash
@@ -69,7 +55,7 @@ Refuses to overwrite a real Claude install. Use `innies claude` directly if link
 | `Token must start with in_` | Use Innies buyer key, not provider token |
 | Missing `claude`/`codex` binary | Install upstream CLI, rerun `innies doctor` |
 | `No active compatibility rule` | Model not in DB — add to `in_model_compatibility_rules` |
-| Codex "high demand" / reconnecting | Check `~/.codex/config.toml` has innies provider + websockets off |
+| Codex "high demand" / reconnecting | Make sure you launched with `innies codex`, not raw `codex`; the wrapper injects Innies config and disables websockets automatically |
 | Claude has active claude.ai login | Supported — `innies claude` uses a local bridge that injects buyer auth before forwarding to Innies |
 | `Stream disconnected` | Check server logs for `synthetic_output_item_count: 0` |
 
