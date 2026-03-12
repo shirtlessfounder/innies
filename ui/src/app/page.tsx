@@ -7,14 +7,25 @@ import styles from './page.module.css';
 export default function DashboardIndexPage() {
   const showAnalyticsLink = shouldShowAnalyticsIndexLink();
   const heroFrame = (
-    <Image
-      className={styles.heroImage}
-      src="/images/archive-computer.png"
-      alt="Winter lake landscape on archival computer"
-      width={2359}
-      height={1778}
-      priority
-    />
+    <div className={styles.heroArtwork}>
+      <Image
+        className={styles.heroImage}
+        src="/images/archive-computer.png"
+        alt="Winter lake landscape on archival computer"
+        width={2359}
+        height={1778}
+        priority
+      />
+      <Image
+        className={styles.heroBadge}
+        src="/images/innies-eye-logo-green-square.svg"
+        alt=""
+        aria-hidden="true"
+        width={320}
+        height={320}
+        priority
+      />
+    </div>
   );
 
   return (

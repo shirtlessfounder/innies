@@ -428,10 +428,10 @@
   outline-offset: 10px;
 }
 
-.heroImage {
+.heroArtwork {
+  position: relative;
   display: block;
   width: 100%;
-  height: auto;
   transform-origin: 50% 82%;
   will-change: transform;
   filter:
@@ -439,8 +439,26 @@
     drop-shadow(0 22px 24px rgba(36, 56, 50, 0.18));
 }
 
-.frame:hover .heroImage,
-.frame:focus-visible .heroImage {
+.heroImage {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.heroBadge {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: clamp(168px, 43.5%, 252px);
+  height: auto;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  opacity: 0.92;
+  filter: saturate(0.48) brightness(0.9);
+}
+
+.frame:hover .heroArtwork,
+.frame:focus-visible .heroArtwork {
   animation: heroQuake 480ms steps(1, end) infinite;
 }
 
@@ -610,12 +628,12 @@
 @media (prefers-reduced-motion: reduce) {
   .frame,
   .primaryCta,
-  .heroImage {
+  .heroArtwork {
     transition: none;
   }
 
-  .frame:hover .heroImage,
-  .frame:focus-visible .heroImage,
+  .frame:hover .heroArtwork,
+  .frame:focus-visible .heroArtwork,
   .promptCursor,
   .liveDot {
     animation: none;
