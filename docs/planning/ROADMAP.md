@@ -97,7 +97,7 @@
   - org kill-switches and emergency controls.
 - Onboarding + auth productization:
   - self-serve org creation
-  - invite/member management
+  - invite/member management 
   - role-based access (owner/admin/member).
 - Per-user model selection by provider (Phase 3):
   - allow different model choice per user within each provider
