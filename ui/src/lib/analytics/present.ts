@@ -12,6 +12,8 @@ function trimBuyerPrefix(value: string): string {
 
 function remapTokenAlias(value: string): string {
   switch (value) {
+    case 'darryn-codex':
+      return 'darryn';
     case 'dylan-codex':
     case 'oauth-main-1':
       return 'shirtless';

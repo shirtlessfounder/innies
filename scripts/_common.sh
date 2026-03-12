@@ -86,6 +86,33 @@ gen_idempotency_key() {
   fi
 }
 
+gen_uuid() {
+  local value
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr '[:upper:]' '[:lower:]'
+    return
+  fi
+  if command -v node >/dev/null 2>&1; then
+    node -e "console.log(require('node:crypto').randomUUID())"
+    return
+  fi
+  value="$(openssl rand -hex 16)"
+  printf '%s-%s-%s-%s-%s\n' \
+    "${value:0:8}" \
+    "${value:8:4}" \
+    "${value:12:4}" \
+    "${value:16:4}" \
+    "${value:20:12}"
+}
+
+gen_live_buyer_key() {
+  if command -v openssl >/dev/null 2>&1; then
+    printf 'in_live_%s\n' "$(openssl rand -hex 24)"
+  else
+    printf 'in_live_%s_%s\n' "$(date +%s)" "buyer_key_fallback"
+  fi
+}
+
 is_uuid() {
   [[ "${1:-}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]
 }
