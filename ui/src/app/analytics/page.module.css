@@ -750,7 +750,7 @@
   }
 
   .liveMeta {
-    align-items: flex-start;
+    display: none;
   }
 
   .toolbar {
