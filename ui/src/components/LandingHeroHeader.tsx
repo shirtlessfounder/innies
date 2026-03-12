@@ -32,27 +32,29 @@ export function LandingHeroHeader(input: {
     <div className={styles.promptLine}>
       <span className={styles.promptPrefix}>innies:~$</span>
       <span className={styles.promptCommand}>
-        <span>{analyticsPromptLabel}</span>
-        {input.analyticsPromptLinkLabel && input.analyticsPromptLinkHref ? (
-          <>
-            <span aria-hidden="true">&nbsp;</span>
-            <a
-              className={styles.promptLink}
-              href={input.analyticsPromptLinkHref}
-              rel="noreferrer"
-              target="_blank"
-            >
-              {input.analyticsPromptLinkLabel}
-            </a>
-            {input.analyticsPromptSuffix ? (
-              <>
-                <span aria-hidden="true">&nbsp;</span>
-                <span>{input.analyticsPromptSuffix}</span>
-              </>
-            ) : null}
-          </>
-        ) : null}
-        <span className={styles.promptCursor} aria-hidden="true" />
+        <span className={styles.promptCommandText}>
+          <span>{analyticsPromptLabel}</span>
+          {input.analyticsPromptLinkLabel && input.analyticsPromptLinkHref ? (
+            <>
+              {' '}
+              <a
+                className={styles.promptLink}
+                href={input.analyticsPromptLinkHref}
+                rel="noreferrer"
+                target="_blank"
+              >
+                {input.analyticsPromptLinkLabel}
+              </a>
+              {input.analyticsPromptSuffix ? (
+                <>
+                  {' '}
+                  <span>{input.analyticsPromptSuffix}</span>
+                </>
+              ) : null}
+            </>
+          ) : null}
+          <span className={styles.promptCursor} aria-hidden="true" />
+        </span>
       </span>
     </div>
   );
@@ -113,7 +115,7 @@ export function LandingHeroHeader(input: {
               <div key={line} className={styles.promptLine}>
                 <span className={styles.promptPrefix}>innies:~$</span>
                 <span className={styles.promptCommand}>
-                  <span>{line}</span>
+                  <span className={styles.promptCommandText}>{line}</span>
                 </span>
               </div>
             ))}
@@ -123,8 +125,10 @@ export function LandingHeroHeader(input: {
                 aria-label="innies claude, innies codex, innies openclaw"
                 className={styles.promptCommand}
               >
-                <span aria-hidden="true">{commandText}</span>
-                <span className={styles.promptCursor} aria-hidden="true" />
+                <span className={styles.promptCommandText} aria-hidden="true">
+                  {commandText}
+                  <span className={styles.promptCursor} aria-hidden="true" />
+                </span>
               </span>
             </div>
           </div>

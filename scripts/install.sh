@@ -7,6 +7,7 @@ BIN_DIR="${HOME}/.local/bin"
 mkdir -p "$BIN_DIR"
 
 ln -sf "${ROOT_DIR}/scripts/innies-add-token.sh" "${BIN_DIR}/innies-add-token"
+ln -sf "${ROOT_DIR}/scripts/innies-create-buyer-key.sh" "${BIN_DIR}/innies-create-buyer-key"
 ln -sf "${ROOT_DIR}/scripts/innies-rotate-token.sh" "${BIN_DIR}/innies-rotate-token"
 ln -sf "${ROOT_DIR}/scripts/innies-set-refresh-token.sh" "${BIN_DIR}/innies-set-refresh-token"
 ln -sf "${ROOT_DIR}/scripts/innies-requeue-token-probe.sh" "${BIN_DIR}/innies-requeue-token-probe"
@@ -22,6 +23,7 @@ rm -f \
 
 echo 'Installed:'
 echo "  ${BIN_DIR}/innies-add-token -> ${ROOT_DIR}/scripts/innies-add-token.sh"
+echo "  ${BIN_DIR}/innies-create-buyer-key -> ${ROOT_DIR}/scripts/innies-create-buyer-key.sh"
 echo "  ${BIN_DIR}/innies-rotate-token -> ${ROOT_DIR}/scripts/innies-rotate-token.sh"
 echo "  ${BIN_DIR}/innies-set-refresh-token -> ${ROOT_DIR}/scripts/innies-set-refresh-token.sh"
 echo "  ${BIN_DIR}/innies-requeue-token-probe -> ${ROOT_DIR}/scripts/innies-requeue-token-probe.sh"

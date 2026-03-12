@@ -14,6 +14,7 @@ chmod +x scripts/install.sh
 
 ```bash
 innies-add-token
+innies-create-buyer-key
 innies-rotate-token
 innies-set-refresh-token
 innies-requeue-token-probe
@@ -24,6 +25,7 @@ innies-check-preference
 
 What they do:
 - `innies-add-token`: create a Claude Code or Codex OAuth credential
+- `innies-create-buyer-key`: create a new buyer key in `in_api_keys` and prompt for provider preference up front
 - `innies-rotate-token`: rotate a Claude Code or Codex OAuth credential pool
 - `innies-set-refresh-token`: set or clear the stored OAuth refresh token for an existing credential id
 - `innies-requeue-token-probe`: directly probe a maxed token credential now; successful probes immediately reactivate it
@@ -34,6 +36,10 @@ What they do:
 Behavior:
 - org id auto-uses `INNIES_ORG_ID`
 - token expiry is auto-filled because the API still requires `expiresAt`
+- `innies-create-buyer-key` uses `DATABASE_URL` directly because buyer-key creation does not have an admin API endpoint yet
+- `innies-create-buyer-key` prompts for `Claude Code`, `Codex`, or `null`, stores the live key hash, and prints the automatic fallback provider
+- `innies-create-buyer-key` optionally accepts an ISO8601 `expiresAt`; press Enter to create a non-expiring buyer key
+- `innies-create-buyer-key` prints the live `in_live_...` key once after insert
 - focused token scripts are OAuth-token flows, not provider API-key flows
 - add/rotate always send `authScheme=bearer`
 - on macOS, add/rotate reads the OAuth access token from your clipboard after you press Enter

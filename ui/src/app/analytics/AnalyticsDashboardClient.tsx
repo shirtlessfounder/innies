@@ -290,8 +290,10 @@ export function AnalyticsDashboardClient() {
           <div className={styles.promptLine}>
             <span className={styles.promptPrefix}>innies:~$</span>
             <span className={styles.promptCommand}>
-              <span>{commandLabel({ window: dashboard.window, seriesMode, metric })}</span>
-              <span className={styles.promptCursor} aria-hidden="true" />
+              <span className={styles.promptCommandText}>
+                {commandLabel({ window: dashboard.window, seriesMode, metric })}
+                <span className={styles.promptCursor} aria-hidden="true" />
+              </span>
             </span>
           </div>
         </div>
