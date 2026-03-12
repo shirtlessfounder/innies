@@ -105,6 +105,8 @@ type CurrentEventsResponse = {
     credentialLabel?: string | null;
     summary?: string;
     severity?: string;
+    statusCode?: number | null;
+    reason?: string | null;
     metadata?: Record<string, unknown>;
   }>;
 };
@@ -376,6 +378,8 @@ function synthesizeAnomalyEvents(snapshotAt: string, anomalies: AnalyticsAnomali
       credentialLabel: null,
       summary: `${summary}: ${count}`,
       severity: key === 'aggregate_mismatches' ? 'error' : 'warn',
+      statusCode: null,
+      reason: null,
       metadata: { check: key, count },
     }));
 }
@@ -408,6 +412,8 @@ function normalizeEventRows(raw: CurrentEventsResponse | null): AnalyticsEventRo
     credentialLabel: toStringOrNull(event.credentialLabel),
     summary: toStringOrNull(event.summary) ?? 'Analytics event',
     severity: mapSeverity(event.severity),
+    statusCode: typeof event.statusCode === 'number' ? event.statusCode : null,
+    reason: toStringOrNull(event.reason),
     metadata: event.metadata ?? {},
   }));
 }

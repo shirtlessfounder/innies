@@ -85,6 +85,8 @@ export type AnalyticsEventRow = {
   credentialLabel: string | null;
   summary: string;
   severity: AnalyticsSeverity;
+  statusCode: number | null;
+  reason: string | null;
   metadata: Record<string, unknown>;
 };
 

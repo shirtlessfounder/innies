@@ -101,6 +101,8 @@ That means we cannot derive later:
 
 - `/dashboard`
   - one merged snapshot for summary + tokens + buyers + anomalies + events
+  - shared snapshot cache keyed by `window/provider/source`, refreshed at most once every ~2.5s per key
+  - keeps the admin dashboard feeling live without recomputing the heaviest buyer/token-health queries for every tab
 
 - `/anomalies`
   - aggregate staleness / mismatch and attribution checks

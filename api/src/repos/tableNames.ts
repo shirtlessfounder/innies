@@ -1,4 +1,5 @@
 export const TABLES = {
+  analyticsDashboardSnapshots: 'in_analytics_dashboard_snapshots',
   auditLogEvents: 'in_audit_log_events',
   idempotencyKeys: 'in_idempotency_keys',
   orgs: 'in_orgs',
