@@ -98,7 +98,7 @@ export default async function OnboardPage() {
             promptMode="analytics"
             title="innies onboarding"
             analyticsPromptLabel="message"
-            analyticsPromptLinkLabel="@shirtessfounder"
+            analyticsPromptLinkLabel="@shirtlessfounder"
             analyticsPromptLinkHref="https://t.me/shirtlessfounder"
             analyticsPromptSuffix="on telegram with your oauth tokens to onboard"
           />
