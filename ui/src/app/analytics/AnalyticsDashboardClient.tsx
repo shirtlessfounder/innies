@@ -570,19 +570,20 @@ export function AnalyticsDashboardClient() {
                 {snapshot.events.length === 0 ? (
                   <div className={styles.noticeText}>No active warnings in the current snapshot.</div>
                 ) : (
-                  snapshot.events.map((event) => (
-                    <div key={event.id} className={styles.eventItem}>
-                      <div className={styles.eventMeta}>
-                        <span className={styles.eventSeverity}>{event.severity.toUpperCase()}</span>
-                        <span>{formatTimestamp(event.createdAt)} UTC</span>
-                        <span>{event.type}</span>
+                  snapshot.events.map((event) => {
+                    const detail = eventDetailLabel(event);
+                    return (
+                      <div key={event.id} className={styles.eventItem}>
+                        <div className={styles.eventMeta}>
+                          <span className={styles.eventSeverity}>{event.severity.toUpperCase()}</span>
+                          <span>{formatTimestamp(event.createdAt)} UTC</span>
+                          <span>{event.type}</span>
+                        </div>
+                        <div className={styles.eventSummary}>{event.summary}</div>
+                        {detail ? <div className={styles.eventDetail}>{detail}</div> : null}
                       </div>
-                      <div className={styles.eventSummary}>{event.summary}</div>
-                      {eventDetailLabel(event) ? (
-                        <div className={styles.eventDetail}>{eventDetailLabel(event)}</div>
-                      ) : null}
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </section>
