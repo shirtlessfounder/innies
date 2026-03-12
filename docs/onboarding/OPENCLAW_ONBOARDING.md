@@ -104,9 +104,3 @@ Important: keep OpenClaw unpinned. Do not send `x-innies-provider-pin: true` and
 
 - Unpinned OpenClaw traffic uses your buyer key's provider preference and automatic fallback to the other provider.
 - Pinned Anthropic traffic stays on Anthropic only, even if the buyer key preference is set to OpenAI/Codex.
-- If you want provider-specific behavior, use a provider-pinned wrapper/CLI instead of OpenClaw.
-
-## Notes
-
-- Reinstalling or updating OpenClaw preserves `~/.openclaw/agents/` config. Just restart the gateway after updates.
-- Never paste buyer keys (`in_live_...`) or provider tokens (`sk-ant-oat...`) into shared channels.
