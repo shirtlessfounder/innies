@@ -2,6 +2,10 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireApiKey } from '../middleware/auth.js';
 import type { ApiKeyRepository } from '../repos/apiKeyRepository.js';
+import type {
+  AnalyticsDashboardSnapshotPayload,
+  DashboardSnapshotStore
+} from '../repos/analyticsDashboardSnapshotRepository.js';
 import { runtime } from '../services/runtime.js';
 import { formatDisplayKey, type AnalyticsWindow } from '../utils/analytics.js';
 import { AppError } from '../utils/errors.js';
@@ -106,7 +110,10 @@ export interface AnalyticsRouteRepository {
 type AnalyticsRouteDeps = {
   apiKeys: ApiKeyRepository;
   analytics?: AnalyticsRouteRepository;
+  dashboardSnapshots?: DashboardSnapshotStore;
 };
+
+const DASHBOARD_SNAPSHOT_FRESHNESS_MS = 2_500;
 
 const analyticsWindowSchema = z.string()
   .trim()
@@ -816,9 +823,56 @@ function normalizeAnomalies(value: unknown) {
   };
 }
 
+function isFreshDashboardSnapshot(refreshedAt: Date, now = Date.now()): boolean {
+  return now - refreshedAt.getTime() <= DASHBOARD_SNAPSHOT_FRESHNESS_MS;
+}
+
+async function buildDashboardSnapshotPayload(
+  analytics: AnalyticsRouteRepository,
+  query: DashboardFilters
+): Promise<AnalyticsDashboardSnapshotPayload> {
+  const snapshotAt = new Date().toISOString();
+  const [summaryRaw, tokenUsageRaw, tokenHealthRaw, tokenRoutingRaw, buyersRaw, anomaliesRaw, eventsRaw] = await Promise.all([
+    analytics.getSystemSummary(query),
+    analytics.getTokenUsage(query),
+    analytics.getTokenHealth(query),
+    analytics.getTokenRouting(query),
+    analytics.getBuyers(query),
+    analytics.getAnomalies(query),
+    analytics.getEvents({
+      window: query.window,
+      provider: query.provider,
+      limit: 20
+    })
+  ]);
+
+  const summary = normalizeSystemSummary(summaryRaw);
+  const tokenUsage = normalizeTokenUsageRows(tokenUsageRaw);
+  const tokenHealth = normalizeTokenHealthRows(tokenHealthRaw);
+  const tokenRouting = normalizeTokenRoutingRows(tokenRoutingRaw);
+  const buyers = normalizeBuyerRows(buyersRaw);
+  const anomalies = normalizeAnomalies(anomaliesRaw);
+  const events = normalizeEventRows(eventsRaw);
+
+  return {
+    window: query.window,
+    snapshotAt,
+    summary,
+    tokens: mergeDashboardTokens({
+      usage: tokenUsage,
+      health: tokenHealth,
+      routing: tokenRouting
+    }),
+    buyers,
+    anomalies,
+    events
+  };
+}
+
 export function createAnalyticsRouter(deps: AnalyticsRouteDeps): Router {
   const router = Router();
   const analytics = deps.analytics ?? missingAnalyticsRepository;
+  const dashboardSnapshots = deps.dashboardSnapshots;
 
   router.get('/v1/admin/analytics/tokens', requireApiKey(deps.apiKeys, ['admin']), async (req, res, next) => {
     try {
@@ -957,42 +1011,30 @@ export function createAnalyticsRouter(deps: AnalyticsRouteDeps): Router {
   router.get('/v1/admin/analytics/dashboard', requireApiKey(deps.apiKeys, ['admin']), async (req, res, next) => {
     try {
       const query = dashboardQuerySchema.parse(req.query);
-      const snapshotAt = new Date().toISOString();
-      const [summaryRaw, tokenUsageRaw, tokenHealthRaw, tokenRoutingRaw, buyersRaw, anomaliesRaw, eventsRaw] = await Promise.all([
-        analytics.getSystemSummary(query),
-        analytics.getTokenUsage(query),
-        analytics.getTokenHealth(query),
-        analytics.getTokenRouting(query),
-        analytics.getBuyers(query),
-        analytics.getAnomalies(query),
-        analytics.getEvents({
-          window: query.window,
-          provider: query.provider,
-          limit: 20
-        })
-      ]);
+      if (dashboardSnapshots) {
+        const cached = await dashboardSnapshots.get(query);
+        if (cached && isFreshDashboardSnapshot(cached.refreshedAt)) {
+          res.json(cached.payload);
+          return;
+        }
 
-      const summary = normalizeSystemSummary(summaryRaw);
-      const tokenUsage = normalizeTokenUsageRows(tokenUsageRaw);
-      const tokenHealth = normalizeTokenHealthRows(tokenHealthRaw);
-      const tokenRouting = normalizeTokenRoutingRows(tokenRoutingRaw);
-      const buyers = normalizeBuyerRows(buyersRaw);
-      const anomalies = normalizeAnomalies(anomaliesRaw);
-      const events = normalizeEventRows(eventsRaw);
+        const refreshed = await dashboardSnapshots.refreshIfLockAvailable(
+          query,
+          () => buildDashboardSnapshotPayload(analytics, query)
+        );
 
-      res.json({
-        window: query.window,
-        snapshotAt,
-        summary,
-        tokens: mergeDashboardTokens({
-          usage: tokenUsage,
-          health: tokenHealth,
-          routing: tokenRouting
-        }),
-        buyers,
-        anomalies,
-        events
-      });
+        if (refreshed) {
+          res.json(refreshed.payload);
+          return;
+        }
+
+        if (cached) {
+          res.json(cached.payload);
+          return;
+        }
+      }
+
+      res.json(await buildDashboardSnapshotPayload(analytics, query));
     } catch (error) {
       next(error);
     }
@@ -1001,9 +1043,13 @@ export function createAnalyticsRouter(deps: AnalyticsRouteDeps): Router {
   return router;
 }
 
-type RuntimeReposWithAnalytics = typeof runtime.repos & { analytics?: AnalyticsRouteRepository };
+type RuntimeReposWithAnalytics = typeof runtime.repos & {
+  analytics?: AnalyticsRouteRepository;
+  analyticsDashboardSnapshots?: DashboardSnapshotStore;
+};
 
 export default createAnalyticsRouter({
   apiKeys: runtime.repos.apiKeys,
-  analytics: (runtime.repos as RuntimeReposWithAnalytics).analytics
+  analytics: (runtime.repos as RuntimeReposWithAnalytics).analytics,
+  dashboardSnapshots: (runtime.repos as RuntimeReposWithAnalytics).analyticsDashboardSnapshots
 });

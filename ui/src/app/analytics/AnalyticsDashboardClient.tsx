@@ -18,18 +18,22 @@ import {
   type TokenSortKey,
 } from '../../lib/analytics/sort';
 import {
+  analyticsEventIdentityLabel,
+  analyticsEventReasonLabel,
   buyerSeriesLabel,
   formatCount,
   formatPercent,
   formatTimestamp,
   metricLabel,
   seriesValueLabel,
+  tokenProviderLabel,
   tokenProviderKey,
   tokenSeriesLabel,
 } from '../../lib/analytics/present';
 import {
   ANALYTICS_PAGE_WINDOWS,
   type AnalyticsAggregateSeries,
+  type AnalyticsEventRow,
   type AnalyticsSeries,
   type AnalyticsSeriesPoint,
   type AnalyticsMetric,
@@ -167,6 +171,36 @@ function SeriesVisibilityButton(input: {
       )}
     </button>
   );
+}
+
+function readMetadataTimestamp(metadata: Record<string, unknown>, key: string): string | null {
+  const value = metadata[key];
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+function eventDetailLabel(event: AnalyticsEventRow): string | null {
+  const parts: string[] = [];
+  const identity = analyticsEventIdentityLabel(event);
+  if (identity) parts.push(identity);
+
+  const provider = tokenProviderLabel(event.provider);
+  if (provider !== '--') parts.push(provider);
+
+  if (typeof event.statusCode === 'number') {
+    parts.push(`status ${event.statusCode}`);
+  }
+
+  const reason = analyticsEventReasonLabel(event.reason);
+  if (reason && reason.toLowerCase() !== (typeof event.statusCode === 'number' ? `status ${event.statusCode}` : '')) {
+    parts.push(reason);
+  }
+
+  const nextProbeAt = readMetadataTimestamp(event.metadata, 'nextProbeAt');
+  if (nextProbeAt) {
+    parts.push(`next ${formatTimestamp(nextProbeAt)} UTC`);
+  }
+
+  return parts.length > 0 ? parts.join(' / ') : null;
 }
 
 export function AnalyticsDashboardClient() {
@@ -544,6 +578,9 @@ export function AnalyticsDashboardClient() {
                         <span>{event.type}</span>
                       </div>
                       <div className={styles.eventSummary}>{event.summary}</div>
+                      {eventDetailLabel(event) ? (
+                        <div className={styles.eventDetail}>{eventDetailLabel(event)}</div>
+                      ) : null}
                     </div>
                   ))
                 )}

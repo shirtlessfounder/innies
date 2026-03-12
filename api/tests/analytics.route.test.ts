@@ -154,6 +154,62 @@ function createAnalyticsRepo() {
   };
 }
 
+function createDashboardSnapshotStore() {
+  return {
+    get: vi.fn().mockResolvedValue(null),
+    refreshIfLockAvailable: vi.fn().mockResolvedValue(null)
+  };
+}
+
+function createDashboardSnapshotPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    window: '24h',
+    snapshotAt: '2026-03-12T12:00:00.000Z',
+    summary: {
+      totalRequests: 0,
+      totalUsageUnits: 0,
+      activeTokens: 0,
+      maxedTokens: 0,
+      totalTokens: 0,
+      maxedEvents7d: 0,
+      errorRate: 0,
+      fallbackRate: 0,
+      byProvider: [],
+      byModel: [],
+      bySource: []
+    },
+    tokens: [],
+    buyers: [],
+    anomalies: {
+      checks: {
+        missingDebugLabels: 0,
+        unresolvedCredentialIdsInTokenModeUsage: 0,
+        nullCredentialIdsInRouting: 0,
+        staleAggregateWindows: null,
+        usageLedgerVsAggregateMismatchCount: null
+      },
+      ok: true
+    },
+    events: [],
+    ...overrides
+  };
+}
+
+function createDashboardSnapshotRecord(
+  payload = createDashboardSnapshotPayload(),
+  refreshedAt = '2026-03-12T12:00:00.000Z'
+) {
+  return {
+    cacheKey: `dashboard:${payload.window}:_:_`,
+    window: payload.window,
+    provider: undefined,
+    source: undefined,
+    payload,
+    snapshotAt: new Date(String(payload.snapshotAt)),
+    refreshedAt: new Date(refreshedAt)
+  };
+}
+
 describe('analytics routes', () => {
   let createAnalyticsRouter: AnalyticsRouteModule['createAnalyticsRouter'];
 
@@ -166,6 +222,7 @@ describe('analytics routes', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it('rejects non-admin API keys', async () => {
@@ -1030,6 +1087,222 @@ describe('analytics routes', () => {
         rateLimited24h: 2
       }
     ]);
+  });
+
+  it('returns a fresh cached dashboard snapshot without recomputing analytics', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-12T12:00:02.000Z'));
+
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    const dashboardSnapshots = createDashboardSnapshotStore();
+    const cachedPayload = createDashboardSnapshotPayload({
+      snapshotAt: '2026-03-12T12:00:01.000Z',
+      summary: {
+        totalRequests: 42,
+        totalUsageUnits: 88,
+        activeTokens: 2,
+        maxedTokens: 0,
+        totalTokens: 2,
+        maxedEvents7d: 0,
+        errorRate: 0.1,
+        fallbackRate: 0.05,
+        byProvider: [],
+        byModel: [],
+        bySource: []
+      }
+    });
+    dashboardSnapshots.get.mockResolvedValue(
+      createDashboardSnapshotRecord(cachedPayload, '2026-03-12T12:00:01.000Z')
+    );
+
+    const router = createAnalyticsRouter({
+      apiKeys: apiKeys as any,
+      analytics,
+      dashboardSnapshots: dashboardSnapshots as any
+    });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/dashboard', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/dashboard',
+      headers: {
+        authorization: 'Bearer admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(dashboardSnapshots.refreshIfLockAvailable).not.toHaveBeenCalled();
+    expect(analytics.getSystemSummary).not.toHaveBeenCalled();
+    expect(res.body).toEqual(cachedPayload);
+  });
+
+  it('refreshes a stale dashboard snapshot when the refresh lock is available', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-12T12:00:10.000Z'));
+
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    const dashboardSnapshots = createDashboardSnapshotStore();
+    dashboardSnapshots.get.mockResolvedValue(
+      createDashboardSnapshotRecord(undefined, '2026-03-12T12:00:00.000Z')
+    );
+    dashboardSnapshots.refreshIfLockAvailable.mockImplementation(async (_query, buildPayload) => (
+      createDashboardSnapshotRecord(await buildPayload(), '2026-03-12T12:00:10.000Z')
+    ));
+    analytics.getSystemSummary.mockResolvedValue({
+      total_requests: 5,
+      total_usage_units: 50,
+      active_tokens: 1,
+      maxed_tokens: 0,
+      total_tokens: 1,
+      maxed_events_7d: 0,
+      error_rate: 0,
+      fallback_rate: 0,
+      by_provider: [],
+      by_model: [],
+      by_source: []
+    });
+    analytics.getEvents.mockResolvedValue([]);
+
+    const router = createAnalyticsRouter({
+      apiKeys: apiKeys as any,
+      analytics,
+      dashboardSnapshots: dashboardSnapshots as any
+    });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/dashboard', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/dashboard',
+      headers: {
+        authorization: 'Bearer admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(dashboardSnapshots.refreshIfLockAvailable).toHaveBeenCalledTimes(1);
+    expect(analytics.getSystemSummary).toHaveBeenCalledWith({
+      window: '24h',
+      provider: undefined,
+      source: undefined
+    });
+    expect((res.body as any).summary).toEqual(expect.objectContaining({
+      totalRequests: 5,
+      totalUsageUnits: 50,
+      activeTokens: 1,
+      maxedTokens: 0,
+      totalTokens: 1,
+      maxedEvents7d: 0,
+      errorRate: 0,
+      fallbackRate: 0
+    }));
+  });
+
+  it('serves the stale dashboard snapshot while another request is refreshing it', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-12T12:00:10.000Z'));
+
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    const dashboardSnapshots = createDashboardSnapshotStore();
+    const stalePayload = createDashboardSnapshotPayload({
+      snapshotAt: '2026-03-12T11:59:59.000Z',
+      summary: {
+        totalRequests: 9,
+        totalUsageUnits: 90,
+        activeTokens: 3,
+        maxedTokens: 1,
+        totalTokens: 4,
+        maxedEvents7d: 1,
+        errorRate: 0.2,
+        fallbackRate: 0.1,
+        byProvider: [],
+        byModel: [],
+        bySource: []
+      }
+    });
+    dashboardSnapshots.get.mockResolvedValue(
+      createDashboardSnapshotRecord(stalePayload, '2026-03-12T12:00:00.000Z')
+    );
+    dashboardSnapshots.refreshIfLockAvailable.mockResolvedValue(null);
+
+    const router = createAnalyticsRouter({
+      apiKeys: apiKeys as any,
+      analytics,
+      dashboardSnapshots: dashboardSnapshots as any
+    });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/dashboard', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/dashboard',
+      headers: {
+        authorization: 'Bearer admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(analytics.getSystemSummary).not.toHaveBeenCalled();
+    expect(res.body).toEqual(stalePayload);
+  });
+
+  it('falls back to inline dashboard computation on a cold miss when no lock is available', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-12T12:00:10.000Z'));
+
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    const dashboardSnapshots = createDashboardSnapshotStore();
+    dashboardSnapshots.get.mockResolvedValue(null);
+    dashboardSnapshots.refreshIfLockAvailable.mockResolvedValue(null);
+    analytics.getSystemSummary.mockResolvedValue({
+      total_requests: 7,
+      total_usage_units: 77,
+      active_tokens: 1,
+      maxed_tokens: 0,
+      total_tokens: 1,
+      maxed_events_7d: 0,
+      error_rate: 0,
+      fallback_rate: 0,
+      by_provider: [],
+      by_model: [],
+      by_source: []
+    });
+    analytics.getEvents.mockResolvedValue([]);
+
+    const router = createAnalyticsRouter({
+      apiKeys: apiKeys as any,
+      analytics,
+      dashboardSnapshots: dashboardSnapshots as any
+    });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/dashboard', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/dashboard',
+      headers: {
+        authorization: 'Bearer admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(dashboardSnapshots.refreshIfLockAvailable).toHaveBeenCalledTimes(1);
+    expect(analytics.getSystemSummary).toHaveBeenCalledTimes(1);
+    expect((res.body as any).summary).toEqual(expect.objectContaining({
+      totalRequests: 7,
+      totalUsageUnits: 77,
+      activeTokens: 1,
+      maxedTokens: 0,
+      totalTokens: 1,
+      maxedEvents7d: 0,
+      errorRate: 0,
+      fallbackRate: 0
+    }));
   });
 
   it('preserves routing-only token attempt counts in dashboard snapshots', async () => {

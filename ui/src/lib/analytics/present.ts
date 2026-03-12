@@ -1,4 +1,4 @@
-import type { AnalyticsBuyerRow, AnalyticsMetric, AnalyticsTokenRow } from './types';
+import type { AnalyticsBuyerRow, AnalyticsEventRow, AnalyticsMetric, AnalyticsTokenRow } from './types';
 
 function formatShortIdentifier(value: string): string {
   const compact = value.replace(/[^a-z0-9]/gi, '').toLowerCase();
@@ -31,6 +31,12 @@ function remapTokenAlias(value: string): string {
 
 function trimTokenDisplayKeySuffix(value: string): string {
   return value.replace(/\s+\((?:key|cred)[^)]+\)$/i, '').trim();
+}
+
+function formatShortTokenKey(value: string): string {
+  const compact = value.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  if (compact.length < 8) return value;
+  return `cred_${compact.slice(0, 4)}...${compact.slice(-4)}`;
 }
 
 export function tokenProviderKey(provider: string | null | undefined): 'claude' | 'codex' | null {
@@ -155,6 +161,11 @@ export function tokenLabelLabel(row: AnalyticsTokenRow): string {
   return remapTokenAlias(trimTokenDisplayKeySuffix(row.debugLabel));
 }
 
+export function tokenDebugLabel(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return remapTokenAlias(trimTokenDisplayKeySuffix(value));
+}
+
 export function tokenSeriesLabel(row: AnalyticsTokenRow): string {
   const base = row.debugLabel ? tokenLabelLabel(row) : tokenIdentityLabel(row);
   switch (tokenProviderKey(row.provider)) {
@@ -210,4 +221,30 @@ export function buyerPreferenceLabel(row: AnalyticsBuyerRow): string {
     default:
       return row.effectiveProvider;
   }
+}
+
+export function analyticsEventIdentityLabel(event: AnalyticsEventRow): string | null {
+  const label = tokenDebugLabel(event.credentialLabel);
+  const key = event.credentialId ? formatShortTokenKey(event.credentialId) : null;
+  if (label && key) return `${label} (${key})`;
+  return label ?? key;
+}
+
+export function analyticsEventReasonLabel(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+
+  let normalized = reason.trim();
+  if (normalized.length === 0) return null;
+  if (normalized.startsWith('probe_failed:')) {
+    normalized = normalized.slice('probe_failed:'.length);
+  }
+
+  normalized = normalized.replace(/^status_(\d+):(\d+)$/i, (_match, left, right) => (
+    left === right ? `status ${left}` : `status ${left}/${right}`
+  ));
+  normalized = normalized.replace(/^status_(\d+)$/i, 'status $1');
+  normalized = normalized.replace(/_/g, ' ');
+  normalized = normalized.replace(/:/g, ' / ');
+
+  return normalized;
 }
