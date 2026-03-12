@@ -2,11 +2,6 @@
 
 Use this to get your own Claude or Codex/OpenAI login into a form an Innies admin can add.
 
-Rules:
-- Use only accounts you control.
-- Do not paste secrets into Slack, Discord, Notion, or shared docs.
-- Prefer opening credential files in an editor, not printing them in a terminal.
-
 ## Claude
 
 1. Use the real Claude binary, not the Innies wrapper at `~/.local/bin/claude`.
@@ -56,20 +51,16 @@ Rules:
 - `tokens.access_token`
 - `tokens.refresh_token` if present
 
-Do not send the whole file.
-
 ## Send To Admin
 
 Claude:
 - provider: `anthropic`
 - token: `sk-ant-oat...`
-- account email
 
 Codex:
 - provider: `openai`
 - access token: `tokens.access_token`
 - refresh token: `tokens.refresh_token` if present
-- account email
 
 ## Quick Fixes
 - `claude` opens Innies instead of Claude Code: run `which -a claude` and use the non-wrapper path.

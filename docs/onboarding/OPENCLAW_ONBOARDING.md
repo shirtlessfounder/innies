@@ -93,12 +93,10 @@ Expected: streaming SSE response starting with `event: message_start`.
 
 ## Provider Routing
 
-OpenClaw always sends requests in Anthropic Messages format. Innies routes them based on your buyer key's provider preference:
+OpenClaw always sends requests in Anthropic Messages format. Innies auto routes them based on your buyer key's provider preference (contact admin to set or change it):
 
-- **Anthropic preference** → request goes directly to an Anthropic credential (Claude).
-- **OpenAI preference** → Innies translates the request to OpenAI Responses format, routes to an OpenAI credential (Codex/GPT), and translates the response back. The default translated model is `gpt-5.4`.
-
-You don't need separate OpenClaw configs for different providers. Provider preference is set server-side by an admin on your buyer key. The OpenClaw config above works for both.
+- **Anthropic pref** → request goes directly to an Anthropic credential (Claude).
+- **OpenAI pref** → Innies translates the request to OpenAI Responses format, routes to an OpenAI credential (Codex/GPT), and translates the response back. The default translated model is `gpt-5.4`.
 
 Important: keep OpenClaw unpinned. Do not send `x-innies-provider-pin: true` and do not add `metadata.innies_provider_pin=true`.
 

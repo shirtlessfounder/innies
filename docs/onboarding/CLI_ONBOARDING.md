@@ -34,18 +34,9 @@ Innies connected | model <model> | proxy <url> | request <id>
 Then hands off to the upstream CLI with full TTY.
 
 ## Model Injection
-Both wrappers inject a default `--model` unless you pass one explicitly:
+Both wrappers inject a default `--model`:
 - Claude: `claude-opus-4-6`
 - Codex: `gpt-5.4`
-
-## Codex
-`innies codex` configures Codex for Innies automatically at runtime.
-
-## Optional: Link Claude
-```bash
-innies link claude    # shims ~/.local/bin/claude
-```
-Refuses to overwrite a real Claude install. Use `innies claude` directly if linking fails.
 
 ## Troubleshooting
 
