@@ -17,6 +17,7 @@ import {
   formatNullableNumber,
   formatPercent,
   formatShortTimestamp,
+  formatTimestamp,
   tokenIdentityLabel,
   tokenLabelLabel,
   tokenProviderLabel,
@@ -297,6 +298,7 @@ export function TokenTable({
                 onClick={() => onSort('fiveHourCapUsedRatio', 'desc')}
               />
             </th>
+            <th className={styles.numeric}>RESET</th>
             <th className={styles.numeric} aria-sort={sortAria(sort.key === 'sevenDayCapUsedRatio', sort.direction)}>
               <SortHeaderButton
                 active={sort.key === 'sevenDayCapUsedRatio'}
@@ -306,6 +308,7 @@ export function TokenTable({
                 onClick={() => onSort('sevenDayCapUsedRatio', 'desc')}
               />
             </th>
+            <th className={styles.numeric}>RESET</th>
             {/* Re-enable Util 24h / Maxed 7d once the token table has room for more operator-only columns again. */}
             {/* <th className={styles.numeric} aria-sort={sortAria(sort.key === 'utilizationRate24h', sort.direction)}>
               <SortHeaderButton
@@ -365,11 +368,13 @@ export function TokenTable({
                     {formatContributionCapPercent(row.fiveHourCapUsedRatio, row.provider)}
                   </span>
                 </td>
+                <td className={styles.numeric}>{formatTimestamp(row.fiveHourResetsAt)}</td>
                 <td className={styles.numeric}>
                   <span className={sevenDayCapTone}>
                     {formatContributionCapPercent(row.sevenDayCapUsedRatio, row.provider)}
                   </span>
                 </td>
+                <td className={styles.numeric}>{formatShortTimestamp(row.sevenDayResetsAt)}</td>
                 {/* Re-enable the hidden token-health cells when we bring the Util 24h / Maxed 7d headers back. */}
                 {/* <td className={styles.numeric}>{formatPercent(row.utilizationRate24h)}</td>
                 <td className={styles.numeric}>{formatCount(row.maxedEvents7d)}</td> */}

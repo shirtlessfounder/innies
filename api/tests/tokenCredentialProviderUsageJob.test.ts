@@ -472,6 +472,171 @@ describe('tokenCredentialProviderUsageJob', () => {
     expect(tokenRepo.setProviderUsageWarning).toHaveBeenCalledWith('cred_backoff', 'provider_usage_fetch_backoff_active');
   });
 
+  it('pauses refreshes for truly 100%-exhausted active Claude tokens until the provider reset time', async () => {
+    const tokenRepo = {
+      listActiveOauthByProvider: vi.fn(async () => [{
+        id: 'cred_full_usage',
+        orgId: 'org_1',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-full-usage',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-10T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z'),
+        fiveHourReservePercent: 0,
+        sevenDayReservePercent: 0,
+        debugLabel: 'full-usage',
+        consecutiveFailureCount: 0,
+        consecutiveRateLimitCount: 0,
+        lastFailedStatus: null,
+        lastFailedAt: null,
+        lastRateLimitedAt: null,
+        maxedAt: null,
+        rateLimitedUntil: null,
+        nextProbeAt: null,
+        lastProbeAt: null
+      }]),
+      clearRateLimitBackoff: vi.fn(async () => false),
+      setProviderUsageWarning: vi.fn(async () => true),
+      listMaxedForProbe: vi.fn(async () => []),
+      syncClaudeContributionCapLifecycle: vi.fn(async () => ({ fiveHourTransition: null, sevenDayTransition: null })),
+      reactivateFromMaxed: vi.fn(async () => false)
+    };
+    const usageRepo = {
+      listByTokenCredentialIds: vi.fn(async () => [{
+        tokenCredentialId: 'cred_full_usage',
+        orgId: 'org_1',
+        provider: 'anthropic',
+        usageSource: 'anthropic_oauth_usage',
+        fiveHourUtilizationRatio: 1,
+        fiveHourResetsAt: new Date('2026-03-04T00:30:00Z'),
+        sevenDayUtilizationRatio: 0.2,
+        sevenDayResetsAt: new Date('2026-03-09T00:00:00Z'),
+        rawPayload: {},
+        fetchedAt: new Date('2026-03-03T23:45:00Z'),
+        createdAt: new Date('2026-03-03T23:45:00Z'),
+        updatedAt: new Date('2026-03-03T23:45:00Z')
+      }]),
+      upsertSnapshot: vi.fn()
+    };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const job = createTokenCredentialProviderUsageJob(tokenRepo as any, usageRepo as any);
+    const ctx = createCtx();
+
+    await job.run(ctx as any);
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(tokenRepo.setProviderUsageWarning).toHaveBeenCalledWith('cred_full_usage', null);
+    expect(ctx.logger.info).toHaveBeenCalledWith(
+      'token credential provider usage refresh paused (provider exhausted)',
+      expect.objectContaining({
+        credentialId: 'cred_full_usage',
+        reason: 'usage_exhausted_5h',
+        nextRefreshAt: '2026-03-04T00:30:00.000Z'
+      })
+    );
+    expect(ctx.logger.info).toHaveBeenCalledWith(
+      'token credential provider usage refresh complete',
+      expect.objectContaining({
+        checked: 1,
+        refreshed: 0,
+        paused: 1
+      })
+    );
+  });
+
+  it('continues refreshing manually capped Claude tokens when usage is below true provider exhaustion', async () => {
+    process.env.ANTHROPIC_OAUTH_USAGE_BASE_URL = 'https://anthropic.internal.test';
+    const tokenRepo = {
+      listActiveOauthByProvider: vi.fn(async () => [{
+        id: 'cred_manual_cap',
+        orgId: 'org_1',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-manual-cap',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-10T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z'),
+        fiveHourReservePercent: 20,
+        sevenDayReservePercent: 0,
+        debugLabel: 'manual-cap',
+        consecutiveFailureCount: 0,
+        consecutiveRateLimitCount: 0,
+        lastFailedStatus: null,
+        lastFailedAt: null,
+        lastRateLimitedAt: null,
+        maxedAt: null,
+        rateLimitedUntil: null,
+        nextProbeAt: null,
+        lastProbeAt: null
+      }]),
+      clearRateLimitBackoff: vi.fn(async () => false),
+      setProviderUsageWarning: vi.fn(async () => false),
+      listMaxedForProbe: vi.fn(async () => []),
+      syncClaudeContributionCapLifecycle: vi.fn(async () => ({ fiveHourTransition: null, sevenDayTransition: null })),
+      reactivateFromMaxed: vi.fn(async () => false)
+    };
+    const usageRepo = {
+      listByTokenCredentialIds: vi.fn(async () => [{
+        tokenCredentialId: 'cred_manual_cap',
+        orgId: 'org_1',
+        provider: 'anthropic',
+        usageSource: 'anthropic_oauth_usage',
+        fiveHourUtilizationRatio: 0.85,
+        fiveHourResetsAt: new Date('2026-03-04T00:30:00Z'),
+        sevenDayUtilizationRatio: 0.2,
+        sevenDayResetsAt: new Date('2026-03-09T00:00:00Z'),
+        rawPayload: {},
+        fetchedAt: new Date('2026-03-03T23:45:00Z'),
+        createdAt: new Date('2026-03-03T23:45:00Z'),
+        updatedAt: new Date('2026-03-03T23:45:00Z')
+      }]),
+      upsertSnapshot: vi.fn(async (input: any) => ({
+        tokenCredentialId: input.tokenCredentialId,
+        orgId: input.orgId,
+        provider: input.provider,
+        usageSource: input.usageSource,
+        fiveHourUtilizationRatio: input.fiveHourUtilizationRatio,
+        fiveHourResetsAt: input.fiveHourResetsAt,
+        sevenDayUtilizationRatio: input.sevenDayUtilizationRatio,
+        sevenDayResetsAt: input.sevenDayResetsAt,
+        rawPayload: input.rawPayload,
+        fetchedAt: input.fetchedAt,
+        createdAt: input.fetchedAt,
+        updatedAt: input.fetchedAt
+      }))
+    };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        '5h': { percent: 86, resets_at: '2026-03-04T05:00:00Z' },
+        '7d': { percent: 20, resets_at: '2026-03-09T00:00:00Z' }
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const job = createTokenCredentialProviderUsageJob(tokenRepo as any, usageRepo as any);
+
+    await job.run(createCtx() as any);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(usageRepo.upsertSnapshot).toHaveBeenCalledTimes(1);
+  });
+
   it('reactivates legacy Claude rate-limit-maxed credentials after a successful provider-usage refresh', async () => {
     process.env.ANTHROPIC_OAUTH_USAGE_BASE_URL = 'https://anthropic.internal.test';
     const tokenRepo = {
@@ -553,6 +718,91 @@ describe('tokenCredentialProviderUsageJob', () => {
         expect.objectContaining({
         legacyMaxedChecked: 1,
         legacyRecovered: 1
+      })
+    );
+  });
+
+  it('keeps legacy maxed Claude tokens parked until reset when refreshed usage is truly 100% exhausted', async () => {
+    process.env.ANTHROPIC_OAUTH_USAGE_BASE_URL = 'https://anthropic.internal.test';
+    const tokenRepo = {
+      listActiveOauthByProvider: vi.fn(async () => []),
+      clearRateLimitBackoff: vi.fn(async () => false),
+      setProviderUsageWarning: vi.fn(async () => false),
+      listMaxedForProbe: vi.fn(async () => [{
+        id: 'cred_legacy_full',
+        orgId: 'org_1',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-legacy-full',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-10T00:00:00Z'),
+        status: 'maxed',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z'),
+        fiveHourReservePercent: 0,
+        sevenDayReservePercent: 0,
+        debugLabel: 'legacy-full',
+        consecutiveFailureCount: 0,
+        consecutiveRateLimitCount: 15,
+        lastFailedStatus: null,
+        lastFailedAt: null,
+        lastRateLimitedAt: new Date('2026-03-03T22:00:00Z'),
+        maxedAt: new Date('2026-03-03T22:00:00Z'),
+        rateLimitedUntil: null,
+        nextProbeAt: new Date('2026-03-04T00:00:00Z'),
+        lastProbeAt: null
+      }]),
+      syncClaudeContributionCapLifecycle: vi.fn(async () => ({ fiveHourTransition: null, sevenDayTransition: null })),
+      reactivateFromMaxed: vi.fn(async () => true),
+      markProbeFailure: vi.fn(async () => true)
+    };
+    const usageRepo = {
+      upsertSnapshot: vi.fn(async (input: any) => ({
+        tokenCredentialId: input.tokenCredentialId,
+        orgId: input.orgId,
+        provider: input.provider,
+        usageSource: input.usageSource,
+        fiveHourUtilizationRatio: input.fiveHourUtilizationRatio,
+        fiveHourResetsAt: input.fiveHourResetsAt,
+        sevenDayUtilizationRatio: input.sevenDayUtilizationRatio,
+        sevenDayResetsAt: input.sevenDayResetsAt,
+        rawPayload: input.rawPayload,
+        fetchedAt: input.fetchedAt,
+        createdAt: input.fetchedAt,
+        updatedAt: input.fetchedAt
+      }))
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        '5h': { percent: 100, resets_at: '2026-03-04T00:30:00Z' },
+        '7d': { percent: 40, resets_at: '2026-03-09T00:00:00Z' }
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const job = createTokenCredentialProviderUsageJob(tokenRepo as any, usageRepo as any);
+    const ctx = createCtx();
+
+    await job.run(ctx as any);
+
+    expect(tokenRepo.markProbeFailure).toHaveBeenCalledWith(
+      'cred_legacy_full',
+      new Date('2026-03-04T00:30:00.000Z'),
+      'usage_exhausted_5h'
+    );
+    expect(tokenRepo.reactivateFromMaxed).not.toHaveBeenCalled();
+    expect(ctx.logger.info).toHaveBeenCalledWith(
+      'legacy Claude maxed recovery deferred',
+      expect.objectContaining({
+        credentialId: 'cred_legacy_full',
+        reason: 'usage_exhausted_5h',
+        nextProbeAt: '2026-03-04T00:30:00.000Z'
       })
     );
   });

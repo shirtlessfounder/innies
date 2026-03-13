@@ -10,7 +10,10 @@ import {
   getAnthropicUsageRetryBackoff,
   markAnthropicUsageRefreshFailure
 } from './tokenCredentialProviderUsageRetryState.js';
-import { readClaudeContributionCapSnapshotState } from './claudeContributionCapState.js';
+import {
+  readClaudeContributionCapProviderExhaustionHold,
+  readClaudeContributionCapSnapshotState
+} from './claudeContributionCapState.js';
 
 const DEFAULT_PROVIDER_USAGE_POLL_MS = 60 * 1000;
 const DEFAULT_PROVIDER_USAGE_TIMEOUT_MS = 10 * 1000;
@@ -441,6 +444,11 @@ export function evaluateClaudeContributionCap(input: {
   const isHardStale = ageMs > hardStaleMs;
   const isSoftStale = !isHardStale && ageMs > softStaleMs;
   const isFresh = !isSoftStale && !isHardStale;
+  const providerExhaustionHold = readClaudeContributionCapProviderExhaustionHold({
+    credential,
+    snapshot,
+    now
+  });
   const routeDecisionMeta: Record<string, unknown> = {
     ...baseMeta,
     providerUsageSnapshotState: isHardStale ? 'hard_stale' : isSoftStale ? 'soft_stale' : 'fresh',
@@ -452,9 +460,35 @@ export function evaluateClaudeContributionCap(input: {
     fiveHourSharedThresholdPercent: state.fiveHourSharedThresholdPercent,
     sevenDaySharedThresholdPercent: state.sevenDaySharedThresholdPercent,
     fiveHourContributionCapExhausted: state.fiveHourContributionCapExhausted,
-    sevenDayContributionCapExhausted: state.sevenDayContributionCapExhausted
+    sevenDayContributionCapExhausted: state.sevenDayContributionCapExhausted,
+    providerUsageExhaustionHoldActive: providerExhaustionHold.hasActiveHold,
+    providerUsageExhaustionHoldUntil: providerExhaustionHold.nextRefreshAt?.toISOString() ?? null
   };
   if (isHardStale) {
+    if (providerExhaustionHold.fiveHourHoldActive) {
+      return {
+        inScope: true,
+        eligible: false,
+        exclusionReason: 'contribution_cap_exhausted_5h',
+        warningReason: null,
+        isFresh,
+        isSoftStale,
+        isHardStale,
+        routeDecisionMeta
+      };
+    }
+    if (providerExhaustionHold.sevenDayHoldActive) {
+      return {
+        inScope: true,
+        eligible: false,
+        exclusionReason: 'contribution_cap_exhausted_7d',
+        warningReason: null,
+        isFresh,
+        isSoftStale,
+        isHardStale,
+        routeDecisionMeta
+      };
+    }
     return {
       inScope: true,
       eligible: fiveHourReservePercent <= 0 && sevenDayReservePercent <= 0,

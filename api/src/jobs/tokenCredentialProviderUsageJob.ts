@@ -11,7 +11,10 @@ import {
   readTokenCredentialProviderUsagePollMs,
   refreshAnthropicOauthUsageNow
 } from '../services/tokenCredentialProviderUsage.js';
-import { readClaudeContributionCapSnapshotState } from '../services/claudeContributionCapState.js';
+import {
+  readClaudeContributionCapProviderExhaustionHold,
+  readClaudeContributionCapSnapshotState
+} from '../services/claudeContributionCapState.js';
 
 const DEFAULT_RATE_LIMIT_ESCALATION_THRESHOLD = 15;
 const DEFAULT_LEGACY_MAXED_RECOVERY_LIMIT = 25;
@@ -48,10 +51,19 @@ export function createTokenCredentialProviderUsageJob(
         DEFAULT_RATE_LIMIT_ESCALATION_THRESHOLD
       );
       const credentials = await tokenCredentialsRepo.listActiveOauthByProvider('anthropic');
+      const existingSnapshots = typeof (providerUsageRepo as {
+        listByTokenCredentialIds?: (ids: string[]) => Promise<TokenCredentialProviderUsageSnapshot[]>;
+      }).listByTokenCredentialIds === 'function'
+        ? await providerUsageRepo.listByTokenCredentialIds(credentials.map((credential) => credential.id))
+        : [];
+      const existingSnapshotsByCredentialId = new Map(
+        existingSnapshots.map((snapshot) => [snapshot.tokenCredentialId, snapshot])
+      );
 
       let refreshed = 0;
       let failed = 0;
       let deferred = 0;
+      let paused = 0;
       let skippedNonOauth = 0;
       let clearedBackoff = 0;
 
@@ -120,6 +132,24 @@ export function createTokenCredentialProviderUsageJob(
       for (const credential of credentials) {
         if (!isAnthropicOauthTokenCredential(credential)) {
           skippedNonOauth += 1;
+          continue;
+        }
+
+        const providerExhaustionHold = readClaudeContributionCapProviderExhaustionHold({
+          credential,
+          snapshot: existingSnapshotsByCredentialId.get(credential.id) ?? null,
+          now: ctx.now
+        });
+        if (providerExhaustionHold.hasActiveHold && providerExhaustionHold.nextRefreshAt) {
+          paused += 1;
+          await tokenCredentialsRepo.setProviderUsageWarning(credential.id, null);
+          ctx.logger.info('token credential provider usage refresh paused (provider exhausted)', {
+            credentialId: credential.id,
+            credentialLabel: credential.debugLabel ?? null,
+            provider: credential.provider,
+            reason: providerExhaustionHold.reason,
+            nextRefreshAt: providerExhaustionHold.nextRefreshAt.toISOString()
+          });
           continue;
         }
 
@@ -222,6 +252,43 @@ export function createTokenCredentialProviderUsageJob(
         }
 
         await syncContributionCapLifecycle(credential, result.snapshot);
+        const providerExhaustionHold = readClaudeContributionCapProviderExhaustionHold({
+          credential,
+          snapshot: result.snapshot,
+          now: ctx.now
+        });
+        if (providerExhaustionHold.hasActiveHold && providerExhaustionHold.nextRefreshAt) {
+          const parked = await tokenCredentialsRepo.markProbeFailure(
+            credential.id,
+            providerExhaustionHold.nextRefreshAt,
+            providerExhaustionHold.reason ?? 'provider_usage_exhausted'
+          );
+          if (parked) {
+            legacyDeferred += 1;
+            ctx.logger.info('legacy Claude maxed recovery deferred', {
+              credentialId: credential.id,
+              credentialLabel: credential.debugLabel ?? null,
+              reason: providerExhaustionHold.reason,
+              detailReason: providerExhaustionHold.reason,
+              nextProbeAt: providerExhaustionHold.nextRefreshAt.toISOString(),
+              retryAfterMs: Math.max(0, providerExhaustionHold.nextRefreshAt.getTime() - ctx.now.getTime())
+            });
+            continue;
+          }
+
+          legacyFailed += 1;
+          ctx.logger.error('legacy Claude maxed recovery failed', {
+            credentialId: credential.id,
+            credentialLabel: credential.debugLabel ?? null,
+            reason: providerExhaustionHold.reason,
+            detailReason: 'failed_to_schedule_next_probe_at_reset',
+            statusCode: null,
+            retryAfterMs: Math.max(0, providerExhaustionHold.nextRefreshAt.getTime() - ctx.now.getTime()),
+            errorMessage: 'failed to defer legacy Claude maxed recovery until provider reset'
+          });
+          continue;
+        }
+
         const reactivated = await tokenCredentialsRepo.reactivateFromMaxed(credential.id);
         if (reactivated) {
           legacyRecovered += 1;
@@ -233,6 +300,7 @@ export function createTokenCredentialProviderUsageJob(
         refreshed,
         failed,
         deferred,
+        paused,
         skippedNonOauth,
         clearedBackoff,
         legacyMaxedChecked: legacyMaxedCredentials.length,

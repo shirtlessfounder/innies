@@ -178,6 +178,34 @@ function readMetadataTimestamp(metadata: Record<string, unknown>, key: string): 
   return typeof value === 'string' && value.trim().length > 0 ? value : null;
 }
 
+function appendUniqueNote(notes: string[], value: string | null): void {
+  if (!value || notes.includes(value)) return;
+  notes.push(value);
+}
+
+function summarizeTraceWarnings(warnings: string[], primaryReason?: string | null): string[] {
+  const grouped = new Map<string, string[]>();
+  const normalizedPrimaryReason = primaryReason?.trim().toLowerCase() ?? null;
+
+  for (const warning of warnings) {
+    const separator = warning.indexOf(': ');
+    const label = separator > 0 ? warning.slice(0, separator).trim() : '';
+    const reason = separator > 0 ? warning.slice(separator + 2).trim() : warning.trim();
+    if (!reason) continue;
+    if (normalizedPrimaryReason && reason.trim().toLowerCase() === normalizedPrimaryReason) continue;
+    const labels = grouped.get(reason) ?? [];
+    if (label) labels.push(label);
+    grouped.set(reason, labels);
+  }
+
+  return [...grouped.entries()].slice(0, 4).map(([reason, labels]) => {
+    if (labels.length <= 1) {
+      return `Trace fetch degraded${labels[0] ? ` for ${labels[0]}` : ''}: ${reason}`;
+    }
+    return `Trace fetch degraded for ${formatCount(labels.length)} traces: ${reason}`;
+  });
+}
+
 function eventDetailLabel(event: AnalyticsEventRow): string | null {
   const parts: string[] = [];
   const identity = analyticsEventIdentityLabel(event);
@@ -309,6 +337,23 @@ export function AnalyticsDashboardClient() {
   const shownTraceCount = visibleSeries.length + visibleAggregateSeries.length;
   const supports5h = snapshot?.capabilities.supports5hWindow ?? false;
   const loadingLabel = dashboard.paused ? 'Polling paused.' : `Waiting for ${dashboard.window.toUpperCase()} analytics snapshot.`;
+  const transientSystemNotes: string[] = [];
+
+  if (snapshot && dashboard.error) {
+    appendUniqueNote(transientSystemNotes, `Dashboard refresh degraded: ${dashboard.error}`);
+  }
+  if (snapshot && series.error) {
+    appendUniqueNote(transientSystemNotes, `Trace polling degraded: ${series.error}`);
+  }
+  if (snapshot) {
+    for (const warning of summarizeTraceWarnings(series.warnings, series.error)) {
+      appendUniqueNote(transientSystemNotes, warning);
+    }
+  }
+
+  const systemNotes = snapshot
+    ? [...transientSystemNotes, ...snapshot.warnings.filter((warning) => !transientSystemNotes.includes(warning))]
+    : [];
 
   return (
     <div className={styles.console}>
@@ -404,7 +449,7 @@ export function AnalyticsDashboardClient() {
         </div>
       </div>
 
-      {dashboard.error ? (
+      {dashboard.error && !snapshot ? (
         <div className={`${styles.statusLine} ${styles.statusLineError}`}>{dashboard.error}</div>
       ) : null}
 
@@ -419,17 +464,6 @@ export function AnalyticsDashboardClient() {
                 {seriesMode.toUpperCase()} · {metricLabel(metric).toUpperCase()} · {formatCount(shownTraceCount)} SHOWN
               </div>
             </div>
-
-            {series.error ? <div className={styles.noticeError}>{series.error}</div> : null}
-            {series.warnings.length > 0 ? (
-              <div className={styles.noticeList}>
-                {series.warnings.map((warning) => (
-                  <div key={warning} className={styles.noticeText}>
-                    {warning}
-                  </div>
-                ))}
-              </div>
-            ) : null}
 
             <AnalyticsChart metric={metric} series={visibleSeries} aggregates={visibleAggregateSeries} loading={series.loading} />
 
@@ -495,7 +529,7 @@ export function AnalyticsDashboardClient() {
               <div className={styles.summaryValue}>{formatCount(snapshot.summary.activeTokens)}</div>
             </div>
             <div className={styles.summaryItem}>
-              <div className={styles.summaryLabel}>HEALTH MAXED</div>
+              <div className={styles.summaryLabel}>MAXED TOKENS</div>
               <div className={styles.summaryValue}>{formatCount(snapshot.summary.maxedTokens)}</div>
             </div>
             <div className={styles.summaryItem}>
@@ -546,13 +580,13 @@ export function AnalyticsDashboardClient() {
             <section className={styles.section}>
               <div className={styles.sectionHeader}>
                 <div className={styles.sectionTitle}>SYSTEM NOTES</div>
-                <div className={styles.sectionMeta}>{formatCount(snapshot.warnings.length)} FLAGS</div>
+                <div className={styles.sectionMeta}>{formatCount(systemNotes.length)} FLAGS</div>
               </div>
               <div className={`${styles.noticeList} ${styles.systemNotesList}`}>
-                {snapshot.warnings.length === 0 ? (
+                {systemNotes.length === 0 ? (
                   <div className={styles.noticeText}>No current dashboard warnings in this snapshot.</div>
                 ) : (
-                  snapshot.warnings.map((warning) => (
+                  systemNotes.map((warning) => (
                     <div key={warning} className={styles.noticeText}>
                       {warning}
                     </div>

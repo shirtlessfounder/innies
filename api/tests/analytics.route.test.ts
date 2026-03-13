@@ -1261,6 +1261,85 @@ describe('analytics routes', () => {
     ]);
   });
 
+  it('marks Claude dashboard token rows as maxed when provider usage has exhausted a contribution cap', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    analytics.getSystemSummary.mockResolvedValue({
+      total_requests: 10,
+      total_usage_units: 100,
+      active_tokens: 0,
+      maxed_tokens: 1,
+      total_tokens: 1,
+      maxed_events_7d: 0,
+      error_rate: 0,
+      fallback_rate: 0,
+      by_provider: [],
+      by_model: [],
+      by_source: []
+    });
+    analytics.getTokenUsage.mockResolvedValue([
+      {
+        credential_id: '22222222-2222-4222-8222-222222222222',
+        debug_label: 'claude-alpha',
+        provider: 'anthropic',
+        status: 'active',
+        attempts: 5,
+        requests: 5,
+        usage_units: 100,
+        by_source: []
+      }
+    ]);
+    analytics.getTokenHealth.mockResolvedValue([
+      {
+        credential_id: '22222222-2222-4222-8222-222222222222',
+        debug_label: 'claude-alpha',
+        provider: 'anthropic',
+        status: 'active',
+        consecutive_rate_limit_count: 0,
+        rate_limited_until: null,
+        monthly_contribution_used_units: 0,
+        monthly_contribution_limit_units: null,
+        maxed_events_7d: 0,
+        utilization_rate_24h: null,
+        five_hour_reserve_percent: 20,
+        five_hour_utilization_ratio: 0.81,
+        five_hour_resets_at: '2026-03-12T14:00:00.000Z',
+        five_hour_contribution_cap_exhausted: true,
+        seven_day_reserve_percent: 0,
+        seven_day_utilization_ratio: 0.2,
+        seven_day_resets_at: '2026-03-15T00:00:00.000Z',
+        seven_day_contribution_cap_exhausted: false,
+        provider_usage_fetched_at: '2026-03-12T12:00:00.000Z'
+      }
+    ]);
+    analytics.getTokenRouting.mockResolvedValue([]);
+    analytics.getBuyers.mockResolvedValue([]);
+    analytics.getAnomalies.mockResolvedValue({ checks: {}, ok: true });
+    analytics.getEvents.mockResolvedValue([]);
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/dashboard', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/dashboard',
+      headers: {
+        authorization: 'Bearer admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect((res.body as any).tokens).toEqual([
+      expect.objectContaining({
+        credentialId: '22222222-2222-4222-8222-222222222222',
+        provider: 'anthropic',
+        status: 'maxed',
+        fiveHourContributionCapExhausted: true
+      })
+    ]);
+  });
+
   it('surfaces Claude provider-usage warnings in dashboard snapshots', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-12T12:10:00.000Z'));
@@ -1343,6 +1422,70 @@ describe('analytics routes', () => {
       'alpha: provider_usage_snapshot_missing - reserved Claude token has no provider-usage snapshot yet; pooled routing excludes it until one arrives.',
       'beta: provider_usage_snapshot_soft_stale - last Claude usage snapshot is 3m old; routing is still using the last successful snapshot.',
       'beta: usage_exhausted_7d - pooled Claude routing is at the 7d cap until 2026-03-15T00:00:00.000Z.'
+    ]);
+  });
+
+  it('keeps true 100%-usage exhaustion warnings visible without degrading them into stale-snapshot warnings', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-12T12:20:00.000Z'));
+
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    analytics.getSystemSummary.mockResolvedValue({
+      total_requests: 10,
+      total_usage_units: 100,
+      active_tokens: 1,
+      maxed_tokens: 0,
+      total_tokens: 1,
+      maxed_events_7d: 0,
+      error_rate: 0,
+      fallback_rate: 0,
+      by_provider: [],
+      by_model: [],
+      by_source: []
+    });
+    analytics.getTokenUsage.mockResolvedValue([]);
+    analytics.getTokenHealth.mockResolvedValue([
+      {
+        credential_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        debug_label: 'beta',
+        provider: 'anthropic',
+        status: 'active',
+        monthly_contribution_used_units: 0,
+        maxed_events_7d: 0,
+        maxing_cycles_observed: 0,
+        five_hour_reserve_percent: 0,
+        five_hour_utilization_ratio: 1,
+        five_hour_resets_at: '2026-03-12T13:00:00.000Z',
+        five_hour_contribution_cap_exhausted: true,
+        seven_day_reserve_percent: 0,
+        seven_day_utilization_ratio: 0.4,
+        seven_day_resets_at: '2026-03-15T00:00:00.000Z',
+        seven_day_contribution_cap_exhausted: false,
+        provider_usage_fetched_at: '2026-03-12T12:00:00.000Z',
+        last_refresh_error: null
+      }
+    ]);
+    analytics.getTokenRouting.mockResolvedValue([]);
+    analytics.getBuyers.mockResolvedValue([]);
+    analytics.getAnomalies.mockResolvedValue({ checks: {}, ok: true });
+    analytics.getEvents.mockResolvedValue([]);
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/dashboard', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/dashboard',
+      headers: {
+        authorization: 'Bearer admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect((res.body as any).warnings).toEqual([
+      'beta: usage_exhausted_5h - pooled Claude routing is at the 5h cap until 2026-03-12T13:00:00.000Z.'
     ]);
   });
 

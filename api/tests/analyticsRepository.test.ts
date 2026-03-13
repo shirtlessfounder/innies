@@ -52,15 +52,21 @@ describe('AnalyticsRepository', () => {
 
     await repo.getSystemSummary({ window: '24h', provider: 'openai' });
 
-    expect(db.queries[0]?.sql).toContain("AND ul.entry_type = 'usage'");
-    expect(db.queries[1]?.sql).toContain('FROM in_token_credentials where provider = $1');
-    expect(db.queries[1]?.params).toEqual(['openai']);
-    expect(db.queries[2]?.sql).toContain('AND provider = $1');
-    expect(db.queries[2]?.params).toEqual(['openai']);
-    expect(db.queries[3]?.sql).toContain("AND ul.entry_type = 'usage'");
-    expect(db.queries[4]?.sql).toContain("AND ul.entry_type = 'usage'");
-    expect(db.queries[5]?.sql).toContain("AND ul.entry_type = 'usage'");
-    expect(db.queries[6]?.sql).toContain("AND ul.entry_type = 'usage'");
+    const mainQuery = db.queries.find((query) => query.sql.includes('count(distinct re.request_id) AS total_requests'));
+    const tokenCountsQuery = db.queries.find((query) => query.sql.includes('token_inventory AS'));
+    const maxedQuery = db.queries.find((query) => query.sql.includes('FROM in_token_credential_events'));
+    const usageLedgerQueries = db.queries.filter((query) => query.sql.includes("AND ul.entry_type = 'usage'"));
+
+    expect(mainQuery?.sql).toContain("AND ul.entry_type = 'usage'");
+    expect(tokenCountsQuery?.sql).toContain('from in_token_credential_provider_usage pu');
+    expect(tokenCountsQuery?.sql).toContain('FROM in_token_credentials tc');
+    expect(tokenCountsQuery?.sql).toContain("where tc.provider = $1");
+    expect(tokenCountsQuery?.sql).toContain("count(*) FILTER (WHERE status = 'active' AND NOT usage_maxed) AS active_tokens");
+    expect(tokenCountsQuery?.sql).toContain("count(*) FILTER (WHERE usage_maxed) AS maxed_tokens");
+    expect(tokenCountsQuery?.params).toEqual(['openai']);
+    expect(maxedQuery?.sql).toContain('AND provider = $1');
+    expect(maxedQuery?.params).toEqual(['openai']);
+    expect(usageLedgerQueries).toHaveLength(5);
   });
 
   it('uses routing metadata request_source in token routing filters, including 24h side counts', async () => {
@@ -156,6 +162,30 @@ describe('AnalyticsRepository', () => {
     expect(db.queries[1]?.sql).not.toContain(`from in_token_credential_provider_usage pu`);
     expect(db.queries[1]?.sql).toContain(`null::numeric as five_hour_utilization_ratio`);
     expect(db.queries[1]?.sql).toContain(`null::timestamptz as provider_usage_fetched_at`);
+  });
+
+  it('falls back to legacy maxed-status counts when Claude provider-usage snapshots are unavailable in system summary', async () => {
+    const db = new SequenceSqlClient([
+      Object.assign(new Error('relation "in_token_credential_provider_usage" does not exist'), {
+        code: '42P01',
+        relation: 'in_token_credential_provider_usage'
+      }),
+      { rows: [{}], rowCount: 1 },
+      { rows: [{}], rowCount: 1 },
+      { rows: [], rowCount: 0 },
+      { rows: [], rowCount: 0 },
+      { rows: [], rowCount: 0 },
+      { rows: [], rowCount: 0 },
+      { rows: [{ active_tokens: 3, maxed_tokens: 1, total_tokens: 5 }], rowCount: 1 }
+    ]);
+    const repo = new AnalyticsRepository(db);
+
+    await repo.getSystemSummary({ window: '24h', provider: 'anthropic' });
+
+    expect(db.queries).toHaveLength(8);
+    expect(db.queries[0]?.sql).toContain(`from in_token_credential_provider_usage pu`);
+    expect(db.queries[7]?.sql).not.toContain(`from in_token_credential_provider_usage pu`);
+    expect(db.queries[7]?.sql).toContain(`tc.status = 'maxed'`);
   });
 
   it('supports 5h windows and 5m bucketed token timeseries', async () => {

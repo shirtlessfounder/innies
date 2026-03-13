@@ -6,6 +6,7 @@ import type {
   AnalyticsPageWindow,
   AnalyticsSeriesResponse,
 } from './types';
+import { extractAnalyticsErrorMessage, safeParseAnalyticsBody } from './errorSummary';
 
 export class AnalyticsClientError extends Error {
   readonly status: number;
@@ -30,28 +31,14 @@ async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Promi
   });
 
   const text = await response.text();
-  const body = text.length > 0 ? safeParseJson(text) : null;
+  const body = text.length > 0 ? safeParseAnalyticsBody(text) : null;
 
   if (!response.ok) {
-    const message = extractMessage(body) ?? `Analytics request failed (${response.status})`;
+    const message = extractAnalyticsErrorMessage(body) ?? `Analytics request failed (${response.status})`;
     throw new AnalyticsClientError(response.status, message, body);
   }
 
   return body as T;
-}
-
-function safeParseJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { message: text };
-  }
-}
-
-function extractMessage(body: unknown): string | null {
-  if (!body || typeof body !== 'object') return null;
-  const value = (body as Record<string, unknown>).message;
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
 
 export function fetchAnalyticsDashboard(window: AnalyticsPageWindow, signal?: AbortSignal) {

@@ -149,6 +149,68 @@ type TokenHealthSqlOptions = {
   includeProviderUsage: boolean;
 };
 
+function buildSystemSummaryTokenCountsSql(input: {
+  providerFilter: string;
+  options: TokenHealthSqlOptions;
+}): string {
+  const providerUsageCte = input.options.includeProviderUsage
+    ? `
+      provider_usage as (
+        select
+          pu.token_credential_id,
+          pu.five_hour_utilization_ratio,
+          pu.seven_day_utilization_ratio
+        from ${TABLES.tokenCredentialProviderUsage} pu
+        where pu.provider = 'anthropic'
+      ),
+      `
+    : '';
+  const providerUsageJoin = input.options.includeProviderUsage
+    ? 'left join provider_usage pu on pu.token_credential_id = tc.id'
+    : '';
+  const fiveHourReservePercent = input.options.includeReserveColumns
+    ? 'coalesce(tc.five_hour_reserve_percent, 0)'
+    : '0';
+  const sevenDayReservePercent = input.options.includeReserveColumns
+    ? 'coalesce(tc.seven_day_reserve_percent, 0)'
+    : '0';
+  const usageMaxedExpression = input.options.includeProviderUsage
+    ? `
+          case
+            when tc.provider = 'anthropic'
+            then (
+              pu.token_credential_id is not null
+              and (
+                coalesce((pu.five_hour_utilization_ratio * 100) >= (100 - ${fiveHourReservePercent}), false)
+                or coalesce((pu.seven_day_utilization_ratio * 100) >= (100 - ${sevenDayReservePercent}), false)
+              )
+            )
+            else tc.status = 'maxed'
+          end
+      `
+    : `
+          tc.status = 'maxed'
+      `;
+
+  return `
+      WITH ${providerUsageCte}token_inventory AS (
+        SELECT
+          tc.id,
+          tc.provider,
+          tc.status,
+          ${usageMaxedExpression} AS usage_maxed
+        FROM ${TABLES.tokenCredentials} tc
+        ${providerUsageJoin}
+        ${input.providerFilter}
+      )
+      SELECT
+        count(*) FILTER (WHERE status = 'active' AND NOT usage_maxed) AS active_tokens,
+        count(*) FILTER (WHERE usage_maxed) AS maxed_tokens,
+        count(*) AS total_tokens
+      FROM token_inventory
+    `;
+}
+
 function buildTokenHealthSql(input: {
   credFilter: string;
   maxedWindowFilter: string;
@@ -851,9 +913,12 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
     const providerOnlyParams: SqlValue[] = [];
     const providerOnlyFilter = filters.provider
       ? (() => {
-          providerOnlyParams.push(filters.provider);
-          return ` where provider = $${providerOnlyParams.length}`;
-        })()
+        providerOnlyParams.push(filters.provider);
+        return ` where provider = $${providerOnlyParams.length}`;
+      })()
+      : '';
+    const tokenCountProviderFilter = filters.provider
+      ? `where tc.provider = $1`
       : '';
 
     // Main aggregates
@@ -880,15 +945,6 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         AND ul.attempt_no = re.attempt_no
         AND ul.entry_type = 'usage'
       WHERE ${where.join(' AND ')}
-    `;
-
-    // Token counts
-    const tokenCountsSql = `
-      SELECT
-        count(*) FILTER (WHERE status = 'active') AS active_tokens,
-        count(*) FILTER (WHERE status = 'maxed') AS maxed_tokens,
-        count(*) AS total_tokens
-      FROM ${TABLES.tokenCredentials}${providerOnlyFilter}
     `;
 
     // Maxed events 7d
@@ -979,10 +1035,43 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
       LIMIT 10
     `;
 
+    const tokenCountsPromise = (async () => {
+      let options: TokenHealthSqlOptions = {
+        includeReserveColumns: true,
+        includeProviderUsage: true
+      };
+
+      for (;;) {
+        try {
+          return await this.db.query(
+            buildSystemSummaryTokenCountsSql({
+              providerFilter: tokenCountProviderFilter,
+              options
+            }),
+            providerOnlyParams
+          );
+        } catch (error) {
+          const nextOptions: TokenHealthSqlOptions = {
+            includeReserveColumns: options.includeReserveColumns && !isMissingReserveColumn(error),
+            includeProviderUsage: options.includeProviderUsage && !isMissingProviderUsageTable(error)
+          };
+
+          if (
+            nextOptions.includeReserveColumns === options.includeReserveColumns
+            && nextOptions.includeProviderUsage === options.includeProviderUsage
+          ) {
+            throw error;
+          }
+
+          options = nextOptions;
+        }
+      }
+    })();
+
     const [mainResult, tokenCountsResult, maxedResult, byProviderResult, byModelResult, bySourceResult, topBuyersResult] =
       await Promise.all([
         this.db.query(mainSql, params),
-        this.db.query(tokenCountsSql, providerOnlyParams),
+        tokenCountsPromise,
         this.db.query(maxedSql, providerOnlyParams),
         this.db.query(byProviderSql, byProviderParams),
         this.db.query(byModelSql, byModelParams),

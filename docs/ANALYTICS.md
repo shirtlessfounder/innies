@@ -112,6 +112,7 @@ Current expectation:
   - request volume
   - top buyers
   - system-wide latency / error / fallback metrics
+  - current usage-maxed token count in `maxedTokens`
 
 - `/timeseries`
   - request / usage / error / latency over time

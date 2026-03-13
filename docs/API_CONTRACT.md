@@ -489,6 +489,9 @@ Response example:
 Notes:
 - `translationOverhead` is currently `null`; translated-request attribution is not yet wired end-to-end
 - `topBuyers[*].percentOfTotal` is a `0..1` ratio, not a `0..100` percentage
+- `maxedTokens` counts tokens currently at usage capacity, not broken credentials
+- for Claude, `maxedTokens` uses the latest provider-reported 5h / 7d utilization against each token's configured reserve
+- for non-Claude providers, `maxedTokens` continues to follow the current durable usage-maxed status until provider-usage telemetry exists there
 
 ### `GET /v1/admin/analytics/timeseries`
 Admin-only chart-series endpoint.
@@ -725,6 +728,7 @@ Notes:
 - `tokens[*]` merges usage, health, and routing metrics by `credentialId`
 - `tokens[*].attempts` is attempt-level volume; `tokens[*].requests` is distinct `request_id` count for the same window
 - `tokens[*]` also carries the same nullable Claude-only contribution-cap/provider-usage fields as `/v1/admin/analytics/tokens/health`
+- `summary.maxedTokens` counts tokens currently at usage capacity; for Claude that means provider usage has hit the provider ceiling or the configured reserve threshold
 - the dashboard UI shows raw Claude provider utilization in `5H` / `7D`; reserve/exhausted fields only control whether those cells are highlighted as effectively exhausted
 - non-Claude rows keep those raw API fields `null` and the UI renders `n/a` in the CAP cells
 - `buyers[*]` may include `latencyP50Ms` and `errorRate` when those buyer aggregates are available
