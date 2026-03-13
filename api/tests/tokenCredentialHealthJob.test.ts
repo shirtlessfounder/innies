@@ -51,7 +51,7 @@ describe('tokenCredentialHealthJob', () => {
     expect(ctx.logger.info).toHaveBeenCalledWith('token credential healthcheck skipped (disabled)');
   });
 
-  it('keeps credential maxed and schedules next probe on failed probe', async () => {
+  it('skips Claude oauth maxed credentials because the minute supervisor owns their recovery', async () => {
     const repo = {
       listMaxedForProbe: vi.fn(async () => [{
         id: 'cred_1',
@@ -63,35 +63,14 @@ describe('tokenCredentialHealthJob', () => {
       markProbeFailure: vi.fn(async () => true),
       reactivateFromMaxed: vi.fn(async () => false)
     };
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('unauthorized', { status: 401 }));
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
     const job = createTokenCredentialHealthJob(repo as any);
     const ctx = createCtx();
 
     await job.run(ctx as any);
 
-    expect(repo.markProbeFailure).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).not.toHaveBeenCalled();
     expect(repo.reactivateFromMaxed).not.toHaveBeenCalled();
-  });
-
-  it('reactivates credential on successful probe', async () => {
-    const repo = {
-      listMaxedForProbe: vi.fn(async () => [{
-        id: 'cred_1',
-        provider: 'anthropic',
-        authScheme: 'bearer',
-        accessToken: 'sk-ant-oat01-good',
-        debugLabel: 'oauth-main-2'
-      }]),
-      markProbeFailure: vi.fn(async () => true),
-      reactivateFromMaxed: vi.fn(async () => true)
-    };
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ id: 'ok' }), { status: 200 }));
-    const job = createTokenCredentialHealthJob(repo as any);
-    const ctx = createCtx();
-
-    await job.run(ctx as any);
-
-    expect(repo.reactivateFromMaxed).toHaveBeenCalledWith('cred_1');
     expect(repo.markProbeFailure).not.toHaveBeenCalled();
   });
 

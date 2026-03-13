@@ -7,6 +7,7 @@ export type ApiKeyRecord = {
   id: string;
   org_id: string | null;
   scope: ApiKeyScope;
+  name?: string | null;
   is_active: boolean;
   expires_at: string | null;
   preferred_provider: ProviderPreference | null;
@@ -48,7 +49,7 @@ export class ApiKeyRepository {
 
   async findActiveByHash(keyHash: string): Promise<ApiKeyRecord | null> {
     const sql = `
-      select id, org_id, scope, is_active, expires_at, preferred_provider
+      select id, org_id, scope, name, is_active, expires_at, preferred_provider
       from in_api_keys
       where key_hash = $1
       limit 1
@@ -62,7 +63,7 @@ export class ApiKeyRepository {
 
       // Roll app code before migration 009 without breaking API-key auth.
       const fallbackSql = `
-        select id, org_id, scope, is_active, expires_at
+        select id, org_id, scope, name, is_active, expires_at
         from in_api_keys
         where key_hash = $1
         limit 1

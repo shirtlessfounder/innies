@@ -29,6 +29,7 @@ import {
 import {
   CLAUDE_REPEATED_429_LOCAL_BACKOFF_REASON,
   evaluateClaudeContributionCap,
+  isAnthropicOauthTokenCredential,
   providerUsageWarningReasonFromRefreshOutcome,
   readTokenCredentialRateLimitLongBackoffMinutes,
   refreshAnthropicOauthUsageNow
@@ -123,6 +124,48 @@ function orderCredentialsForRequest(credentials: TokenCredential[], requestId: s
   if (credentials.length <= 1) return credentials;
   const offset = requestSeed(requestId) % credentials.length;
   return [...credentials.slice(offset), ...credentials.slice(0, offset)];
+}
+
+function normalizeBuyerLabel(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function findUniqueBuyerLabelMatchedCredentialId(
+  credentials: TokenCredential[],
+  buyerKeyLabel: string | null | undefined
+): string | null {
+  const normalizedBuyerKeyLabel = normalizeBuyerLabel(buyerKeyLabel);
+  if (!normalizedBuyerKeyLabel) return null;
+
+  let matchedCredentialId: string | null = null;
+  for (const credential of credentials) {
+    if (!isAnthropicOauthTokenCredential(credential)) continue;
+    if (normalizeBuyerLabel(credential.debugLabel) !== normalizedBuyerKeyLabel) continue;
+    if (matchedCredentialId !== null) return null;
+    matchedCredentialId = credential.id;
+  }
+
+  return matchedCredentialId;
+}
+
+function prioritizeMatchedCredential(
+  credentials: TokenCredential[],
+  matchedCredentialId: string | null
+): TokenCredential[] {
+  if (!matchedCredentialId || credentials.length <= 1) return credentials;
+  const matchIndex = credentials.findIndex((credential) => credential.id === matchedCredentialId);
+  if (matchIndex <= 0) return credentials;
+  return [
+    credentials[matchIndex],
+    ...credentials.slice(0, matchIndex),
+    ...credentials.slice(matchIndex + 1)
+  ];
+}
+
+function isProviderUsageWindowExhausted(utilizationRatio: unknown): boolean {
+  return typeof utilizationRatio === 'number' && utilizationRatio >= 1;
 }
 
 function buildRequestId(headerValue: string | undefined): string {
@@ -396,14 +439,9 @@ function tokenCredentialProbeIntervalHours(): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 4;
 }
 
-function tokenCredentialRateLimitCooldownThreshold(): number {
-  const parsed = Number(process.env.TOKEN_CREDENTIAL_RATE_LIMIT_COOLDOWN_CONSECUTIVE_FAILURES || 5);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 5;
-}
-
-function tokenCredentialRateLimitMaxThreshold(): number {
-  const parsed = Number(process.env.TOKEN_CREDENTIAL_RATE_LIMIT_MAX_CONSECUTIVE_FAILURES || 15);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 15;
+function tokenCredentialRateLimitThreshold(): number {
+  const parsed = Number(process.env.TOKEN_CREDENTIAL_RATE_LIMIT_CONSECUTIVE_FAILURES || 10);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 10;
 }
 
 function tokenCredentialRateLimitCooldownMinutes(): number {
@@ -831,15 +869,20 @@ async function resolveEligibleTokenCredentials(input: {
   orgId: string;
   provider: string;
   requestId: string;
+  buyerKeyLabel?: string | null;
 }): Promise<{
   credentials: TokenCredential[];
   providerUsageRouteMeta: Map<string, Record<string, unknown>>;
   providerUsageExcludedReasonCounts: Record<string, number>;
 }> {
-  const orderedCredentials = orderCredentialsForRequest(
+  const seededCredentials = orderCredentialsForRequest(
     await runtime.repos.tokenCredentials.listActiveForRouting(input.orgId, input.provider),
     input.requestId
   );
+  const buyerLabelMatchedCredentialId = canonicalizeProvider(input.provider) === 'anthropic'
+    ? findUniqueBuyerLabelMatchedCredentialId(seededCredentials, input.buyerKeyLabel)
+    : null;
+  const orderedCredentials = prioritizeMatchedCredential(seededCredentials, buyerLabelMatchedCredentialId);
 
   const providerUsageRouteMeta = new Map<string, Record<string, unknown>>();
   if (canonicalizeProvider(input.provider) !== 'anthropic' || orderedCredentials.length === 0) {
@@ -856,7 +899,7 @@ async function resolveEligibleTokenCredentials(input: {
   const snapshotsByCredentialId = new Map(snapshots.map((snapshot) => [snapshot.tokenCredentialId, snapshot]));
   const eligibleCredentials: TokenCredential[] = [];
   const providerUsageExcludedReasonCounts: Record<string, number> = {};
-  const rateLimitEscalationThreshold = tokenCredentialRateLimitMaxThreshold();
+  const rateLimitEscalationThreshold = tokenCredentialRateLimitThreshold();
 
   for (const credential of orderedCredentials) {
     const evaluation = evaluateClaudeContributionCap({
@@ -866,10 +909,19 @@ async function resolveEligibleTokenCredentials(input: {
     const repeated429HoldActive = evaluation.inScope
       && credential.consecutiveRateLimitCount >= rateLimitEscalationThreshold
       && (!evaluation.isFresh || !evaluation.eligible);
+    const buyerLabelAffinityBypassApplied = buyerLabelMatchedCredentialId === credential.id
+      && !repeated429HoldActive
+      && (evaluation.exclusionReason === 'contribution_cap_exhausted_5h'
+        || evaluation.exclusionReason === 'contribution_cap_exhausted_7d')
+      && evaluation.routeDecisionMeta.providerUsageExhaustionHoldActive !== true
+      && !isProviderUsageWindowExhausted(evaluation.routeDecisionMeta.fiveHourUtilizationRatio)
+      && !isProviderUsageWindowExhausted(evaluation.routeDecisionMeta.sevenDayUtilizationRatio);
 
     if (evaluation.inScope) {
       providerUsageRouteMeta.set(credential.id, {
         ...evaluation.routeDecisionMeta,
+        buyerLabelAffinityMatched: buyerLabelMatchedCredentialId === credential.id,
+        buyerLabelAffinityBypassApplied,
         claudeRepeated429LocalBackoffActive: repeated429HoldActive,
         claudeRepeated429ConsecutiveRateLimits: credential.consecutiveRateLimitCount,
         claudeRepeated429EscalationThreshold: rateLimitEscalationThreshold,
@@ -879,7 +931,7 @@ async function resolveEligibleTokenCredentials(input: {
       });
     }
 
-    if (!evaluation.eligible) {
+    if (!evaluation.eligible && !buyerLabelAffinityBypassApplied) {
       const reason = evaluation.exclusionReason ?? 'provider_usage_unknown';
       providerUsageExcludedReasonCounts[reason] = (providerUsageExcludedReasonCounts[reason] ?? 0) + 1;
       continue;
@@ -965,8 +1017,7 @@ async function recordTokenCredentialOutcome(input: {
   if (upstreamStatus === 429) {
     if (!isOauthCredential(credential, provider)) return;
 
-    const cooldownThreshold = tokenCredentialRateLimitCooldownThreshold();
-    const threshold = tokenCredentialRateLimitMaxThreshold();
+    const threshold = tokenCredentialRateLimitThreshold();
     const cooldownUntil = new Date(Date.now() + (tokenCredentialRateLimitCooldownMinutes() * 60 * 1000));
 
     if (isAnthropicOauthToken(credential, provider)) {
@@ -976,7 +1027,7 @@ async function recordTokenCredentialOutcome(input: {
       const result = await runtime.repos.tokenCredentials.recordRateLimitAndApplyCooldown({
         id: credential.id,
         statusCode: upstreamStatus,
-        cooldownThreshold,
+        cooldownThreshold: threshold,
         cooldownUntil,
         escalationThreshold: threshold,
         escalationCooldownUntil,
@@ -1068,7 +1119,7 @@ async function recordTokenCredentialOutcome(input: {
           credential_id: credential.id,
           credential_label: credential.debugLabel ?? null,
           consecutive_rate_limits: result.consecutiveRateLimits,
-          cooldown_threshold: cooldownThreshold,
+          threshold,
           escalation_threshold: threshold,
           rate_limited_until: result.rateLimitedUntil?.toISOString() ?? null,
           provider_usage_refresh_ok: refreshResult.ok,
@@ -1090,44 +1141,26 @@ async function recordTokenCredentialOutcome(input: {
           credential_id: credential.id,
           credential_label: credential.debugLabel ?? null,
           consecutive_rate_limits: result.consecutiveRateLimits,
-          cooldown_threshold: cooldownThreshold,
-          escalation_threshold: threshold,
+          threshold,
           rate_limited_until: result.rateLimitedUntil?.toISOString() ?? null
         });
       }
       return;
     }
 
-    const nextProbeAt = new Date(Date.now() + (tokenCredentialProbeIntervalHours() * 60 * 60 * 1000));
     const result = await runtime.repos.tokenCredentials.recordRateLimitAndMaybeMax({
       id: credential.id,
       statusCode: upstreamStatus,
-      cooldownThreshold,
+      cooldownThreshold: threshold,
       cooldownUntil,
       threshold,
-      nextProbeAt,
+      nextProbeAt: new Date(Date.now() + (tokenCredentialProbeIntervalHours() * 60 * 60 * 1000)),
       reason: 'upstream_429_consecutive_rate_limit',
       requestId,
       attemptNo
     });
 
-    if (result?.status === 'maxed') {
-      console.warn('[token-credential] auto-maxed-rate-limit', {
-        request_id: requestId,
-        attempt_no: attemptNo,
-        provider,
-        model,
-        credential_id: credential.id,
-        credential_label: credential.debugLabel ?? null,
-        status: upstreamStatus,
-        consecutive_rate_limits: result.consecutiveRateLimits,
-        threshold,
-        next_probe_at: nextProbeAt.toISOString()
-      });
-      return;
-    }
-
-    if (result?.rateLimitedUntil && result.consecutiveRateLimits >= cooldownThreshold) {
+    if (result?.rateLimitedUntil && result.consecutiveRateLimits >= threshold) {
       console.warn('[token-credential] cooldown-rate-limit', {
         request_id: requestId,
         attempt_no: attemptNo,
@@ -1136,8 +1169,7 @@ async function recordTokenCredentialOutcome(input: {
         credential_id: credential.id,
         credential_label: credential.debugLabel ?? null,
         consecutive_rate_limits: result.consecutiveRateLimits,
-        cooldown_threshold: cooldownThreshold,
-        max_threshold: threshold,
+        threshold,
         rate_limited_until: result.rateLimitedUntil.toISOString()
       });
     }
@@ -1860,6 +1892,7 @@ async function executeTokenModeNonStreaming(input: {
   requestId: string;
   orgId: string;
   apiKeyId: string;
+  buyerKeyLabel?: string | null;
   correlation: OpenClawCorrelation;
   provider: string;
   model: string;
@@ -1877,6 +1910,7 @@ async function executeTokenModeNonStreaming(input: {
     requestId,
     orgId,
     apiKeyId,
+    buyerKeyLabel,
     correlation,
     provider,
     model,
@@ -1897,7 +1931,8 @@ async function executeTokenModeNonStreaming(input: {
   } = await resolveEligibleTokenCredentials({
     orgId,
     provider,
-    requestId
+    requestId,
+    buyerKeyLabel
   });
   if (credentials.length === 0) {
     throw new AppError('capacity_unavailable', 429, 'No eligible token credentials available', {
@@ -2490,6 +2525,7 @@ async function executeTokenModeStreaming(input: {
   requestId: string;
   orgId: string;
   apiKeyId: string;
+  buyerKeyLabel?: string | null;
   correlation: OpenClawCorrelation;
   provider: string;
   model: string;
@@ -2510,6 +2546,7 @@ async function executeTokenModeStreaming(input: {
     requestId,
     orgId,
     apiKeyId,
+    buyerKeyLabel,
     correlation,
     provider,
     model,
@@ -2534,7 +2571,8 @@ async function executeTokenModeStreaming(input: {
   } = await resolveEligibleTokenCredentials({
     orgId,
     provider,
-    requestId
+    requestId,
+    buyerKeyLabel
   });
   if (credentials.length === 0) {
     throw new AppError('capacity_unavailable', 429, 'No eligible token credentials available', {
@@ -3767,6 +3805,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               requestId,
               orgId,
               apiKeyId: auth.apiKeyId,
+              buyerKeyLabel: auth.buyerKeyLabel ?? null,
               correlation,
               provider: upstreamRequest.provider,
               model: upstreamRequest.model,
@@ -3790,6 +3829,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               requestId,
               orgId,
               apiKeyId: auth.apiKeyId,
+              buyerKeyLabel: auth.buyerKeyLabel ?? null,
               correlation,
               provider: upstreamRequest.provider,
               model: upstreamRequest.model,

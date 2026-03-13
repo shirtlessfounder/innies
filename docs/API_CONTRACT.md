@@ -767,10 +767,10 @@ Notes:
 - `tokens[*]` also carries the same nullable Claude-only contribution-cap/provider-usage fields as `/v1/admin/analytics/tokens/health`
 - `summary.maxedTokens` counts tokens currently at usage capacity; for Claude that means provider usage has hit the provider ceiling or the configured reserve threshold
 - the dashboard UI shows raw Claude provider utilization in `5H` / `7D`; reserve/exhausted fields only control whether those cells are highlighted as effectively exhausted
-- non-Claude rows keep those raw API fields `null` and the UI renders `n/a` in the CAP cells
+- non-Claude rows keep those raw API fields `null` and the UI renders `--` in the CAP cells
 - `buyers[*]` may include `latencyP50Ms` and `errorRate` when those buyer aggregates are available
 - snapshot `events` is currently capped to the 20 most recent lifecycle events
-- `warnings` is a free-form operator-facing list for Claude provider-usage issues such as missing snapshots, stale snapshots, and contribution-cap exhaustion when the backend emits them
+- `warnings` is a free-form operator-facing list for Claude operator issues such as auth-failed parked tokens, missing snapshots, stale snapshots, and contribution-cap exhaustion when the backend emits them
 
 Response example:
 ```json
@@ -899,16 +899,15 @@ Response example:
   - Default threshold is `10` consecutive matching failures (`TOKEN_CREDENTIAL_MAXED_CONSECUTIVE_FAILURES=10`).
   - OAuth/session creds use a `3x` auth-failure threshold before auto-max (`30` by default).
   - OAuth/session creds also track repeated `429` responses separately:
-    - non-Claude OAuth/session creds keep the legacy behavior:
-      - `5` consecutive `429`s -> temporary routing penalty (`TOKEN_CREDENTIAL_RATE_LIMIT_COOLDOWN_CONSECUTIVE_FAILURES=5`, `TOKEN_CREDENTIAL_RATE_LIMIT_COOLDOWN_MINUTES=5`)
-      - `15` consecutive `429`s -> auto-max (`TOKEN_CREDENTIAL_RATE_LIMIT_MAX_CONSECUTIVE_FAILURES=15`)
-    - Claude OAuth creds do not auto-max on repeated `429`s
-      - `5` consecutive `429`s -> temporary routing penalty
-      - escalation threshold still extends the local cooldown, but recovery comes from provider-usage refresh + fresh quota state rather than a durable `maxed` transition
-  - Auto-maxed credentials are removed from active routing pool until probe reactivation for auth-like failures and the legacy non-Claude repeated-`429` path.
+    - repeated `429`s now use one threshold: `10` consecutive `429`s -> temporary routing penalty (`TOKEN_CREDENTIAL_RATE_LIMIT_CONSECUTIVE_FAILURES=10`)
+    - non-Claude OAuth/session creds apply the normal short cooldown duration (`TOKEN_CREDENTIAL_RATE_LIMIT_COOLDOWN_MINUTES=5`)
+    - Claude OAuth creds keep repeated-`429` handling local and do not auto-max; once the threshold is hit, routing applies the longer local backoff and recovery comes from provider-usage refresh + fresh quota state rather than a durable `maxed` transition
+  - Auto-maxed credentials are removed from active routing pool until probe reactivation for auth-like failures only.
   - Successful routed request on an active/rotating credential resets both auth-failure and `429` counters and clears temporary rate-limit penalties.
 - Token credential probe/reactivation:
-  - Background job: `token-credential-healthcheck-hourly`.
+  - Background jobs:
+    - Claude OAuth auth-failure recovery is supervised by `token-credential-provider-usage-minute`, which checks due auth-broken Claude creds each minute and only probes when `nextProbeAt` is due.
+    - `token-credential-healthcheck-hourly` remains the generic maxed-token probe loop for non-Claude credentials.
   - Enabled by default (`TOKEN_CREDENTIAL_PROBE_ENABLED=true`).
   - Schedule default: hourly (`TOKEN_CREDENTIAL_PROBE_SCHEDULE_MS=3600000`).
   - Probe timeout default: `10000ms` (`TOKEN_CREDENTIAL_PROBE_TIMEOUT_MS=10000`).

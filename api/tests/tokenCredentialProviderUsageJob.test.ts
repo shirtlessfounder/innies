@@ -17,7 +17,7 @@ describe('tokenCredentialProviderUsageJob', () => {
     vi.restoreAllMocks();
     delete process.env.TOKEN_CREDENTIAL_PROVIDER_USAGE_ENABLED;
     delete process.env.TOKEN_CREDENTIAL_PROVIDER_USAGE_POLL_MS;
-    delete process.env.TOKEN_CREDENTIAL_RATE_LIMIT_MAX_CONSECUTIVE_FAILURES;
+    delete process.env.TOKEN_CREDENTIAL_RATE_LIMIT_CONSECUTIVE_FAILURES;
     delete process.env.ANTHROPIC_OAUTH_USAGE_BASE_URL;
     delete process.env.ANTHROPIC_OAUTH_USAGE_PATH;
     delete process.env.ANTHROPIC_OAUTH_USAGE_USER_AGENT;
@@ -68,7 +68,7 @@ describe('tokenCredentialProviderUsageJob', () => {
         sevenDayReservePercent: 0,
         debugLabel: 'claude-oauth-main',
         consecutiveFailureCount: 0,
-        consecutiveRateLimitCount: 15,
+        consecutiveRateLimitCount: 10,
         lastFailedStatus: null,
         lastFailedAt: null,
         lastRateLimitedAt: null,
@@ -126,7 +126,7 @@ describe('tokenCredentialProviderUsageJob', () => {
       fiveHourContributionCapExhausted: false,
       sevenDayContributionCapExhausted: false
     }));
-    expect(tokenRepo.clearRateLimitBackoff).toHaveBeenCalledWith('cred_1', 15);
+    expect(tokenRepo.clearRateLimitBackoff).toHaveBeenCalledWith('cred_1', 10);
     expect(ctx.logger.info).toHaveBeenCalledWith(
       'token credential provider usage refresh complete',
       expect.objectContaining({
@@ -718,6 +718,78 @@ describe('tokenCredentialProviderUsageJob', () => {
         expect.objectContaining({
         legacyMaxedChecked: 1,
         legacyRecovered: 1
+      })
+    );
+  });
+
+  it('reactivates auth-failed Claude maxed credentials through the minute supervisor probe path', async () => {
+    const tokenRepo = {
+      listActiveOauthByProvider: vi.fn(async () => []),
+      clearRateLimitBackoff: vi.fn(async () => false),
+      setProviderUsageWarning: vi.fn(async () => false),
+      listMaxedForProbe: vi.fn(async () => [{
+        id: 'cred_auth_maxed',
+        orgId: 'org_1',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-auth-maxed',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-10T00:00:00Z'),
+        status: 'maxed',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z'),
+        fiveHourReservePercent: 0,
+        sevenDayReservePercent: 0,
+        debugLabel: 'auth-maxed',
+        consecutiveFailureCount: 30,
+        consecutiveRateLimitCount: 0,
+        lastFailedStatus: 401,
+        lastFailedAt: new Date('2026-03-03T22:00:00Z'),
+        lastRateLimitedAt: null,
+        maxedAt: new Date('2026-03-03T22:00:00Z'),
+        rateLimitedUntil: null,
+        nextProbeAt: new Date('2026-03-04T00:00:00Z'),
+        lastProbeAt: null
+      }]),
+      syncClaudeContributionCapLifecycle: vi.fn(async () => ({ fiveHourTransition: null, sevenDayTransition: null })),
+      reactivateFromMaxed: vi.fn(async () => true),
+      markProbeFailure: vi.fn(async () => true)
+    };
+    const usageRepo = {
+      upsertSnapshot: vi.fn()
+    };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const job = createTokenCredentialProviderUsageJob(tokenRepo as any, usageRepo as any);
+    const ctx = createCtx();
+
+    await job.run(ctx as any);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(usageRepo.upsertSnapshot).not.toHaveBeenCalled();
+    expect(tokenRepo.reactivateFromMaxed).toHaveBeenCalledWith('cred_auth_maxed');
+    expect(tokenRepo.markProbeFailure).not.toHaveBeenCalled();
+    expect(ctx.logger.info).toHaveBeenCalledWith(
+      'Claude auth recovery reactivated',
+      expect.objectContaining({
+        credentialId: 'cred_auth_maxed'
+      })
+    );
+    expect(ctx.logger.info).toHaveBeenCalledWith(
+      'token credential provider usage refresh complete',
+      expect.objectContaining({
+        authProbeChecked: 1,
+        authProbeReactivated: 1,
+        authProbeDeferred: 0
       })
     );
   });
