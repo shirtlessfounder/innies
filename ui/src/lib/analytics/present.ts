@@ -125,6 +125,19 @@ export function formatTimestamp(value: string | null | undefined): string {
   }).replace(',', '');
 }
 
+export function formatTimeOnly(value: string | null | undefined): string {
+  if (!value) return '--';
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return '--';
+  return date.toLocaleString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    timeZone: 'UTC',
+  });
+}
+
 export function formatShortTimestamp(value: string | null | undefined): string {
   if (!value) return '--';
   const date = new Date(value);

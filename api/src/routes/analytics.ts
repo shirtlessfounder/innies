@@ -19,7 +19,7 @@ import { AppError } from '../utils/errors.js';
 
 const ANALYTICS_SOURCES = ['openclaw', 'cli-claude', 'cli-codex', 'direct'] as const;
 const TOKEN_PROVIDERS = ['anthropic', 'openai'] as const;
-const TOKEN_STATUSES = ['active', 'rotating', 'maxed', 'expired', 'revoked'] as const;
+const TOKEN_STATUSES = ['active', 'paused', 'rotating', 'maxed', 'expired', 'revoked'] as const;
 const ANALYTICS_EVENT_SEVERITIES = ['info', 'warn', 'error'] as const;
 
 type AnalyticsSource = typeof ANALYTICS_SOURCES[number];

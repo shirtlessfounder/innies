@@ -586,6 +586,112 @@ router.post('/v1/admin/token-credentials/:id/revoke', requireApiKey(runtime.repo
   }
 });
 
+router.post('/v1/admin/token-credentials/:id/pause', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const id = z.string().uuid().parse(req.params.id);
+    const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
+    const requestHash = sha256Hex(stableJson({ id, apiKeyId: req.auth?.apiKeyId }));
+    const tenantScope = req.auth?.orgId ?? `admin:${req.auth?.apiKeyId}`;
+
+    const idemStart = await runtime.services.idempotency.start({
+      scope: 'admin_token_credentials_pause_v1',
+      tenantScope,
+      idempotencyKey,
+      requestHash
+    });
+
+    if (idemStart.replay) {
+      if (!idemStart.responseBody) {
+        throw new AppError('idempotency_replay_unavailable', 409, 'Idempotent replay not available for this request');
+      }
+      res.setHeader('x-idempotent-replay', 'true');
+      res.status(idemStart.responseCode).json(idemStart.responseBody);
+      return;
+    }
+
+    const paused = await runtime.services.tokenCredentials.pause(id, {
+      actorApiKeyId: req.auth?.apiKeyId ?? null
+    });
+    if (!paused) {
+      throw new AppError('invalid_request', 404, 'Token credential not found');
+    }
+
+    const responseBody = {
+      ok: true,
+      id,
+      orgId: paused.orgId,
+      provider: paused.provider,
+      debugLabel: paused.debugLabel,
+      status: paused.status,
+      changed: paused.changed
+    } as const;
+
+    await runtime.services.idempotency.commit(idemStart, {
+      responseCode: 200,
+      responseBody,
+      responseDigest: sha256Hex(stableJson(responseBody)),
+      responseRef: id
+    });
+
+    res.status(200).json(responseBody);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/admin/token-credentials/:id/unpause', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const id = z.string().uuid().parse(req.params.id);
+    const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
+    const requestHash = sha256Hex(stableJson({ id, apiKeyId: req.auth?.apiKeyId }));
+    const tenantScope = req.auth?.orgId ?? `admin:${req.auth?.apiKeyId}`;
+
+    const idemStart = await runtime.services.idempotency.start({
+      scope: 'admin_token_credentials_unpause_v1',
+      tenantScope,
+      idempotencyKey,
+      requestHash
+    });
+
+    if (idemStart.replay) {
+      if (!idemStart.responseBody) {
+        throw new AppError('idempotency_replay_unavailable', 409, 'Idempotent replay not available for this request');
+      }
+      res.setHeader('x-idempotent-replay', 'true');
+      res.status(idemStart.responseCode).json(idemStart.responseBody);
+      return;
+    }
+
+    const unpaused = await runtime.services.tokenCredentials.unpause(id, {
+      actorApiKeyId: req.auth?.apiKeyId ?? null
+    });
+    if (!unpaused) {
+      throw new AppError('invalid_request', 404, 'Token credential not found');
+    }
+
+    const responseBody = {
+      ok: true,
+      id,
+      orgId: unpaused.orgId,
+      provider: unpaused.provider,
+      debugLabel: unpaused.debugLabel,
+      status: unpaused.status,
+      changed: unpaused.changed
+    } as const;
+
+    await runtime.services.idempotency.commit(idemStart, {
+      responseCode: 200,
+      responseBody,
+      responseDigest: sha256Hex(stableJson(responseBody)),
+      responseRef: id
+    });
+
+    res.status(200).json(responseBody);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.patch('/v1/admin/token-credentials/:id/refresh-token', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
   try {
     const id = z.string().uuid().parse(req.params.id);

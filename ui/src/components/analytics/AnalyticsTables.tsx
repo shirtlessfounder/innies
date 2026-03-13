@@ -17,6 +17,7 @@ import {
   formatNullableNumber,
   formatPercent,
   formatShortTimestamp,
+  formatTimeOnly,
   formatTimestamp,
   tokenIdentityLabel,
   tokenLabelLabel,
@@ -83,6 +84,8 @@ function tokenStatusTone(status: string): string {
   switch (normalized) {
     case 'active':
       return styles.statusPillActive;
+    case 'paused':
+      return styles.statusPillPaused;
     case 'rotating':
       return styles.statusPillRotating;
     case 'rate_limited':
@@ -298,7 +301,7 @@ export function TokenTable({
                 onClick={() => onSort('fiveHourCapUsedRatio', 'desc')}
               />
             </th>
-            <th className={styles.numeric}>RESET</th>
+            <th className={styles.numeric}>5H RESET</th>
             <th className={styles.numeric} aria-sort={sortAria(sort.key === 'sevenDayCapUsedRatio', sort.direction)}>
               <SortHeaderButton
                 active={sort.key === 'sevenDayCapUsedRatio'}
@@ -308,7 +311,7 @@ export function TokenTable({
                 onClick={() => onSort('sevenDayCapUsedRatio', 'desc')}
               />
             </th>
-            <th className={styles.numeric}>RESET</th>
+            <th className={styles.numeric}>7D RESET</th>
             {/* Re-enable Util 24h / Maxed 7d once the token table has room for more operator-only columns again. */}
             {/* <th className={styles.numeric} aria-sort={sortAria(sort.key === 'utilizationRate24h', sort.direction)}>
               <SortHeaderButton
@@ -368,7 +371,7 @@ export function TokenTable({
                     {formatContributionCapPercent(row.fiveHourCapUsedRatio, row.provider)}
                   </span>
                 </td>
-                <td className={styles.numeric}>{formatTimestamp(row.fiveHourResetsAt)}</td>
+                <td className={styles.numeric}>{formatTimeOnly(row.fiveHourResetsAt)}</td>
                 <td className={styles.numeric}>
                   <span className={sevenDayCapTone}>
                     {formatContributionCapPercent(row.sevenDayCapUsedRatio, row.provider)}

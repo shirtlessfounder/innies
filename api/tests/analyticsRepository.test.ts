@@ -249,7 +249,9 @@ describe('AnalyticsRepository', () => {
 
     expect(db.queries[0]?.sql).toContain("tce.created_at >= now() - interval '5 hours'");
     expect(db.queries[0]?.sql).toContain('LEFT JOIN in_token_credentials tc');
-    expect(db.queries[0]?.sql).toContain("WHEN tce.event_type in ('reactivated', 'contribution_cap_cleared') THEN 'info'");
+    expect(db.queries[0]?.sql).toContain("WHEN tce.event_type in ('reactivated', 'contribution_cap_cleared', 'paused', 'unpaused') THEN 'info'");
+    expect(db.queries[0]?.sql).toContain("WHEN tce.event_type = 'paused' THEN 'credential paused'");
+    expect(db.queries[0]?.sql).toContain("WHEN tce.event_type = 'unpaused' THEN 'credential unpaused'");
     expect(db.queries[0]?.sql).toContain("WHEN tce.event_type = 'contribution_cap_exhausted'");
     expect(db.queries[0]?.sql).toContain('LIMIT $2');
     expect(db.queries[0]?.params).toEqual(['openai', 20]);

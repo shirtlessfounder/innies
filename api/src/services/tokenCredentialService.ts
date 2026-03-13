@@ -87,6 +87,132 @@ export class TokenCredentialService {
     return revoked;
   }
 
+  async pause(
+    id: string,
+    actor?: ActorContext
+  ): Promise<{
+    id: string;
+    orgId: string;
+    provider: string;
+    debugLabel: string | null;
+    status: 'paused';
+    changed: boolean;
+  } | null> {
+    const existing = await this.repo.getById(id);
+    if (!existing) {
+      return null;
+    }
+    if (existing.status === 'paused') {
+      return {
+        id,
+        orgId: existing.orgId,
+        provider: existing.provider,
+        debugLabel: existing.debugLabel,
+        status: 'paused',
+        changed: false,
+      };
+    }
+    if (existing.status !== 'active') {
+      throw new AppError('invalid_request', 409, 'Only active token credentials can be paused', {
+        credentialId: id,
+        status: existing.status,
+      });
+    }
+
+    const changed = await this.repo.pause(id);
+    if (!changed) {
+      return null;
+    }
+
+    await this.auditLogs.createEvent({
+      actorApiKeyId: actor?.actorApiKeyId ?? null,
+      actorUserId: actor?.actorUserId ?? null,
+      orgId: existing.orgId,
+      action: 'token_credential.pause',
+      targetType: 'token_credential',
+      targetId: id,
+      metadata: {
+        provider: existing.provider,
+        debugLabel: existing.debugLabel,
+      }
+    });
+
+    return {
+      id,
+      orgId: existing.orgId,
+      provider: existing.provider,
+      debugLabel: existing.debugLabel,
+      status: 'paused',
+      changed: true,
+    };
+  }
+
+  async unpause(
+    id: string,
+    actor?: ActorContext
+  ): Promise<{
+    id: string;
+    orgId: string;
+    provider: string;
+    debugLabel: string | null;
+    status: 'active';
+    changed: boolean;
+  } | null> {
+    const existing = await this.repo.getById(id);
+    if (!existing) {
+      return null;
+    }
+    if (existing.status === 'active') {
+      return {
+        id,
+        orgId: existing.orgId,
+        provider: existing.provider,
+        debugLabel: existing.debugLabel,
+        status: 'active',
+        changed: false,
+      };
+    }
+    if (existing.status !== 'paused') {
+      throw new AppError('invalid_request', 409, 'Only paused token credentials can be unpaused', {
+        credentialId: id,
+        status: existing.status,
+      });
+    }
+    if (existing.expiresAt.getTime() <= Date.now()) {
+      throw new AppError('invalid_request', 409, 'Token credential is expired and cannot be unpaused', {
+        credentialId: id,
+        status: existing.status,
+      });
+    }
+
+    const changed = await this.repo.unpause(id);
+    if (!changed) {
+      return null;
+    }
+
+    await this.auditLogs.createEvent({
+      actorApiKeyId: actor?.actorApiKeyId ?? null,
+      actorUserId: actor?.actorUserId ?? null,
+      orgId: existing.orgId,
+      action: 'token_credential.unpause',
+      targetType: 'token_credential',
+      targetId: id,
+      metadata: {
+        provider: existing.provider,
+        debugLabel: existing.debugLabel,
+      }
+    });
+
+    return {
+      id,
+      orgId: existing.orgId,
+      provider: existing.provider,
+      debugLabel: existing.debugLabel,
+      status: 'active',
+      changed: true,
+    };
+  }
+
   async setRefreshToken(id: string, orgId: string, refreshToken: string | null, actor?: ActorContext): Promise<boolean> {
     const updated = await this.repo.setRefreshToken(id, refreshToken);
     if (updated) {

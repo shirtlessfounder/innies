@@ -123,6 +123,8 @@ describe('admin token credential routes idempotent replay', () => {
   let createHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let rotateHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let revokeHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let pauseHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let unpauseHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let refreshTokenHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let contributionCapHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let probeHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
@@ -136,6 +138,8 @@ describe('admin token credential routes idempotent replay', () => {
     createHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials');
     rotateHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/rotate');
     revokeHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/revoke');
+    pauseHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/pause');
+    unpauseHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/unpause');
     refreshTokenHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/refresh-token');
     contributionCapHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/contribution-cap');
     probeHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/probe');
@@ -168,6 +172,22 @@ describe('admin token credential routes idempotent replay', () => {
       rotationVersion: 2
     } as any);
     vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'revoke').mockResolvedValue(true);
+    vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'pause').mockResolvedValue({
+      id: 'z',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      debugLabel: 'oauth-main-1',
+      status: 'paused',
+      changed: true
+    } as any);
+    vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'unpause').mockResolvedValue({
+      id: 'z',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      debugLabel: 'oauth-main-1',
+      status: 'active',
+      changed: true
+    } as any);
     vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'setRefreshToken').mockResolvedValue(true);
     vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'updateContributionCap').mockResolvedValue({
       id: 'z',
@@ -199,7 +219,7 @@ describe('admin token credential routes idempotent replay', () => {
     vi.restoreAllMocks();
   });
 
-  it('replays create/rotate/revoke/refresh-token/contribution-cap/probe deterministically without executing mutations', async () => {
+  it('replays create/rotate/revoke/pause/unpause/refresh-token/contribution-cap/probe deterministically without executing mutations', async () => {
     const headers = {
       authorization: 'Bearer in_admin_token',
       'content-type': 'application/json',
@@ -257,6 +277,32 @@ describe('admin token credential routes idempotent replay', () => {
     expect(resRevoke.headers['x-idempotent-replay']).toBe('true');
     expect((resRevoke.body as any).replayed).toBe(true);
 
+    const reqPause = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/pause',
+      headers,
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const resPause = createMockRes();
+    await invoke(pauseHandlers[0], reqPause, resPause);
+    await invoke(pauseHandlers[1], reqPause, resPause);
+    expect(resPause.statusCode).toBe(200);
+    expect(resPause.headers['x-idempotent-replay']).toBe('true');
+    expect((resPause.body as any).replayed).toBe(true);
+
+    const reqUnpause = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/unpause',
+      headers,
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const resUnpause = createMockRes();
+    await invoke(unpauseHandlers[0], reqUnpause, resUnpause);
+    await invoke(unpauseHandlers[1], reqUnpause, resUnpause);
+    expect(resUnpause.statusCode).toBe(200);
+    expect(resUnpause.headers['x-idempotent-replay']).toBe('true');
+    expect((resUnpause.body as any).replayed).toBe(true);
+
     const reqRefresh = createMockReq({
       method: 'PATCH',
       path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/refresh-token',
@@ -305,6 +351,8 @@ describe('admin token credential routes idempotent replay', () => {
     expect(runtimeModule.runtime.services.tokenCredentials.create).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.tokenCredentials.rotate).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.tokenCredentials.revoke).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.services.tokenCredentials.pause).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.services.tokenCredentials.unpause).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.tokenCredentials.setRefreshToken).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.tokenCredentials.updateContributionCap).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.repos.tokenCredentials.getById).not.toHaveBeenCalled();
@@ -664,6 +712,154 @@ describe('admin token credential routes idempotent replay', () => {
       null,
       expect.any(Object)
     );
+    expect(commitSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('pauses an active token credential by id', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_pause_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123470',
+        requestHash: 'pause_h_1'
+      }
+    } as any);
+
+    const pauseSpy = vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'pause').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      debugLabel: 'oauth-main-1',
+      status: 'paused',
+      changed: true
+    } as any);
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/pause',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123470'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const res = createMockRes();
+
+    await invoke(pauseHandlers[0], req, res);
+    await invoke(pauseHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any)).toEqual({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      debugLabel: 'oauth-main-1',
+      status: 'paused',
+      changed: true
+    });
+    expect(pauseSpy).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111',
+      expect.any(Object)
+    );
+    expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('unpauses a paused token credential by id and preserves idempotent no-ops', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start')
+      .mockResolvedValueOnce({
+        replay: false,
+        input: {
+          scope: 'admin_token_credentials_unpause_v1',
+          tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+          idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123471',
+          requestHash: 'unpause_h_1'
+        }
+      } as any)
+      .mockResolvedValueOnce({
+        replay: false,
+        input: {
+          scope: 'admin_token_credentials_unpause_v1',
+          tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+          idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123472',
+          requestHash: 'unpause_h_2'
+        }
+      } as any);
+
+    const unpauseSpy = vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'unpause')
+      .mockResolvedValueOnce({
+        id: '11111111-1111-4111-8111-111111111111',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'openai',
+        debugLabel: 'codex-main-1',
+        status: 'active',
+        changed: true
+      } as any)
+      .mockResolvedValueOnce({
+        id: '11111111-1111-4111-8111-111111111111',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'openai',
+        debugLabel: 'codex-main-1',
+        status: 'active',
+        changed: false
+      } as any);
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const reqChanged = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/unpause',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123471'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const resChanged = createMockRes();
+
+    await invoke(unpauseHandlers[0], reqChanged, resChanged);
+    await invoke(unpauseHandlers[1], reqChanged, resChanged);
+
+    expect(resChanged.statusCode).toBe(200);
+    expect((resChanged.body as any)).toEqual({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      debugLabel: 'codex-main-1',
+      status: 'active',
+      changed: true
+    });
+
+    const reqNoop = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/unpause',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123472'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const resNoop = createMockRes();
+
+    await invoke(unpauseHandlers[0], reqNoop, resNoop);
+    await invoke(unpauseHandlers[1], reqNoop, resNoop);
+
+    expect(resNoop.statusCode).toBe(200);
+    expect((resNoop.body as any)).toEqual({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      debugLabel: 'codex-main-1',
+      status: 'active',
+      changed: false
+    });
+    expect(unpauseSpy).toHaveBeenCalledTimes(2);
     expect(commitSpy).toHaveBeenCalledTimes(2);
   });
 

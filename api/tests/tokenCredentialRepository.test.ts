@@ -589,6 +589,59 @@ describe('tokenCredentialRepository', () => {
     });
   });
 
+  it('pauses an active credential and records a lifecycle event', async () => {
+    const db = new SequenceSqlClient([
+      {
+        rows: [{
+          org_id: '00000000-0000-0000-0000-000000000001',
+          provider: 'anthropic',
+          rate_limited_until: '2026-03-04T01:00:00Z'
+        }],
+        rowCount: 1
+      },
+      { rows: [], rowCount: 1 }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    const ok = await repo.pause('cred_1');
+
+    expect(ok).toBe(true);
+    expect(db.queries[0].sql).toContain("status = 'paused'");
+    expect(db.queries[1].sql).toContain("'paused'");
+    expect(db.queries[1].params?.[4]).toBe('manual_pause');
+    expect(db.queries[1].params?.[5]).toMatchObject({
+      previousStatus: 'active',
+      rateLimitedUntil: '2026-03-04T01:00:00.000Z'
+    });
+  });
+
+  it('unpauses a paused credential and records a lifecycle event', async () => {
+    const db = new SequenceSqlClient([
+      {
+        rows: [{
+          org_id: '00000000-0000-0000-0000-000000000001',
+          provider: 'openai',
+          rate_limited_until: null
+        }],
+        rowCount: 1
+      },
+      { rows: [], rowCount: 1 }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    const ok = await repo.unpause('cred_1');
+
+    expect(ok).toBe(true);
+    expect(db.queries[0].sql).toContain("status = 'active'");
+    expect(db.queries[0].sql).toContain("status = 'paused'");
+    expect(db.queries[1].sql).toContain("'unpaused'");
+    expect(db.queries[1].params?.[4]).toBe('manual_unpause');
+    expect(db.queries[1].params?.[5]).toMatchObject({
+      previousStatus: 'paused',
+      rateLimitedUntil: null
+    });
+  });
+
   it('persists provider-usage warning state without churning unchanged rows', async () => {
     const db = new SequenceSqlClient([{ rows: [], rowCount: 1 }]);
     const repo = new TokenCredentialRepository(db);
