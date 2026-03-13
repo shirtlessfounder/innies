@@ -22,6 +22,7 @@ import {
   analyticsEventReasonLabel,
   buyerSeriesLabel,
   formatCount,
+  formatLocalTimeZoneAbbreviation,
   formatPercent,
   formatTimestamp,
   metricLabel,
@@ -225,7 +226,7 @@ function eventDetailLabel(event: AnalyticsEventRow): string | null {
 
   const nextProbeAt = readMetadataTimestamp(event.metadata, 'nextProbeAt');
   if (nextProbeAt) {
-    parts.push(`next ${formatTimestamp(nextProbeAt)} UTC`);
+    parts.push(`next ${formatTimestamp(nextProbeAt)} ${formatLocalTimeZoneAbbreviation(nextProbeAt)}`);
   }
 
   return parts.length > 0 ? parts.join(' / ') : null;
@@ -382,7 +383,9 @@ export function AnalyticsDashboardClient() {
             <span className={styles.liveDot} />
             {dashboard.liveStatus.toUpperCase()}
           </span>
-          <span className={styles.liveText}>LAST {formatTimestamp(dashboard.lastSuccessfulUpdateAt)} UTC</span>
+          <span className={styles.liveText}>
+            LAST {formatTimestamp(dashboard.lastSuccessfulUpdateAt)} {formatLocalTimeZoneAbbreviation(dashboard.lastSuccessfulUpdateAt)}
+          </span>
         </div>
       </header>
 
@@ -610,7 +613,7 @@ export function AnalyticsDashboardClient() {
                       <div key={event.id} className={styles.eventItem}>
                         <div className={styles.eventMeta}>
                           <span className={styles.eventSeverity}>{event.severity.toUpperCase()}</span>
-                          <span>{formatTimestamp(event.createdAt)} UTC</span>
+                          <span>{formatTimestamp(event.createdAt)} {formatLocalTimeZoneAbbreviation(event.createdAt)}</span>
                           <span>{event.type}</span>
                         </div>
                         <div className={styles.eventSummary}>{event.summary}</div>

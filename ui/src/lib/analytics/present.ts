@@ -121,7 +121,6 @@ export function formatTimestamp(value: string | null | undefined): string {
     minute: '2-digit',
     second: '2-digit',
     hour12: false,
-    timeZone: 'UTC',
   }).replace(',', '');
 }
 
@@ -134,8 +133,18 @@ export function formatTimeOnly(value: string | null | undefined): string {
     minute: '2-digit',
     second: '2-digit',
     hour12: false,
-    timeZone: 'UTC',
   });
+}
+
+export function formatLocalTimeZoneAbbreviation(value: string | null | undefined): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return '';
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZoneName: 'short',
+  }).formatToParts(date);
+  const zone = parts.find((part) => part.type === 'timeZoneName')?.value?.trim();
+  return zone && zone.length > 0 ? zone : '';
 }
 
 export function formatShortTimestamp(value: string | null | undefined): string {
@@ -149,7 +158,6 @@ export function formatShortTimestamp(value: string | null | undefined): string {
     minute: '2-digit',
     second: '2-digit',
     hour12: false,
-    timeZone: 'UTC',
   }).replace(',', '');
 }
 

@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { usePublicLiveMeta } from '../hooks/usePublicLiveMeta';
-import { formatTimestamp } from '../lib/analytics/present';
+import { formatLocalTimeZoneAbbreviation, formatTimestamp } from '../lib/analytics/present';
 import styles from '../app/page.module.css';
 
 const STATIC_HEADER_ROWS = [
@@ -140,7 +140,9 @@ export function LandingHeroHeader(input: {
           <span className={styles.liveDot} />
           {liveMeta.liveStatus.toUpperCase()}
         </span>
-        <span className={styles.liveText}>LAST {formatTimestamp(liveMeta.lastSuccessfulUpdateAt)} UTC</span>
+        <span className={styles.liveText}>
+          LAST {formatTimestamp(liveMeta.lastSuccessfulUpdateAt)} {formatLocalTimeZoneAbbreviation(liveMeta.lastSuccessfulUpdateAt)}
+        </span>
       </div>
     </header>
   );
