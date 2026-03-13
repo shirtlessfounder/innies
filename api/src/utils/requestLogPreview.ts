@@ -2,6 +2,14 @@ import { truncatePreview } from './analytics.js';
 import { stableJson } from './hash.js';
 
 const MAX_DEPTH = 5;
+const HTML_ENTITY_MAP: Record<string, string> = {
+  amp: '&',
+  apos: "'",
+  gt: '>',
+  lt: '<',
+  nbsp: ' ',
+  quot: '"'
+};
 
 function readRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -46,6 +54,53 @@ function collectText(value: unknown, depth = 0): string[] {
 function joinPreviewParts(parts: string[]): string | null {
   const joined = parts.join('\n').trim();
   return truncatePreview(joined);
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (_match, entity: string) => {
+    const normalized = entity.toLowerCase();
+    if (normalized.startsWith('#x')) {
+      const codePoint = Number.parseInt(normalized.slice(2), 16);
+      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : `&${entity};`;
+    }
+
+    if (normalized.startsWith('#')) {
+      const codePoint = Number.parseInt(normalized.slice(1), 10);
+      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : `&${entity};`;
+    }
+
+    return HTML_ENTITY_MAP[normalized] ?? `&${entity};`;
+  });
+}
+
+function stripHtml(value: string): string {
+  return value
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ');
+}
+
+function normalizeHtmlText(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const normalized = decodeHtmlEntities(stripHtml(value)).replace(/\s+/g, ' ').trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function summarizeHtmlResponse(raw: string): string | null {
+  const trimmed = raw.trimStart();
+  const looksLikeHtml = /^<!doctype html\b/i.test(trimmed) || /^<html\b/i.test(trimmed) || /<html[\s>]/i.test(trimmed);
+  if (!looksLikeHtml) return null;
+
+  const title = normalizeHtmlText(raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]);
+  const heading = normalizeHtmlText(raw.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1])
+    ?? normalizeHtmlText(raw.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i)?.[1]);
+
+  let summary = title ?? heading ?? 'HTML response received from upstream';
+  if (/\bcloudflare\b/i.test(raw) && !/\bcloudflare\b/i.test(summary)) {
+    summary = `Cloudflare ${summary}`;
+  }
+
+  return truncatePreview(summary);
 }
 
 function extractAnthropicRequestPreview(payload: Record<string, unknown>): string | null {
@@ -117,7 +172,7 @@ export function extractRequestPreview(payload: unknown, proxiedPath: string): st
 
 export function extractResponsePreview(payload: unknown): string | null {
   if (typeof payload === 'string') {
-    return payload.includes('data:') ? extractSsePreview(payload) : truncatePreview(payload);
+    return payload.includes('data:') ? extractSsePreview(payload) : summarizeHtmlResponse(payload) ?? truncatePreview(payload);
   }
 
   const record = readRecord(payload);

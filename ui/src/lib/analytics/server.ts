@@ -1,5 +1,6 @@
 import 'server-only';
 
+import { extractAnalyticsErrorMessage, safeParseAnalyticsBody } from './errorSummary';
 import {
   type AnalyticsAnomalies,
   type AnalyticsApiWindow,
@@ -299,7 +300,7 @@ function deriveContributionCapUsedRatio(input: {
   return Math.min(1, Math.max(0, input.utilizationRatio));
 }
 
-function deriveTokenStatus(input: {
+function deriveFallbackTokenStatus(input: {
   status: string | null;
   rateLimitedUntil: string | null;
   fiveHourContributionCapExhausted?: boolean | null;
@@ -367,10 +368,10 @@ async function fetchAdminJson<T>(path: string, query?: Record<string, string | u
     });
 
     const text = await response.text();
-    const body = text.length > 0 ? safeParseJson(text) : null;
+    const body = text.length > 0 ? safeParseAnalyticsBody(text) : null;
 
     if (!response.ok) {
-      const message = extractErrorMessage(body) ?? `Innies admin API request failed (${response.status})`;
+      const message = extractAnalyticsErrorMessage(body) ?? `Innies admin API request failed (${response.status})`;
       throw new AnalyticsServerError(response.status, message, body);
     }
 
@@ -398,20 +399,6 @@ async function fetchOptionalAdminJson<T>(
     }
     throw error;
   }
-}
-
-function safeParseJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { message: text };
-  }
-}
-
-function extractErrorMessage(body: unknown): string | null {
-  if (!body || typeof body !== 'object') return null;
-  const maybeMessage = (body as Record<string, unknown>).message;
-  return typeof maybeMessage === 'string' && maybeMessage.trim().length > 0 ? maybeMessage.trim() : null;
 }
 
 function synthesizeAnomalyEvents(snapshotAt: string, anomalies: AnalyticsAnomalies): AnalyticsEventRow[] {
@@ -557,12 +544,7 @@ function normalizeDashboardTokenRows(
         displayKey: row.displayKey ?? formatDisplayKey('cred', row.credentialId),
         debugLabel: toStringOrNull(row.debugLabel),
         provider,
-        status: deriveTokenStatus({
-          status: toStringOrNull(row.status),
-          rateLimitedUntil: toStringOrNull(row.rateLimitedUntil),
-          fiveHourContributionCapExhausted,
-          sevenDayContributionCapExhausted,
-        }),
+        status: toStringOrNull(row.status) ?? 'unknown',
         attempts: toNumber(row.attempts, toNumber(row.requests)),
         requests: toNumber(row.requests),
         usageUnits,
@@ -671,7 +653,7 @@ function buildTokenRows(
       displayKey: formatDisplayKey('cred', credentialId),
       debugLabel: toStringOrNull(health?.debugLabel ?? usage?.debugLabel ?? routing?.debugLabel),
       provider,
-      status: deriveTokenStatus({
+      status: deriveFallbackTokenStatus({
         status: rawStatus,
         rateLimitedUntil,
         fiveHourContributionCapExhausted,
