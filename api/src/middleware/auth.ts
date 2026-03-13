@@ -46,6 +46,7 @@ export function requireApiKey(repo: ApiKeyRepository, allowedScopes: ApiKeyScope
         apiKeyId: record.id,
         orgId: record.org_id,
         scope: record.scope,
+        buyerKeyLabel: record.scope === 'buyer_proxy' ? (record.name ?? null) : null,
         preferredProvider: record.scope === 'buyer_proxy'
           ? (record.preferred_provider ?? resolveDefaultBuyerProvider())
           : (record.preferred_provider ?? null),

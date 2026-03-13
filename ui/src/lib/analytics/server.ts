@@ -301,6 +301,7 @@ function deriveContributionCapUsedRatio(input: {
 }
 
 function deriveFallbackTokenStatus(input: {
+  provider: string | null;
   status: string | null;
   rateLimitedUntil: string | null;
   fiveHourContributionCapExhausted?: boolean | null;
@@ -312,6 +313,9 @@ function deriveFallbackTokenStatus(input: {
     && (input.fiveHourContributionCapExhausted === true || input.sevenDayContributionCapExhausted === true)
   ) {
     return 'maxed';
+  }
+  if ((input.provider ?? '').trim().toLowerCase() === 'anthropic' && normalized === 'maxed') {
+    return 'rate_limited';
   }
   if (normalized === 'active' && input.rateLimitedUntil) {
     const expiresAt = Date.parse(input.rateLimitedUntil);
@@ -654,6 +658,7 @@ function buildTokenRows(
       debugLabel: toStringOrNull(health?.debugLabel ?? usage?.debugLabel ?? routing?.debugLabel),
       provider,
       status: deriveFallbackTokenStatus({
+        provider,
         status: rawStatus,
         rateLimitedUntil,
         fiveHourContributionCapExhausted,

@@ -13,7 +13,7 @@ import {
   readTokenCredentialProviderUsageHardStaleMs,
   readTokenCredentialProviderUsageSoftStaleMs
 } from '../services/tokenCredentialProviderUsage.js';
-import { readClaudeProviderUsageExhaustionHoldState } from '../services/claudeContributionCapState.js';
+import { evaluateClaudeCredentialAvailability } from '../services/claudeCredentialAvailability.js';
 import { formatDisplayKey, type AnalyticsWindow } from '../utils/analytics.js';
 import { AppError } from '../utils/errors.js';
 
@@ -406,19 +406,44 @@ function normalizeTokenStatus(value: unknown, field: string): typeof TOKEN_STATU
 }
 
 function deriveDashboardTokenStatus(input: {
+  provider: string;
   status: string;
+  consecutiveFailures?: number | null;
+  consecutiveRateLimitCount?: number | null;
+  lastFailedStatus?: number | null;
   rateLimitedUntil: string | null;
+  nextProbeAt?: string | null;
+  fiveHourReservePercent?: number | null;
+  fiveHourUtilizationRatio?: number | null;
+  fiveHourResetsAt?: string | null;
   fiveHourContributionCapExhausted?: boolean | null;
+  sevenDayReservePercent?: number | null;
+  sevenDayUtilizationRatio?: number | null;
+  sevenDayResetsAt?: string | null;
   sevenDayContributionCapExhausted?: boolean | null;
+  providerUsageFetchedAt?: string | null;
 }): string {
-  if (
-    input.status === 'active'
-    && (
-      input.fiveHourContributionCapExhausted === true
-      || input.sevenDayContributionCapExhausted === true
-    )
-  ) {
-    return 'maxed';
+  if (input.provider === 'anthropic') {
+    return evaluateClaudeCredentialAvailability({
+      credential: {
+        provider: input.provider,
+        status: input.status,
+        fiveHourReservePercent: input.fiveHourReservePercent,
+        sevenDayReservePercent: input.sevenDayReservePercent,
+        consecutiveFailureCount: input.consecutiveFailures,
+        consecutiveRateLimitCount: input.consecutiveRateLimitCount,
+        lastFailedStatus: input.lastFailedStatus,
+        rateLimitedUntil: input.rateLimitedUntil,
+        nextProbeAt: input.nextProbeAt
+      },
+      snapshot: {
+        fetchedAt: input.providerUsageFetchedAt,
+        fiveHourUtilizationRatio: input.fiveHourUtilizationRatio,
+        fiveHourResetsAt: input.fiveHourResetsAt,
+        sevenDayUtilizationRatio: input.sevenDayUtilizationRatio,
+        sevenDayResetsAt: input.sevenDayResetsAt
+      }
+    }).displayStatus;
   }
 
   if (input.status === 'active' && input.rateLimitedUntil) {
@@ -684,6 +709,11 @@ function normalizeProviderUsageWarningRows(value: unknown) {
       debugLabel: readOptionalString(record, ['debugLabel', 'debug_label']),
       provider: normalizeProvider(pick(record, ['provider']), 'provider'),
       status: normalizeTokenStatus(pick(record, ['status']), 'status'),
+      consecutiveFailures: readOptionalNumber(record, ['consecutiveFailures', 'consecutive_failure_count'], 0) ?? 0,
+      consecutiveRateLimitCount: readOptionalNumber(record, ['consecutiveRateLimitCount', 'consecutive_rate_limit_count'], 0) ?? 0,
+      lastFailedStatus: readOptionalNumber(record, ['lastFailedStatus', 'last_failed_status']),
+      rateLimitedUntil: readOptionalIsoDate(record, ['rateLimitedUntil', 'rate_limited_until']),
+      nextProbeAt: readOptionalIsoDate(record, ['nextProbeAt', 'next_probe_at']),
       fiveHourUtilizationRatio: readOptionalNumber(record, ['fiveHourUtilizationRatio', 'five_hour_utilization_ratio']),
       fiveHourReservePercent: readOptionalNumber(record, ['fiveHourReservePercent', 'five_hour_reserve_percent']),
       fiveHourResetsAt: readOptionalIsoDate(record, ['fiveHourResetsAt', 'five_hour_resets_at']),
@@ -753,15 +783,40 @@ function buildProviderUsageWarnings(
     if (row.status === 'expired' || row.status === 'revoked') continue;
 
     const label = tokenHealthWarningLabel(row);
-    const reserveConfigured = (row.fiveHourReservePercent ?? 0) > 0 || (row.sevenDayReservePercent ?? 0) > 0;
-    const fetchedAtRaw = row.providerUsageFetchedAt;
-    const providerExhaustionHold = readClaudeProviderUsageExhaustionHoldState({
-      fiveHourUtilizationRatio: row.fiveHourUtilizationRatio ?? null,
-      fiveHourResetsAt: row.fiveHourResetsAt ? new Date(row.fiveHourResetsAt) : null,
-      sevenDayUtilizationRatio: row.sevenDayUtilizationRatio ?? null,
-      sevenDayResetsAt: row.sevenDayResetsAt ? new Date(row.sevenDayResetsAt) : null,
+    const availability = evaluateClaudeCredentialAvailability({
+      credential: {
+        provider: row.provider,
+        status: row.status,
+        fiveHourReservePercent: row.fiveHourReservePercent,
+        sevenDayReservePercent: row.sevenDayReservePercent,
+        consecutiveFailureCount: row.consecutiveFailures,
+        consecutiveRateLimitCount: row.consecutiveRateLimitCount,
+        lastFailedStatus: row.lastFailedStatus,
+        rateLimitedUntil: row.rateLimitedUntil,
+        nextProbeAt: row.nextProbeAt
+      },
+      snapshot: {
+        fetchedAt: row.providerUsageFetchedAt,
+        fiveHourUtilizationRatio: row.fiveHourUtilizationRatio,
+        fiveHourResetsAt: row.fiveHourResetsAt,
+        sevenDayUtilizationRatio: row.sevenDayUtilizationRatio,
+        sevenDayResetsAt: row.sevenDayResetsAt
+      },
       now: new Date(now)
     });
+    const reserveConfigured = availability.reserveConfigured;
+    const fetchedAtRaw = row.providerUsageFetchedAt;
+
+    if (availability.authFailed) {
+      appendDashboardWarning(
+        warnings,
+        seen,
+        availability.nextCheckAt
+          ? `${label}: auth_failed - Claude credential is parked after upstream ${row.lastFailedStatus ?? 'auth'} failures; next probe at ${availability.nextCheckAt.toISOString()}.`
+          : `${label}: auth_failed - Claude credential is parked after upstream ${row.lastFailedStatus ?? 'auth'} failures.`
+      );
+      continue;
+    }
 
     if (row.lastRefreshError === PROVIDER_USAGE_FETCH_FAILED_REASON) {
       appendDashboardWarning(
@@ -790,7 +845,12 @@ function buildProviderUsageWarnings(
 
     const fetchedAtMs = Date.parse(fetchedAtRaw);
     const ageMs = Number.isFinite(fetchedAtMs) ? Math.max(0, now - fetchedAtMs) : null;
-    if (ageMs !== null && ageMs > hardStaleMs && !providerExhaustionHold.hasActiveHold) {
+    if (
+      ageMs !== null
+      && ageMs > hardStaleMs
+      && !availability.fiveHourProviderUsageHoldActive
+      && !availability.sevenDayProviderUsageHoldActive
+    ) {
       appendDashboardWarning(
         warnings,
         seen,
@@ -801,7 +861,12 @@ function buildProviderUsageWarnings(
       continue;
     }
 
-    if (ageMs !== null && ageMs > softStaleMs && !providerExhaustionHold.hasActiveHold) {
+    if (
+      ageMs !== null
+      && ageMs > softStaleMs
+      && !availability.fiveHourProviderUsageHoldActive
+      && !availability.sevenDayProviderUsageHoldActive
+    ) {
       appendDashboardWarning(
         warnings,
         seen,
@@ -809,7 +874,7 @@ function buildProviderUsageWarnings(
       );
     }
 
-    if (row.fiveHourContributionCapExhausted === true) {
+    if (availability.fiveHourContributionCapExhausted) {
       appendDashboardWarning(
         warnings,
         seen,
@@ -817,7 +882,7 @@ function buildProviderUsageWarnings(
       );
     }
 
-    if (row.sevenDayContributionCapExhausted === true) {
+    if (availability.sevenDayContributionCapExhausted) {
       appendDashboardWarning(
         warnings,
         seen,
@@ -1066,10 +1131,22 @@ function mergeDashboardTokens(input: {
       row.claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow;
     existing.claudeSevenDayAvgUsageUnitsBeforeCapExhaustion = row.claudeSevenDayAvgUsageUnitsBeforeCapExhaustion;
     existing.status = deriveDashboardTokenStatus({
+      provider: row.provider,
       status: row.status,
+      consecutiveFailures: row.consecutiveFailures,
+      consecutiveRateLimitCount: row.consecutiveRateLimitCount,
+      lastFailedStatus: row.lastFailedStatus,
       rateLimitedUntil: row.rateLimitedUntil,
+      nextProbeAt: row.nextProbeAt,
+      fiveHourReservePercent: row.fiveHourReservePercent,
+      fiveHourUtilizationRatio: row.fiveHourUtilizationRatio,
+      fiveHourResetsAt: row.fiveHourResetsAt,
       fiveHourContributionCapExhausted: row.fiveHourContributionCapExhausted,
-      sevenDayContributionCapExhausted: row.sevenDayContributionCapExhausted
+      sevenDayReservePercent: row.sevenDayReservePercent,
+      sevenDayUtilizationRatio: row.sevenDayUtilizationRatio,
+      sevenDayResetsAt: row.sevenDayResetsAt,
+      sevenDayContributionCapExhausted: row.sevenDayContributionCapExhausted,
+      providerUsageFetchedAt: row.providerUsageFetchedAt
     });
     byId.set(row.credentialId, existing);
   }

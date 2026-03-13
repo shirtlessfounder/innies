@@ -11,12 +11,18 @@ import {
   readTokenCredentialProviderUsagePollMs,
   refreshAnthropicOauthUsageNow
 } from '../services/tokenCredentialProviderUsage.js';
+import { evaluateClaudeCredentialAvailability } from '../services/claudeCredentialAvailability.js';
 import {
   readClaudeContributionCapProviderExhaustionHold,
   readClaudeContributionCapSnapshotState
 } from '../services/claudeContributionCapState.js';
+import {
+  probeAndUpdateTokenCredential,
+  readTokenCredentialProbeIntervalHours,
+  readTokenCredentialProbeTimeoutMs
+} from '../services/tokenCredentialProbe.js';
 
-const DEFAULT_RATE_LIMIT_ESCALATION_THRESHOLD = 15;
+const DEFAULT_RATE_LIMIT_ESCALATION_THRESHOLD = 10;
 const DEFAULT_LEGACY_MAXED_RECOVERY_LIMIT = 25;
 
 function envFlag(name: string, fallback: boolean): boolean {
@@ -47,9 +53,11 @@ export function createTokenCredentialProviderUsageJob(
       }
 
       const escalationThreshold = readIntEnv(
-        'TOKEN_CREDENTIAL_RATE_LIMIT_MAX_CONSECUTIVE_FAILURES',
+        'TOKEN_CREDENTIAL_RATE_LIMIT_CONSECUTIVE_FAILURES',
         DEFAULT_RATE_LIMIT_ESCALATION_THRESHOLD
       );
+      const probeTimeoutMs = readTokenCredentialProbeTimeoutMs();
+      const probeIntervalHours = readTokenCredentialProbeIntervalHours();
       const credentials = await tokenCredentialsRepo.listActiveOauthByProvider('anthropic');
       const existingSnapshots = typeof (providerUsageRepo as {
         listByTokenCredentialIds?: (ids: string[]) => Promise<TokenCredentialProviderUsageSnapshot[]>;
@@ -66,6 +74,9 @@ export function createTokenCredentialProviderUsageJob(
       let paused = 0;
       let skippedNonOauth = 0;
       let clearedBackoff = 0;
+      let authProbeChecked = 0;
+      let authProbeReactivated = 0;
+      let authProbeDeferred = 0;
 
       const syncProviderUsageWarning = async (
         credentialId: string,
@@ -210,11 +221,46 @@ export function createTokenCredentialProviderUsageJob(
         DEFAULT_LEGACY_MAXED_RECOVERY_LIMIT
       );
       const legacyMaxedCredentials = await tokenCredentialsRepo.listMaxedForProbe(legacyRecoveryLimit);
+      let legacyMaxedChecked = 0;
       let legacyRecovered = 0;
       let legacyFailed = 0;
       let legacyDeferred = 0;
 
       for (const credential of legacyMaxedCredentials) {
+        const availability = evaluateClaudeCredentialAvailability({
+          credential,
+          snapshot: null,
+          now: ctx.now,
+          rateLimitThreshold: escalationThreshold
+        });
+
+        if (availability.authFailed) {
+          authProbeChecked += 1;
+          const result = await probeAndUpdateTokenCredential(tokenCredentialsRepo, credential, {
+            timeoutMs: probeTimeoutMs,
+            probeIntervalHours
+          });
+          if (result.reactivated) {
+            authProbeReactivated += 1;
+            ctx.logger.info('Claude auth recovery reactivated', {
+              credentialId: credential.id,
+              credentialLabel: credential.debugLabel ?? null,
+              statusCode: result.statusCode,
+              reason: result.reason
+            });
+          } else {
+            authProbeDeferred += 1;
+            ctx.logger.info('Claude auth recovery deferred', {
+              credentialId: credential.id,
+              credentialLabel: credential.debugLabel ?? null,
+              statusCode: result.statusCode,
+              reason: result.reason,
+              nextProbeAt: result.nextProbeAt?.toISOString() ?? null
+            });
+          }
+          continue;
+        }
+
         const looksLikeLegacyClaudeRateLimitMaxed = isAnthropicOauthTokenCredential(credential)
           && credential.consecutiveRateLimitCount >= escalationThreshold
           && credential.lastFailedStatus !== 401
@@ -222,6 +268,7 @@ export function createTokenCredentialProviderUsageJob(
         if (!looksLikeLegacyClaudeRateLimitMaxed) {
           continue;
         }
+        legacyMaxedChecked += 1;
 
         const result = await refreshAnthropicOauthUsageNow(providerUsageRepo, credential);
         await syncProviderUsageWarning(credential.id, credential.debugLabel, result);
@@ -303,7 +350,10 @@ export function createTokenCredentialProviderUsageJob(
         paused,
         skippedNonOauth,
         clearedBackoff,
-        legacyMaxedChecked: legacyMaxedCredentials.length,
+        authProbeChecked,
+        authProbeReactivated,
+        authProbeDeferred,
+        legacyMaxedChecked,
         legacyRecovered,
         legacyFailed,
         legacyDeferred

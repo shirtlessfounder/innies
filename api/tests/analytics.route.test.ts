@@ -1448,6 +1448,184 @@ describe('analytics routes', () => {
     ]));
   });
 
+  it('maps legacy Claude maxed status without cap exhaustion to rate_limited in dashboard rows', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    analytics.getSystemSummary.mockResolvedValue({
+      total_requests: 10,
+      total_usage_units: 100,
+      active_tokens: 0,
+      maxed_tokens: 1,
+      total_tokens: 1,
+      maxed_events_7d: 0,
+      error_rate: 0,
+      fallback_rate: 0,
+      by_provider: [],
+      by_model: [],
+      by_source: []
+    });
+    analytics.getTokenUsage.mockResolvedValue([
+      {
+        credential_id: '33333333-3333-4333-8333-333333333333',
+        debug_label: 'legacy-claude-maxed',
+        provider: 'anthropic',
+        status: 'maxed',
+        attempts: 5,
+        requests: 5,
+        usage_units: 100,
+        by_source: []
+      }
+    ]);
+    analytics.getTokenHealth.mockResolvedValue([
+      {
+        credential_id: '33333333-3333-4333-8333-333333333333',
+        debug_label: 'legacy-claude-maxed',
+        provider: 'anthropic',
+        status: 'maxed',
+        consecutive_rate_limit_count: 15,
+        rate_limited_until: null,
+        monthly_contribution_used_units: 0,
+        monthly_contribution_limit_units: null,
+        maxed_events_7d: 1,
+        utilization_rate_24h: null,
+        five_hour_reserve_percent: 0,
+        five_hour_utilization_ratio: 0.55,
+        five_hour_resets_at: '2026-03-12T20:00:00.000Z',
+        five_hour_contribution_cap_exhausted: false,
+        seven_day_reserve_percent: 0,
+        seven_day_utilization_ratio: 0.18,
+        seven_day_resets_at: '2026-03-20T10:00:00.000Z',
+        seven_day_contribution_cap_exhausted: false,
+        provider_usage_fetched_at: '2026-03-12T12:00:00.000Z'
+      }
+    ]);
+    analytics.getTokenRouting.mockResolvedValue([]);
+    analytics.getBuyers.mockResolvedValue([]);
+    analytics.getAnomalies.mockResolvedValue({ checks: {}, ok: true });
+    analytics.getEvents.mockResolvedValue([]);
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/dashboard', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/dashboard',
+      headers: {
+        authorization: 'Bearer admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect((res.body as any).summary).toEqual(expect.objectContaining({
+      activeTokens: 1,
+      maxedTokens: 0,
+      totalTokens: 1
+    }));
+    expect((res.body as any).tokens).toEqual([
+      expect.objectContaining({
+        credentialId: '33333333-3333-4333-8333-333333333333',
+        provider: 'anthropic',
+        status: 'rate_limited',
+        fiveHourContributionCapExhausted: false,
+        sevenDayContributionCapExhausted: false
+      })
+    ]);
+  });
+
+  it('surfaces auth-failed Claude maxed credentials as auth_failed warnings instead of stale quota warnings', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-13T22:10:00.000Z'));
+
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    analytics.getSystemSummary.mockResolvedValue({
+      total_requests: 10,
+      total_usage_units: 100,
+      active_tokens: 0,
+      maxed_tokens: 1,
+      total_tokens: 1,
+      maxed_events_7d: 0,
+      error_rate: 0,
+      fallback_rate: 0,
+      by_provider: [],
+      by_model: [],
+      by_source: []
+    });
+    analytics.getTokenUsage.mockResolvedValue([
+      {
+        credential_id: '44444444-4444-4444-8444-444444444444',
+        debug_label: 'darryn',
+        provider: 'anthropic',
+        status: 'maxed',
+        attempts: 5,
+        requests: 5,
+        usage_units: 100,
+        by_source: []
+      }
+    ]);
+    analytics.getTokenHealth.mockResolvedValue([
+      {
+        credential_id: '44444444-4444-4444-8444-444444444444',
+        debug_label: 'darryn',
+        provider: 'anthropic',
+        status: 'maxed',
+        consecutive_failure_count: 30,
+        consecutive_rate_limit_count: 0,
+        last_failed_status: 401,
+        rate_limited_until: null,
+        next_probe_at: '2026-03-13T23:34:18.269Z',
+        monthly_contribution_used_units: 0,
+        monthly_contribution_limit_units: null,
+        maxed_events_7d: 1,
+        utilization_rate_24h: null,
+        five_hour_reserve_percent: 0,
+        five_hour_utilization_ratio: 0.55,
+        five_hour_resets_at: '2026-03-14T00:00:00.686Z',
+        five_hour_contribution_cap_exhausted: false,
+        seven_day_reserve_percent: 0,
+        seven_day_utilization_ratio: 0.18,
+        seven_day_resets_at: '2026-03-20T14:00:00.686Z',
+        seven_day_contribution_cap_exhausted: false,
+        provider_usage_fetched_at: '2026-03-13T21:04:16.710Z',
+        last_refresh_error: 'upstream_401_consecutive_failure'
+      }
+    ]);
+    analytics.getTokenRouting.mockResolvedValue([]);
+    analytics.getBuyers.mockResolvedValue([]);
+    analytics.getAnomalies.mockResolvedValue({ checks: {}, ok: true });
+    analytics.getEvents.mockResolvedValue([]);
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/dashboard', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/dashboard',
+      headers: {
+        authorization: 'Bearer admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect((res.body as any).summary).toEqual(expect.objectContaining({
+      activeTokens: 1,
+      maxedTokens: 0,
+      totalTokens: 1
+    }));
+    expect((res.body as any).tokens).toEqual([
+      expect.objectContaining({
+        credentialId: '44444444-4444-4444-8444-444444444444',
+        provider: 'anthropic',
+        status: 'rate_limited'
+      })
+    ]);
+    expect((res.body as any).warnings).toEqual([
+      'darryn: auth_failed - Claude credential is parked after upstream 401 failures; next probe at 2026-03-13T23:34:18.269Z.'
+    ]);
+  });
+
   it('surfaces Claude provider-usage warnings in dashboard snapshots', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-12T12:10:00.000Z'));

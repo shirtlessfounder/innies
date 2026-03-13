@@ -28,6 +28,7 @@ describe('apiKeyRepository', () => {
         id: 'key_1',
         org_id: '00000000-0000-0000-0000-000000000001',
         scope: 'buyer_proxy',
+        name: 'shirtless',
         is_active: true,
         expires_at: null,
         preferred_provider: 'openai'
@@ -38,7 +39,9 @@ describe('apiKeyRepository', () => {
 
     const record = await repo.findActiveByHash('hash_live');
 
+    expect(record?.name).toBe('shirtless');
     expect(record?.preferred_provider).toBe('openai');
+    expect(db.queries[0]?.sql).toContain('name');
     expect(db.queries[0]?.sql).toContain('preferred_provider');
   });
 
@@ -56,6 +59,7 @@ describe('apiKeyRepository', () => {
           id: 'key_1',
           org_id: '00000000-0000-0000-0000-000000000001',
           scope: 'buyer_proxy',
+          name: 'shirtless',
           is_active: true,
           expires_at: null
         }],
@@ -70,11 +74,13 @@ describe('apiKeyRepository', () => {
       id: 'key_1',
       org_id: '00000000-0000-0000-0000-000000000001',
       scope: 'buyer_proxy',
+      name: 'shirtless',
       is_active: true,
       expires_at: null,
       preferred_provider: null
     });
     expect(db.queries).toHaveLength(2);
+    expect(db.queries[1]?.sql).toContain('name');
     expect(db.queries[0]?.sql).toContain('preferred_provider');
     expect(db.queries[1]?.sql).not.toContain('preferred_provider');
   });

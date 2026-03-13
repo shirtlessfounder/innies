@@ -7,6 +7,7 @@ declare global {
         apiKeyId: string;
         orgId: string | null;
         scope: 'buyer_proxy' | 'admin';
+        buyerKeyLabel?: string | null;
         preferredProvider?: 'anthropic' | 'openai' | null;
         preferredProviderSource?: 'explicit' | 'default' | null;
       };

@@ -925,30 +925,11 @@ export class TokenCredentialRepository {
           set
             consecutive_rate_limit_count = coalesce(consecutive_rate_limit_count, 0) + 1,
             last_rate_limited_at = now(),
-            status = case
-              when status in ('active', 'rotating')
-                and coalesce(consecutive_rate_limit_count, 0) + 1 >= $4
-              then 'maxed'
-              else status
-            end,
-            maxed_at = case
-              when status in ('active', 'rotating')
-                and coalesce(consecutive_rate_limit_count, 0) + 1 >= $4
-              then now()
-              else maxed_at
-            end,
             rate_limited_until = case
               when status = 'active'
-                and not (coalesce(consecutive_rate_limit_count, 0) + 1 >= $4)
-                and coalesce(consecutive_rate_limit_count, 0) + 1 >= $2
+                and coalesce(consecutive_rate_limit_count, 0) + 1 >= $4
               then greatest(coalesce(rate_limited_until, '-infinity'::timestamptz), $3)
               else rate_limited_until
-            end,
-            next_probe_at = case
-              when status in ('active', 'rotating')
-                and coalesce(consecutive_rate_limit_count, 0) + 1 >= $4
-              then $5
-              else next_probe_at
             end,
             last_refresh_error = case
               when $6::text is not null then $6
@@ -990,48 +971,11 @@ export class TokenCredentialRepository {
       if (result.rowCount !== 1) return null;
 
       const row = result.rows[0];
-      const newlyMaxed = (row.previous_status === 'active' || row.previous_status === 'rotating')
-        && row.status === 'maxed';
-
-      if (newlyMaxed) {
-        await tx.query(
-          `
-            insert into ${TABLES.tokenCredentialEvents} (
-              id,
-              token_credential_id,
-              org_id,
-              provider,
-              event_type,
-              status_code,
-              reason,
-              metadata,
-              created_at
-            ) values ($1,$2,$3,$4,'maxed',$5,$6,$7,now())
-          `,
-          [
-            newId(),
-            input.id,
-            row.org_id,
-            row.provider,
-            input.statusCode,
-            input.reason ?? null,
-            {
-              requestId: input.requestId ?? null,
-              attemptNo: input.attemptNo ?? null,
-              statusCode: input.statusCode,
-              threshold: input.threshold,
-              cooldownThreshold: input.cooldownThreshold,
-              consecutiveRateLimits: Number(row.consecutive_rate_limits)
-            }
-          ]
-        );
-      }
-
       return {
         status: row.status,
         consecutiveRateLimits: Number(row.consecutive_rate_limits),
         rateLimitedUntil: row.rate_limited_until ? new Date(row.rate_limited_until) : null,
-        newlyMaxed
+        newlyMaxed: false
       };
     });
   }

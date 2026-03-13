@@ -5,6 +5,7 @@ import {
   readTokenCredentialProbeIntervalHours,
   readTokenCredentialProbeTimeoutMs
 } from '../services/tokenCredentialProbe.js';
+import { isAnthropicOauthTokenCredential } from '../services/tokenCredentialProviderUsage.js';
 
 const DEFAULT_SCHEDULE_MS = 60 * 60 * 1000;
 
@@ -35,7 +36,9 @@ export function createTokenCredentialHealthJob(repo: TokenCredentialRepository):
       const maxKeys = readIntEnv('TOKEN_CREDENTIAL_PROBE_MAX_KEYS', 20);
       const timeoutMs = readTokenCredentialProbeTimeoutMs();
       const probeIntervalHours = readTokenCredentialProbeIntervalHours();
-      const candidates = await repo.listMaxedForProbe(maxKeys);
+      const candidates = (await repo.listMaxedForProbe(maxKeys * 5))
+        .filter((credential) => !isAnthropicOauthTokenCredential(credential))
+        .slice(0, maxKeys);
 
       let reactivated = 0;
       let stillMaxed = 0;
