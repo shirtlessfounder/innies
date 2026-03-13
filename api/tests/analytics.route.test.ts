@@ -1330,6 +1330,11 @@ describe('analytics routes', () => {
 
     await invokeHandlers(handlers, req, res);
 
+    expect((res.body as any).summary).toEqual(expect.objectContaining({
+      activeTokens: 0,
+      maxedTokens: 1,
+      totalTokens: 1
+    }));
     expect((res.body as any).tokens).toEqual([
       expect.objectContaining({
         credentialId: '22222222-2222-4222-8222-222222222222',
@@ -1338,6 +1343,109 @@ describe('analytics routes', () => {
         fiveHourContributionCapExhausted: true
       })
     ]);
+  });
+
+  it('derives dashboard summary token counts from visible token rows, excluding expired maxed credentials', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    analytics.getSystemSummary.mockResolvedValue({
+      total_requests: 10,
+      total_usage_units: 100,
+      active_tokens: 1,
+      maxed_tokens: 1,
+      total_tokens: 2,
+      maxed_events_7d: 0,
+      error_rate: 0,
+      fallback_rate: 0,
+      by_provider: [],
+      by_model: [],
+      by_source: []
+    });
+    analytics.getTokenUsage.mockResolvedValue([
+      {
+        credential_id: '11111111-1111-4111-8111-111111111111',
+        debug_label: 'active-row',
+        provider: 'openai',
+        status: 'active',
+        attempts: 5,
+        requests: 5,
+        usage_units: 100,
+        by_source: []
+      }
+    ]);
+    analytics.getTokenHealth.mockResolvedValue([
+      {
+        credential_id: '11111111-1111-4111-8111-111111111111',
+        debug_label: 'active-row',
+        provider: 'openai',
+        status: 'active',
+        consecutive_rate_limit_count: 0,
+        rate_limited_until: null,
+        monthly_contribution_used_units: 0,
+        monthly_contribution_limit_units: null,
+        maxed_events_7d: 0,
+        utilization_rate_24h: null,
+        five_hour_reserve_percent: null,
+        five_hour_utilization_ratio: null,
+        five_hour_resets_at: null,
+        five_hour_contribution_cap_exhausted: null,
+        seven_day_reserve_percent: null,
+        seven_day_utilization_ratio: null,
+        seven_day_resets_at: null,
+        seven_day_contribution_cap_exhausted: null,
+        provider_usage_fetched_at: null
+      },
+      {
+        credential_id: '22222222-2222-4222-8222-222222222222',
+        debug_label: 'expired-maxed-row',
+        provider: 'anthropic',
+        status: 'expired',
+        consecutive_rate_limit_count: 0,
+        rate_limited_until: null,
+        monthly_contribution_used_units: 0,
+        monthly_contribution_limit_units: null,
+        maxed_events_7d: 0,
+        utilization_rate_24h: null,
+        five_hour_reserve_percent: 20,
+        five_hour_utilization_ratio: 0.95,
+        five_hour_resets_at: '2026-03-12T14:00:00.000Z',
+        five_hour_contribution_cap_exhausted: true,
+        seven_day_reserve_percent: 0,
+        seven_day_utilization_ratio: 0.2,
+        seven_day_resets_at: '2026-03-15T00:00:00.000Z',
+        seven_day_contribution_cap_exhausted: false,
+        provider_usage_fetched_at: '2026-03-12T12:00:00.000Z'
+      }
+    ]);
+    analytics.getTokenRouting.mockResolvedValue([]);
+    analytics.getBuyers.mockResolvedValue([]);
+    analytics.getAnomalies.mockResolvedValue({ checks: {}, ok: true });
+    analytics.getEvents.mockResolvedValue([]);
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/dashboard', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/dashboard',
+      headers: {
+        authorization: 'Bearer admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect((res.body as any).summary).toEqual(expect.objectContaining({
+      activeTokens: 1,
+      maxedTokens: 0,
+      totalTokens: 1
+    }));
+    expect((res.body as any).tokens).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        credentialId: '22222222-2222-4222-8222-222222222222',
+        status: 'expired'
+      })
+    ]));
   });
 
   it('surfaces Claude provider-usage warnings in dashboard snapshots', async () => {
