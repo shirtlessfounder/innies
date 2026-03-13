@@ -7,7 +7,7 @@
 Stored now:
 - routing attempts over time
 - usage per attempt over time
-- token lifecycle events over time (`maxed`, `reactivated`, `probe_failed`)
+- token lifecycle events over time (`maxed`, `reactivated`, `probe_failed`, `paused`, `unpaused`)
 - current token state and current manual monthly budget state
 
 That means we can derive later:
@@ -76,7 +76,7 @@ Current expectation:
 
 - `in_token_credential_events`
   - durable lifecycle history
-  - currently: `maxed`, `reactivated`, `probe_failed`, `contribution_cap_exhausted`, `contribution_cap_cleared`
+  - currently: `maxed`, `reactivated`, `probe_failed`, `contribution_cap_exhausted`, `contribution_cap_cleared`, `paused`, `unpaused`
 
 - `in_token_credentials`
   - current token state
@@ -134,7 +134,7 @@ Current expectation:
 
 - `/events`
   - token lifecycle event feed
-  - currently durable `maxed|reactivated|probe_failed` reads
+  - currently durable `maxed|reactivated|probe_failed|contribution_cap_exhausted|contribution_cap_cleared|paused|unpaused` reads
 
 - `/dashboard`
   - one merged snapshot for summary + tokens + buyers + anomalies + events

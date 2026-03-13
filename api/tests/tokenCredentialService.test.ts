@@ -127,4 +127,92 @@ describe('tokenCredentialService', () => {
     expect(repo.updateContributionCap).not.toHaveBeenCalled();
     expect(createEvent).not.toHaveBeenCalled();
   });
+
+  it('writes audit events for pause and unpause', async () => {
+    const repo = {
+      getById: vi.fn(async (id: string) => ({
+        id,
+        orgId: 'org_1',
+        provider: 'anthropic',
+        debugLabel: 'main-1',
+        status: id === 'cred_pause' ? 'active' : 'paused',
+        expiresAt: new Date('2026-03-20T00:00:00Z'),
+      })),
+      pause: vi.fn(async () => true),
+      unpause: vi.fn(async () => true),
+    };
+    const createEvent = vi.fn(async () => ({ id: 'audit_1' }));
+    const service = new TokenCredentialService(repo as any, { createEvent } as any);
+
+    const paused = await service.pause('cred_pause');
+    const unpaused = await service.unpause('cred_unpause');
+
+    expect(paused).toEqual({
+      id: 'cred_pause',
+      orgId: 'org_1',
+      provider: 'anthropic',
+      debugLabel: 'main-1',
+      status: 'paused',
+      changed: true,
+    });
+    expect(unpaused).toEqual({
+      id: 'cred_unpause',
+      orgId: 'org_1',
+      provider: 'anthropic',
+      debugLabel: 'main-1',
+      status: 'active',
+      changed: true,
+    });
+    expect(repo.pause).toHaveBeenCalledWith('cred_pause');
+    expect(repo.unpause).toHaveBeenCalledWith('cred_unpause');
+    expect(createEvent).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      action: 'token_credential.pause',
+      targetId: 'cred_pause',
+      orgId: 'org_1',
+    }));
+    expect(createEvent).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      action: 'token_credential.unpause',
+      targetId: 'cred_unpause',
+      orgId: 'org_1',
+    }));
+  });
+
+  it('rejects unpause for non-paused or expired credentials', async () => {
+    const createEvent = vi.fn();
+    const service = new TokenCredentialService({
+      getById: vi.fn(async (id: string) => {
+        if (id === 'cred_maxed') {
+          return {
+            id,
+            orgId: 'org_1',
+            provider: 'anthropic',
+            debugLabel: 'main-1',
+            status: 'maxed',
+            expiresAt: new Date('2026-03-20T00:00:00Z'),
+          };
+        }
+        return {
+          id,
+          orgId: 'org_1',
+          provider: 'anthropic',
+          debugLabel: 'main-1',
+          status: 'paused',
+          expiresAt: new Date('2026-03-01T00:00:00Z'),
+        };
+      }),
+      unpause: vi.fn(),
+    } as any, { createEvent } as any);
+
+    await expect(service.unpause('cred_maxed')).rejects.toMatchObject<AppError>({
+      code: 'invalid_request',
+      status: 409,
+      message: 'Only paused token credentials can be unpaused',
+    });
+    await expect(service.unpause('cred_expired')).rejects.toMatchObject<AppError>({
+      code: 'invalid_request',
+      status: 409,
+      message: 'Token credential is expired and cannot be unpaused',
+    });
+    expect(createEvent).not.toHaveBeenCalled();
+  });
 });

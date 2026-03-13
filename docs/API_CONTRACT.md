@@ -190,6 +190,43 @@ Optional field:
 ### `POST /v1/admin/token-credentials/:id/revoke`
 Revoke a token credential by id (admin only).
 
+### `POST /v1/admin/token-credentials/:id/pause`
+Pause an `active` token credential so routing stops using it until an operator explicitly unpauses it (admin only).
+
+Response shape:
+- `ok`: always `true` on success
+- `id`: token credential id
+- `orgId`: owning org id
+- `provider`: token provider
+- `debugLabel`: credential label when present
+- `status`: resulting Innies status (`paused`)
+- `changed`: `true` when Innies flipped the credential to `paused`; `false` when it was already paused
+
+Notes:
+- only `active` credentials can be newly paused
+- already-paused credentials return `200` with `changed: false`
+- `maxed|expired|revoked|rotating` credentials are rejected with `invalid_request` / `409`
+- request is idempotent and requires an `idempotency-key` header
+
+### `POST /v1/admin/token-credentials/:id/unpause`
+Unpause a `paused` token credential so routing may use it again (admin only).
+
+Response shape:
+- `ok`: always `true` on success
+- `id`: token credential id
+- `orgId`: owning org id
+- `provider`: token provider
+- `debugLabel`: credential label when present
+- `status`: resulting Innies status (`active`)
+- `changed`: `true` when Innies flipped the credential back to `active`; `false` when it was already active
+
+Notes:
+- only `paused`, unexpired credentials can be newly unpaused
+- already-active credentials return `200` with `changed: false`
+- `maxed|expired|revoked|rotating` credentials are rejected with `invalid_request` / `409`
+- unpausing does not wipe any existing `rate_limited_until` backoff; it only restores `status = active`
+- request is idempotent and requires an `idempotency-key` header
+
 ### `PATCH /v1/admin/token-credentials/:id/contribution-cap`
 Set or clear Claude contribution-cap reserves for a token credential (admin only).
 

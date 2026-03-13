@@ -638,6 +638,10 @@
   color: #16a34a;
 }
 
+.statusPillPaused {
+  color: #0f766e;
+}
+
 .statusPillRotating {
   color: #d97706;
 }

@@ -1303,13 +1303,15 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         tce.reason,
         tce.metadata,
         CASE
-          WHEN tce.event_type in ('reactivated', 'contribution_cap_cleared') THEN 'info'
+          WHEN tce.event_type in ('reactivated', 'contribution_cap_cleared', 'paused', 'unpaused') THEN 'info'
           ELSE 'warn'
         END AS severity,
         CASE
           WHEN tce.event_type = 'maxed' THEN 'credential maxed'
           WHEN tce.event_type = 'reactivated' THEN 'credential reactivated'
           WHEN tce.event_type = 'probe_failed' THEN 'probe failed'
+          WHEN tce.event_type = 'paused' THEN 'credential paused'
+          WHEN tce.event_type = 'unpaused' THEN 'credential unpaused'
           WHEN tce.event_type = 'contribution_cap_exhausted'
             THEN coalesce(tce.metadata->>'window', 'cap') || ' contribution cap exhausted'
           WHEN tce.event_type = 'contribution_cap_cleared'

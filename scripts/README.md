@@ -16,6 +16,7 @@ chmod +x scripts/install.sh
 innies-add-token
 innies-create-buyer-key
 innies-rotate-token
+innies-pause-token
 innies-set-contribution-cap
 innies-set-refresh-token
 innies-requeue-token-probe
@@ -28,6 +29,7 @@ What they do:
 - `innies-add-token`: create a Claude Code or Codex OAuth credential
 - `innies-create-buyer-key`: create a new buyer key in `in_api_keys` and prompt for provider preference up front
 - `innies-rotate-token`: rotate a Claude Code or Codex OAuth credential pool
+- `innies-pause-token`: pause or unpause a token credential so routing excludes or re-admits it manually
 - `innies-set-contribution-cap`: set the 5h / 7d reserve percents for a Claude token credential
 - `innies-set-refresh-token`: set or clear the stored OAuth refresh token for an existing credential id
 - `innies-requeue-token-probe`: directly probe a maxed token credential now; successful probes immediately reactivate it
@@ -49,6 +51,10 @@ Behavior:
 - `innies-rotate-token` accepts a credential UUID or exact `debugLabel`; if `DATABASE_URL` is available it lists existing credentials for the selected provider first so you can choose one by number
 - `innies-rotate-token` shows labeled credentials plus unlabeled `active`/`maxed` credentials by default; unlabeled lower-priority rows stay collapsed behind a summary count
 - `innies-rotate-token` preserves the previous credential's `debugLabel` when you leave the rotate label prompt blank
+- `innies-pause-token` accepts optional args `pause|unpause`, then lists eligible credentials for the chosen provider and lets you select one by number / UUID / exact `debugLabel`
+- `innies-pause-token` needs `DATABASE_URL` so it can list/select existing credentials and verify the current state before calling the admin API
+- `innies-pause-token` needs `INNIES_ADMIN_API_KEY` (or prompts for it) because it calls the admin API pause/unpause endpoint directly
+- `innies-pause-token pause` only targets currently `active` credentials; `unpause` only targets currently `paused` credentials
 - `innies-set-contribution-cap` lists only `active`/`maxed` Claude Code credentials, lets you choose one by number / UUID / exact `debugLabel`, then prompts for the resulting `5h` and `7d` reserve percents
 - `innies-set-contribution-cap` needs `DATABASE_URL` so it can list/select existing Claude credentials and show the current reserve percents as defaults
 - `innies-set-refresh-token` accepts a credential UUID, then:

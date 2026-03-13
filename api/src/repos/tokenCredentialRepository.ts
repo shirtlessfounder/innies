@@ -4,7 +4,7 @@ import { newId } from '../utils/ids.js';
 import { decryptSecret, encryptSecret } from '../utils/crypto.js';
 
 export type TokenAuthScheme = 'x_api_key' | 'bearer';
-export type TokenCredentialStatus = 'active' | 'rotating' | 'maxed' | 'expired' | 'revoked';
+export type TokenCredentialStatus = 'active' | 'paused' | 'rotating' | 'maxed' | 'expired' | 'revoked';
 
 type TokenCredentialRow = {
   id: string;
@@ -665,6 +665,110 @@ export class TokenCredentialRepository {
     `;
     const result = await this.db.query(sql, [id]);
     return result.rowCount === 1;
+  }
+
+  async pause(id: string): Promise<boolean> {
+    return this.db.transaction(async (tx) => {
+      const result = await tx.query<{
+        org_id: string;
+        provider: string;
+        rate_limited_until: string | Date | null;
+      }>(
+        `
+          update ${TABLES.tokenCredentials}
+          set
+            status = 'paused',
+            updated_at = now()
+          where id = $1
+            and status = 'active'
+          returning org_id, provider, rate_limited_until
+        `,
+        [id]
+      );
+      if (result.rowCount !== 1) return false;
+
+      const row = result.rows[0];
+      await tx.query(
+        `
+          insert into ${TABLES.tokenCredentialEvents} (
+            id,
+            token_credential_id,
+            org_id,
+            provider,
+            event_type,
+            status_code,
+            reason,
+            metadata,
+            created_at
+          ) values ($1,$2,$3,$4,'paused',null,$5,$6,now())
+        `,
+        [
+          newId(),
+          id,
+          row.org_id,
+          row.provider,
+          'manual_pause',
+          {
+            previousStatus: 'active',
+            rateLimitedUntil: row.rate_limited_until ? new Date(row.rate_limited_until).toISOString() : null,
+          }
+        ]
+      );
+
+      return true;
+    });
+  }
+
+  async unpause(id: string): Promise<boolean> {
+    return this.db.transaction(async (tx) => {
+      const result = await tx.query<{
+        org_id: string;
+        provider: string;
+        rate_limited_until: string | Date | null;
+      }>(
+        `
+          update ${TABLES.tokenCredentials}
+          set
+            status = 'active',
+            updated_at = now()
+          where id = $1
+            and status = 'paused'
+          returning org_id, provider, rate_limited_until
+        `,
+        [id]
+      );
+      if (result.rowCount !== 1) return false;
+
+      const row = result.rows[0];
+      await tx.query(
+        `
+          insert into ${TABLES.tokenCredentialEvents} (
+            id,
+            token_credential_id,
+            org_id,
+            provider,
+            event_type,
+            status_code,
+            reason,
+            metadata,
+            created_at
+          ) values ($1,$2,$3,$4,'unpaused',null,$5,$6,now())
+        `,
+        [
+          newId(),
+          id,
+          row.org_id,
+          row.provider,
+          'manual_unpause',
+          {
+            previousStatus: 'paused',
+            rateLimitedUntil: row.rate_limited_until ? new Date(row.rate_limited_until).toISOString() : null,
+          }
+        ]
+      );
+
+      return true;
+    });
   }
 
   async recordFailureAndMaybeMax(input: {
