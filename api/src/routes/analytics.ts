@@ -431,6 +431,34 @@ function deriveDashboardTokenStatus(input: {
   return input.status;
 }
 
+function isVisibleDashboardTokenStatus(status: string): boolean {
+  const normalized = status.trim().toLowerCase();
+  return normalized !== 'expired' && normalized !== 'revoked';
+}
+
+function deriveDashboardSummaryFromTokens(
+  summary: ReturnType<typeof normalizeSystemSummary>,
+  tokens: Array<Record<string, unknown>>
+) {
+  if (tokens.length === 0) return summary;
+
+  const visibleTokens = tokens.filter((row) => {
+    const status = readTrimmedString((row as { status?: unknown }).status) ?? 'unknown';
+    return isVisibleDashboardTokenStatus(status);
+  });
+  const maxedTokens = visibleTokens.filter((row) => {
+    const status = readTrimmedString((row as { status?: unknown }).status) ?? 'unknown';
+    return status.toLowerCase() === 'maxed';
+  }).length;
+
+  return {
+    ...summary,
+    activeTokens: visibleTokens.length - maxedTokens,
+    maxedTokens,
+    totalTokens: visibleTokens.length
+  };
+}
+
 function normalizeEventSeverity(value: unknown): typeof ANALYTICS_EVENT_SEVERITIES[number] {
   const normalized = readTrimmedString(value)?.toLowerCase();
   if (normalized && (ANALYTICS_EVENT_SEVERITIES as readonly string[]).includes(normalized)) {
@@ -1147,16 +1175,17 @@ async function buildDashboardSnapshotPayload(
   const anomalies = normalizeAnomalies(anomaliesRaw);
   const events = normalizeEventRows(eventsRaw);
   const warnings = buildProviderUsageWarnings(tokenHealthRaw);
+  const tokens = mergeDashboardTokens({
+    usage: tokenUsage,
+    health: tokenHealth,
+    routing: tokenRouting
+  });
 
   return {
     window: query.window,
     snapshotAt,
-    summary,
-    tokens: mergeDashboardTokens({
-      usage: tokenUsage,
-      health: tokenHealth,
-      routing: tokenRouting
-    }),
+    summary: deriveDashboardSummaryFromTokens(summary, tokens),
+    tokens,
     buyers,
     anomalies,
     events,
