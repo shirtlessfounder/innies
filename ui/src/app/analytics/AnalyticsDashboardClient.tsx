@@ -548,7 +548,7 @@ export function AnalyticsDashboardClient() {
           <div className={styles.tableGrid}>
             <section className={`${styles.section} ${styles.tableSection}`}>
               <div className={styles.sectionHeader}>
-                <div className={styles.sectionTitle}>TOKEN CREDS</div>
+                <div className={styles.sectionTitle}>TOKEN CREDS (innies)</div>
                 <div className={styles.sectionMeta}>{formatCount(visibleTokenRows.length)} VISIBLE</div>
               </div>
               <TokenTable
@@ -562,7 +562,7 @@ export function AnalyticsDashboardClient() {
 
             <section className={`${styles.section} ${styles.tableSection}`}>
               <div className={styles.sectionHeader}>
-                <div className={styles.sectionTitle}>BUYER KEYS</div>
+                <div className={styles.sectionTitle}>BUYER KEYS (outies)</div>
                 <div className={styles.sectionMeta}>
                   {snapshot.capabilities.buyersComplete
                     ? `${formatCount(visibleBuyerRows.length)} ACTIVE`
