@@ -1,4 +1,4 @@
-import type { SqlClient, SqlValue } from './sqlClient.js';
+import type { SqlClient, SqlQueryResult, SqlValue, TransactionContext } from './sqlClient.js';
 import { TABLES } from './tableNames.js';
 import { newId } from '../utils/ids.js';
 import { decryptSecret, encryptSecret } from '../utils/crypto.js';
@@ -22,6 +22,8 @@ type TokenCredentialRow = {
   monthly_contribution_limit_units: number | null;
   monthly_contribution_used_units: number;
   monthly_window_start_at: string | Date;
+  five_hour_reserve_percent?: number | null;
+  seven_day_reserve_percent?: number | null;
   debug_label: string | null;
   consecutive_failure_count?: number | null;
   consecutive_rate_limit_count?: number | null;
@@ -50,6 +52,8 @@ export type TokenCredential = {
   monthlyContributionLimitUnits: number | null;
   monthlyContributionUsedUnits: number;
   monthlyWindowStartAt: Date;
+  fiveHourReservePercent: number;
+  sevenDayReservePercent: number;
   debugLabel: string | null;
   consecutiveFailureCount: number;
   consecutiveRateLimitCount: number;
@@ -87,8 +91,79 @@ export type RotateTokenCredentialInput = {
   previousCredentialId?: string | null;
 };
 
+export type UpdateTokenCredentialContributionCapInput = {
+  fiveHourReservePercent?: number;
+  sevenDayReservePercent?: number;
+};
+
+type ClaudeContributionCapLifecycleTransition = 'exhausted' | 'cleared' | null;
+type ClaudeContributionCapWindow = '5h' | '7d';
+
 function currentUtcMonthStartExpr(): string {
   return "date_trunc('month', now() at time zone 'utc') at time zone 'utc'";
+}
+
+function isMissingTokenCredentialContributionCapColumns(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const details = error as { code?: string; column?: string; message?: string };
+  if (details.code !== '42703') return false;
+  return details.column === 'five_hour_reserve_percent'
+    || details.column === 'seven_day_reserve_percent'
+    || details.message?.includes('five_hour_reserve_percent') === true
+    || details.message?.includes('seven_day_reserve_percent') === true;
+}
+
+function tokenCredentialSelectColumns(includeContributionCapColumns: boolean): string {
+  const contributionCapColumns = includeContributionCapColumns
+    ? `five_hour_reserve_percent,
+        seven_day_reserve_percent`
+    : `0::integer as five_hour_reserve_percent,
+        0::integer as seven_day_reserve_percent`;
+
+  return `
+        id,
+        org_id,
+        provider,
+        auth_scheme,
+        encrypted_access_token,
+        encrypted_refresh_token,
+        expires_at,
+        status,
+        rotation_version,
+        created_at,
+        revoked_at,
+        updated_at,
+        monthly_contribution_limit_units,
+        monthly_contribution_used_units,
+        monthly_window_start_at,
+        ${contributionCapColumns},
+        debug_label,
+        consecutive_failure_count,
+        consecutive_rate_limit_count,
+        last_failed_status,
+        last_failed_at,
+        last_rate_limited_at,
+        maxed_at,
+        rate_limited_until,
+        next_probe_at,
+        last_probe_at
+  `;
+}
+
+async function queryTokenCredentialRowsWithContributionCapFallback(
+  client: TransactionContext,
+  sqlFor: (includeContributionCapColumns: boolean) => string,
+  params: SqlValue[]
+): Promise<SqlQueryResult<TokenCredentialRow>> {
+  try {
+    return await client.query<TokenCredentialRow>(sqlFor(true), params);
+  } catch (error) {
+    if (!isMissingTokenCredentialContributionCapColumns(error)) {
+      throw error;
+    }
+
+    return client.query<TokenCredentialRow>(sqlFor(false), params);
+  }
 }
 
 function mapRow(row: TokenCredentialRow): TokenCredential {
@@ -108,6 +183,8 @@ function mapRow(row: TokenCredentialRow): TokenCredential {
     monthlyContributionLimitUnits: row.monthly_contribution_limit_units === null ? null : Number(row.monthly_contribution_limit_units),
     monthlyContributionUsedUnits: Number(row.monthly_contribution_used_units),
     monthlyWindowStartAt: new Date(row.monthly_window_start_at),
+    fiveHourReservePercent: Number(row.five_hour_reserve_percent ?? 0),
+    sevenDayReservePercent: Number(row.seven_day_reserve_percent ?? 0),
     debugLabel: row.debug_label,
     consecutiveFailureCount: Number(row.consecutive_failure_count ?? 0),
     consecutiveRateLimitCount: Number(row.consecutive_rate_limit_count ?? 0),
@@ -118,6 +195,37 @@ function mapRow(row: TokenCredentialRow): TokenCredential {
     rateLimitedUntil: row.rate_limited_until ? new Date(row.rate_limited_until) : null,
     nextProbeAt: row.next_probe_at ? new Date(row.next_probe_at) : null,
     lastProbeAt: row.last_probe_at ? new Date(row.last_probe_at) : null
+  };
+}
+
+function contributionCapLifecycleReason(
+  window: ClaudeContributionCapWindow,
+  transition: Exclude<ClaudeContributionCapLifecycleTransition, null>
+): string {
+  return transition === 'exhausted'
+    ? `provider_usage_${window}_threshold_reached`
+    : `provider_usage_${window}_threshold_cleared`;
+}
+
+function contributionCapLifecycleMetadata(input: {
+  window: ClaudeContributionCapWindow;
+  latestEventType: string | null;
+  latestEventAt: string | Date | null;
+  snapshotFetchedAt: Date;
+  reservePercent: number;
+  utilizationRatio: number;
+  sharedThresholdPercent: number;
+  resetsAt: Date | null;
+}): Record<string, unknown> {
+  return {
+    window: input.window,
+    snapshotFetchedAt: input.snapshotFetchedAt.toISOString(),
+    reservePercent: input.reservePercent,
+    utilizationRatio: input.utilizationRatio,
+    sharedThresholdPercent: input.sharedThresholdPercent,
+    resetsAt: input.resetsAt?.toISOString() ?? null,
+    previousEventType: input.latestEventType,
+    previousEventAt: input.latestEventAt ? new Date(input.latestEventAt).toISOString() : null
   };
 }
 
@@ -181,33 +289,9 @@ export class TokenCredentialRepository {
   }
 
   async listActiveForRouting(orgId: string, provider: string): Promise<TokenCredential[]> {
-    const sql = `
+    const sql = (includeContributionCapColumns: boolean) => `
       select
-        id,
-        org_id,
-        provider,
-        auth_scheme,
-        encrypted_access_token,
-        encrypted_refresh_token,
-        expires_at,
-        status,
-        rotation_version,
-        created_at,
-        revoked_at,
-        updated_at,
-        monthly_contribution_limit_units,
-        monthly_contribution_used_units,
-        monthly_window_start_at,
-        debug_label,
-        consecutive_failure_count,
-        consecutive_rate_limit_count,
-        last_failed_status,
-        last_failed_at,
-        last_rate_limited_at,
-        maxed_at,
-        rate_limited_until,
-        next_probe_at,
-        last_probe_at
+        ${tokenCredentialSelectColumns(includeContributionCapColumns)}
       from ${TABLES.tokenCredentials}
       where org_id = $1
         and provider = $2
@@ -227,43 +311,19 @@ export class TokenCredentialRepository {
       order by rotation_version desc, updated_at desc
     `;
 
-    const result = await this.db.query<TokenCredentialRow>(sql, [orgId, provider]);
+    const result = await queryTokenCredentialRowsWithContributionCapFallback(this.db, sql, [orgId, provider]);
     return result.rows.map(mapRow);
   }
 
   async getById(id: string): Promise<TokenCredential | null> {
-    const sql = `
+    const sql = (includeContributionCapColumns: boolean) => `
       select
-        id,
-        org_id,
-        provider,
-        auth_scheme,
-        encrypted_access_token,
-        encrypted_refresh_token,
-        expires_at,
-        status,
-        rotation_version,
-        created_at,
-        updated_at,
-        revoked_at,
-        monthly_contribution_limit_units,
-        monthly_contribution_used_units,
-        monthly_window_start_at,
-        debug_label,
-        consecutive_failure_count,
-        consecutive_rate_limit_count,
-        last_failed_status,
-        last_failed_at,
-        last_rate_limited_at,
-        maxed_at,
-        rate_limited_until,
-        next_probe_at,
-        last_probe_at
+        ${tokenCredentialSelectColumns(includeContributionCapColumns)}
       from ${TABLES.tokenCredentials}
       where id = $1
       limit 1
     `;
-    const result = await this.db.query<TokenCredentialRow>(sql, [id]);
+    const result = await queryTokenCredentialRowsWithContributionCapFallback(this.db, sql, [id]);
     if (result.rowCount !== 1) return null;
     return mapRow(result.rows[0]);
   }
@@ -286,7 +346,7 @@ export class TokenCredentialRepository {
     refreshToken: string | null;
     expiresAt: Date | null;
   }): Promise<TokenCredential | null> {
-    const sql = `
+    const sql = (includeContributionCapColumns: boolean) => `
       update ${TABLES.tokenCredentials}
       set
         encrypted_access_token = $2,
@@ -324,6 +384,11 @@ export class TokenCredentialRepository {
         monthly_contribution_limit_units,
         monthly_contribution_used_units,
         monthly_window_start_at,
+        ${includeContributionCapColumns
+    ? `five_hour_reserve_percent,
+        seven_day_reserve_percent`
+    : `0::integer as five_hour_reserve_percent,
+        0::integer as seven_day_reserve_percent`},
         debug_label,
         consecutive_failure_count,
         consecutive_rate_limit_count,
@@ -343,7 +408,7 @@ export class TokenCredentialRepository {
       input.expiresAt
     ];
 
-    const result = await this.db.query<TokenCredentialRow>(sql, params);
+    const result = await queryTokenCredentialRowsWithContributionCapFallback(this.db, sql, params);
     if (result.rowCount !== 1) return null;
     return mapRow(result.rows[0]);
   }
@@ -364,6 +429,63 @@ export class TokenCredentialRepository {
     return result.rowCount === 1;
   }
 
+  async updateContributionCap(
+    id: string,
+    input: UpdateTokenCredentialContributionCapInput
+  ): Promise<{
+    id: string;
+    orgId: string;
+    provider: string;
+    fiveHourReservePercent: number;
+    sevenDayReservePercent: number;
+  } | null> {
+    const sql = `
+      update ${TABLES.tokenCredentials}
+      set
+        five_hour_reserve_percent = case
+          when $2::integer is not null then $2
+          else five_hour_reserve_percent
+        end,
+        seven_day_reserve_percent = case
+          when $3::integer is not null then $3
+          else seven_day_reserve_percent
+        end,
+        updated_at = now()
+      where id = $1
+        and provider = 'anthropic'
+      returning
+        id,
+        org_id,
+        provider,
+        five_hour_reserve_percent,
+        seven_day_reserve_percent
+    `;
+
+    const result = await this.db.query<{
+      id: string;
+      org_id: string;
+      provider: string;
+      five_hour_reserve_percent: number | null;
+      seven_day_reserve_percent: number | null;
+    }>(sql, [
+      id,
+      input.fiveHourReservePercent ?? null,
+      input.sevenDayReservePercent ?? null
+    ]);
+
+    if (result.rowCount !== 1) {
+      return null;
+    }
+
+    return {
+      id: result.rows[0].id,
+      orgId: result.rows[0].org_id,
+      provider: result.rows[0].provider,
+      fiveHourReservePercent: Number(result.rows[0].five_hour_reserve_percent ?? 0),
+      sevenDayReservePercent: Number(result.rows[0].seven_day_reserve_percent ?? 0)
+    };
+  }
+
   async rotate(input: RotateTokenCredentialInput): Promise<{ id: string; rotationVersion: number; previousId: string | null }> {
     return this.db.transaction(async (tx) => {
       const latestSql = `
@@ -378,40 +500,59 @@ export class TokenCredentialRepository {
       const latestRow = latest.rowCount === 1 ? latest.rows[0] : null;
       const nextRotationVersion = (latestRow?.rotation_version ?? 0) + 1;
 
-      let previousActive: { id: string } | null = null;
+      let previousCredential: { id: string; status: TokenCredentialStatus; debugLabel: string | null } | null = null;
       if (input.previousCredentialId) {
         const targetSql = `
-          select id
+          select id, status, debug_label
           from ${TABLES.tokenCredentials}
-          where id = $1 and org_id = $2 and provider = $3 and status = 'active'
+          where id = $1
+            and org_id = $2
+            and provider = $3
+            and status in ('active', 'maxed')
           for update
         `;
-        const target = await tx.query<{ id: string }>(targetSql, [input.previousCredentialId, input.orgId, input.provider]);
+        const target = await tx.query<{ id: string; status: TokenCredentialStatus; debug_label: string | null }>(
+          targetSql,
+          [input.previousCredentialId, input.orgId, input.provider]
+        );
         if (target.rowCount !== 1) {
-          throw new Error(`Credential ${input.previousCredentialId} not found or not active for org/provider`);
+          throw new Error(`Credential ${input.previousCredentialId} not found or not rotatable for org/provider`);
         }
-        previousActive = target.rows[0];
+        previousCredential = {
+          id: target.rows[0].id,
+          status: target.rows[0].status,
+          debugLabel: target.rows[0].debug_label ?? null
+        };
       } else {
         const activeSql = `
-          select id
+          select id, status, debug_label
           from ${TABLES.tokenCredentials}
           where org_id = $1 and provider = $2 and status = 'active'
           order by rotation_version desc
           limit 1
           for update
         `;
-        const active = await tx.query<{ id: string }>(activeSql, [input.orgId, input.provider]);
-        previousActive = active.rowCount === 1 ? active.rows[0] : null;
+        const active = await tx.query<{ id: string; status: TokenCredentialStatus; debug_label: string | null }>(
+          activeSql,
+          [input.orgId, input.provider]
+        );
+        previousCredential = active.rowCount === 1
+          ? {
+            id: active.rows[0].id,
+            status: active.rows[0].status,
+            debugLabel: active.rows[0].debug_label ?? null
+          }
+          : null;
       }
 
-      if (previousActive) {
+      if (previousCredential?.status === 'active') {
         await tx.query(
           `
             update ${TABLES.tokenCredentials}
             set status = 'rotating', updated_at = now()
             where id = $1
           `,
-          [previousActive.id]
+          [previousCredential.id]
         );
       }
 
@@ -446,25 +587,40 @@ export class TokenCredentialRepository {
         input.refreshToken ? encryptSecret(input.refreshToken) : null,
         input.expiresAt,
         input.monthlyContributionLimitUnits ?? null,
-        input.debugLabel ?? null,
+        input.debugLabel ?? previousCredential?.debugLabel ?? null,
         nextRotationVersion,
         input.createdBy ?? null
       ];
       await tx.query(insertSql, insertParams);
 
-      if (previousActive) {
+      if (previousCredential) {
         await tx.query(
           `
             update ${TABLES.tokenCredentials}
             set status = 'revoked', revoked_at = now(), updated_at = now()
             where id = $1
           `,
-          [previousActive.id]
+          [previousCredential.id]
         );
       }
 
-      return { id: nextId, rotationVersion: nextRotationVersion, previousId: previousActive?.id ?? null };
+      return { id: nextId, rotationVersion: nextRotationVersion, previousId: previousCredential?.id ?? null };
     });
+  }
+
+  async listActiveOauthByProvider(provider: string): Promise<TokenCredential[]> {
+    const sql = (includeContributionCapColumns: boolean) => `
+      select
+        ${tokenCredentialSelectColumns(includeContributionCapColumns)}
+      from ${TABLES.tokenCredentials}
+      where provider = $1
+        and status = 'active'
+        and expires_at > now()
+      order by updated_at desc, rotation_version desc
+    `;
+
+    const result = await queryTokenCredentialRowsWithContributionCapFallback(this.db, sql, [provider]);
+    return result.rows.map(mapRow);
   }
 
   async addMonthlyContributionUsage(id: string, usageUnits: number): Promise<boolean> {
@@ -776,6 +932,211 @@ export class TokenCredentialRepository {
     });
   }
 
+  async recordRateLimitAndApplyCooldown(input: {
+    id: string;
+    statusCode: number;
+    cooldownThreshold: number;
+    cooldownUntil: Date;
+    escalationThreshold: number;
+    escalationCooldownUntil: Date;
+    reason?: string;
+  }): Promise<{
+    status: TokenCredentialStatus;
+    consecutiveRateLimits: number;
+    rateLimitedUntil: Date | null;
+    backoffKind: 'none' | 'cooldown' | 'extended';
+  } | null> {
+    const sql = `
+      update ${TABLES.tokenCredentials}
+      set
+        consecutive_rate_limit_count = coalesce(consecutive_rate_limit_count, 0) + 1,
+        last_rate_limited_at = now(),
+        rate_limited_until = case
+          when coalesce(consecutive_rate_limit_count, 0) + 1 >= $4
+          then greatest(coalesce(rate_limited_until, '-infinity'::timestamptz), $5)
+          when coalesce(consecutive_rate_limit_count, 0) + 1 >= $2
+          then greatest(coalesce(rate_limited_until, '-infinity'::timestamptz), $3)
+          else rate_limited_until
+        end,
+        last_refresh_error = case
+          when $6::text is not null then $6
+          else last_refresh_error
+        end,
+        updated_at = now()
+      where id = $1
+        and status in ('active', 'rotating', 'maxed')
+      returning
+        status,
+        coalesce(consecutive_rate_limit_count, 0) as consecutive_rate_limits,
+        rate_limited_until
+    `;
+
+    const result = await this.db.query<{
+      status: TokenCredentialStatus;
+      consecutive_rate_limits: number;
+      rate_limited_until: string | Date | null;
+    }>(sql, [
+      input.id,
+      input.cooldownThreshold,
+      input.cooldownUntil,
+      input.escalationThreshold,
+      input.escalationCooldownUntil,
+      input.reason ?? null
+    ]);
+
+    if (result.rowCount !== 1) {
+      return null;
+    }
+
+    const row = result.rows[0];
+    const consecutiveRateLimits = Number(row.consecutive_rate_limits);
+    let backoffKind: 'none' | 'cooldown' | 'extended' = 'none';
+
+    if (row.rate_limited_until) {
+      if (consecutiveRateLimits >= input.escalationThreshold) {
+        backoffKind = 'extended';
+      } else if (consecutiveRateLimits >= input.cooldownThreshold) {
+        backoffKind = 'cooldown';
+      }
+    }
+
+    return {
+      status: row.status,
+      consecutiveRateLimits,
+      rateLimitedUntil: row.rate_limited_until ? new Date(row.rate_limited_until) : null,
+      backoffKind
+    };
+  }
+
+  async clearRateLimitBackoff(id: string, minConsecutiveRateLimits = 0): Promise<boolean> {
+    const sql = `
+      update ${TABLES.tokenCredentials}
+      set
+        consecutive_rate_limit_count = 0,
+        rate_limited_until = null,
+        updated_at = now()
+      where id = $1
+        and status in ('active', 'rotating')
+        and coalesce(consecutive_rate_limit_count, 0) >= $2
+    `;
+    const result = await this.db.query(sql, [id, Math.max(0, Math.floor(minConsecutiveRateLimits))]);
+    return result.rowCount === 1;
+  }
+
+  async syncClaudeContributionCapLifecycle(input: {
+    id: string;
+    orgId: string;
+    provider: string;
+    snapshotFetchedAt: Date;
+    fiveHourReservePercent: number;
+    fiveHourUtilizationRatio: number;
+    fiveHourResetsAt: Date | null;
+    fiveHourSharedThresholdPercent: number;
+    fiveHourContributionCapExhausted: boolean;
+    sevenDayReservePercent: number;
+    sevenDayUtilizationRatio: number;
+    sevenDayResetsAt: Date | null;
+    sevenDaySharedThresholdPercent: number;
+    sevenDayContributionCapExhausted: boolean;
+  }): Promise<{
+    fiveHourTransition: ClaudeContributionCapLifecycleTransition;
+    sevenDayTransition: ClaudeContributionCapLifecycleTransition;
+  }> {
+    return this.db.transaction(async (tx) => {
+      await tx.query('select pg_advisory_xact_lock(hashtext($1))', [`claude_contribution_cap:${input.id}`]);
+
+      const syncWindow = async (windowInput: {
+        window: ClaudeContributionCapWindow;
+        exhausted: boolean;
+        reservePercent: number;
+        utilizationRatio: number;
+        sharedThresholdPercent: number;
+        resetsAt: Date | null;
+      }): Promise<ClaudeContributionCapLifecycleTransition> => {
+        const latestResult = await tx.query<{ event_type: string; created_at: string | Date }>(
+          `
+            select event_type, created_at
+            from ${TABLES.tokenCredentialEvents}
+            where token_credential_id = $1::uuid
+              and event_type in ('contribution_cap_exhausted', 'contribution_cap_cleared')
+              and metadata->>'window' = $2
+            order by created_at desc, id desc
+            limit 1
+          `,
+          [input.id, windowInput.window]
+        );
+
+        const latestEvent = latestResult.rows[0] ?? null;
+        const previouslyExhausted = latestEvent?.event_type === 'contribution_cap_exhausted';
+        if (previouslyExhausted === windowInput.exhausted) {
+          return null;
+        }
+
+        const transition: Exclude<ClaudeContributionCapLifecycleTransition, null> = windowInput.exhausted
+          ? 'exhausted'
+          : 'cleared';
+        const eventType = transition === 'exhausted'
+          ? 'contribution_cap_exhausted'
+          : 'contribution_cap_cleared';
+
+        await tx.query(
+          `
+            insert into ${TABLES.tokenCredentialEvents} (
+              id,
+              token_credential_id,
+              org_id,
+              provider,
+              event_type,
+              status_code,
+              reason,
+              metadata,
+              created_at
+            ) values ($1,$2,$3,$4,$5,null,$6,$7,now())
+          `,
+          [
+            newId(),
+            input.id,
+            input.orgId,
+            input.provider,
+            eventType,
+            contributionCapLifecycleReason(windowInput.window, transition),
+            contributionCapLifecycleMetadata({
+              window: windowInput.window,
+              latestEventType: latestEvent?.event_type ?? null,
+              latestEventAt: latestEvent?.created_at ?? null,
+              snapshotFetchedAt: input.snapshotFetchedAt,
+              reservePercent: windowInput.reservePercent,
+              utilizationRatio: windowInput.utilizationRatio,
+              sharedThresholdPercent: windowInput.sharedThresholdPercent,
+              resetsAt: windowInput.resetsAt
+            })
+          ]
+        );
+
+        return transition;
+      };
+
+      return {
+        fiveHourTransition: await syncWindow({
+          window: '5h',
+          exhausted: input.fiveHourContributionCapExhausted,
+          reservePercent: input.fiveHourReservePercent,
+          utilizationRatio: input.fiveHourUtilizationRatio,
+          sharedThresholdPercent: input.fiveHourSharedThresholdPercent,
+          resetsAt: input.fiveHourResetsAt
+        }),
+        sevenDayTransition: await syncWindow({
+          window: '7d',
+          exhausted: input.sevenDayContributionCapExhausted,
+          reservePercent: input.sevenDayReservePercent,
+          utilizationRatio: input.sevenDayUtilizationRatio,
+          sharedThresholdPercent: input.sevenDaySharedThresholdPercent,
+          resetsAt: input.sevenDayResetsAt
+        })
+      };
+    });
+  }
+
   async recordSuccess(id: string): Promise<boolean> {
     const sql = `
       update ${TABLES.tokenCredentials}
@@ -793,34 +1154,29 @@ export class TokenCredentialRepository {
     return result.rowCount === 1;
   }
 
-  async listMaxedForProbe(limit: number): Promise<TokenCredential[]> {
+  async setProviderUsageWarning(
+    id: string,
+    warning: 'provider_usage_fetch_failed' | 'provider_usage_fetch_backoff_active' | null
+  ): Promise<boolean> {
     const sql = `
+      update ${TABLES.tokenCredentials}
+      set
+        last_refresh_error = $2,
+        updated_at = now()
+      where id = $1
+        and (
+          ($2::text is null and last_refresh_error like 'provider_usage_%')
+          or ($2::text is not null and last_refresh_error is distinct from $2)
+        )
+    `;
+    const result = await this.db.query(sql, [id, warning]);
+    return result.rowCount === 1;
+  }
+
+  async listMaxedForProbe(limit: number): Promise<TokenCredential[]> {
+    const sql = (includeContributionCapColumns: boolean) => `
       select
-        id,
-        org_id,
-        provider,
-        auth_scheme,
-        encrypted_access_token,
-        encrypted_refresh_token,
-        expires_at,
-        status,
-        rotation_version,
-        created_at,
-        revoked_at,
-        updated_at,
-        monthly_contribution_limit_units,
-        monthly_contribution_used_units,
-        monthly_window_start_at,
-        debug_label,
-        consecutive_failure_count,
-        consecutive_rate_limit_count,
-        last_failed_status,
-        last_failed_at,
-        last_rate_limited_at,
-        maxed_at,
-        rate_limited_until,
-        next_probe_at,
-        last_probe_at
+        ${tokenCredentialSelectColumns(includeContributionCapColumns)}
       from ${TABLES.tokenCredentials}
       where status = 'maxed'
         and expires_at > now()
@@ -828,7 +1184,7 @@ export class TokenCredentialRepository {
       order by coalesce(next_probe_at, maxed_at, updated_at) asc
       limit $1
     `;
-    const result = await this.db.query<TokenCredentialRow>(sql, [limit]);
+    const result = await queryTokenCredentialRowsWithContributionCapFallback(this.db, sql, [limit]);
     return result.rows.map(mapRow);
   }
 

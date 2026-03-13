@@ -495,7 +495,7 @@ export function AnalyticsDashboardClient() {
               <div className={styles.summaryValue}>{formatCount(snapshot.summary.activeTokens)}</div>
             </div>
             <div className={styles.summaryItem}>
-              <div className={styles.summaryLabel}>MAXED TOKENS</div>
+              <div className={styles.summaryLabel}>HEALTH MAXED</div>
               <div className={styles.summaryValue}>{formatCount(snapshot.summary.maxedTokens)}</div>
             </div>
             <div className={styles.summaryItem}>
@@ -550,7 +550,7 @@ export function AnalyticsDashboardClient() {
               </div>
               <div className={`${styles.noticeList} ${styles.systemNotesList}`}>
                 {snapshot.warnings.length === 0 ? (
-                  <div className={styles.noticeText}>Snapshot bridge stable. No current integration warnings.</div>
+                  <div className={styles.noticeText}>No current dashboard warnings in this snapshot.</div>
                 ) : (
                   snapshot.warnings.map((warning) => (
                     <div key={warning} className={styles.noticeText}>
@@ -568,7 +568,7 @@ export function AnalyticsDashboardClient() {
               </div>
               <div className={`${styles.eventList} ${styles.opsLogList}`}>
                 {snapshot.events.length === 0 ? (
-                  <div className={styles.noticeText}>No active warnings in the current snapshot.</div>
+                  <div className={styles.noticeText}>No recent lifecycle events in the current snapshot.</div>
                 ) : (
                   snapshot.events.map((event) => {
                     const detail = eventDetailLabel(event);

@@ -4,6 +4,7 @@ import { ReconciliationRepository } from '../repos/reconciliationRepository.js';
 import { RequestLogRepository } from '../repos/requestLogRepository.js';
 import { SellerKeyRepository } from '../repos/sellerKeyRepository.js';
 import { TokenCredentialRepository } from '../repos/tokenCredentialRepository.js';
+import { TokenCredentialProviderUsageRepository } from '../repos/tokenCredentialProviderUsageRepository.js';
 import type { SqlClient } from '../repos/sqlClient.js';
 import { C1ReconciliationDataSource } from './reconciliationDataSource.js';
 import {
@@ -14,6 +15,7 @@ import { createIdempotencyPurgeJob } from './idempotencyPurgeJob.js';
 import { createKeyHealthCheckJob } from './keyHealthJob.js';
 import { createRequestLogRetentionJob } from './requestLogRetentionJob.js';
 import { createTokenCredentialHealthJob } from './tokenCredentialHealthJob.js';
+import { createTokenCredentialProviderUsageJob } from './tokenCredentialProviderUsageJob.js';
 import { createReconciliationJob, type ReconciliationDataSource } from './reconciliationJob.js';
 import type { JobDefinition } from './types.js';
 
@@ -24,10 +26,12 @@ export function buildDefaultJobs(db: SqlClient, source: ReconciliationDataSource
   const requestLogRepo = new RequestLogRepository(db);
   const sellerKeysRepo = new SellerKeyRepository(db);
   const tokenCredentialsRepo = new TokenCredentialRepository(db);
+  const tokenCredentialProviderUsageRepo = new TokenCredentialProviderUsageRepository(db);
 
   return [
     createIdempotencyPurgeJob(idempotencyRepo),
     createKeyHealthCheckJob(sellerKeysRepo),
+    createTokenCredentialProviderUsageJob(tokenCredentialsRepo, tokenCredentialProviderUsageRepo),
     createTokenCredentialHealthJob(tokenCredentialsRepo),
     createDailyAggregatesIncrementalJob(aggregatesRepo),
     createDailyAggregatesCompactionJob(aggregatesRepo),

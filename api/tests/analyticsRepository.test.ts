@@ -1,6 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import { AnalyticsRepository } from '../src/repos/analyticsRepository.js';
 import { MockSqlClient } from './testHelpers.js';
+import type { SqlQueryResult, SqlValue, TransactionContext } from '../src/repos/sqlClient.js';
+
+class SequenceSqlClient extends MockSqlClient {
+  constructor(private readonly steps: Array<SqlQueryResult | Error>) {
+    super({ rows: [], rowCount: 0 });
+  }
+
+  override async query<T = Record<string, unknown>>(sql: string, params?: SqlValue[]): Promise<SqlQueryResult<T>> {
+    this.queries.push({ sql, params });
+    const next = this.steps.shift();
+    if (next instanceof Error) {
+      throw next;
+    }
+    return (next ?? { rows: [], rowCount: 0 }) as SqlQueryResult<T>;
+  }
+
+  override async transaction<T>(run: (tx: TransactionContext) => Promise<T>): Promise<T> {
+    return run(this);
+  }
+}
 
 describe('AnalyticsRepository', () => {
   it('reads token usage from canonical usage ledger rows only', async () => {
@@ -82,6 +102,62 @@ describe('AnalyticsRepository', () => {
     expect(db.queries[0]?.sql).toContain("ul.created_at >= now() - interval '24 hours'");
   });
 
+  it('joins Claude provider-usage snapshots into token health analytics and nulls non-Claude reserve fields', async () => {
+    const db = new MockSqlClient({ rows: [], rowCount: 0 });
+    const repo = new AnalyticsRepository(db);
+
+    await repo.getTokenHealth({ window: '7d', provider: 'anthropic' });
+
+    expect(db.queries[0]?.sql).toContain(`from in_token_credential_provider_usage pu`);
+    expect(db.queries[0]?.sql).toContain(`left join provider_usage pu on pu.token_credential_id = cb.id`);
+    expect(db.queries[0]?.sql).toContain(`case
+            when tc.provider = 'anthropic' then tc.five_hour_reserve_percent`);
+    expect(db.queries[0]?.sql).toContain(`pu.five_hour_utilization_ratio`);
+    expect(db.queries[0]?.sql).toContain(`five_hour_contribution_cap_exhausted`);
+    expect(db.queries[0]?.sql).toContain(`pu.provider_usage_fetched_at`);
+    expect(db.queries[0]?.sql).toContain(`tc.last_refresh_error`);
+    expect(db.queries[0]?.sql).toContain(`ce.event_type = 'contribution_cap_exhausted'`);
+    expect(db.queries[0]?.sql).toContain(`cc.event_type = 'contribution_cap_cleared'`);
+    expect(db.queries[0]?.sql).toContain(`claude_five_hour_cap_exhaustion_cycles_observed`);
+    expect(db.queries[0]?.sql).toContain(`claude_seven_day_avg_usage_units_before_cap_exhaustion`);
+  });
+
+  it('falls back to null reserve fields when contribution-cap columns are missing', async () => {
+    const db = new SequenceSqlClient([
+      Object.assign(new Error('column "five_hour_reserve_percent" does not exist'), {
+        code: '42703',
+        column: 'five_hour_reserve_percent'
+      }),
+      { rows: [], rowCount: 0 }
+    ]);
+    const repo = new AnalyticsRepository(db);
+
+    await repo.getTokenHealth({ window: '24h', provider: 'anthropic' });
+
+    expect(db.queries).toHaveLength(2);
+    expect(db.queries[1]?.sql).toContain(`null::integer as five_hour_reserve_percent`);
+    expect(db.queries[1]?.sql).toContain(`null::integer as seven_day_reserve_percent`);
+    expect(db.queries[1]?.sql).toContain(`from in_token_credential_provider_usage pu`);
+  });
+
+  it('falls back to null provider-usage fields when the snapshot table is missing', async () => {
+    const db = new SequenceSqlClient([
+      Object.assign(new Error('relation "in_token_credential_provider_usage" does not exist'), {
+        code: '42P01',
+        relation: 'in_token_credential_provider_usage'
+      }),
+      { rows: [], rowCount: 0 }
+    ]);
+    const repo = new AnalyticsRepository(db);
+
+    await repo.getTokenHealth({ window: '24h', provider: 'anthropic' });
+
+    expect(db.queries).toHaveLength(2);
+    expect(db.queries[1]?.sql).not.toContain(`from in_token_credential_provider_usage pu`);
+    expect(db.queries[1]?.sql).toContain(`null::numeric as five_hour_utilization_ratio`);
+    expect(db.queries[1]?.sql).toContain(`null::timestamptz as provider_usage_fetched_at`);
+  });
+
   it('supports 5h windows and 5m bucketed token timeseries', async () => {
     const db = new MockSqlClient({ rows: [], rowCount: 0 });
     const repo = new AnalyticsRepository(db);
@@ -143,7 +219,8 @@ describe('AnalyticsRepository', () => {
 
     expect(db.queries[0]?.sql).toContain("tce.created_at >= now() - interval '5 hours'");
     expect(db.queries[0]?.sql).toContain('LEFT JOIN in_token_credentials tc');
-    expect(db.queries[0]?.sql).toContain("WHEN tce.event_type = 'reactivated' THEN 'info'");
+    expect(db.queries[0]?.sql).toContain("WHEN tce.event_type in ('reactivated', 'contribution_cap_cleared') THEN 'info'");
+    expect(db.queries[0]?.sql).toContain("WHEN tce.event_type = 'contribution_cap_exhausted'");
     expect(db.queries[0]?.sql).toContain('LIMIT $2');
     expect(db.queries[0]?.params).toEqual(['openai', 20]);
   });

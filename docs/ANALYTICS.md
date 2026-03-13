@@ -18,17 +18,51 @@ That means we can derive later:
 - empirical capacity estimates
 - historical empirical utilization charts
 
-### No, we are not storing the raw data needed for true provider-set quota analytics.
+### Partially: we now store live Claude provider-usage snapshots, but not snapshot history.
+
+Stored now for Claude OAuth tokens:
+- provider-reported `5h` utilization ratio
+- provider-reported `7d` utilization ratio
+- provider-reported reset timestamps for both windows
+- latest fetch timestamp per token
 
 Not stored now:
-- provider-reported quota limits
-- provider-reported remaining quota
-- provider reset timestamps / provider quota-window headers
+- provider-declared absolute quota ceilings
+- provider-declared remaining units
+- historical snapshot series over time
 
-That means we cannot derive later:
-- true provider-declared daily / weekly / 5h quota usage
-- true remaining provider quota per OAuth token
-- true provider reset-window charts
+That means we can now:
+- enforce live per-token `5h` and `7d` reserves for pooled Claude routing
+- show current quota/reset state per Claude token in admin analytics
+
+That means we still cannot derive later from storage alone:
+- true historical provider quota charts
+- exact provider-declared remaining-unit burn curves over time
+
+### Current Claude quota fields
+
+The admin analytics read surface now carries these Claude quota fields:
+- `fiveHourReservePercent`
+- `fiveHourUtilizationRatio`
+- `fiveHourResetsAt`
+- `fiveHourContributionCapExhausted`
+- `sevenDayReservePercent`
+- `sevenDayUtilizationRatio`
+- `sevenDayResetsAt`
+- `sevenDayContributionCapExhausted`
+- `providerUsageFetchedAt`
+- `claudeFiveHourCapExhaustionCyclesObserved`
+- `claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow`
+- `claudeFiveHourAvgUsageUnitsBeforeCapExhaustion`
+- `claudeSevenDayCapExhaustionCyclesObserved`
+- `claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow`
+- `claudeSevenDayAvgUsageUnitsBeforeCapExhaustion`
+
+Current expectation:
+- non-Claude rows keep those fields `null`
+- Claude rows may still keep them `null` when the latest usage snapshot is missing or analytics is reading against a pre-migration environment
+- the dashboard shows raw Claude utilization in `5H` / `7D`, tints exhausted cells red when a reserve or provider limit is hit, and renders `n/a` for non-Claude rows
+- the Claude cap-cycle usage fields are derived from durable `contribution_cap_exhausted` / `contribution_cap_cleared` events plus usage-ledger sums between the prior clear point and each exhaustion point
 
 ## What We Actually Store
 
@@ -42,7 +76,7 @@ That means we cannot derive later:
 
 - `in_token_credential_events`
   - durable lifecycle history
-  - currently: `maxed`, `reactivated`, `probe_failed`
+  - currently: `maxed`, `reactivated`, `probe_failed`, `contribution_cap_exhausted`, `contribution_cap_cleared`
 
 - `in_token_credentials`
   - current token state
@@ -67,6 +101,8 @@ That means we cannot derive later:
   - current manual monthly budget usage
   - exact `maxedEvents7d`
   - empirical maxing / recovery / capacity / utilization metrics when enough history exists
+  - live Claude provider-usage / reserve fields for contribution-cap routing
+  - Claude 5h / 7d usage-units-before-cap-exhaustion metrics when those cap cycles have been observed
 
 - `/tokens/routing`
   - per-token routing quality, fallbacks, latency, TTFB
@@ -103,6 +139,11 @@ That means we cannot derive later:
   - one merged snapshot for summary + tokens + buyers + anomalies + events
   - shared snapshot cache keyed by `window/provider/source`, refreshed at most once every ~2.5s per key
   - keeps the admin dashboard feeling live without recomputing the heaviest buyer/token-health queries for every tab
+  - carries raw Claude provider-usage/reserve fields when available
+  - derives `5H` / `7D` in the dashboard layer
+  - renders `n/a` CAP placeholders for non-Claude rows while keeping the raw API fields `null`
+  - surfaces provider-usage freshness and contribution-cap warnings in the snapshot `warnings` list
+  - surfaces operator-facing Claude quota warnings for missing snapshots, stale snapshots, and cap exhaustion
 
 - `/anomalies`
   - aggregate staleness / mismatch and attribution checks
@@ -115,4 +156,6 @@ If the question is:
   - yes
 
 - "Can we build true provider quota analytics from what we store now?"
-  - no
+  - partially
+  - we can drive current-state reserve enforcement and current-token quota visibility
+  - we still cannot reconstruct historical provider quota usage over time

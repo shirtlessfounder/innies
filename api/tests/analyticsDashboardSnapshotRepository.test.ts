@@ -45,7 +45,7 @@ describe('AnalyticsDashboardSnapshotRepository', () => {
       { rows: [{ locked: true }], rowCount: 1 },
       {
         rows: [{
-          cache_key: 'dashboard:24h:openai:_',
+          cache_key: 'dashboard:v3:24h:openai:_',
           dashboard_window: '24h',
           provider: 'openai',
           source: null,
@@ -85,7 +85,7 @@ describe('AnalyticsDashboardSnapshotRepository', () => {
     expect(sql.queries[0].sql).toContain('pg_try_advisory_xact_lock');
     expect(sql.queries[1].sql).toContain('insert into in_analytics_dashboard_snapshots');
     expect(snapshot).toEqual({
-      cacheKey: 'dashboard:24h:openai:_',
+      cacheKey: 'dashboard:v3:24h:openai:_',
       window: '24h',
       provider: 'openai',
       source: undefined,

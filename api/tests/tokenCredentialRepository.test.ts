@@ -6,17 +6,27 @@ import { encryptSecret } from '../src/utils/crypto.js';
 class SequenceSqlClient implements SqlClient {
   readonly queries: Array<{ sql: string; params?: SqlValue[] }> = [];
 
-  constructor(private readonly results: SqlQueryResult[]) {}
+  constructor(private readonly results: Array<SqlQueryResult | Error>) {}
 
   async query<T = Record<string, unknown>>(sql: string, params?: SqlValue[]): Promise<SqlQueryResult<T>> {
     this.queries.push({ sql, params });
     const next = this.results.shift() ?? { rows: [], rowCount: 0 };
+    if (next instanceof Error) {
+      throw next;
+    }
     return next as SqlQueryResult<T>;
   }
 
   async transaction<T>(run: (tx: TransactionContext) => Promise<T>): Promise<T> {
     return run(this);
   }
+}
+
+function createMissingContributionCapColumnError(column: 'five_hour_reserve_percent' | 'seven_day_reserve_percent'): Error {
+  return Object.assign(new Error(`column "${column}" does not exist`), {
+    code: '42703',
+    column
+  });
 }
 
 describe('tokenCredentialRepository', () => {
@@ -78,11 +88,61 @@ describe('tokenCredentialRepository', () => {
     expect(db.queries[0].sql).toContain('rate_limited_until is null or rate_limited_until <= now()');
   });
 
+  it('falls back cleanly when contribution-cap columns are missing from routing reads', async () => {
+    process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 10).toString('base64');
+    const db = new SequenceSqlClient([
+      createMissingContributionCapColumnError('five_hour_reserve_percent'),
+      {
+        rows: [{
+          id: 'cred_legacy_1',
+          org_id: '00000000-0000-0000-0000-000000000001',
+          provider: 'anthropic',
+          auth_scheme: 'x_api_key',
+          encrypted_access_token: encryptSecret('access-legacy'),
+          encrypted_refresh_token: encryptSecret('refresh-legacy'),
+          expires_at: '2026-03-02T00:00:00Z',
+          status: 'active',
+          rotation_version: 1,
+          created_at: '2026-03-01T00:00:00Z',
+          updated_at: '2026-03-01T00:00:00Z',
+          revoked_at: null,
+          monthly_contribution_limit_units: null,
+          monthly_contribution_used_units: 0,
+          monthly_window_start_at: '2026-03-01T00:00:00Z',
+          five_hour_reserve_percent: 0,
+          seven_day_reserve_percent: 0,
+          debug_label: null,
+          consecutive_failure_count: 0,
+          consecutive_rate_limit_count: 0,
+          last_failed_status: null,
+          last_failed_at: null,
+          last_rate_limited_at: null,
+          maxed_at: null,
+          rate_limited_until: null,
+          next_probe_at: null,
+          last_probe_at: null
+        }],
+        rowCount: 1
+      }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    const [found] = await repo.listActiveForRouting('00000000-0000-0000-0000-000000000001', 'anthropic');
+
+    expect(found?.accessToken).toBe('access-legacy');
+    expect(found?.fiveHourReservePercent).toBe(0);
+    expect(found?.sevenDayReservePercent).toBe(0);
+    expect(db.queries).toHaveLength(2);
+    expect(db.queries[0].sql).toContain('five_hour_reserve_percent');
+    expect(db.queries[1].sql).toContain('0::integer as five_hour_reserve_percent');
+    expect(db.queries[1].sql).toContain('0::integer as seven_day_reserve_percent');
+  });
+
   it('rotates active credential with deterministic status updates', async () => {
     process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 11).toString('base64');
     const db = new SequenceSqlClient([
       { rows: [{ id: 'latest_1', rotation_version: 2 }], rowCount: 1 },
-      { rows: [{ id: 'old_1' }], rowCount: 1 },
+      { rows: [{ id: 'old_1', status: 'active', debug_label: 'oauth-main-1' }], rowCount: 1 },
       { rows: [], rowCount: 1 },
       { rows: [], rowCount: 1 },
       { rows: [], rowCount: 1 }
@@ -102,6 +162,121 @@ describe('tokenCredentialRepository', () => {
     expect(rotated.previousId).toBe('old_1');
     expect(db.queries[2].sql).toContain("set status = 'rotating'");
     expect(db.queries[4].sql).toContain("set status = 'revoked'");
+    expect(db.queries[3].params?.[8]).toBe('oauth-main-1');
+  });
+
+  it('rotates selected maxed credential by revoking it directly', async () => {
+    process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 12).toString('base64');
+    const db = new SequenceSqlClient([
+      { rows: [{ id: 'latest_1', rotation_version: 4 }], rowCount: 1 },
+      { rows: [{ id: 'old_maxed_1', status: 'maxed', debug_label: 'darryn' }], rowCount: 1 },
+      { rows: [], rowCount: 1 },
+      { rows: [], rowCount: 1 }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    const rotated = await repo.rotate({
+      orgId: '00000000-0000-0000-0000-000000000001',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'next-token',
+      refreshToken: 'next-refresh',
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      previousCredentialId: 'old_maxed_1'
+    });
+
+    expect(rotated.rotationVersion).toBe(5);
+    expect(rotated.previousId).toBe('old_maxed_1');
+    expect(db.queries).toHaveLength(4);
+    expect(db.queries[2].sql).toContain('insert into in_token_credentials');
+    expect(db.queries[2].params?.[8]).toBe('darryn');
+    expect(db.queries[3].sql).toContain("set status = 'revoked'");
+  });
+
+  it('lists active provider poll candidates without relying on stored auth_scheme', async () => {
+    process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 21).toString('base64');
+    const db = new SequenceSqlClient([{
+      rows: [{
+        id: 'cred_oauth_1',
+        org_id: '00000000-0000-0000-0000-000000000001',
+        provider: 'anthropic',
+        auth_scheme: 'x_api_key',
+        encrypted_access_token: encryptSecret('sk-ant-oat01-oauth-access'),
+        encrypted_refresh_token: encryptSecret('oauth-refresh'),
+        expires_at: '2026-03-02T00:00:00Z',
+        status: 'active',
+        rotation_version: 3,
+        created_at: '2026-03-01T00:00:00Z',
+        updated_at: '2026-03-01T01:00:00Z',
+        revoked_at: null,
+        monthly_contribution_limit_units: null,
+        monthly_contribution_used_units: 0,
+        monthly_window_start_at: '2026-03-01T00:00:00Z',
+        five_hour_reserve_percent: 20,
+        seven_day_reserve_percent: 15,
+        debug_label: 'claude-oauth-1'
+      }],
+      rowCount: 1
+    }]);
+    const repo = new TokenCredentialRepository(db);
+
+    const [found] = await repo.listActiveOauthByProvider('anthropic');
+
+    expect(found?.authScheme).toBe('x_api_key');
+    expect(found?.accessToken).toBe('sk-ant-oat01-oauth-access');
+    expect(found?.fiveHourReservePercent).toBe(20);
+    expect(found?.sevenDayReservePercent).toBe(15);
+    expect(db.queries[0].sql).not.toContain("auth_scheme = 'bearer'");
+    expect(db.queries[0].sql).toContain("status = 'active'");
+  });
+
+  it('falls back cleanly when contribution-cap columns are missing from maxed probe reads', async () => {
+    process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 23).toString('base64');
+    const db = new SequenceSqlClient([
+      createMissingContributionCapColumnError('seven_day_reserve_percent'),
+      {
+        rows: [{
+          id: 'cred_maxed_1',
+          org_id: '00000000-0000-0000-0000-000000000001',
+          provider: 'anthropic',
+          auth_scheme: 'bearer',
+          encrypted_access_token: encryptSecret('sk-ant-oat01-maxed'),
+          encrypted_refresh_token: encryptSecret('oauth-refresh'),
+          expires_at: '2026-03-02T00:00:00Z',
+          status: 'maxed',
+          rotation_version: 4,
+          created_at: '2026-03-01T00:00:00Z',
+          updated_at: '2026-03-01T00:00:00Z',
+          revoked_at: null,
+          monthly_contribution_limit_units: null,
+          monthly_contribution_used_units: 0,
+          monthly_window_start_at: '2026-03-01T00:00:00Z',
+          five_hour_reserve_percent: 0,
+          seven_day_reserve_percent: 0,
+          debug_label: 'claude-maxed-1',
+          consecutive_failure_count: 0,
+          consecutive_rate_limit_count: 0,
+          last_failed_status: null,
+          last_failed_at: null,
+          last_rate_limited_at: null,
+          maxed_at: '2026-03-01T01:00:00Z',
+          rate_limited_until: null,
+          next_probe_at: '2026-03-01T02:00:00Z',
+          last_probe_at: null
+        }],
+        rowCount: 1
+      }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    const [found] = await repo.listMaxedForProbe(5);
+
+    expect(found?.status).toBe('maxed');
+    expect(found?.fiveHourReservePercent).toBe(0);
+    expect(found?.sevenDayReservePercent).toBe(0);
+    expect(db.queries).toHaveLength(2);
+    expect(db.queries[1].sql).toContain('0::integer as five_hour_reserve_percent');
+    expect(db.queries[1].sql).toContain('0::integer as seven_day_reserve_percent');
   });
 
   it('increments monthly contribution usage when under cap', async () => {
@@ -111,6 +286,37 @@ describe('tokenCredentialRepository', () => {
     const ok = await repo.addMonthlyContributionUsage('cred_1', 120);
     expect(ok).toBe(true);
     expect(db.queries[0].sql).toContain('monthly_contribution_used_units');
+  });
+
+  it('updates contribution-cap reserve fields without touching other token state', async () => {
+    const db = new SequenceSqlClient([{
+      rows: [{
+        id: 'cred_1',
+        org_id: '00000000-0000-0000-0000-000000000001',
+        provider: 'anthropic',
+        five_hour_reserve_percent: 35,
+        seven_day_reserve_percent: 10
+      }],
+      rowCount: 1
+    }]);
+    const repo = new TokenCredentialRepository(db);
+
+    const updated = await repo.updateContributionCap('cred_1', {
+      fiveHourReservePercent: 35,
+      sevenDayReservePercent: 10
+    });
+
+    expect(updated).toEqual({
+      id: 'cred_1',
+      orgId: '00000000-0000-0000-0000-000000000001',
+      provider: 'anthropic',
+      fiveHourReservePercent: 35,
+      sevenDayReservePercent: 10
+    });
+    expect(db.queries[0].sql).toContain('five_hour_reserve_percent');
+    expect(db.queries[0].sql).toContain('seven_day_reserve_percent');
+    expect(db.queries[0].sql).toContain('updated_at = now()');
+    expect(db.queries[0].sql).toContain("and provider = 'anthropic'");
   });
 
   it('records failure and marks credential maxed when threshold is reached', async () => {
@@ -249,6 +455,111 @@ describe('tokenCredentialRepository', () => {
     });
   });
 
+  it('records repeated Claude 429s into extended local backoff without maxing', async () => {
+    const db = new SequenceSqlClient([
+      {
+        rows: [{
+          status: 'active',
+          consecutive_rate_limits: 15,
+          rate_limited_until: '2026-03-04T01:00:00Z'
+        }],
+        rowCount: 1
+      }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    const result = await repo.recordRateLimitAndApplyCooldown({
+      id: 'cred_1',
+      statusCode: 429,
+      cooldownThreshold: 5,
+      cooldownUntil: new Date('2026-03-04T00:05:00Z'),
+      escalationThreshold: 15,
+      escalationCooldownUntil: new Date('2026-03-04T01:00:00Z'),
+      reason: 'upstream_429_consecutive_rate_limit'
+    });
+
+    expect(result).toEqual({
+      status: 'active',
+      consecutiveRateLimits: 15,
+      rateLimitedUntil: new Date('2026-03-04T01:00:00.000Z'),
+      backoffKind: 'extended'
+    });
+    expect(db.queries[0].sql).toContain('consecutive_rate_limit_count');
+    expect(db.queries[0].sql).toContain('rate_limited_until');
+    expect(db.queries[0].sql).not.toContain("then 'maxed'");
+    expect(db.queries[0].sql).not.toContain('next_probe_at');
+    expect(db.queries[0].params).toEqual([
+      'cred_1',
+      5,
+      new Date('2026-03-04T00:05:00Z'),
+      15,
+      new Date('2026-03-04T01:00:00Z'),
+      'upstream_429_consecutive_rate_limit'
+    ]);
+  });
+
+  it('records Claude contribution-cap exhausted and cleared transitions per window', async () => {
+    const db = new SequenceSqlClient([
+      { rows: [], rowCount: 1 },
+      { rows: [], rowCount: 0 },
+      { rows: [], rowCount: 1 },
+      {
+        rows: [{
+          event_type: 'contribution_cap_exhausted',
+          created_at: '2026-03-03T00:00:00Z'
+        }],
+        rowCount: 1
+      },
+      { rows: [], rowCount: 1 }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    const result = await repo.syncClaudeContributionCapLifecycle({
+      id: 'cred_1',
+      orgId: '00000000-0000-0000-0000-000000000001',
+      provider: 'anthropic',
+      snapshotFetchedAt: new Date('2026-03-04T00:00:00Z'),
+      fiveHourReservePercent: 20,
+      fiveHourUtilizationRatio: 0.81,
+      fiveHourResetsAt: new Date('2026-03-04T05:00:00Z'),
+      fiveHourSharedThresholdPercent: 80,
+      fiveHourContributionCapExhausted: true,
+      sevenDayReservePercent: 10,
+      sevenDayUtilizationRatio: 0.65,
+      sevenDayResetsAt: new Date('2026-03-09T00:00:00Z'),
+      sevenDaySharedThresholdPercent: 90,
+      sevenDayContributionCapExhausted: false
+    });
+
+    expect(result).toEqual({
+      fiveHourTransition: 'exhausted',
+      sevenDayTransition: 'cleared'
+    });
+    expect(db.queries[0].sql).toContain('pg_advisory_xact_lock');
+    expect(db.queries[2].params?.[4]).toBe('contribution_cap_exhausted');
+    expect(db.queries[2].params?.[5]).toBe('provider_usage_5h_threshold_reached');
+    expect(db.queries[2].params?.[6]).toMatchObject({
+      window: '5h',
+      reservePercent: 20,
+      utilizationRatio: 0.81,
+      sharedThresholdPercent: 80,
+      resetsAt: '2026-03-04T05:00:00.000Z',
+      previousEventType: null,
+      previousEventAt: null
+    });
+    expect(db.queries[4].params?.[4]).toBe('contribution_cap_cleared');
+    expect(db.queries[4].params?.[5]).toBe('provider_usage_7d_threshold_cleared');
+    expect(db.queries[4].params?.[6]).toMatchObject({
+      window: '7d',
+      reservePercent: 10,
+      utilizationRatio: 0.65,
+      sharedThresholdPercent: 90,
+      resetsAt: '2026-03-09T00:00:00.000Z',
+      previousEventType: 'contribution_cap_exhausted',
+      previousEventAt: '2026-03-03T00:00:00.000Z'
+    });
+  });
+
   it('reactivates maxed credential and clears probe/failure fields', async () => {
     const db = new SequenceSqlClient([
       {
@@ -276,6 +587,19 @@ describe('tokenCredentialRepository', () => {
       previousMaxedAt: '2026-03-03T00:00:00.000Z',
       probeSucceededAt: '2026-03-04T00:00:00.000Z'
     });
+  });
+
+  it('persists provider-usage warning state without churning unchanged rows', async () => {
+    const db = new SequenceSqlClient([{ rows: [], rowCount: 1 }]);
+    const repo = new TokenCredentialRepository(db);
+
+    const ok = await repo.setProviderUsageWarning('cred_1', 'provider_usage_fetch_failed');
+
+    expect(ok).toBe(true);
+    expect(db.queries[0].sql).toContain('last_refresh_error = $2');
+    expect(db.queries[0].sql).toContain("last_refresh_error like 'provider_usage_%'");
+    expect(db.queries[0].sql).toContain('last_refresh_error is distinct from $2');
+    expect(db.queries[0].params).toEqual(['cred_1', 'provider_usage_fetch_failed']);
   });
 
   it('records failed probe metadata with next probe and prior maxed timestamp', async () => {

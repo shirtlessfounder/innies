@@ -21,7 +21,9 @@ export type TokenSortKey =
   | 'errorRate'
   | 'percentOfWindow'
   | 'utilizationRate24h'
-  | 'maxedEvents7d';
+  | 'maxedEvents7d'
+  | 'fiveHourCapUsedRatio'
+  | 'sevenDayCapUsedRatio';
 
 export type BuyerSortKey =
   | 'label'
@@ -67,6 +69,12 @@ function directionValue(direction: SortDirection, comparison: number): number {
   return direction === 'asc' ? comparison : comparison * -1;
 }
 
+function contributionCapSortValue(row: AnalyticsTokenRow, key: 'fiveHourCapUsedRatio' | 'sevenDayCapUsedRatio'): number | null {
+  const provider = row.provider.trim().toLowerCase();
+  if (provider !== 'anthropic') return null;
+  return key === 'fiveHourCapUsedRatio' ? row.fiveHourCapUsedRatio : row.sevenDayCapUsedRatio;
+}
+
 function compareTokenRows(
   left: AnalyticsTokenRow,
   right: AnalyticsTokenRow,
@@ -93,6 +101,22 @@ function compareTokenRows(
       return directionValue(sort.direction, compareNullableNumbers(left.utilizationRate24h, right.utilizationRate24h));
     case 'maxedEvents7d':
       return directionValue(sort.direction, compareNullableNumbers(left.maxedEvents7d, right.maxedEvents7d));
+    case 'fiveHourCapUsedRatio':
+      return directionValue(
+        sort.direction,
+        compareNullableNumbers(
+          contributionCapSortValue(left, 'fiveHourCapUsedRatio'),
+          contributionCapSortValue(right, 'fiveHourCapUsedRatio')
+        )
+      );
+    case 'sevenDayCapUsedRatio':
+      return directionValue(
+        sort.direction,
+        compareNullableNumbers(
+          contributionCapSortValue(left, 'sevenDayCapUsedRatio'),
+          contributionCapSortValue(right, 'sevenDayCapUsedRatio')
+        )
+      );
     case 'usageUnits':
     default:
       return directionValue(sort.direction, compareNullableNumbers(left.usageUnits, right.usageUnits));

@@ -26,6 +26,14 @@ import {
   resolveOpenAiOauthClientId,
   resolveOpenAiOauthExpiresAt
 } from '../utils/openaiOauth.js';
+import {
+  CLAUDE_REPEATED_429_LOCAL_BACKOFF_REASON,
+  evaluateClaudeContributionCap,
+  providerUsageWarningReasonFromRefreshOutcome,
+  readTokenCredentialRateLimitLongBackoffMinutes,
+  refreshAnthropicOauthUsageNow
+} from '../services/tokenCredentialProviderUsage.js';
+import { readClaudeContributionCapSnapshotState } from '../services/claudeContributionCapState.js';
 
 const router = Router();
 
@@ -779,7 +787,8 @@ function buildTokenRouteDecision(
   credential: TokenCredential,
   correlation: OpenClawCorrelation,
   providerPreference?: ProviderPreferenceMeta,
-  compatTranslation?: CompatTranslationMeta
+  compatTranslation?: CompatTranslationMeta,
+  providerUsageMeta?: Record<string, unknown>
 ): Record<string, unknown> {
   const selectionReason = providerPreference?.selectionReason ?? 'preferred_provider_selected';
   const decision: Record<string, unknown> = {
@@ -812,7 +821,85 @@ function buildTokenRouteDecision(
     decision.translated_path = compatTranslation.translatedPath;
     decision.translated_model = compatTranslation.translatedModel;
   }
+  if (providerUsageMeta) {
+    Object.assign(decision, providerUsageMeta);
+  }
   return decision;
+}
+
+async function resolveEligibleTokenCredentials(input: {
+  orgId: string;
+  provider: string;
+  requestId: string;
+}): Promise<{
+  credentials: TokenCredential[];
+  providerUsageRouteMeta: Map<string, Record<string, unknown>>;
+  providerUsageExcludedReasonCounts: Record<string, number>;
+}> {
+  const orderedCredentials = orderCredentialsForRequest(
+    await runtime.repos.tokenCredentials.listActiveForRouting(input.orgId, input.provider),
+    input.requestId
+  );
+
+  const providerUsageRouteMeta = new Map<string, Record<string, unknown>>();
+  if (canonicalizeProvider(input.provider) !== 'anthropic' || orderedCredentials.length === 0) {
+    return {
+      credentials: orderedCredentials,
+      providerUsageRouteMeta,
+      providerUsageExcludedReasonCounts: {}
+    };
+  }
+
+  const snapshots = await runtime.repos.tokenCredentialProviderUsage.listByTokenCredentialIds(
+    orderedCredentials.map((credential) => credential.id)
+  );
+  const snapshotsByCredentialId = new Map(snapshots.map((snapshot) => [snapshot.tokenCredentialId, snapshot]));
+  const eligibleCredentials: TokenCredential[] = [];
+  const providerUsageExcludedReasonCounts: Record<string, number> = {};
+  const rateLimitEscalationThreshold = tokenCredentialRateLimitMaxThreshold();
+
+  for (const credential of orderedCredentials) {
+    const evaluation = evaluateClaudeContributionCap({
+      credential,
+      snapshot: snapshotsByCredentialId.get(credential.id) ?? null
+    });
+    const repeated429HoldActive = evaluation.inScope
+      && credential.consecutiveRateLimitCount >= rateLimitEscalationThreshold
+      && (!evaluation.isFresh || !evaluation.eligible);
+
+    if (evaluation.inScope) {
+      providerUsageRouteMeta.set(credential.id, {
+        ...evaluation.routeDecisionMeta,
+        claudeRepeated429LocalBackoffActive: repeated429HoldActive,
+        claudeRepeated429ConsecutiveRateLimits: credential.consecutiveRateLimitCount,
+        claudeRepeated429EscalationThreshold: rateLimitEscalationThreshold,
+        claudeRepeated429RecoveryBlockedBy: repeated429HoldActive
+          ? evaluation.exclusionReason ?? evaluation.warningReason ?? CLAUDE_REPEATED_429_LOCAL_BACKOFF_REASON
+          : null
+      });
+    }
+
+    if (!evaluation.eligible) {
+      const reason = evaluation.exclusionReason ?? 'provider_usage_unknown';
+      providerUsageExcludedReasonCounts[reason] = (providerUsageExcludedReasonCounts[reason] ?? 0) + 1;
+      continue;
+    }
+
+    if (repeated429HoldActive) {
+      providerUsageExcludedReasonCounts[CLAUDE_REPEATED_429_LOCAL_BACKOFF_REASON] = (
+        providerUsageExcludedReasonCounts[CLAUDE_REPEATED_429_LOCAL_BACKOFF_REASON] ?? 0
+      ) + 1;
+      continue;
+    }
+
+    eligibleCredentials.push(credential);
+  }
+
+  return {
+    credentials: eligibleCredentials,
+    providerUsageRouteMeta,
+    providerUsageExcludedReasonCounts
+  };
 }
 
 function buildSellerRouteDecision(input: {
@@ -881,6 +968,136 @@ async function recordTokenCredentialOutcome(input: {
     const cooldownThreshold = tokenCredentialRateLimitCooldownThreshold();
     const threshold = tokenCredentialRateLimitMaxThreshold();
     const cooldownUntil = new Date(Date.now() + (tokenCredentialRateLimitCooldownMinutes() * 60 * 1000));
+
+    if (isAnthropicOauthToken(credential, provider)) {
+      const escalationCooldownUntil = new Date(
+        Date.now() + (readTokenCredentialRateLimitLongBackoffMinutes() * 60 * 1000)
+      );
+      const result = await runtime.repos.tokenCredentials.recordRateLimitAndApplyCooldown({
+        id: credential.id,
+        statusCode: upstreamStatus,
+        cooldownThreshold,
+        cooldownUntil,
+        escalationThreshold: threshold,
+        escalationCooldownUntil,
+        reason: 'upstream_429_consecutive_rate_limit'
+      });
+
+      if (result?.backoffKind === 'extended') {
+        const refreshResult = await refreshAnthropicOauthUsageNow(
+          runtime.repos.tokenCredentialProviderUsage,
+          credential,
+          { ignoreRetryBackoff: true }
+        );
+        try {
+          await runtime.repos.tokenCredentials.setProviderUsageWarning(
+            credential.id,
+            providerUsageWarningReasonFromRefreshOutcome(refreshResult)
+          );
+        } catch (error) {
+          console.error('[token-credential] provider-usage-warning-sync-failed', {
+            request_id: requestId,
+            attempt_no: attemptNo,
+            provider,
+            model,
+            credential_id: credential.id,
+            credential_label: credential.debugLabel ?? null,
+            error_message: error instanceof Error ? error.message : 'unknown'
+          });
+        }
+        if (refreshResult.ok) {
+          const capState = readClaudeContributionCapSnapshotState({
+            credential,
+            snapshot: refreshResult.snapshot
+          });
+          if (
+            capState.fetchedAt !== null
+            && capState.fiveHourUtilizationRatio !== null
+            && capState.sevenDayUtilizationRatio !== null
+            && capState.fiveHourSharedThresholdPercent !== null
+            && capState.sevenDaySharedThresholdPercent !== null
+          ) {
+            try {
+              await runtime.repos.tokenCredentials.syncClaudeContributionCapLifecycle({
+                id: credential.id,
+                orgId: credential.orgId,
+                provider: credential.provider,
+                snapshotFetchedAt: capState.fetchedAt,
+                fiveHourReservePercent: capState.fiveHourReservePercent,
+                fiveHourUtilizationRatio: capState.fiveHourUtilizationRatio,
+                fiveHourResetsAt: capState.fiveHourResetsAt,
+                fiveHourSharedThresholdPercent: capState.fiveHourSharedThresholdPercent,
+                fiveHourContributionCapExhausted: capState.fiveHourContributionCapExhausted,
+                sevenDayReservePercent: capState.sevenDayReservePercent,
+                sevenDayUtilizationRatio: capState.sevenDayUtilizationRatio,
+                sevenDayResetsAt: capState.sevenDayResetsAt,
+                sevenDaySharedThresholdPercent: capState.sevenDaySharedThresholdPercent,
+                sevenDayContributionCapExhausted: capState.sevenDayContributionCapExhausted
+              });
+            } catch (error) {
+              console.error('[token-credential] contribution-cap-lifecycle-sync-failed', {
+                request_id: requestId,
+                attempt_no: attemptNo,
+                provider,
+                model,
+                credential_id: credential.id,
+                credential_label: credential.debugLabel ?? null,
+                error_message: error instanceof Error ? error.message : 'unknown'
+              });
+            }
+          }
+        }
+        const evaluation = refreshResult.ok
+          ? evaluateClaudeContributionCap({
+              credential,
+              snapshot: refreshResult.snapshot
+            })
+          : null;
+        const clearedExtendedBackoff = refreshResult.ok
+          && evaluation?.inScope === true
+          && evaluation.isFresh
+          && evaluation.eligible
+          ? await runtime.repos.tokenCredentials.clearRateLimitBackoff(credential.id, threshold)
+          : false;
+
+        console.warn('[token-credential] cooldown-rate-limit-extended', {
+          request_id: requestId,
+          attempt_no: attemptNo,
+          provider,
+          model,
+          credential_id: credential.id,
+          credential_label: credential.debugLabel ?? null,
+          consecutive_rate_limits: result.consecutiveRateLimits,
+          cooldown_threshold: cooldownThreshold,
+          escalation_threshold: threshold,
+          rate_limited_until: result.rateLimitedUntil?.toISOString() ?? null,
+          provider_usage_refresh_ok: refreshResult.ok,
+          provider_usage_refresh_reason: refreshResult.ok
+            ? evaluation?.exclusionReason ?? evaluation?.warningReason ?? 'healthy'
+            : refreshResult.warningReason ?? refreshResult.reason,
+          provider_usage_refresh_retry_after_ms: refreshResult.ok ? null : (refreshResult.retryAfterMs ?? null),
+          repeated_429_local_backoff_cleared: clearedExtendedBackoff
+        });
+        return;
+      }
+
+      if (result?.backoffKind === 'cooldown') {
+        console.warn('[token-credential] cooldown-rate-limit', {
+          request_id: requestId,
+          attempt_no: attemptNo,
+          provider,
+          model,
+          credential_id: credential.id,
+          credential_label: credential.debugLabel ?? null,
+          consecutive_rate_limits: result.consecutiveRateLimits,
+          cooldown_threshold: cooldownThreshold,
+          escalation_threshold: threshold,
+          rate_limited_until: result.rateLimitedUntil?.toISOString() ?? null
+        });
+      }
+      return;
+    }
+
     const nextProbeAt = new Date(Date.now() + (tokenCredentialProbeIntervalHours() * 60 * 60 * 1000));
     const result = await runtime.repos.tokenCredentials.recordRateLimitAndMaybeMax({
       id: credential.id,
@@ -1673,12 +1890,23 @@ async function executeTokenModeNonStreaming(input: {
     compatTranslation,
     allowCompatTerminalErrorResponse
   } = input;
-  const credentials = orderCredentialsForRequest(
-    await runtime.repos.tokenCredentials.listActiveForRouting(orgId, provider),
+  const {
+    credentials,
+    providerUsageRouteMeta,
+    providerUsageExcludedReasonCounts
+  } = await resolveEligibleTokenCredentials({
+    orgId,
+    provider,
     requestId
-  );
+  });
   if (credentials.length === 0) {
-    throw new AppError('capacity_unavailable', 429, 'No eligible token credentials available', { provider, model });
+    throw new AppError('capacity_unavailable', 429, 'No eligible token credentials available', {
+      provider,
+      model,
+      providerUsageExcludedReasonCounts: Object.keys(providerUsageExcludedReasonCounts).length > 0
+        ? providerUsageExcludedReasonCounts
+        : undefined
+    });
   }
 
   let attemptNo = 0;
@@ -1722,7 +1950,13 @@ async function executeTokenModeNonStreaming(input: {
           provider,
           model,
           streaming: false,
-          routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
+          routeDecision: buildTokenRouteDecision(
+            credential,
+            correlation,
+            providerPreference,
+            compatTranslation,
+            providerUsageRouteMeta.get(credential.id)
+          ),
           upstreamStatus: failure.statusCode,
           errorCode: inferErrorCode(failure),
           latencyMs: Date.now() - startedAt,
@@ -1813,7 +2047,13 @@ async function executeTokenModeNonStreaming(input: {
             provider,
             model,
             streaming: false,
-            routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
+            routeDecision: buildTokenRouteDecision(
+              credential,
+              correlation,
+              providerPreference,
+              compatTranslation,
+              providerUsageRouteMeta.get(credential.id)
+            ),
             upstreamStatus: status,
             errorCode: 'upstream_403_blocked_passthrough',
             latencyMs: Date.now() - startedAt,
@@ -2008,7 +2248,13 @@ async function executeTokenModeNonStreaming(input: {
             provider,
             model,
             streaming: false,
-            routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
+            routeDecision: buildTokenRouteDecision(
+              credential,
+              correlation,
+              providerPreference,
+              compatTranslation,
+              providerUsageRouteMeta.get(credential.id)
+            ),
             upstreamStatus: status,
             errorCode: 'upstream_5xx_passthrough',
             latencyMs: Date.now() - startedAt,
@@ -2134,7 +2380,13 @@ async function executeTokenModeNonStreaming(input: {
         provider,
         model,
         streaming: false,
-        routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
+        routeDecision: buildTokenRouteDecision(
+          credential,
+          correlation,
+          providerPreference,
+          compatTranslation,
+          providerUsageRouteMeta.get(credential.id)
+        ),
         upstreamStatus: status,
         latencyMs: Date.now() - startedAt,
         ttfbMs
@@ -2275,12 +2527,23 @@ async function executeTokenModeStreaming(input: {
     allowCompatTerminalErrorResponse
   } = input;
 
-  const credentials = orderCredentialsForRequest(
-    await runtime.repos.tokenCredentials.listActiveForRouting(orgId, provider),
+  const {
+    credentials,
+    providerUsageRouteMeta,
+    providerUsageExcludedReasonCounts
+  } = await resolveEligibleTokenCredentials({
+    orgId,
+    provider,
     requestId
-  );
+  });
   if (credentials.length === 0) {
-    throw new AppError('capacity_unavailable', 429, 'No eligible token credentials available', { provider, model });
+    throw new AppError('capacity_unavailable', 429, 'No eligible token credentials available', {
+      provider,
+      model,
+      providerUsageExcludedReasonCounts: Object.keys(providerUsageExcludedReasonCounts).length > 0
+        ? providerUsageExcludedReasonCounts
+        : undefined
+    });
   }
 
   let attemptNo = 0;
@@ -2335,7 +2598,13 @@ async function executeTokenModeStreaming(input: {
           provider,
           model,
           streaming: true,
-          routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
+          routeDecision: buildTokenRouteDecision(
+            credential,
+            correlation,
+            providerPreference,
+            compatTranslation,
+            providerUsageRouteMeta.get(credential.id)
+          ),
           upstreamStatus: failure.statusCode,
           errorCode: inferErrorCode(failure),
           latencyMs: Date.now() - startedAt,
@@ -2418,7 +2687,13 @@ async function executeTokenModeStreaming(input: {
             provider,
             model,
             streaming: true,
-            routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
+            routeDecision: buildTokenRouteDecision(
+              credential,
+              correlation,
+              providerPreference,
+              compatTranslation,
+              providerUsageRouteMeta.get(credential.id)
+            ),
             upstreamStatus: status,
             errorCode: 'upstream_403_blocked_passthrough',
             latencyMs: Date.now() - startedAt,
@@ -2693,7 +2968,13 @@ async function executeTokenModeStreaming(input: {
           provider,
           model,
           streaming: true,
-            routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
+            routeDecision: buildTokenRouteDecision(
+              credential,
+              correlation,
+              providerPreference,
+              compatTranslation,
+              providerUsageRouteMeta.get(credential.id)
+            ),
           upstreamStatus: effectiveStatus,
           errorCode: extractedFailed ? 'upstream_failed_stream' : (status >= 500 ? 'upstream_5xx_passthrough' : undefined),
           latencyMs: Date.now() - startedAt,
@@ -3036,7 +3317,13 @@ async function executeTokenModeStreaming(input: {
         provider,
         model,
         streaming: true,
-        routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
+        routeDecision: buildTokenRouteDecision(
+          credential,
+          correlation,
+          providerPreference,
+          compatTranslation,
+          providerUsageRouteMeta.get(credential.id)
+        ),
         upstreamStatus: status,
         latencyMs: Date.now() - startedAt,
         ttfbMs: Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt))
@@ -3205,7 +3492,13 @@ async function executeTokenModeStreaming(input: {
           provider,
           model,
           streaming: true,
-          routeDecision: buildTokenRouteDecision(credential, correlation, providerPreference, compatTranslation),
+          routeDecision: buildTokenRouteDecision(
+            credential,
+            correlation,
+            providerPreference,
+            compatTranslation,
+            providerUsageRouteMeta.get(credential.id)
+          ),
           upstreamStatus: status,
           errorCode: streamFailureCode,
           latencyMs: Date.now() - startedAt,

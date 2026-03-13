@@ -2,6 +2,7 @@ import { describe, expect, it, beforeAll, beforeEach, afterEach, vi } from 'vite
 import { PassThrough } from 'node:stream';
 import { z } from 'zod';
 import { AppError } from '../src/utils/errors.js';
+import { resetAnthropicUsageRetryStateForTests } from '../src/services/tokenCredentialProviderUsageRetryState.js';
 
 type RuntimeModule = typeof import('../src/services/runtime.js');
 type CompatRouteModule = typeof import('../src/routes/anthropicCompat.js');
@@ -273,12 +274,34 @@ describe('anthropic compat route', () => {
       status: 'active',
       consecutiveFailures: 1
     } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'recordRateLimitAndApplyCooldown').mockResolvedValue({
+      status: 'active',
+      consecutiveRateLimits: 1,
+      rateLimitedUntil: null,
+      backoffKind: 'none'
+    } as any);
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'recordRateLimitAndMaybeMax').mockResolvedValue({
       status: 'active',
       consecutiveRateLimits: 1,
       rateLimitedUntil: null,
       newlyMaxed: false
     } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'clearRateLimitBackoff').mockResolvedValue(false);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentialProviderUsage, 'listByTokenCredentialIds').mockResolvedValue([]);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentialProviderUsage, 'upsertSnapshot').mockImplementation(async (input: any) => ({
+      tokenCredentialId: input.tokenCredentialId,
+      orgId: input.orgId,
+      provider: input.provider,
+      usageSource: input.usageSource ?? 'anthropic_oauth_usage',
+      fiveHourUtilizationRatio: input.fiveHourUtilizationRatio,
+      fiveHourResetsAt: input.fiveHourResetsAt,
+      sevenDayUtilizationRatio: input.sevenDayUtilizationRatio,
+      sevenDayResetsAt: input.sevenDayResetsAt,
+      rawPayload: input.rawPayload,
+      fetchedAt: input.fetchedAt,
+      createdAt: input.fetchedAt,
+      updatedAt: input.fetchedAt
+    }));
     vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
       replay: false,
       input: {
@@ -298,6 +321,7 @@ describe('anthropic compat route', () => {
     delete process.env.ANTHROPIC_COMPAT_MAX_REQUEST_BYTES;
     delete process.env.OPENAI_UPSTREAM_BASE_URL;
     delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
+    resetAnthropicUsageRetryStateForTests();
     vi.restoreAllMocks();
   });
 

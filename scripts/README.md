@@ -16,6 +16,7 @@ chmod +x scripts/install.sh
 innies-add-token
 innies-create-buyer-key
 innies-rotate-token
+innies-set-contribution-cap
 innies-set-refresh-token
 innies-requeue-token-probe
 innies-set-preference
@@ -27,6 +28,7 @@ What they do:
 - `innies-add-token`: create a Claude Code or Codex OAuth credential
 - `innies-create-buyer-key`: create a new buyer key in `in_api_keys` and prompt for provider preference up front
 - `innies-rotate-token`: rotate a Claude Code or Codex OAuth credential pool
+- `innies-set-contribution-cap`: set the 5h / 7d reserve percents for a Claude token credential
 - `innies-set-refresh-token`: set or clear the stored OAuth refresh token for an existing credential id
 - `innies-requeue-token-probe`: directly probe a maxed token credential now; successful probes immediately reactivate it
 - `innies-set-preference`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
@@ -44,6 +46,11 @@ Behavior:
 - add/rotate always send `authScheme=bearer`
 - on macOS, add/rotate reads the OAuth access token from your clipboard after you press Enter
 - add/rotate now prompt for an optional OAuth refresh token; type `paste` to read it from your clipboard, or press Enter to skip
+- `innies-rotate-token` accepts a credential UUID or exact `debugLabel`; if `DATABASE_URL` is available it lists existing credentials for the selected provider first so you can choose one by number
+- `innies-rotate-token` shows labeled credentials plus unlabeled `active`/`maxed` credentials by default; unlabeled lower-priority rows stay collapsed behind a summary count
+- `innies-rotate-token` preserves the previous credential's `debugLabel` when you leave the rotate label prompt blank
+- `innies-set-contribution-cap` lists only `active`/`maxed` Claude Code credentials, lets you choose one by number / UUID / exact `debugLabel`, then prompts for the resulting `5h` and `7d` reserve percents
+- `innies-set-contribution-cap` needs `DATABASE_URL` so it can list/select existing Claude credentials and show the current reserve percents as defaults
 - `innies-set-refresh-token` accepts a credential UUID, then:
   - `paste` to read the refresh token from clipboard
   - `clear` to remove the stored refresh token

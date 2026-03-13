@@ -90,6 +90,21 @@ export function formatPercent(value: number | null | undefined): string {
   return `${(value * 100).toFixed(value >= 0.1 ? 1 : 2)}%`;
 }
 
+export function formatCapPercent(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '--';
+  if (value <= 0) return '0%';
+  if (value >= 1) return '100%';
+  return formatPercent(value);
+}
+
+export function formatContributionCapPercent(
+  value: number | null | undefined,
+  provider: string | null | undefined,
+): string {
+  if (tokenProviderKey(provider) !== 'claude') return 'n/a';
+  return formatCapPercent(value);
+}
+
 export function formatNullableNumber(value: number | null | undefined, suffix = ''): string {
   if (value === null || value === undefined) return '--';
   return `${formatCount(Math.round(value))}${suffix}`;

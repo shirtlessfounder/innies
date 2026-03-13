@@ -124,6 +124,7 @@ describe('admin token credential routes idempotent replay', () => {
   let rotateHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let revokeHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let refreshTokenHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let contributionCapHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let probeHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
 
   beforeAll(async () => {
@@ -136,6 +137,7 @@ describe('admin token credential routes idempotent replay', () => {
     rotateHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/rotate');
     revokeHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/revoke');
     refreshTokenHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/refresh-token');
+    contributionCapHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/contribution-cap');
     probeHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/probe');
   });
 
@@ -167,6 +169,13 @@ describe('admin token credential routes idempotent replay', () => {
     } as any);
     vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'revoke').mockResolvedValue(true);
     vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'setRefreshToken').mockResolvedValue(true);
+    vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'updateContributionCap').mockResolvedValue({
+      id: 'z',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      fiveHourReservePercent: 20,
+      sevenDayReservePercent: 10
+    } as any);
     vi.spyOn(probeModule, 'probeAndUpdateTokenCredential').mockResolvedValue({
       ok: true,
       statusCode: 200,
@@ -190,7 +199,7 @@ describe('admin token credential routes idempotent replay', () => {
     vi.restoreAllMocks();
   });
 
-  it('replays create/rotate/revoke/refresh-token/probe deterministically without executing mutations', async () => {
+  it('replays create/rotate/revoke/refresh-token/contribution-cap/probe deterministically without executing mutations', async () => {
     const headers = {
       authorization: 'Bearer in_admin_token',
       'content-type': 'application/json',
@@ -264,6 +273,22 @@ describe('admin token credential routes idempotent replay', () => {
     expect(resRefresh.headers['x-idempotent-replay']).toBe('true');
     expect((resRefresh.body as any).replayed).toBe(true);
 
+    const reqContributionCap = createMockReq({
+      method: 'PATCH',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/contribution-cap',
+      headers,
+      params: { id: '11111111-1111-4111-8111-111111111111' },
+      body: {
+        fiveHourReservePercent: 20
+      }
+    });
+    const resContributionCap = createMockRes();
+    await invoke(contributionCapHandlers[0], reqContributionCap, resContributionCap);
+    await invoke(contributionCapHandlers[1], reqContributionCap, resContributionCap);
+    expect(resContributionCap.statusCode).toBe(200);
+    expect(resContributionCap.headers['x-idempotent-replay']).toBe('true');
+    expect((resContributionCap.body as any).replayed).toBe(true);
+
     const reqProbe = createMockReq({
       method: 'POST',
       path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/probe',
@@ -281,6 +306,7 @@ describe('admin token credential routes idempotent replay', () => {
     expect(runtimeModule.runtime.services.tokenCredentials.rotate).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.tokenCredentials.revoke).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.tokenCredentials.setRefreshToken).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.services.tokenCredentials.updateContributionCap).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.repos.tokenCredentials.getById).not.toHaveBeenCalled();
     expect(probeModule.probeAndUpdateTokenCredential).not.toHaveBeenCalled();
   });
@@ -459,6 +485,96 @@ describe('admin token credential routes idempotent replay', () => {
     expect(commitSpy).toHaveBeenCalledTimes(2);
   });
 
+  it('infers bearer authScheme for anthropic oauth create and rotate when authScheme is omitted', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start')
+      .mockResolvedValueOnce({
+        replay: false,
+        input: {
+          scope: 'admin_token_credentials_create_v1',
+          tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+          idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123458',
+          requestHash: 'create_oauth_h'
+        }
+      } as any)
+      .mockResolvedValueOnce({
+        replay: false,
+        input: {
+          scope: 'admin_token_credentials_rotate_v1',
+          tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+          idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123459',
+          requestHash: 'rotate_oauth_h'
+        }
+      } as any);
+
+    const createSpy = vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'create').mockResolvedValue({
+      id: 'new_cred_oauth',
+      rotationVersion: 1
+    } as any);
+    const rotateSpy = vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'rotate').mockResolvedValue({
+      id: 'new_cred_oauth_rotated',
+      previousId: 'new_cred_oauth',
+      rotationVersion: 2
+    } as any);
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const reqCreate = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123458'
+      },
+      body: {
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'anthropic',
+        accessToken: 'sk-ant-oat01-create',
+        expiresAt: '2026-03-05T00:00:00.000Z'
+      }
+    });
+    const resCreate = createMockRes();
+
+    await invoke(createHandlers[0], reqCreate, resCreate);
+    await invoke(createHandlers[1], reqCreate, resCreate);
+    expect(resCreate.statusCode).toBe(200);
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'anthropic',
+        authScheme: 'bearer'
+      }),
+      expect.any(Object)
+    );
+
+    const reqRotate = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/rotate',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123459'
+      },
+      body: {
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'anthropic',
+        accessToken: 'sk-ant-oat01-rotate',
+        expiresAt: '2026-03-06T00:00:00.000Z'
+      }
+    });
+    const resRotate = createMockRes();
+
+    await invoke(rotateHandlers[0], reqRotate, resRotate);
+    await invoke(rotateHandlers[1], reqRotate, resRotate);
+    expect(resRotate.statusCode).toBe(200);
+    expect(rotateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'anthropic',
+        authScheme: 'bearer'
+      }),
+      expect.any(Object)
+    );
+    expect(commitSpy).toHaveBeenCalledTimes(2);
+  });
+
   it('sets and clears refresh tokens for an existing credential by id', async () => {
     vi.spyOn(runtimeModule.runtime.services.idempotency, 'start')
       .mockResolvedValueOnce({
@@ -549,6 +665,112 @@ describe('admin token credential routes idempotent replay', () => {
       expect.any(Object)
     );
     expect(commitSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('updates token contribution caps by id without touching rotation state', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_contribution_cap_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123460',
+        requestHash: 'contribution_cap_h_1'
+      }
+    } as any);
+
+    const updateSpy = vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'updateContributionCap').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      fiveHourReservePercent: 35,
+      sevenDayReservePercent: 15
+    } as any);
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'PATCH',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/contribution-cap',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123460'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' },
+      body: {
+        fiveHourReservePercent: 35,
+        sevenDayReservePercent: 15
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(contributionCapHandlers[0], req, res);
+    await invoke(contributionCapHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any)).toEqual({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      provider: 'anthropic',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      fiveHourReservePercent: 35,
+      sevenDayReservePercent: 15
+    });
+    expect(updateSpy).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111',
+      {
+        fiveHourReservePercent: 35,
+        sevenDayReservePercent: 15
+      },
+      expect.any(Object)
+    );
+    expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects contribution-cap updates for non-Claude credentials', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_contribution_cap_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123460x',
+        requestHash: 'contribution_cap_h_unsupported'
+      }
+    } as any);
+
+    vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'updateContributionCap').mockRejectedValue(
+      new AppError(
+        'invalid_request',
+        400,
+        'Contribution caps are only supported for Claude token credentials',
+        { credentialId: '11111111-1111-4111-8111-111111111111', provider: 'openai' }
+      )
+    );
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'PATCH',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/contribution-cap',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123460x'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' },
+      body: {
+        fiveHourReservePercent: 35
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(contributionCapHandlers[0], req, res);
+    await invoke(contributionCapHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any)).toMatchObject({
+      code: 'invalid_request',
+      message: 'Contribution caps are only supported for Claude token credentials'
+    });
+    expect(commitSpy).not.toHaveBeenCalled();
   });
 
   it('probes a maxed credential immediately and returns active on success', async () => {

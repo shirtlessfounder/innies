@@ -2,8 +2,10 @@ import { AuditLogRepository } from '../repos/auditLogRepository.js';
 import {
   TokenCredentialRepository,
   type CreateTokenCredentialInput,
-  type RotateTokenCredentialInput
+  type RotateTokenCredentialInput,
+  type UpdateTokenCredentialContributionCapInput
 } from '../repos/tokenCredentialRepository.js';
+import { AppError } from '../utils/errors.js';
 
 type ActorContext = {
   actorApiKeyId?: string | null;
@@ -36,7 +38,22 @@ export class TokenCredentialService {
   }
 
   async rotate(input: RotateTokenCredentialInput, actor?: ActorContext): Promise<{ id: string; rotationVersion: number; previousId: string | null }> {
-    const rotated = await this.repo.rotate(input);
+    let rotated: { id: string; rotationVersion: number; previousId: string | null };
+    try {
+      rotated = await this.repo.rotate(input);
+    } catch (error) {
+      if (
+        error instanceof Error
+        && error.message.includes('not found or not rotatable for org/provider')
+      ) {
+        throw new AppError('invalid_request', 400, error.message, {
+          previousCredentialId: input.previousCredentialId ?? null,
+          provider: input.provider,
+          orgId: input.orgId
+        });
+      }
+      throw error;
+    }
     await this.auditLogs.createEvent({
       actorApiKeyId: actor?.actorApiKeyId ?? null,
       actorUserId: actor?.actorUserId ?? null,
@@ -85,6 +102,51 @@ export class TokenCredentialService {
         }
       });
     }
+    return updated;
+  }
+
+  async updateContributionCap(
+    id: string,
+    input: UpdateTokenCredentialContributionCapInput,
+    actor?: ActorContext
+  ): Promise<{
+    id: string;
+    orgId: string;
+    provider: string;
+    fiveHourReservePercent: number;
+    sevenDayReservePercent: number;
+  } | null> {
+    const existing = await this.repo.getById(id);
+    if (!existing) {
+      return null;
+    }
+    if (existing.provider !== 'anthropic') {
+      throw new AppError(
+        'invalid_request',
+        400,
+        'Contribution caps are only supported for Claude token credentials',
+        { credentialId: id, provider: existing.provider }
+      );
+    }
+
+    const updated = await this.repo.updateContributionCap(id, input);
+    if (!updated) {
+      return null;
+    }
+
+    await this.auditLogs.createEvent({
+      actorApiKeyId: actor?.actorApiKeyId ?? null,
+      actorUserId: actor?.actorUserId ?? null,
+      orgId: updated.orgId,
+      action: 'token_credential.update_contribution_cap',
+      targetType: 'token_credential',
+      targetId: id,
+      metadata: {
+        fiveHourReservePercent: updated.fiveHourReservePercent,
+        sevenDayReservePercent: updated.sevenDayReservePercent
+      }
+    });
+
     return updated;
   }
 }

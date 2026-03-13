@@ -34,6 +34,17 @@ export type AnalyticsTokenRow = {
   maxedEvents7d: number;
   monthlyContributionUsedUnits: number;
   monthlyContributionLimitUnits: number | null;
+  fiveHourReservePercent: number | null;
+  fiveHourUtilizationRatio: number | null;
+  fiveHourResetsAt: string | null;
+  fiveHourContributionCapExhausted: boolean | null;
+  sevenDayReservePercent: number | null;
+  sevenDayUtilizationRatio: number | null;
+  sevenDayResetsAt: string | null;
+  sevenDayContributionCapExhausted: boolean | null;
+  providerUsageFetchedAt: string | null;
+  fiveHourCapUsedRatio: number | null;
+  sevenDayCapUsedRatio: number | null;
   latencyP50Ms: number | null;
   errorRate: number | null;
   authFailures24h: number;

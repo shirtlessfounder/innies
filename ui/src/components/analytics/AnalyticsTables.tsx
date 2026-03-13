@@ -13,6 +13,7 @@ import {
   buyerOrgLabel,
   buyerPreferenceLabel,
   formatCount,
+  formatContributionCapPercent,
   formatNullableNumber,
   formatPercent,
   formatShortTimestamp,
@@ -102,6 +103,18 @@ function TokenStatusCell({ status }: { status: string }) {
       {status.replaceAll('_', ' ')}
     </span>
   );
+}
+
+function contributionCapTone(input: {
+  provider: string;
+  utilizationRatio: number | null;
+  exhausted: boolean | null;
+}): string {
+  const provider = input.provider.trim().toLowerCase();
+  if (provider !== 'anthropic') return '';
+  if (input.exhausted === true) return styles.statusPillMaxed;
+  if (input.utilizationRatio !== null && input.utilizationRatio >= 1) return styles.statusPillMaxed;
+  return '';
 }
 
 function tokenMetricConfig(metric: AnalyticsMetric): {
@@ -275,7 +288,25 @@ export function TokenTable({
               />
             </th>
             {metricConfig.showDelta ? <th className={styles.numeric}>Delta</th> : null}
-            {/* Re-enable Util 24h / Maxed 7d once the token table has room for the extra operator-only columns again. */}
+            <th className={styles.numeric} aria-sort={sortAria(sort.key === 'fiveHourCapUsedRatio', sort.direction)}>
+              <SortHeaderButton
+                active={sort.key === 'fiveHourCapUsedRatio'}
+                direction={sort.direction}
+                label="5H"
+                numeric
+                onClick={() => onSort('fiveHourCapUsedRatio', 'desc')}
+              />
+            </th>
+            <th className={styles.numeric} aria-sort={sortAria(sort.key === 'sevenDayCapUsedRatio', sort.direction)}>
+              <SortHeaderButton
+                active={sort.key === 'sevenDayCapUsedRatio'}
+                direction={sort.direction}
+                label="7D"
+                numeric
+                onClick={() => onSort('sevenDayCapUsedRatio', 'desc')}
+              />
+            </th>
+            {/* Re-enable Util 24h / Maxed 7d once the token table has room for more operator-only columns again. */}
             {/* <th className={styles.numeric} aria-sort={sortAria(sort.key === 'utilizationRate24h', sort.direction)}>
               <SortHeaderButton
                 active={sort.key === 'utilizationRate24h'}
@@ -299,29 +330,50 @@ export function TokenTable({
         <tbody>
           {rows.map((row) => {
             const deltaValue = metricConfig.deltaValue(row);
+            const fiveHourCapTone = contributionCapTone({
+              provider: row.provider,
+              utilizationRatio: row.fiveHourCapUsedRatio,
+              exhausted: row.fiveHourContributionCapExhausted,
+            });
+            const sevenDayCapTone = contributionCapTone({
+              provider: row.provider,
+              utilizationRatio: row.sevenDayCapUsedRatio,
+              exhausted: row.sevenDayContributionCapExhausted,
+            });
+
             return (
-            <tr
-              key={row.credentialId}
-              className={[
-                hiddenIds.includes(row.credentialId) ? styles.rowHidden : '',
-                metricConfig.showDelta && deltaValue > 0 ? styles.rowDeltaFlash : '',
-              ].filter(Boolean).join(' ')}
-            >
-              <td>{tokenIdentityLabel(row)}</td>
-              <td>{tokenLabelLabel(row)}</td>
-              <td>{tokenProviderLabel(row.provider)}</td>
-              <td><TokenStatusCell status={row.status} /></td>
-              {metricConfig.showShare ? <td className={styles.numeric}>{formatPercent(row.percentOfWindow)}</td> : null}
-              <td className={styles.numeric}>{metricConfig.value(row)}</td>
-              {metricConfig.showDelta ? (
+              <tr
+                key={row.credentialId}
+                className={[
+                  hiddenIds.includes(row.credentialId) ? styles.rowHidden : '',
+                  metricConfig.showDelta && deltaValue > 0 ? styles.rowDeltaFlash : '',
+                ].filter(Boolean).join(' ')}
+              >
+                <td>{tokenIdentityLabel(row)}</td>
+                <td>{tokenLabelLabel(row)}</td>
+                <td>{tokenProviderLabel(row.provider)}</td>
+                <td><TokenStatusCell status={row.status} /></td>
+                {metricConfig.showShare ? <td className={styles.numeric}>{formatPercent(row.percentOfWindow)}</td> : null}
+                <td className={styles.numeric}>{metricConfig.value(row)}</td>
+                {metricConfig.showDelta ? (
+                  <td className={styles.numeric}>
+                    <DeltaCell value={deltaValue} flashToken={row.flashToken} />
+                  </td>
+                ) : null}
                 <td className={styles.numeric}>
-                  <DeltaCell value={deltaValue} flashToken={row.flashToken} />
+                  <span className={fiveHourCapTone}>
+                    {formatContributionCapPercent(row.fiveHourCapUsedRatio, row.provider)}
+                  </span>
                 </td>
-              ) : null}
-              {/* Re-enable the hidden token-health cells when we bring the Util 24h / Maxed 7d headers back. */}
-              {/* <td className={styles.numeric}>{formatPercent(row.utilizationRate24h)}</td>
-              <td className={styles.numeric}>{formatCount(row.maxedEvents7d)}</td> */}
-            </tr>
+                <td className={styles.numeric}>
+                  <span className={sevenDayCapTone}>
+                    {formatContributionCapPercent(row.sevenDayCapUsedRatio, row.provider)}
+                  </span>
+                </td>
+                {/* Re-enable the hidden token-health cells when we bring the Util 24h / Maxed 7d headers back. */}
+                {/* <td className={styles.numeric}>{formatPercent(row.utilizationRate24h)}</td>
+                <td className={styles.numeric}>{formatCount(row.maxedEvents7d)}</td> */}
+              </tr>
             );
           })}
         </tbody>

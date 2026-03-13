@@ -111,6 +111,431 @@ function applyBaseFilters(
   }
 }
 
+function isMissingReserveColumn(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const details = error as { code?: string; column?: string; message?: string };
+  if (details.code !== '42703') return false;
+  return details.column === 'five_hour_reserve_percent'
+    || details.column === 'seven_day_reserve_percent'
+    || details.message?.includes('five_hour_reserve_percent') === true
+    || details.message?.includes('seven_day_reserve_percent') === true;
+}
+
+function isMissingProviderUsageTable(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const details = error as { code?: string; table?: string; relation?: string; column?: string; message?: string };
+  if (details.code === '42P01') {
+    return details.table === TABLES.tokenCredentialProviderUsage
+      || details.relation === TABLES.tokenCredentialProviderUsage
+      || details.message?.includes(TABLES.tokenCredentialProviderUsage) === true;
+  }
+  if (details.code === '42703') {
+    return details.column === 'five_hour_utilization_ratio'
+      || details.column === 'five_hour_resets_at'
+      || details.column === 'seven_day_utilization_ratio'
+      || details.column === 'seven_day_resets_at'
+      || details.column === 'fetched_at'
+      || details.message?.includes('five_hour_utilization_ratio') === true
+      || details.message?.includes('five_hour_resets_at') === true
+      || details.message?.includes('seven_day_utilization_ratio') === true
+      || details.message?.includes('seven_day_resets_at') === true
+      || details.message?.includes('fetched_at') === true;
+  }
+  return false;
+}
+
+type TokenHealthSqlOptions = {
+  includeReserveColumns: boolean;
+  includeProviderUsage: boolean;
+};
+
+function buildTokenHealthSql(input: {
+  credFilter: string;
+  maxedWindowFilter: string;
+  recoveryWindowFilter: string;
+  capExhaustionWindowFilter: string;
+  options: TokenHealthSqlOptions;
+}): string {
+  const reserveSelect = input.options.includeReserveColumns
+    ? `
+          case
+            when tc.provider = 'anthropic' then tc.five_hour_reserve_percent
+            else null
+          end as five_hour_reserve_percent,
+          case
+            when tc.provider = 'anthropic' then tc.seven_day_reserve_percent
+            else null
+          end as seven_day_reserve_percent,
+      `
+    : `
+          null::integer as five_hour_reserve_percent,
+          null::integer as seven_day_reserve_percent,
+      `;
+  const providerUsageCte = input.options.includeProviderUsage
+    ? `
+      provider_usage as (
+        select
+          pu.token_credential_id,
+          pu.five_hour_utilization_ratio,
+          pu.five_hour_resets_at,
+          pu.seven_day_utilization_ratio,
+          pu.seven_day_resets_at,
+          pu.fetched_at as provider_usage_fetched_at
+        from ${TABLES.tokenCredentialProviderUsage} pu
+        where pu.provider = 'anthropic'
+      ),
+      `
+    : '';
+  const providerUsageJoin = input.options.includeProviderUsage
+    ? 'left join provider_usage pu on pu.token_credential_id = cb.id'
+    : '';
+  const providerUsageSelect = input.options.includeProviderUsage
+    ? `
+        pu.five_hour_utilization_ratio,
+        pu.five_hour_resets_at,
+        case
+          when cb.provider = 'anthropic'
+            and cb.five_hour_reserve_percent is not null
+            and pu.token_credential_id is not null
+          then (pu.five_hour_utilization_ratio * 100) >= (100 - cb.five_hour_reserve_percent)
+          else null
+        end as five_hour_contribution_cap_exhausted,
+        pu.seven_day_utilization_ratio,
+        pu.seven_day_resets_at,
+        case
+          when cb.provider = 'anthropic'
+            and cb.seven_day_reserve_percent is not null
+            and pu.token_credential_id is not null
+          then (pu.seven_day_utilization_ratio * 100) >= (100 - cb.seven_day_reserve_percent)
+          else null
+        end as seven_day_contribution_cap_exhausted,
+        pu.provider_usage_fetched_at,
+      `
+    : `
+        null::numeric as five_hour_utilization_ratio,
+        null::timestamptz as five_hour_resets_at,
+        null::boolean as five_hour_contribution_cap_exhausted,
+        null::numeric as seven_day_utilization_ratio,
+        null::timestamptz as seven_day_resets_at,
+        null::boolean as seven_day_contribution_cap_exhausted,
+        null::timestamptz as provider_usage_fetched_at,
+      `;
+
+  return `
+      WITH credential_base AS (
+        SELECT
+          tc.id,
+          tc.debug_label,
+          tc.provider,
+          tc.status,
+          coalesce(tc.consecutive_failure_count, 0) AS consecutive_failure_count,
+          coalesce(tc.consecutive_rate_limit_count, 0) AS consecutive_rate_limit_count,
+          tc.last_failed_status,
+          tc.last_failed_at,
+          tc.last_rate_limited_at,
+          tc.last_refresh_error,
+          tc.maxed_at,
+          tc.rate_limited_until,
+          tc.next_probe_at,
+          tc.last_probe_at,
+          tc.monthly_contribution_limit_units,
+          coalesce(tc.monthly_contribution_used_units, 0) AS monthly_contribution_used_units,
+          tc.monthly_window_start_at,
+          ${reserveSelect}
+          tc.created_at,
+          tc.expires_at
+        FROM ${TABLES.tokenCredentials} tc
+        ${input.credFilter}
+      ),
+      ${providerUsageCte}
+      maxed_events AS (
+        SELECT
+          tce.token_credential_id::text AS credential_id,
+          count(*) AS maxed_events_7d
+        FROM ${TABLES.tokenCredentialEvents} tce
+        JOIN credential_base cb ON cb.id = tce.token_credential_id
+        WHERE tce.event_type = 'maxed'
+          AND tce.created_at >= now() - interval '7 days'
+        GROUP BY tce.token_credential_id
+      ),
+      maxed_cycles AS (
+        SELECT
+          cb.id::text AS credential_id,
+          cb.created_at AS credential_created_at,
+          me.created_at AS maxed_at,
+          coalesce(
+            (
+              SELECT re.created_at
+              FROM ${TABLES.tokenCredentialEvents} re
+              WHERE re.token_credential_id = me.token_credential_id
+                AND re.event_type = 'reactivated'
+                AND re.created_at < me.created_at
+              ORDER BY re.created_at DESC
+              LIMIT 1
+            ),
+            cb.created_at
+          ) AS cycle_start_at,
+          (
+            SELECT re.created_at
+            FROM ${TABLES.tokenCredentialEvents} re
+            WHERE re.token_credential_id = me.token_credential_id
+              AND re.event_type = 'reactivated'
+              AND re.created_at > me.created_at
+            ORDER BY re.created_at ASC
+            LIMIT 1
+          ) AS reactivated_at
+        FROM credential_base cb
+        JOIN ${TABLES.tokenCredentialEvents} me
+          ON me.token_credential_id = cb.id
+         AND me.event_type = 'maxed'
+      ),
+      cycle_rollups AS (
+        SELECT
+          mc.credential_id,
+          mc.maxed_at,
+          mc.cycle_start_at,
+          mc.reactivated_at,
+          coalesce(traffic.request_count, 0)::bigint AS request_count,
+          coalesce(traffic.usage_units, 0)::bigint AS usage_units,
+          coalesce(traffic.usage_row_count, 0)::bigint AS usage_row_count,
+          extract(epoch from (mc.maxed_at - mc.cycle_start_at)) / 86400.0 AS cycle_duration_days,
+          CASE
+            WHEN mc.reactivated_at IS NOT NULL
+            THEN extract(epoch from (mc.reactivated_at - mc.maxed_at)) * 1000.0
+            ELSE NULL
+          END AS recovery_time_ms
+        FROM maxed_cycles mc
+        LEFT JOIN LATERAL (
+          SELECT
+            count(DISTINCT re.request_id) AS request_count,
+            coalesce(sum(ul.usage_units), 0) AS usage_units,
+            count(ul.id) AS usage_row_count
+          FROM ${TABLES.routingEvents} re
+          LEFT JOIN ${TABLES.usageLedger} ul
+            ON ul.org_id = re.org_id
+            AND ul.request_id = re.request_id
+            AND ul.attempt_no = re.attempt_no
+            AND ul.entry_type = 'usage'
+          WHERE re.route_decision->>'tokenCredentialId' = mc.credential_id
+            AND re.created_at >= mc.cycle_start_at
+            AND re.created_at <= mc.maxed_at
+        ) traffic ON true
+      ),
+      maxed_window_rollups AS (
+        SELECT *
+        FROM cycle_rollups cr
+        WHERE ${input.maxedWindowFilter}
+      ),
+      recovery_window_rollups AS (
+        SELECT *
+        FROM cycle_rollups cr
+        WHERE cr.reactivated_at IS NOT NULL
+          AND ${input.recoveryWindowFilter}
+      ),
+      claude_cap_exhaustion_cycles AS (
+        SELECT
+          cb.id::text AS credential_id,
+          ce.metadata->>'window' AS cap_window,
+          ce.created_at AS exhausted_at,
+          coalesce(
+            (
+              SELECT cc.created_at
+              FROM ${TABLES.tokenCredentialEvents} cc
+              WHERE cc.token_credential_id = ce.token_credential_id
+                AND cc.event_type = 'contribution_cap_cleared'
+                AND cc.metadata->>'window' = ce.metadata->>'window'
+                AND cc.created_at < ce.created_at
+              ORDER BY cc.created_at DESC
+              LIMIT 1
+            ),
+            cb.created_at
+          ) AS cycle_start_at
+        FROM credential_base cb
+        JOIN ${TABLES.tokenCredentialEvents} ce
+          ON ce.token_credential_id = cb.id
+         AND ce.event_type = 'contribution_cap_exhausted'
+        WHERE cb.provider = 'anthropic'
+          AND ce.metadata->>'window' in ('5h', '7d')
+      ),
+      claude_cap_exhaustion_rollups AS (
+        SELECT
+          cec.credential_id,
+          cec.cap_window,
+          cec.exhausted_at,
+          cec.cycle_start_at,
+          coalesce(traffic.usage_units, 0)::bigint AS usage_units
+        FROM claude_cap_exhaustion_cycles cec
+        LEFT JOIN LATERAL (
+          SELECT
+            coalesce(sum(ul.usage_units), 0) AS usage_units
+          FROM ${TABLES.routingEvents} re
+          JOIN ${TABLES.usageLedger} ul
+            ON ul.org_id = re.org_id
+            AND ul.request_id = re.request_id
+            AND ul.attempt_no = re.attempt_no
+            AND ul.entry_type = 'usage'
+          WHERE re.route_decision->>'tokenCredentialId' = cec.credential_id
+            AND re.created_at >= cec.cycle_start_at
+            AND re.created_at <= cec.exhausted_at
+        ) traffic ON true
+      ),
+      claude_cap_exhaustion_window_rollups AS (
+        SELECT *
+        FROM claude_cap_exhaustion_rollups ccer
+        WHERE ${input.capExhaustionWindowFilter}
+      ),
+      claude_cap_exhaustion_summary AS (
+        SELECT
+          credential_id,
+          cap_window,
+          count(*)::bigint AS cap_exhaustion_cycles_observed,
+          avg(usage_units::numeric) AS avg_usage_units_before_cap_exhaustion,
+          (array_agg(usage_units ORDER BY exhausted_at DESC))[1]::bigint
+            AS usage_units_before_cap_exhaustion_last_window
+        FROM claude_cap_exhaustion_window_rollups
+        GROUP BY credential_id, cap_window
+      ),
+      capacity_window_rollups AS (
+        SELECT
+          cr.*,
+          CASE
+            WHEN cr.cycle_duration_days >= 0.25
+              AND cr.usage_row_count > 0
+              AND cr.cycle_duration_days > 0
+            THEN cr.usage_units::numeric / cr.cycle_duration_days::numeric
+            ELSE NULL
+          END AS daily_capacity_units
+        FROM maxed_window_rollups cr
+      ),
+      maxed_summary AS (
+        SELECT
+          credential_id,
+          count(*)::bigint AS maxing_cycles_observed,
+          avg(request_count::numeric) AS avg_requests_before_maxed,
+          avg(usage_units::numeric) AS avg_usage_units_before_maxed,
+          (array_agg(request_count ORDER BY maxed_at DESC))[1]::bigint AS requests_before_maxed_last_window
+        FROM maxed_window_rollups
+        GROUP BY credential_id
+      ),
+      recovery_summary AS (
+        SELECT
+          credential_id,
+          avg(recovery_time_ms) AS avg_recovery_time_ms
+        FROM recovery_window_rollups
+        GROUP BY credential_id
+      ),
+      capacity_summary AS (
+        SELECT
+          credential_id,
+          count(*) FILTER (WHERE daily_capacity_units IS NOT NULL)::bigint AS valid_capacity_cycles,
+          percentile_cont(0.5) WITHIN GROUP (ORDER BY daily_capacity_units)
+            FILTER (WHERE daily_capacity_units IS NOT NULL) AS estimated_daily_capacity_units
+        FROM capacity_window_rollups
+        GROUP BY credential_id
+      ),
+      utilization_usage AS (
+        SELECT
+          re.route_decision->>'tokenCredentialId' AS credential_id,
+          coalesce(sum(ul.usage_units), 0)::bigint AS usage_units_24h
+        FROM ${TABLES.routingEvents} re
+        JOIN ${TABLES.usageLedger} ul
+          ON ul.org_id = re.org_id
+          AND ul.request_id = re.request_id
+          AND ul.attempt_no = re.attempt_no
+          AND ul.entry_type = 'usage'
+        JOIN credential_base cb
+          ON cb.id::text = re.route_decision->>'tokenCredentialId'
+        WHERE ul.created_at >= now() - interval '24 hours'
+        GROUP BY re.route_decision->>'tokenCredentialId'
+      )
+      SELECT
+        cb.id AS credential_id,
+        cb.debug_label,
+        cb.provider,
+        cb.status,
+        cb.consecutive_failure_count,
+        cb.consecutive_rate_limit_count,
+        cb.last_failed_status,
+        cb.last_failed_at,
+        cb.last_rate_limited_at,
+        cb.last_refresh_error,
+        cb.maxed_at,
+        cb.rate_limited_until,
+        cb.next_probe_at,
+        cb.last_probe_at,
+        cb.monthly_contribution_limit_units,
+        cb.monthly_contribution_used_units,
+        cb.monthly_window_start_at,
+        coalesce(me.maxed_events_7d, 0) AS maxed_events_7d,
+        ms.requests_before_maxed_last_window,
+        ms.avg_requests_before_maxed,
+        ms.avg_usage_units_before_maxed,
+        rs.avg_recovery_time_ms,
+        CASE
+          WHEN coalesce(cs.valid_capacity_cycles, 0) >= 2
+          THEN cs.estimated_daily_capacity_units
+          ELSE NULL
+        END AS estimated_daily_capacity_units,
+        coalesce(ms.maxing_cycles_observed, 0) AS maxing_cycles_observed,
+        CASE
+          WHEN coalesce(cs.valid_capacity_cycles, 0) >= 2
+            AND cs.estimated_daily_capacity_units IS NOT NULL
+            AND cs.estimated_daily_capacity_units <> 0
+          THEN coalesce(uu.usage_units_24h, 0)::numeric / cs.estimated_daily_capacity_units
+          ELSE NULL
+        END AS utilization_rate_24h,
+        cb.five_hour_reserve_percent,
+        ${providerUsageSelect}
+        cb.seven_day_reserve_percent,
+        case
+          when cb.provider = 'anthropic'
+          then coalesce(c5.cap_exhaustion_cycles_observed, 0)
+          else null
+        end AS claude_five_hour_cap_exhaustion_cycles_observed,
+        case
+          when cb.provider = 'anthropic'
+          then c5.usage_units_before_cap_exhaustion_last_window
+          else null
+        end AS claude_five_hour_usage_units_before_cap_exhaustion_last_window,
+        case
+          when cb.provider = 'anthropic'
+          then c5.avg_usage_units_before_cap_exhaustion
+          else null
+        end AS claude_five_hour_avg_usage_units_before_cap_exhaustion,
+        case
+          when cb.provider = 'anthropic'
+          then coalesce(c7.cap_exhaustion_cycles_observed, 0)
+          else null
+        end AS claude_seven_day_cap_exhaustion_cycles_observed,
+        case
+          when cb.provider = 'anthropic'
+          then c7.usage_units_before_cap_exhaustion_last_window
+          else null
+        end AS claude_seven_day_usage_units_before_cap_exhaustion_last_window,
+        case
+          when cb.provider = 'anthropic'
+          then c7.avg_usage_units_before_cap_exhaustion
+          else null
+        end AS claude_seven_day_avg_usage_units_before_cap_exhaustion,
+        cb.created_at,
+        cb.expires_at
+      FROM credential_base cb
+      ${providerUsageJoin}
+      LEFT JOIN maxed_events me ON me.credential_id = cb.id::text
+      LEFT JOIN maxed_summary ms ON ms.credential_id = cb.id::text
+      LEFT JOIN recovery_summary rs ON rs.credential_id = cb.id::text
+      LEFT JOIN capacity_summary cs ON cs.credential_id = cb.id::text
+      LEFT JOIN claude_cap_exhaustion_summary c5
+        ON c5.credential_id = cb.id::text
+       AND c5.cap_window = '5h'
+      LEFT JOIN claude_cap_exhaustion_summary c7
+        ON c7.credential_id = cb.id::text
+       AND c7.cap_window = '7d'
+      LEFT JOIN utilization_usage uu ON uu.credential_id = cb.id::text
+      ORDER BY cb.provider, cb.debug_label NULLS LAST, cb.id
+    `;
+}
+
 export class AnalyticsRepository implements AnalyticsRouteRepository {
   constructor(private readonly db: SqlClient) {}
 
@@ -296,216 +721,38 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
     const credFilter = credWhere.length > 0 ? `WHERE ${credWhere.join(' AND ')}` : '';
     const maxedWindowFilter = windowSqlRaw(filters.window, 'cr.maxed_at');
     const recoveryWindowFilter = windowSqlRaw(filters.window, 'cr.reactivated_at');
+    const capExhaustionWindowFilter = windowSqlRaw(filters.window, 'ccer.exhausted_at');
+    let options: TokenHealthSqlOptions = {
+      includeReserveColumns: true,
+      includeProviderUsage: true
+    };
 
-    const sql = `
-      WITH credential_base AS (
-        SELECT
-          tc.id,
-          tc.debug_label,
-          tc.provider,
-          tc.status,
-          coalesce(tc.consecutive_failure_count, 0) AS consecutive_failure_count,
-          coalesce(tc.consecutive_rate_limit_count, 0) AS consecutive_rate_limit_count,
-          tc.last_failed_status,
-          tc.last_failed_at,
-          tc.last_rate_limited_at,
-          tc.maxed_at,
-          tc.rate_limited_until,
-          tc.next_probe_at,
-          tc.last_probe_at,
-          tc.monthly_contribution_limit_units,
-          coalesce(tc.monthly_contribution_used_units, 0) AS monthly_contribution_used_units,
-          tc.monthly_window_start_at,
-          tc.created_at,
-          tc.expires_at
-        FROM ${TABLES.tokenCredentials} tc
-        ${credFilter}
-      ),
-      maxed_events AS (
-        SELECT
-          tce.token_credential_id::text AS credential_id,
-          count(*) AS maxed_events_7d
-        FROM ${TABLES.tokenCredentialEvents} tce
-        JOIN credential_base cb ON cb.id = tce.token_credential_id
-        WHERE tce.event_type = 'maxed'
-          AND tce.created_at >= now() - interval '7 days'
-        GROUP BY tce.token_credential_id
-      ),
-      maxed_cycles AS (
-        SELECT
-          cb.id::text AS credential_id,
-          cb.created_at AS credential_created_at,
-          me.created_at AS maxed_at,
-          coalesce(
-            (
-              SELECT re.created_at
-              FROM ${TABLES.tokenCredentialEvents} re
-              WHERE re.token_credential_id = me.token_credential_id
-                AND re.event_type = 'reactivated'
-                AND re.created_at < me.created_at
-              ORDER BY re.created_at DESC
-              LIMIT 1
-            ),
-            cb.created_at
-          ) AS cycle_start_at,
-          (
-            SELECT re.created_at
-            FROM ${TABLES.tokenCredentialEvents} re
-            WHERE re.token_credential_id = me.token_credential_id
-              AND re.event_type = 'reactivated'
-              AND re.created_at > me.created_at
-            ORDER BY re.created_at ASC
-            LIMIT 1
-          ) AS reactivated_at
-        FROM credential_base cb
-        JOIN ${TABLES.tokenCredentialEvents} me
-          ON me.token_credential_id = cb.id
-         AND me.event_type = 'maxed'
-      ),
-      cycle_rollups AS (
-        SELECT
-          mc.credential_id,
-          mc.maxed_at,
-          mc.cycle_start_at,
-          mc.reactivated_at,
-          coalesce(traffic.request_count, 0)::bigint AS request_count,
-          coalesce(traffic.usage_units, 0)::bigint AS usage_units,
-          coalesce(traffic.usage_row_count, 0)::bigint AS usage_row_count,
-          extract(epoch from (mc.maxed_at - mc.cycle_start_at)) / 86400.0 AS cycle_duration_days,
-          CASE
-            WHEN mc.reactivated_at IS NOT NULL
-            THEN extract(epoch from (mc.reactivated_at - mc.maxed_at)) * 1000.0
-            ELSE NULL
-          END AS recovery_time_ms
-        FROM maxed_cycles mc
-        LEFT JOIN LATERAL (
-          SELECT
-            count(DISTINCT re.request_id) AS request_count,
-            coalesce(sum(ul.usage_units), 0) AS usage_units,
-            count(ul.id) AS usage_row_count
-          FROM ${TABLES.routingEvents} re
-          LEFT JOIN ${TABLES.usageLedger} ul
-            ON ul.org_id = re.org_id
-            AND ul.request_id = re.request_id
-            AND ul.attempt_no = re.attempt_no
-            AND ul.entry_type = 'usage'
-          WHERE re.route_decision->>'tokenCredentialId' = mc.credential_id
-            AND re.created_at >= mc.cycle_start_at
-            AND re.created_at <= mc.maxed_at
-        ) traffic ON true
-      ),
-      maxed_window_rollups AS (
-        SELECT *
-        FROM cycle_rollups cr
-        WHERE ${maxedWindowFilter}
-      ),
-      recovery_window_rollups AS (
-        SELECT *
-        FROM cycle_rollups cr
-        WHERE cr.reactivated_at IS NOT NULL
-          AND ${recoveryWindowFilter}
-      ),
-      capacity_window_rollups AS (
-        SELECT
-          cr.*,
-          CASE
-            WHEN cr.cycle_duration_days >= 0.25
-              AND cr.usage_row_count > 0
-              AND cr.cycle_duration_days > 0
-            THEN cr.usage_units::numeric / cr.cycle_duration_days::numeric
-            ELSE NULL
-          END AS daily_capacity_units
-        FROM maxed_window_rollups cr
-      ),
-      maxed_summary AS (
-        SELECT
-          credential_id,
-          count(*)::bigint AS maxing_cycles_observed,
-          avg(request_count::numeric) AS avg_requests_before_maxed,
-          avg(usage_units::numeric) AS avg_usage_units_before_maxed,
-          (array_agg(request_count ORDER BY maxed_at DESC))[1]::bigint AS requests_before_maxed_last_window
-        FROM maxed_window_rollups
-        GROUP BY credential_id
-      ),
-      recovery_summary AS (
-        SELECT
-          credential_id,
-          avg(recovery_time_ms) AS avg_recovery_time_ms
-        FROM recovery_window_rollups
-        GROUP BY credential_id
-      ),
-      capacity_summary AS (
-        SELECT
-          credential_id,
-          count(*) FILTER (WHERE daily_capacity_units IS NOT NULL)::bigint AS valid_capacity_cycles,
-          percentile_cont(0.5) WITHIN GROUP (ORDER BY daily_capacity_units)
-            FILTER (WHERE daily_capacity_units IS NOT NULL) AS estimated_daily_capacity_units
-        FROM capacity_window_rollups
-        GROUP BY credential_id
-      ),
-      utilization_usage AS (
-        SELECT
-          re.route_decision->>'tokenCredentialId' AS credential_id,
-          coalesce(sum(ul.usage_units), 0)::bigint AS usage_units_24h
-        FROM ${TABLES.routingEvents} re
-        JOIN ${TABLES.usageLedger} ul
-          ON ul.org_id = re.org_id
-          AND ul.request_id = re.request_id
-          AND ul.attempt_no = re.attempt_no
-          AND ul.entry_type = 'usage'
-        JOIN credential_base cb
-          ON cb.id::text = re.route_decision->>'tokenCredentialId'
-        WHERE ul.created_at >= now() - interval '24 hours'
-        GROUP BY re.route_decision->>'tokenCredentialId'
-      )
-      SELECT
-        cb.id AS credential_id,
-        cb.debug_label,
-        cb.provider,
-        cb.status,
-        cb.consecutive_failure_count,
-        cb.consecutive_rate_limit_count,
-        cb.last_failed_status,
-        cb.last_failed_at,
-        cb.last_rate_limited_at,
-        cb.maxed_at,
-        cb.rate_limited_until,
-        cb.next_probe_at,
-        cb.last_probe_at,
-        cb.monthly_contribution_limit_units,
-        cb.monthly_contribution_used_units,
-        cb.monthly_window_start_at,
-        coalesce(me.maxed_events_7d, 0) AS maxed_events_7d,
-        ms.requests_before_maxed_last_window,
-        ms.avg_requests_before_maxed,
-        ms.avg_usage_units_before_maxed,
-        rs.avg_recovery_time_ms,
-        CASE
-          WHEN coalesce(cs.valid_capacity_cycles, 0) >= 2
-          THEN cs.estimated_daily_capacity_units
-          ELSE NULL
-        END AS estimated_daily_capacity_units,
-        coalesce(ms.maxing_cycles_observed, 0) AS maxing_cycles_observed,
-        CASE
-          WHEN coalesce(cs.valid_capacity_cycles, 0) >= 2
-            AND cs.estimated_daily_capacity_units IS NOT NULL
-            AND cs.estimated_daily_capacity_units <> 0
-          THEN coalesce(uu.usage_units_24h, 0)::numeric / cs.estimated_daily_capacity_units
-          ELSE NULL
-        END AS utilization_rate_24h,
-        cb.created_at,
-        cb.expires_at
-      FROM credential_base cb
-      LEFT JOIN maxed_events me ON me.credential_id = cb.id::text
-      LEFT JOIN maxed_summary ms ON ms.credential_id = cb.id::text
-      LEFT JOIN recovery_summary rs ON rs.credential_id = cb.id::text
-      LEFT JOIN capacity_summary cs ON cs.credential_id = cb.id::text
-      LEFT JOIN utilization_usage uu ON uu.credential_id = cb.id::text
-      ORDER BY cb.provider, cb.debug_label NULLS LAST, cb.id
-    `;
+    for (;;) {
+      try {
+        const result = await this.db.query(buildTokenHealthSql({
+          credFilter,
+          maxedWindowFilter,
+          recoveryWindowFilter,
+          capExhaustionWindowFilter,
+          options
+        }), params);
+        return result.rows;
+      } catch (error) {
+        const nextOptions: TokenHealthSqlOptions = {
+          includeReserveColumns: options.includeReserveColumns && !isMissingReserveColumn(error),
+          includeProviderUsage: options.includeProviderUsage && !isMissingProviderUsageTable(error)
+        };
 
-    const result = await this.db.query(sql, params);
-    return result.rows;
+        if (
+          nextOptions.includeReserveColumns === options.includeReserveColumns
+          && nextOptions.includeProviderUsage === options.includeProviderUsage
+        ) {
+          throw error;
+        }
+
+        options = nextOptions;
+      }
+    }
   }
 
   async getTokenRouting(filters: BaseFilters): Promise<unknown> {
@@ -967,13 +1214,17 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         tce.reason,
         tce.metadata,
         CASE
-          WHEN tce.event_type = 'reactivated' THEN 'info'
+          WHEN tce.event_type in ('reactivated', 'contribution_cap_cleared') THEN 'info'
           ELSE 'warn'
         END AS severity,
         CASE
           WHEN tce.event_type = 'maxed' THEN 'credential maxed'
           WHEN tce.event_type = 'reactivated' THEN 'credential reactivated'
           WHEN tce.event_type = 'probe_failed' THEN 'probe failed'
+          WHEN tce.event_type = 'contribution_cap_exhausted'
+            THEN coalesce(tce.metadata->>'window', 'cap') || ' contribution cap exhausted'
+          WHEN tce.event_type = 'contribution_cap_cleared'
+            THEN coalesce(tce.metadata->>'window', 'cap') || ' contribution cap cleared'
           ELSE tce.event_type
         END AS summary
       FROM ${TABLES.tokenCredentialEvents} tce
