@@ -33,6 +33,7 @@ describe('tokenCredentialHealthJob', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     delete process.env.TOKEN_CREDENTIAL_PROBE_ENABLED;
+    delete process.env.TOKEN_CREDENTIAL_PROBE_INTERVAL_MINUTES;
     delete process.env.TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS;
     delete process.env.TOKEN_CREDENTIAL_PROBE_TIMEOUT_MS;
   });
@@ -49,6 +50,16 @@ describe('tokenCredentialHealthJob', () => {
 
     expect(repo.listMaxedForProbe).not.toHaveBeenCalled();
     expect(ctx.logger.info).toHaveBeenCalledWith('token credential healthcheck skipped (disabled)');
+  });
+
+  it('defaults the generic maxed probe loop to a 10 minute cadence', () => {
+    const repo = {
+      listMaxedForProbe: vi.fn()
+    };
+
+    const job = createTokenCredentialHealthJob(repo as any);
+
+    expect(job.scheduleMs).toBe(10 * 60 * 1000);
   });
 
   it('skips Claude oauth maxed credentials because the minute supervisor owns their recovery', async () => {

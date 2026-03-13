@@ -907,12 +907,12 @@ Response example:
 - Token credential probe/reactivation:
   - Background jobs:
     - Claude OAuth auth-failure recovery is supervised by `token-credential-provider-usage-minute`, which checks due auth-broken Claude creds each minute and only probes when `nextProbeAt` is due.
-    - `token-credential-healthcheck-hourly` remains the generic maxed-token probe loop for non-Claude credentials.
+    - `token-credential-healthcheck-hourly` remains the generic maxed-token probe loop for non-Claude credentials; the job name is legacy, but the default cadence is now 10m.
   - Enabled by default (`TOKEN_CREDENTIAL_PROBE_ENABLED=true`).
-  - Schedule default: hourly (`TOKEN_CREDENTIAL_PROBE_SCHEDULE_MS=3600000`).
+  - Schedule default: 10m (`TOKEN_CREDENTIAL_PROBE_SCHEDULE_MS=600000`).
   - Probe timeout default: `10000ms` (`TOKEN_CREDENTIAL_PROBE_TIMEOUT_MS=10000`).
   - Probe batch default: `20` creds (`TOKEN_CREDENTIAL_PROBE_MAX_KEYS=20`).
-  - Next probe interval default: 2h (`TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS=2`).
+  - Next probe interval default: 10m (`TOKEN_CREDENTIAL_PROBE_INTERVAL_MINUTES=10`; legacy `TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS` still works as fallback).
   - Probe model default: `claude-opus-4-6` (`TOKEN_CREDENTIAL_PROBE_MODEL` override).
 - Token-mode policy guard:
   - when `TOKEN_MODE_ENABLED_ORGS` is configured, non-allowlisted orgs are blocked deterministically (no legacy fallback)

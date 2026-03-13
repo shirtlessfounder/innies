@@ -2,12 +2,12 @@ import { TokenCredentialRepository } from '../repos/tokenCredentialRepository.js
 import type { JobDefinition } from './types.js';
 import {
   probeAndUpdateTokenCredential,
-  readTokenCredentialProbeIntervalHours,
+  readTokenCredentialProbeIntervalMinutes,
   readTokenCredentialProbeTimeoutMs
 } from '../services/tokenCredentialProbe.js';
 import { isAnthropicOauthTokenCredential } from '../services/tokenCredentialProviderUsage.js';
 
-const DEFAULT_SCHEDULE_MS = 60 * 60 * 1000;
+const DEFAULT_SCHEDULE_MS = 10 * 60 * 1000;
 
 function envFlag(name: string, fallback: boolean): boolean {
   const value = process.env[name];
@@ -35,7 +35,7 @@ export function createTokenCredentialHealthJob(repo: TokenCredentialRepository):
 
       const maxKeys = readIntEnv('TOKEN_CREDENTIAL_PROBE_MAX_KEYS', 20);
       const timeoutMs = readTokenCredentialProbeTimeoutMs();
-      const probeIntervalHours = readTokenCredentialProbeIntervalHours();
+      const probeIntervalMinutes = readTokenCredentialProbeIntervalMinutes();
       const candidates = (await repo.listMaxedForProbe(maxKeys * 5))
         .filter((credential) => !isAnthropicOauthTokenCredential(credential))
         .slice(0, maxKeys);
@@ -46,7 +46,7 @@ export function createTokenCredentialHealthJob(repo: TokenCredentialRepository):
       for (const credential of candidates) {
         const result = await probeAndUpdateTokenCredential(repo, credential, {
           timeoutMs,
-          probeIntervalHours
+          probeIntervalMinutes
         });
         if (result.reactivated) {
             reactivated += 1;

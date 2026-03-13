@@ -6,7 +6,7 @@ import { requireApiKey } from '../middleware/auth.js';
 import { runtime } from '../services/runtime.js';
 import {
   probeAndUpdateTokenCredential,
-  readTokenCredentialProbeIntervalHours,
+  readTokenCredentialProbeIntervalMinutes,
   readTokenCredentialProbeTimeoutMs
 } from '../services/tokenCredentialProbe.js';
 import { AppError } from '../utils/errors.js';
@@ -846,7 +846,7 @@ router.post('/v1/admin/token-credentials/:id/probe', requireApiKey(runtime.repos
 
     const probeOutcome = await probeAndUpdateTokenCredential(runtime.repos.tokenCredentials, existing, {
       timeoutMs: readTokenCredentialProbeTimeoutMs(),
-      probeIntervalHours: readTokenCredentialProbeIntervalHours()
+      probeIntervalMinutes: readTokenCredentialProbeIntervalMinutes()
     });
 
     const responseBody = {
