@@ -23,6 +23,8 @@ const tokenCredentialProviderSchema = z.preprocess(
   z.enum(['anthropic', 'openai', 'codex'])
 ).transform((provider) => (provider === 'codex' ? 'openai' : provider));
 
+type TokenCredentialAuthScheme = 'x_api_key' | 'bearer';
+
 const buyerProviderPreferenceSchema = tokenCredentialProviderSchema;
 
 const killSwitchSchema = z.object({
@@ -80,7 +82,7 @@ const replayMeteringSchema = z.object({
 const tokenCredentialCreateSchema = z.object({
   orgId: z.string().uuid(),
   provider: tokenCredentialProviderSchema,
-  authScheme: z.enum(['x_api_key', 'bearer']).default('x_api_key'),
+  authScheme: z.enum(['x_api_key', 'bearer']).optional(),
   accessToken: z.string().min(1),
   refreshToken: z.string().min(1).optional(),
   debugLabel: z.string().trim().min(1).max(64).optional(),
@@ -91,7 +93,7 @@ const tokenCredentialCreateSchema = z.object({
 const tokenCredentialRotateSchema = z.object({
   orgId: z.string().uuid(),
   provider: tokenCredentialProviderSchema,
-  authScheme: z.enum(['x_api_key', 'bearer']).default('x_api_key'),
+  authScheme: z.enum(['x_api_key', 'bearer']).optional(),
   accessToken: z.string().min(1),
   refreshToken: z.string().min(1).optional(),
   debugLabel: z.string().trim().min(1).max(64).optional(),
@@ -102,6 +104,18 @@ const tokenCredentialRotateSchema = z.object({
 
 const tokenCredentialRefreshTokenSchema = z.object({
   refreshToken: z.string().trim().min(1).nullable()
+});
+
+const tokenCredentialContributionCapSchema = z.object({
+  fiveHourReservePercent: z.number().int().min(0).max(100).optional(),
+  sevenDayReservePercent: z.number().int().min(0).max(100).optional()
+}).superRefine((value, ctx) => {
+  if (value.fiveHourReservePercent === undefined && value.sevenDayReservePercent === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'At least one reserve percent must be provided'
+    });
+  }
 });
 
 const buyerProviderPreferenceUpdateSchema = z.object({
@@ -121,6 +135,26 @@ function canAccessBuyerKey(input: {
   if (!buyerOrgId) return false;
   if (!adminOrgId) return true;
   return adminOrgId === buyerOrgId;
+}
+
+function isAnthropicOauthAccessToken(provider: string, accessToken: string): boolean {
+  return provider === 'anthropic' && accessToken.includes('sk-ant-oat');
+}
+
+function resolveTokenCredentialAuthScheme(input: {
+  provider: string;
+  accessToken: string;
+  authScheme?: TokenCredentialAuthScheme;
+}): TokenCredentialAuthScheme {
+  if (input.authScheme) {
+    return input.authScheme;
+  }
+
+  if (isAnthropicOauthAccessToken(input.provider, input.accessToken)) {
+    return 'bearer';
+  }
+
+  return 'x_api_key';
 }
 
 router.get('/v1/admin/pool-health', requireApiKey(runtime.repos.apiKeys, ['admin']), async (_req, res, next) => {
@@ -383,7 +417,9 @@ router.post('/v1/admin/token-credentials', requireApiKey(runtime.repos.apiKeys, 
     const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
 
     const parsed = tokenCredentialCreateSchema.parse(req.body);
-    const requestHash = sha256Hex(stableJson({ body: parsed, apiKeyId: req.auth?.apiKeyId }));
+    const authScheme = resolveTokenCredentialAuthScheme(parsed);
+    const normalizedBody = { ...parsed, authScheme };
+    const requestHash = sha256Hex(stableJson({ body: normalizedBody, apiKeyId: req.auth?.apiKeyId }));
     const tenantScope = req.auth?.orgId ?? `admin:${req.auth?.apiKeyId}`;
     const idemStart = await runtime.services.idempotency.start({
       scope: 'admin_token_credentials_create_v1',
@@ -406,7 +442,7 @@ router.post('/v1/admin/token-credentials', requireApiKey(runtime.repos.apiKeys, 
       created = await runtime.services.tokenCredentials.create({
         orgId: parsed.orgId,
         provider: parsed.provider,
-        authScheme: parsed.authScheme,
+        authScheme,
         accessToken: parsed.accessToken,
         refreshToken: parsed.refreshToken ?? null,
         debugLabel: parsed.debugLabel ?? null,
@@ -450,7 +486,9 @@ router.post('/v1/admin/token-credentials/rotate', requireApiKey(runtime.repos.ap
     const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
 
     const parsed = tokenCredentialRotateSchema.parse(req.body);
-    const requestHash = sha256Hex(stableJson({ body: parsed, apiKeyId: req.auth?.apiKeyId }));
+    const authScheme = resolveTokenCredentialAuthScheme(parsed);
+    const normalizedBody = { ...parsed, authScheme };
+    const requestHash = sha256Hex(stableJson({ body: normalizedBody, apiKeyId: req.auth?.apiKeyId }));
     const tenantScope = req.auth?.orgId ?? `admin:${req.auth?.apiKeyId}`;
     const idemStart = await runtime.services.idempotency.start({
       scope: 'admin_token_credentials_rotate_v1',
@@ -471,13 +509,13 @@ router.post('/v1/admin/token-credentials/rotate', requireApiKey(runtime.repos.ap
     const rotated = await runtime.services.tokenCredentials.rotate({
       orgId: parsed.orgId,
       provider: parsed.provider,
-      authScheme: parsed.authScheme,
-        accessToken: parsed.accessToken,
-        refreshToken: parsed.refreshToken ?? null,
-        debugLabel: parsed.debugLabel ?? null,
-        expiresAt: new Date(parsed.expiresAt),
-        monthlyContributionLimitUnits: parsed.monthlyContributionLimitUnits ?? null,
-        previousCredentialId: parsed.previousCredentialId ?? null
+      authScheme,
+      accessToken: parsed.accessToken,
+      refreshToken: parsed.refreshToken ?? null,
+      debugLabel: parsed.debugLabel ?? null,
+      expiresAt: new Date(parsed.expiresAt),
+      monthlyContributionLimitUnits: parsed.monthlyContributionLimitUnits ?? null,
+      previousCredentialId: parsed.previousCredentialId ?? null
     }, {
       actorApiKeyId: req.auth?.apiKeyId ?? null
     });
@@ -592,6 +630,64 @@ router.patch('/v1/admin/token-credentials/:id/refresh-token', requireApiKey(runt
       id,
       hasRefreshToken: parsed.refreshToken !== null
     };
+
+    await runtime.services.idempotency.commit(idemStart, {
+      responseCode: 200,
+      responseBody,
+      responseDigest: sha256Hex(stableJson(responseBody)),
+      responseRef: id
+    });
+
+    res.status(200).json(responseBody);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/v1/admin/token-credentials/:id/contribution-cap', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const id = z.string().uuid().parse(req.params.id);
+    const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
+    const parsed = tokenCredentialContributionCapSchema.parse(req.body);
+    const requestHash = sha256Hex(stableJson({ id, body: parsed, apiKeyId: req.auth?.apiKeyId }));
+    const tenantScope = req.auth?.orgId ?? `admin:${req.auth?.apiKeyId}`;
+
+    const idemStart = await runtime.services.idempotency.start({
+      scope: 'admin_token_credentials_contribution_cap_v1',
+      tenantScope,
+      idempotencyKey,
+      requestHash
+    });
+
+    if (idemStart.replay) {
+      if (!idemStart.responseBody) {
+        throw new AppError('idempotency_replay_unavailable', 409, 'Idempotent replay not available for this request');
+      }
+      res.setHeader('x-idempotent-replay', 'true');
+      res.status(idemStart.responseCode).json(idemStart.responseBody);
+      return;
+    }
+
+    const updated = await runtime.services.tokenCredentials.updateContributionCap(
+      id,
+      {
+        fiveHourReservePercent: parsed.fiveHourReservePercent,
+        sevenDayReservePercent: parsed.sevenDayReservePercent
+      },
+      { actorApiKeyId: req.auth?.apiKeyId ?? null }
+    );
+    if (!updated) {
+      throw new AppError('invalid_request', 404, 'Token credential not found');
+    }
+
+    const responseBody = {
+      ok: true,
+      id,
+      provider: updated.provider,
+      orgId: updated.orgId,
+      fiveHourReservePercent: updated.fiveHourReservePercent,
+      sevenDayReservePercent: updated.sevenDayReservePercent
+    } as const;
 
     await runtime.services.idempotency.commit(idemStart, {
       responseCode: 200,

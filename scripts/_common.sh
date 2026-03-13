@@ -319,6 +319,7 @@ ensure_psql() {
 
 resolve_token_credential_id() {
   local input="$1"
+  local provider_filter="${2:-}"
   local matches=""
   local line_count
 
@@ -333,15 +334,28 @@ resolve_token_credential_id() {
   ensure_database_url
   ensure_psql
 
-  matches="$(
-    psql "$DATABASE_URL" -X -A -F $'\t' -t -v ON_ERROR_STOP=1 -v debug_label="$input" 2>/dev/null <<'SQL'
+  if [[ -n "$provider_filter" ]]; then
+    matches="$(
+      psql "$DATABASE_URL" -X -A -F $'\t' -t -v ON_ERROR_STOP=1 -v debug_label="$input" -v provider="$provider_filter" 2>/dev/null <<'SQL'
+select id, provider, status
+from in_token_credentials
+where debug_label = :'debug_label'
+  and provider = :'provider'
+  and status <> 'revoked'
+order by updated_at desc;
+SQL
+    )"
+  else
+    matches="$(
+      psql "$DATABASE_URL" -X -A -F $'\t' -t -v ON_ERROR_STOP=1 -v debug_label="$input" 2>/dev/null <<'SQL'
 select id, provider, status
 from in_token_credentials
 where debug_label = :'debug_label'
   and status <> 'revoked'
 order by updated_at desc;
 SQL
-  )"
+    )"
+  fi
   matches="$(printf '%s\n' "$matches" | sed '/^[[:space:]]*$/d')"
 
   if [[ -z "$matches" ]]; then
@@ -359,6 +373,28 @@ SQL
   fi
 
   printf '%s\n' "$matches" | cut -f1
+}
+
+list_token_credentials_for_provider() {
+  local provider="$1"
+
+  provider="$(trim "$provider")"
+  require_nonempty 'provider' "$provider"
+
+  ensure_database_url
+  ensure_psql
+
+  psql "$DATABASE_URL" -X -A -F $'\x1f' -t -v ON_ERROR_STOP=1 -v provider="$provider" 2>/dev/null <<'SQL'
+select
+  id,
+  coalesce(debug_label, ''),
+  status,
+  to_char(updated_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as updated_at_utc
+from in_token_credentials
+where provider = :'provider'
+  and status <> 'revoked'
+order by updated_at desc;
+SQL
 }
 
 print_response() {

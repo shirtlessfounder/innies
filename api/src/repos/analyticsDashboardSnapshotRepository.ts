@@ -16,6 +16,7 @@ export type AnalyticsDashboardSnapshotPayload = {
   buyers: Record<string, unknown>[];
   anomalies: Record<string, unknown>;
   events: Record<string, unknown>[];
+  warnings?: string[];
 };
 
 export type DashboardSnapshotRecord = {
@@ -47,10 +48,14 @@ type SnapshotRow = {
 };
 
 const LOCK_NAMESPACE = 19772191;
+// Version the shared snapshot row so mixed-version API instances do not clobber
+// newer dashboard payload shapes during rollouts or local/prod DB sharing.
+const DASHBOARD_SNAPSHOT_CACHE_SCHEMA_VERSION = 3;
 
 function buildCacheKey(filters: DashboardSnapshotFilters): string {
   return [
     'dashboard',
+    `v${DASHBOARD_SNAPSHOT_CACHE_SCHEMA_VERSION}`,
     filters.window,
     filters.provider ?? '_',
     filters.source ?? '_'

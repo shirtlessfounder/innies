@@ -7,6 +7,12 @@ import type {
   DashboardSnapshotStore
 } from '../repos/analyticsDashboardSnapshotRepository.js';
 import { runtime } from '../services/runtime.js';
+import {
+  PROVIDER_USAGE_FETCH_BACKOFF_ACTIVE_REASON,
+  PROVIDER_USAGE_FETCH_FAILED_REASON,
+  readTokenCredentialProviderUsageHardStaleMs,
+  readTokenCredentialProviderUsageSoftStaleMs
+} from '../services/tokenCredentialProviderUsage.js';
 import { formatDisplayKey, type AnalyticsWindow } from '../utils/analytics.js';
 import { AppError } from '../utils/errors.js';
 
@@ -357,6 +363,10 @@ function readOptionalBoolean(record: Record<string, unknown>, keys: string[], fa
   return value === null ? fallback : value;
 }
 
+function readNullableBoolean(record: Record<string, unknown>, keys: string[]): boolean | null {
+  return readBooleanLike(pick(record, keys));
+}
+
 function readIsoDate(value: unknown, field: string): string {
   if (value instanceof Date) return value.toISOString();
   if (typeof value === 'string' && value.trim().length > 0) {
@@ -570,9 +580,199 @@ function normalizeTokenHealthRows(value: unknown) {
     estimatedDailyCapacityUnits: readOptionalNumber(record, ['estimatedDailyCapacityUnits', 'estimated_daily_capacity_units']),
     maxingCyclesObserved: readOptionalNumber(record, ['maxingCyclesObserved', 'maxing_cycles_observed']),
     utilizationRate24h: readOptionalNumber(record, ['utilizationRate24h', 'utilization_rate_24h']),
+    fiveHourReservePercent: readOptionalNumber(record, ['fiveHourReservePercent', 'five_hour_reserve_percent']),
+    fiveHourUtilizationRatio: readOptionalNumber(record, ['fiveHourUtilizationRatio', 'five_hour_utilization_ratio']),
+    fiveHourResetsAt: readOptionalIsoDate(record, ['fiveHourResetsAt', 'five_hour_resets_at']),
+    fiveHourContributionCapExhausted: readNullableBoolean(
+      record,
+      ['fiveHourContributionCapExhausted', 'five_hour_contribution_cap_exhausted']
+    ),
+    sevenDayReservePercent: readOptionalNumber(record, ['sevenDayReservePercent', 'seven_day_reserve_percent']),
+    sevenDayUtilizationRatio: readOptionalNumber(record, ['sevenDayUtilizationRatio', 'seven_day_utilization_ratio']),
+    sevenDayResetsAt: readOptionalIsoDate(record, ['sevenDayResetsAt', 'seven_day_resets_at']),
+    sevenDayContributionCapExhausted: readNullableBoolean(
+      record,
+      ['sevenDayContributionCapExhausted', 'seven_day_contribution_cap_exhausted']
+    ),
+    providerUsageFetchedAt: readOptionalIsoDate(record, ['providerUsageFetchedAt', 'provider_usage_fetched_at']),
+    claudeFiveHourCapExhaustionCyclesObserved: readOptionalNumber(
+      record,
+      ['claudeFiveHourCapExhaustionCyclesObserved', 'claude_five_hour_cap_exhaustion_cycles_observed']
+    ),
+    claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow: readOptionalNumber(
+      record,
+      [
+        'claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow',
+        'claude_five_hour_usage_units_before_cap_exhaustion_last_window'
+      ]
+    ),
+    claudeFiveHourAvgUsageUnitsBeforeCapExhaustion: readOptionalNumber(
+      record,
+      ['claudeFiveHourAvgUsageUnitsBeforeCapExhaustion', 'claude_five_hour_avg_usage_units_before_cap_exhaustion']
+    ),
+    claudeSevenDayCapExhaustionCyclesObserved: readOptionalNumber(
+      record,
+      ['claudeSevenDayCapExhaustionCyclesObserved', 'claude_seven_day_cap_exhaustion_cycles_observed']
+    ),
+    claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow: readOptionalNumber(
+      record,
+      [
+        'claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow',
+        'claude_seven_day_usage_units_before_cap_exhaustion_last_window'
+      ]
+    ),
+    claudeSevenDayAvgUsageUnitsBeforeCapExhaustion: readOptionalNumber(
+      record,
+      ['claudeSevenDayAvgUsageUnitsBeforeCapExhaustion', 'claude_seven_day_avg_usage_units_before_cap_exhaustion']
+    ),
     createdAt: readOptionalIsoDate(record, ['createdAt', 'created_at']),
     expiresAt: readOptionalIsoDate(record, ['expiresAt', 'expires_at'])
   }));
+}
+
+function normalizeProviderUsageWarningRows(value: unknown) {
+  return readObjectArray(value, 'tokens').map((record) => {
+    const credentialId = readRequiredString(record, ['credentialId', 'credential_id'], 'credentialId');
+    return {
+      credentialId,
+      displayKey: readOptionalString(record, ['displayKey', 'display_key']) ?? formatDisplayKey(credentialId, 'cred'),
+      debugLabel: readOptionalString(record, ['debugLabel', 'debug_label']),
+      provider: normalizeProvider(pick(record, ['provider']), 'provider'),
+      status: normalizeTokenStatus(pick(record, ['status']), 'status'),
+      fiveHourReservePercent: readOptionalNumber(record, ['fiveHourReservePercent', 'five_hour_reserve_percent']),
+      fiveHourResetsAt: readOptionalIsoDate(record, ['fiveHourResetsAt', 'five_hour_resets_at']),
+      fiveHourContributionCapExhausted: readNullableBoolean(
+        record,
+        ['fiveHourContributionCapExhausted', 'five_hour_contribution_cap_exhausted']
+      ),
+      sevenDayReservePercent: readOptionalNumber(record, ['sevenDayReservePercent', 'seven_day_reserve_percent']),
+      sevenDayResetsAt: readOptionalIsoDate(record, ['sevenDayResetsAt', 'seven_day_resets_at']),
+      sevenDayContributionCapExhausted: readNullableBoolean(
+        record,
+        ['sevenDayContributionCapExhausted', 'seven_day_contribution_cap_exhausted']
+      ),
+      providerUsageFetchedAt: readOptionalIsoDate(record, ['providerUsageFetchedAt', 'provider_usage_fetched_at']),
+      lastRefreshError: readOptionalString(record, ['lastRefreshError', 'last_refresh_error'])
+    };
+  });
+}
+
+function normalizeWarnings(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => readTrimmedString(entry))
+    .filter((entry): entry is string => entry !== null);
+}
+
+function tokenHealthWarningLabel(row: {
+  credentialId: string;
+  displayKey: string | null;
+  debugLabel: string | null;
+}): string {
+  return row.debugLabel ?? row.displayKey ?? row.credentialId;
+}
+
+function formatWarningAge(ageMs: number): string {
+  const totalMinutes = Math.max(1, Math.round(ageMs / 60_000));
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const totalHours = Math.round((ageMs / 60_000 / 60) * 10) / 10;
+  if (totalHours < 24) return `${totalHours}h`;
+  const totalDays = Math.round((ageMs / 60_000 / 60 / 24) * 10) / 10;
+  return `${totalDays}d`;
+}
+
+function appendDashboardWarning(
+  warnings: string[],
+  seen: Set<string>,
+  warning: string
+): void {
+  if (seen.has(warning)) return;
+  seen.add(warning);
+  warnings.push(warning);
+}
+
+function buildProviderUsageWarnings(
+  rawTokenHealthRows: unknown,
+  now = Date.now()
+): string[] {
+  const tokenHealthRows = normalizeProviderUsageWarningRows(rawTokenHealthRows);
+  const warnings: string[] = [];
+  const seen = new Set<string>();
+  const softStaleMs = readTokenCredentialProviderUsageSoftStaleMs();
+  const hardStaleMs = readTokenCredentialProviderUsageHardStaleMs();
+
+  for (const row of tokenHealthRows) {
+    if (row.provider !== 'anthropic') continue;
+    if (row.status === 'expired' || row.status === 'revoked') continue;
+
+    const label = tokenHealthWarningLabel(row);
+    const reserveConfigured = (row.fiveHourReservePercent ?? 0) > 0 || (row.sevenDayReservePercent ?? 0) > 0;
+    const fetchedAtRaw = row.providerUsageFetchedAt;
+
+    if (row.lastRefreshError === PROVIDER_USAGE_FETCH_FAILED_REASON) {
+      appendDashboardWarning(
+        warnings,
+        seen,
+        `${label}: provider_usage_fetch_failed - last Claude usage refresh failed; dashboard freshness/cap state may lag until a successful refresh.`
+      );
+    } else if (row.lastRefreshError === PROVIDER_USAGE_FETCH_BACKOFF_ACTIVE_REASON) {
+      appendDashboardWarning(
+        warnings,
+        seen,
+        `${label}: provider_usage_fetch_backoff_active - Claude usage refresh is temporarily backing off after recent fetch failures; dashboard freshness/cap state may lag until retry.`
+      );
+    }
+
+    if (!fetchedAtRaw) {
+      if (reserveConfigured) {
+        appendDashboardWarning(
+          warnings,
+          seen,
+          `${label}: provider_usage_snapshot_missing - reserved Claude token has no provider-usage snapshot yet; pooled routing excludes it until one arrives.`
+        );
+      }
+      continue;
+    }
+
+    const fetchedAtMs = Date.parse(fetchedAtRaw);
+    const ageMs = Number.isFinite(fetchedAtMs) ? Math.max(0, now - fetchedAtMs) : null;
+    if (ageMs !== null && ageMs > hardStaleMs) {
+      appendDashboardWarning(
+        warnings,
+        seen,
+        reserveConfigured
+          ? `${label}: provider_usage_snapshot_hard_stale - last Claude usage snapshot is ${formatWarningAge(ageMs)} old; pooled routing excludes this reserved token until a fresh snapshot arrives.`
+          : `${label}: provider_usage_snapshot_hard_stale - last Claude usage snapshot is ${formatWarningAge(ageMs)} old; routing is currently fail-open because both reserves are 0%.`
+      );
+      continue;
+    }
+
+    if (ageMs !== null && ageMs > softStaleMs) {
+      appendDashboardWarning(
+        warnings,
+        seen,
+        `${label}: provider_usage_snapshot_soft_stale - last Claude usage snapshot is ${formatWarningAge(ageMs)} old; routing is still using the last successful snapshot.`
+      );
+    }
+
+    if (row.fiveHourContributionCapExhausted === true) {
+      appendDashboardWarning(
+        warnings,
+        seen,
+        `${label}: usage_exhausted_5h - pooled Claude routing is at the 5h cap${row.fiveHourResetsAt ? ` until ${row.fiveHourResetsAt}` : ''}.`
+      );
+    }
+
+    if (row.sevenDayContributionCapExhausted === true) {
+      appendDashboardWarning(
+        warnings,
+        seen,
+        `${label}: usage_exhausted_7d - pooled Claude routing is at the 7d cap${row.sevenDayResetsAt ? ` until ${row.sevenDayResetsAt}` : ''}.`
+      );
+    }
+  }
+
+  return warnings;
 }
 
 function normalizeTokenRoutingRows(value: unknown) {
@@ -744,7 +944,22 @@ function mergeDashboardTokens(input: {
       attempts: row.attempts,
       requests: row.requests,
       usageUnits: row.usageUnits,
-      percentOfWindow: totalUsageUnits > 0 ? Number((row.usageUnits / totalUsageUnits).toFixed(4)) : 0
+      percentOfWindow: totalUsageUnits > 0 ? Number((row.usageUnits / totalUsageUnits).toFixed(4)) : 0,
+      fiveHourReservePercent: null,
+      fiveHourUtilizationRatio: null,
+      fiveHourResetsAt: null,
+      fiveHourContributionCapExhausted: null,
+      sevenDayReservePercent: null,
+      sevenDayUtilizationRatio: null,
+      sevenDayResetsAt: null,
+      sevenDayContributionCapExhausted: null,
+      providerUsageFetchedAt: null,
+      claudeFiveHourCapExhaustionCyclesObserved: null,
+      claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow: null,
+      claudeFiveHourAvgUsageUnitsBeforeCapExhaustion: null,
+      claudeSevenDayCapExhaustionCyclesObserved: null,
+      claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow: null,
+      claudeSevenDayAvgUsageUnitsBeforeCapExhaustion: null
     });
   }
 
@@ -758,12 +973,44 @@ function mergeDashboardTokens(input: {
       attempts: 0,
       requests: 0,
       usageUnits: 0,
-      percentOfWindow: 0
+      percentOfWindow: 0,
+      fiveHourReservePercent: null,
+      fiveHourUtilizationRatio: null,
+      fiveHourResetsAt: null,
+      fiveHourContributionCapExhausted: null,
+      sevenDayReservePercent: null,
+      sevenDayUtilizationRatio: null,
+      sevenDayResetsAt: null,
+      sevenDayContributionCapExhausted: null,
+      providerUsageFetchedAt: null,
+      claudeFiveHourCapExhaustionCyclesObserved: null,
+      claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow: null,
+      claudeFiveHourAvgUsageUnitsBeforeCapExhaustion: null,
+      claudeSevenDayCapExhaustionCyclesObserved: null,
+      claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow: null,
+      claudeSevenDayAvgUsageUnitsBeforeCapExhaustion: null
     };
     existing.utilizationRate24h = row.utilizationRate24h;
     existing.maxedEvents7d = row.maxedEvents7d;
     existing.monthlyContributionUsedUnits = row.monthlyContributionUsedUnits;
     existing.monthlyContributionLimitUnits = row.monthlyContributionLimitUnits;
+    existing.fiveHourReservePercent = row.fiveHourReservePercent;
+    existing.fiveHourUtilizationRatio = row.fiveHourUtilizationRatio;
+    existing.fiveHourResetsAt = row.fiveHourResetsAt;
+    existing.fiveHourContributionCapExhausted = row.fiveHourContributionCapExhausted;
+    existing.sevenDayReservePercent = row.sevenDayReservePercent;
+    existing.sevenDayUtilizationRatio = row.sevenDayUtilizationRatio;
+    existing.sevenDayResetsAt = row.sevenDayResetsAt;
+    existing.sevenDayContributionCapExhausted = row.sevenDayContributionCapExhausted;
+    existing.providerUsageFetchedAt = row.providerUsageFetchedAt;
+    existing.claudeFiveHourCapExhaustionCyclesObserved = row.claudeFiveHourCapExhaustionCyclesObserved;
+    existing.claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow =
+      row.claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow;
+    existing.claudeFiveHourAvgUsageUnitsBeforeCapExhaustion = row.claudeFiveHourAvgUsageUnitsBeforeCapExhaustion;
+    existing.claudeSevenDayCapExhaustionCyclesObserved = row.claudeSevenDayCapExhaustionCyclesObserved;
+    existing.claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow =
+      row.claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow;
+    existing.claudeSevenDayAvgUsageUnitsBeforeCapExhaustion = row.claudeSevenDayAvgUsageUnitsBeforeCapExhaustion;
     existing.status = deriveDashboardTokenStatus(row.status, row.rateLimitedUntil);
     byId.set(row.credentialId, existing);
   }
@@ -778,7 +1025,22 @@ function mergeDashboardTokens(input: {
       attempts: 0,
       requests: 0,
       usageUnits: 0,
-      percentOfWindow: 0
+      percentOfWindow: 0,
+      fiveHourReservePercent: null,
+      fiveHourUtilizationRatio: null,
+      fiveHourResetsAt: null,
+      fiveHourContributionCapExhausted: null,
+      sevenDayReservePercent: null,
+      sevenDayUtilizationRatio: null,
+      sevenDayResetsAt: null,
+      sevenDayContributionCapExhausted: null,
+      providerUsageFetchedAt: null,
+      claudeFiveHourCapExhaustionCyclesObserved: null,
+      claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow: null,
+      claudeFiveHourAvgUsageUnitsBeforeCapExhaustion: null,
+      claudeSevenDayCapExhaustionCyclesObserved: null,
+      claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow: null,
+      claudeSevenDayAvgUsageUnitsBeforeCapExhaustion: null
     };
     existing.displayKey = existing.displayKey ?? row.displayKey;
     existing.debugLabel = existing.debugLabel ?? row.debugLabel;
@@ -853,6 +1115,7 @@ async function buildDashboardSnapshotPayload(
   const buyers = normalizeBuyerRows(buyersRaw);
   const anomalies = normalizeAnomalies(anomaliesRaw);
   const events = normalizeEventRows(eventsRaw);
+  const warnings = buildProviderUsageWarnings(tokenHealthRaw);
 
   return {
     window: query.window,
@@ -865,7 +1128,8 @@ async function buildDashboardSnapshotPayload(
     }),
     buyers,
     anomalies,
-    events
+    events,
+    warnings
   };
 }
 
@@ -1014,7 +1278,10 @@ export function createAnalyticsRouter(deps: AnalyticsRouteDeps): Router {
       if (dashboardSnapshots) {
         const cached = await dashboardSnapshots.get(query);
         if (cached && isFreshDashboardSnapshot(cached.refreshedAt)) {
-          res.json(cached.payload);
+          res.json({
+            ...cached.payload,
+            warnings: normalizeWarnings((cached.payload as Record<string, unknown>).warnings)
+          });
           return;
         }
 
@@ -1024,17 +1291,27 @@ export function createAnalyticsRouter(deps: AnalyticsRouteDeps): Router {
         );
 
         if (refreshed) {
-          res.json(refreshed.payload);
+          res.json({
+            ...refreshed.payload,
+            warnings: normalizeWarnings((refreshed.payload as Record<string, unknown>).warnings)
+          });
           return;
         }
 
         if (cached) {
-          res.json(cached.payload);
+          res.json({
+            ...cached.payload,
+            warnings: normalizeWarnings((cached.payload as Record<string, unknown>).warnings)
+          });
           return;
         }
       }
 
-      res.json(await buildDashboardSnapshotPayload(analytics, query));
+      const payload = await buildDashboardSnapshotPayload(analytics, query);
+      res.json({
+        ...payload,
+        warnings: normalizeWarnings((payload as Record<string, unknown>).warnings)
+      });
     } catch (error) {
       next(error);
     }

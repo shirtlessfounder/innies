@@ -23,6 +23,7 @@
 - `POST /v1/admin/token-credentials`
 - `POST /v1/admin/token-credentials/rotate`
 - `POST /v1/admin/token-credentials/:id/revoke`
+- `PATCH /v1/admin/token-credentials/:id/contribution-cap`
 - `POST /v1/admin/token-credentials/:id/probe`
 - `PATCH /v1/admin/buyer-keys/:id/provider-preference`
 - Header: `Idempotency-Key`
@@ -170,10 +171,14 @@ Credential material:
   - runtime behavior: Innies derives ChatGPT account context from the access token and uses OpenAI OAuth refresh against `auth.openai.com/oauth/token`
 Optional field:
 - `debugLabel` (1-64 chars): human-readable label stored with credential and emitted in routing/debug telemetry.
+- if `debugLabel` is omitted during rotate, Innies keeps the previous credential's label when rotating an existing credential
 
 ### `POST /v1/admin/token-credentials/rotate`
 Rotate token credential for an org/provider (admin only).
 Contract: primary path for replacing existing credential material.
+Behavior:
+- if `previousCredentialId` is omitted, Innies rotates the latest `active` credential for that `(org, provider)` lane when one exists
+- if `previousCredentialId` is provided, it may target an `active` or `maxed` credential in that `(org, provider)` lane; Innies revokes that prior credential after inserting the replacement
 Credential material:
 - `anthropic`: Claude Code OAuth bearer token (`sk-ant-oat...`)
 - `openai`: Codex/OpenAI OAuth/session token material, not a public OpenAI API key
@@ -184,6 +189,33 @@ Optional field:
 
 ### `POST /v1/admin/token-credentials/:id/revoke`
 Revoke a token credential by id (admin only).
+
+### `PATCH /v1/admin/token-credentials/:id/contribution-cap`
+Set or clear Claude contribution-cap reserves for a token credential (admin only).
+
+Request body:
+```json
+{
+  "fiveHourReservePercent": 20,
+  "sevenDayReservePercent": 10
+}
+```
+
+Notes:
+- each field is optional, but at least one of `fiveHourReservePercent` or `sevenDayReservePercent` must be present
+- each reserve percent is an integer in `0..100`
+- `0` means no protected reserve for that window
+- only Claude token credentials accept this mutation; non-Claude credentials are rejected with `invalid_request` / `400`
+- non-Claude analytics rows still keep the raw contribution-cap fields `null`
+- request is idempotent and requires an `idempotency-key` header
+
+Response shape:
+- `ok`: always `true` on success
+- `id`: token credential id
+- `provider`: token provider
+- `orgId`: owning org id
+- `fiveHourReservePercent`: resulting stored 5h reserve percent
+- `sevenDayReservePercent`: resulting stored 7d reserve percent
 
 ### `POST /v1/admin/token-credentials/:id/probe`
 Probe a `maxed` token credential immediately (admin only).
@@ -279,7 +311,7 @@ Response example:
 ```
 
 ### `GET /v1/admin/analytics/tokens/health`
-Admin-only token health snapshot plus rolling maxing/utilization metrics.
+Admin-only token health snapshot plus rolling maxing/utilization metrics and nullable Claude contribution-cap fields.
 
 Query params:
 - `window`: `5h|24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `7d`)
@@ -288,11 +320,32 @@ Query params:
 
 Notes:
 - current credential state fields (`status`, `maxedAt`, `nextProbeAt`, etc.) are point-in-time values
+- Claude contribution-cap/provider-usage fields are:
+  - `fiveHourReservePercent`
+  - `fiveHourUtilizationRatio`
+  - `fiveHourResetsAt`
+  - `fiveHourContributionCapExhausted`
+  - `sevenDayReservePercent`
+  - `sevenDayUtilizationRatio`
+  - `sevenDayResetsAt`
+  - `sevenDayContributionCapExhausted`
+  - `providerUsageFetchedAt`
+- Claude cap-cycle analytics fields are:
+  - `claudeFiveHourCapExhaustionCyclesObserved`
+  - `claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow`
+  - `claudeFiveHourAvgUsageUnitsBeforeCapExhaustion`
+  - `claudeSevenDayCapExhaustionCyclesObserved`
+  - `claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow`
+  - `claudeSevenDayAvgUsageUnitsBeforeCapExhaustion`
+- those fields are Claude-only and stay `null` on non-Claude rows
+- Claude rows may also keep them `null` when a fresh provider-usage snapshot has not been fetched yet or analytics is reading against a pre-migration environment
 - maxed-cycle metrics (`requestsBeforeMaxedLastWindow`, `avgRequestsBeforeMaxed`, `avgUsageUnitsBeforeMaxed`, `estimatedDailyCapacityUnits`, `maxingCyclesObserved`) anchor on `maxedAt`
+- Claude cap-cycle metrics anchor on durable `contribution_cap_exhausted` / `contribution_cap_cleared` lifecycle events, not auth-style `maxed`
 - recovery metrics (`avgRecoveryTimeMs`) anchor on `reactivated` timestamps and stay `null` unless at least one completed maxed→reactivated pair lands in-window
 - `estimatedDailyCapacityUnits` is the `p50` of per-cycle `usageUnits / cycleDurationDays` and stays `null` unless at least 2 valid cycles exist
 - `maxingCyclesObserved` is always numeric; `0` means no maxed cycles were observed in the requested window
 - `utilizationRate24h` is trailing 24h `usageUnits / estimatedDailyCapacityUnits`; it stays `null` when capacity is unknown and may exceed `1`
+- for Claude, the provider-reported fields above are the authoritative live quota signal; the empirical maxing-cycle fields remain legacy health/capacity heuristics
 - `source` is accepted for contract consistency but is non-operative for lifecycle/capacity/utilization fields; derived health values are always credential-global
 
 Response example:
@@ -323,6 +376,21 @@ Response example:
       "estimatedDailyCapacityUnits": 156000,
       "maxingCyclesObserved": 2,
       "utilizationRate24h": 1.08,
+      "fiveHourReservePercent": 20,
+      "fiveHourUtilizationRatio": 0.6,
+      "fiveHourResetsAt": "2026-03-07T17:00:00.000Z",
+      "fiveHourContributionCapExhausted": false,
+      "sevenDayReservePercent": 10,
+      "sevenDayUtilizationRatio": 0.72,
+      "sevenDayResetsAt": "2026-03-12T00:00:00.000Z",
+      "sevenDayContributionCapExhausted": true,
+      "providerUsageFetchedAt": "2026-03-07T14:34:00.000Z",
+      "claudeFiveHourCapExhaustionCyclesObserved": 2,
+      "claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow": 48000,
+      "claudeFiveHourAvgUsageUnitsBeforeCapExhaustion": 47000,
+      "claudeSevenDayCapExhaustionCyclesObserved": 1,
+      "claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow": 220000,
+      "claudeSevenDayAvgUsageUnitsBeforeCapExhaustion": 220000,
       "createdAt": "2026-02-15T00:00:00.000Z",
       "expiresAt": "2026-06-01T00:00:00.000Z"
     }
@@ -656,8 +724,12 @@ Notes:
 - returns a best-effort merged snapshot for the UI so summary/tables/anomalies/events share one `snapshotAt`
 - `tokens[*]` merges usage, health, and routing metrics by `credentialId`
 - `tokens[*].attempts` is attempt-level volume; `tokens[*].requests` is distinct `request_id` count for the same window
+- `tokens[*]` also carries the same nullable Claude-only contribution-cap/provider-usage fields as `/v1/admin/analytics/tokens/health`
+- the dashboard UI shows raw Claude provider utilization in `5H` / `7D`; reserve/exhausted fields only control whether those cells are highlighted as effectively exhausted
+- non-Claude rows keep those raw API fields `null` and the UI renders `n/a` in the CAP cells
 - `buyers[*]` may include `latencyP50Ms` and `errorRate` when those buyer aggregates are available
 - snapshot `events` is currently capped to the 20 most recent lifecycle events
+- `warnings` is a free-form operator-facing list for Claude provider-usage issues such as missing snapshots, stale snapshots, and contribution-cap exhaustion when the backend emits them
 
 Response example:
 ```json
@@ -702,6 +774,21 @@ Response example:
       "maxedEvents7d": 2,
       "monthlyContributionUsedUnits": 123000,
       "monthlyContributionLimitUnits": 500000,
+      "fiveHourReservePercent": 20,
+      "fiveHourUtilizationRatio": 0.6,
+      "fiveHourResetsAt": "2026-03-07T17:00:00.000Z",
+      "fiveHourContributionCapExhausted": false,
+      "sevenDayReservePercent": 10,
+      "sevenDayUtilizationRatio": 0.72,
+      "sevenDayResetsAt": "2026-03-12T00:00:00.000Z",
+      "sevenDayContributionCapExhausted": true,
+      "providerUsageFetchedAt": "2026-03-07T14:34:00.000Z",
+      "claudeFiveHourCapExhaustionCyclesObserved": 2,
+      "claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow": 48000,
+      "claudeFiveHourAvgUsageUnitsBeforeCapExhaustion": 47000,
+      "claudeSevenDayCapExhaustionCyclesObserved": 1,
+      "claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow": 220000,
+      "claudeSevenDayAvgUsageUnitsBeforeCapExhaustion": 220000,
       "latencyP50Ms": 1200,
       "errorRate": 0.02,
       "authFailures24h": 2,
@@ -735,7 +822,8 @@ Response example:
     },
     "ok": true
   },
-  "events": []
+  "events": [],
+  "warnings": []
 }
 ```
 
@@ -770,9 +858,13 @@ Response example:
   - Default threshold is `10` consecutive matching failures (`TOKEN_CREDENTIAL_MAXED_CONSECUTIVE_FAILURES=10`).
   - OAuth/session creds use a `3x` auth-failure threshold before auto-max (`30` by default).
   - OAuth/session creds also track repeated `429` responses separately:
-    - `5` consecutive `429`s -> temporary routing penalty (`TOKEN_CREDENTIAL_RATE_LIMIT_COOLDOWN_CONSECUTIVE_FAILURES=5`, `TOKEN_CREDENTIAL_RATE_LIMIT_COOLDOWN_MINUTES=5`)
-    - `15` consecutive `429`s -> auto-max (`TOKEN_CREDENTIAL_RATE_LIMIT_MAX_CONSECUTIVE_FAILURES=15`)
-  - Auto-maxed credentials are removed from active routing pool until probe reactivation.
+    - non-Claude OAuth/session creds keep the legacy behavior:
+      - `5` consecutive `429`s -> temporary routing penalty (`TOKEN_CREDENTIAL_RATE_LIMIT_COOLDOWN_CONSECUTIVE_FAILURES=5`, `TOKEN_CREDENTIAL_RATE_LIMIT_COOLDOWN_MINUTES=5`)
+      - `15` consecutive `429`s -> auto-max (`TOKEN_CREDENTIAL_RATE_LIMIT_MAX_CONSECUTIVE_FAILURES=15`)
+    - Claude OAuth creds do not auto-max on repeated `429`s
+      - `5` consecutive `429`s -> temporary routing penalty
+      - escalation threshold still extends the local cooldown, but recovery comes from provider-usage refresh + fresh quota state rather than a durable `maxed` transition
+  - Auto-maxed credentials are removed from active routing pool until probe reactivation for auth-like failures and the legacy non-Claude repeated-`429` path.
   - Successful routed request on an active/rotating credential resets both auth-failure and `429` counters and clears temporary rate-limit penalties.
 - Token credential probe/reactivation:
   - Background job: `token-credential-healthcheck-hourly`.

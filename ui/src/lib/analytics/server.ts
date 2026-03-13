@@ -76,6 +76,15 @@ type CurrentTokenHealthRow = {
   maxedEvents7d?: number;
   monthlyContributionUsedUnits?: number;
   monthlyContributionLimitUnits?: number | null;
+  fiveHourReservePercent?: number | null;
+  fiveHourUtilizationRatio?: number | null;
+  fiveHourResetsAt?: string | null;
+  fiveHourContributionCapExhausted?: boolean | null;
+  sevenDayReservePercent?: number | null;
+  sevenDayUtilizationRatio?: number | null;
+  sevenDayResetsAt?: string | null;
+  sevenDayContributionCapExhausted?: boolean | null;
+  providerUsageFetchedAt?: string | null;
 };
 
 type CurrentTokenRoutingRow = {
@@ -169,6 +178,15 @@ type CurrentDashboardTokenRow = {
   maxedEvents7d?: number;
   monthlyContributionUsedUnits?: number;
   monthlyContributionLimitUnits?: number | null;
+  fiveHourReservePercent?: number | null;
+  fiveHourUtilizationRatio?: number | null;
+  fiveHourResetsAt?: string | null;
+  fiveHourContributionCapExhausted?: boolean | null;
+  sevenDayReservePercent?: number | null;
+  sevenDayUtilizationRatio?: number | null;
+  sevenDayResetsAt?: string | null;
+  sevenDayContributionCapExhausted?: boolean | null;
+  providerUsageFetchedAt?: string | null;
   latencyP50Ms?: number | null;
   errorRate?: number | null;
   authFailures24h?: number;
@@ -200,6 +218,7 @@ type CurrentDashboardResponse = {
   buyers?: CurrentDashboardBuyerRow[];
   anomalies?: CurrentAnomaliesResponse;
   events?: CurrentEventsResponse['events'];
+  warnings?: string[];
 };
 
 export class AnalyticsServerError extends Error {
@@ -246,17 +265,55 @@ function toNumber(value: unknown, fallback = 0): number {
 
 function toNullableNumber(value: unknown): number | null {
   if (value === null || value === undefined) return null;
-  return toNumber(value, Number.NaN);
+  const numeric = toNumber(value, Number.NaN);
+  return Number.isFinite(numeric) ? numeric : null;
 }
 
 function toStringOrNull(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
 
-function deriveTokenStatus(status: string | null, rateLimitedUntil: string | null): string {
-  const normalized = status ?? 'unknown';
-  if (normalized === 'active' && rateLimitedUntil) {
-    const expiresAt = Date.parse(rateLimitedUntil);
+function toNullableBoolean(value: unknown): boolean | null {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+  }
+  return null;
+}
+
+function normalizeDashboardWarnings(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => toStringOrNull(entry))
+    .filter((entry): entry is string => entry !== null);
+}
+
+function deriveContributionCapUsedRatio(input: {
+  provider: string | null;
+  utilizationRatio: number | null;
+}): number | null {
+  if ((input.provider ?? '').trim().toLowerCase() !== 'anthropic') return null;
+  if (input.utilizationRatio === null) return null;
+  return Math.min(1, Math.max(0, input.utilizationRatio));
+}
+
+function deriveTokenStatus(input: {
+  status: string | null;
+  rateLimitedUntil: string | null;
+  fiveHourContributionCapExhausted?: boolean | null;
+  sevenDayContributionCapExhausted?: boolean | null;
+}): string {
+  const normalized = input.status ?? 'unknown';
+  if (
+    normalized === 'active'
+    && (input.fiveHourContributionCapExhausted === true || input.sevenDayContributionCapExhausted === true)
+  ) {
+    return 'maxed';
+  }
+  if (normalized === 'active' && input.rateLimitedUntil) {
+    const expiresAt = Date.parse(input.rateLimitedUntil);
     if (Number.isFinite(expiresAt) && expiresAt > Date.now()) {
       return 'rate_limited';
     }
@@ -488,12 +545,24 @@ function normalizeDashboardTokenRows(
   return (rows ?? [])
     .map((row) => {
       const usageUnits = toNumber(row.usageUnits);
+      const provider = toStringOrNull(row.provider) ?? 'unknown';
+      const fiveHourReservePercent = toNullableNumber(row.fiveHourReservePercent);
+      const fiveHourUtilizationRatio = toNullableNumber(row.fiveHourUtilizationRatio);
+      const fiveHourContributionCapExhausted = toNullableBoolean(row.fiveHourContributionCapExhausted);
+      const sevenDayReservePercent = toNullableNumber(row.sevenDayReservePercent);
+      const sevenDayUtilizationRatio = toNullableNumber(row.sevenDayUtilizationRatio);
+      const sevenDayContributionCapExhausted = toNullableBoolean(row.sevenDayContributionCapExhausted);
       return {
         credentialId: row.credentialId,
         displayKey: row.displayKey ?? formatDisplayKey('cred', row.credentialId),
         debugLabel: toStringOrNull(row.debugLabel),
-        provider: toStringOrNull(row.provider) ?? 'unknown',
-        status: deriveTokenStatus(toStringOrNull(row.status), toStringOrNull(row.rateLimitedUntil)),
+        provider,
+        status: deriveTokenStatus({
+          status: toStringOrNull(row.status),
+          rateLimitedUntil: toStringOrNull(row.rateLimitedUntil),
+          fiveHourContributionCapExhausted,
+          sevenDayContributionCapExhausted,
+        }),
         attempts: toNumber(row.attempts, toNumber(row.requests)),
         requests: toNumber(row.requests),
         usageUnits,
@@ -505,6 +574,23 @@ function normalizeDashboardTokenRows(
         maxedEvents7d: toNumber(row.maxedEvents7d),
         monthlyContributionUsedUnits: toNumber(row.monthlyContributionUsedUnits),
         monthlyContributionLimitUnits: toNullableNumber(row.monthlyContributionLimitUnits),
+        fiveHourReservePercent,
+        fiveHourUtilizationRatio,
+        fiveHourResetsAt: toStringOrNull(row.fiveHourResetsAt),
+        fiveHourContributionCapExhausted,
+        sevenDayReservePercent,
+        sevenDayUtilizationRatio,
+        sevenDayResetsAt: toStringOrNull(row.sevenDayResetsAt),
+        sevenDayContributionCapExhausted,
+        providerUsageFetchedAt: toStringOrNull(row.providerUsageFetchedAt),
+        fiveHourCapUsedRatio: deriveContributionCapUsedRatio({
+          provider,
+          utilizationRatio: fiveHourUtilizationRatio,
+        }),
+        sevenDayCapUsedRatio: deriveContributionCapUsedRatio({
+          provider,
+          utilizationRatio: sevenDayUtilizationRatio,
+        }),
         latencyP50Ms: toNullableNumber(row.latencyP50Ms),
         errorRate: toNullableNumber(row.errorRate),
         authFailures24h: toNumber(row.authFailures24h),
@@ -572,13 +658,25 @@ function buildTokenRows(
     const errorRate = attempts > 0 ? errorCount / attempts : null;
     const rawStatus = toStringOrNull(health?.status ?? usage?.status);
     const rateLimitedUntil = toStringOrNull(health?.rateLimitedUntil);
+    const provider = toStringOrNull(health?.provider ?? usage?.provider ?? routing?.provider) ?? 'unknown';
+    const fiveHourReservePercent = toNullableNumber(health?.fiveHourReservePercent);
+    const fiveHourUtilizationRatio = toNullableNumber(health?.fiveHourUtilizationRatio);
+    const fiveHourContributionCapExhausted = toNullableBoolean(health?.fiveHourContributionCapExhausted);
+    const sevenDayReservePercent = toNullableNumber(health?.sevenDayReservePercent);
+    const sevenDayUtilizationRatio = toNullableNumber(health?.sevenDayUtilizationRatio);
+    const sevenDayContributionCapExhausted = toNullableBoolean(health?.sevenDayContributionCapExhausted);
 
     return {
       credentialId,
       displayKey: formatDisplayKey('cred', credentialId),
       debugLabel: toStringOrNull(health?.debugLabel ?? usage?.debugLabel ?? routing?.debugLabel),
-      provider: toStringOrNull(health?.provider ?? usage?.provider ?? routing?.provider) ?? 'unknown',
-      status: deriveTokenStatus(rawStatus, rateLimitedUntil),
+      provider,
+      status: deriveTokenStatus({
+        status: rawStatus,
+        rateLimitedUntil,
+        fiveHourContributionCapExhausted,
+        sevenDayContributionCapExhausted,
+      }),
       attempts,
       requests,
       usageUnits,
@@ -587,6 +685,23 @@ function buildTokenRows(
       maxedEvents7d: toNumber(health?.maxedEvents7d),
       monthlyContributionUsedUnits: toNumber(health?.monthlyContributionUsedUnits),
       monthlyContributionLimitUnits: toNullableNumber(health?.monthlyContributionLimitUnits),
+      fiveHourReservePercent,
+      fiveHourUtilizationRatio,
+      fiveHourResetsAt: toStringOrNull(health?.fiveHourResetsAt),
+      fiveHourContributionCapExhausted,
+      sevenDayReservePercent,
+      sevenDayUtilizationRatio,
+      sevenDayResetsAt: toStringOrNull(health?.sevenDayResetsAt),
+      sevenDayContributionCapExhausted,
+      providerUsageFetchedAt: toStringOrNull(health?.providerUsageFetchedAt),
+      fiveHourCapUsedRatio: deriveContributionCapUsedRatio({
+        provider,
+        utilizationRatio: fiveHourUtilizationRatio,
+      }),
+      sevenDayCapUsedRatio: deriveContributionCapUsedRatio({
+        provider,
+        utilizationRatio: sevenDayUtilizationRatio,
+      }),
       latencyP50Ms: toNullableNumber(routing?.latencyP50Ms),
       errorRate: toNullableNumber(errorRate),
       authFailures24h: toNumber(routing?.authFailures24h),
@@ -638,7 +753,7 @@ export async function getAnalyticsDashboardSnapshot(window: AnalyticsPageWindow)
     };
     const eventsPayload: CurrentEventsResponse = { events: dashboardPayload.events };
     const events = normalizeEventRows(eventsPayload);
-    const warnings: string[] = [];
+    const warnings = normalizeDashboardWarnings(dashboardPayload.warnings);
 
     if (!dashboardPayload.events) {
       warnings.push('Dashboard snapshot did not include lifecycle events; showing anomaly-derived warnings only.');
@@ -661,10 +776,6 @@ export async function getAnalyticsDashboardSnapshot(window: AnalyticsPageWindow)
       }),
       warnings,
     };
-  }
-
-  if (window === '5h') {
-    throw new AnalyticsServerError(501, '5h analytics window is not available until backend support lands');
   }
 
   const snapshotAt = new Date().toISOString();
@@ -691,7 +802,6 @@ export async function getAnalyticsDashboardSnapshot(window: AnalyticsPageWindow)
   if (!eventsPayload) {
     warnings.push('Lifecycle events endpoint is not available yet; only anomaly-derived warnings are shown.');
   }
-  warnings.push('5h window remains disabled until backend analytics adds native support.');
 
   return {
     window,
@@ -703,7 +813,7 @@ export async function getAnalyticsDashboardSnapshot(window: AnalyticsPageWindow)
     anomalies,
     events: events.length > 0 ? events : synthesizeAnomalyEvents(snapshotAt, anomalies),
     capabilities: baseCapabilities({
-      supports5hWindow: false,
+      supports5hWindow: true,
       buyersComplete: buyers.complete,
       buyerSeriesAvailable: false,
       lifecycleEventsAvailable: Boolean(eventsPayload),

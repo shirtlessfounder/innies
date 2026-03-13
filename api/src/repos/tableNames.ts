@@ -5,6 +5,7 @@ export const TABLES = {
   orgs: 'in_orgs',
   requestLog: 'in_request_log',
   sellerKeys: 'in_seller_keys',
+  tokenCredentialProviderUsage: 'in_token_credential_provider_usage',
   tokenCredentials: 'in_token_credentials',
   tokenCredentialEvents: 'in_token_credential_events',
   usageLedger: 'in_usage_ledger',

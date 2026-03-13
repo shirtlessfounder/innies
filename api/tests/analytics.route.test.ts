@@ -191,6 +191,7 @@ function createDashboardSnapshotPayload(overrides: Record<string, unknown> = {})
       ok: true
     },
     events: [],
+    warnings: [],
     ...overrides
   };
 }
@@ -200,7 +201,7 @@ function createDashboardSnapshotRecord(
   refreshedAt = '2026-03-12T12:00:00.000Z'
 ) {
   return {
-    cacheKey: `dashboard:${payload.window}:_:_`,
+    cacheKey: `dashboard:v3:${payload.window}:_:_`,
     window: payload.window,
     provider: undefined,
     source: undefined,
@@ -763,6 +764,21 @@ describe('analytics routes', () => {
           estimatedDailyCapacityUnits: 156000,
           maxingCyclesObserved: 2,
           utilizationRate24h: 1.08,
+          fiveHourReservePercent: null,
+          fiveHourUtilizationRatio: null,
+          fiveHourResetsAt: null,
+          fiveHourContributionCapExhausted: null,
+          sevenDayReservePercent: null,
+          sevenDayUtilizationRatio: null,
+          sevenDayResetsAt: null,
+          sevenDayContributionCapExhausted: null,
+          providerUsageFetchedAt: null,
+          claudeFiveHourCapExhaustionCyclesObserved: null,
+          claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow: null,
+          claudeFiveHourAvgUsageUnitsBeforeCapExhaustion: null,
+          claudeSevenDayCapExhaustionCyclesObserved: null,
+          claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow: null,
+          claudeSevenDayAvgUsageUnitsBeforeCapExhaustion: null,
           createdAt: '2026-02-15T00:00:00.000Z',
           expiresAt: '2026-06-01T00:00:00.000Z'
         }
@@ -851,6 +867,21 @@ describe('analytics routes', () => {
           estimatedDailyCapacityUnits: null,
           maxingCyclesObserved: 0,
           utilizationRate24h: null,
+          fiveHourReservePercent: null,
+          fiveHourUtilizationRatio: null,
+          fiveHourResetsAt: null,
+          fiveHourContributionCapExhausted: null,
+          sevenDayReservePercent: null,
+          sevenDayUtilizationRatio: null,
+          sevenDayResetsAt: null,
+          sevenDayContributionCapExhausted: null,
+          providerUsageFetchedAt: null,
+          claudeFiveHourCapExhaustionCyclesObserved: null,
+          claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow: null,
+          claudeFiveHourAvgUsageUnitsBeforeCapExhaustion: null,
+          claudeSevenDayCapExhaustionCyclesObserved: null,
+          claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow: null,
+          claudeSevenDayAvgUsageUnitsBeforeCapExhaustion: null,
           createdAt: '2026-02-20T00:00:00.000Z',
           expiresAt: null
         }
@@ -919,6 +950,122 @@ describe('analytics routes', () => {
           requests: 800,
           usageUnits: 180000,
           percentOfTotal: 0.56
+        }
+      ]
+    });
+  });
+
+  it('passes through Claude provider-usage contribution-cap fields when present', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    analytics.getTokenHealth.mockResolvedValue([
+      {
+        credential_id: '33333333-3333-4333-8333-333333333333',
+        debug_label: 'gamma',
+        provider: 'anthropic',
+        status: 'active',
+        consecutive_failure_count: 0,
+        consecutive_rate_limit_count: 1,
+        last_failed_status: null,
+        last_failed_at: null,
+        last_rate_limited_at: '2026-03-09T02:00:00.000Z',
+        maxed_at: null,
+        rate_limited_until: null,
+        next_probe_at: null,
+        last_probe_at: null,
+        monthly_contribution_limit_units: null,
+        monthly_contribution_used_units: 0,
+        monthly_window_start_at: null,
+        maxed_events_7d: 0,
+        requests_before_maxed_last_window: null,
+        avg_requests_before_maxed: null,
+        avg_usage_units_before_maxed: null,
+        avg_recovery_time_ms: null,
+        estimated_daily_capacity_units: null,
+        maxing_cycles_observed: 0,
+        utilization_rate_24h: null,
+        five_hour_reserve_percent: 20,
+        five_hour_utilization_ratio: 0.6,
+        five_hour_resets_at: '2026-03-09T05:00:00.000Z',
+        five_hour_contribution_cap_exhausted: false,
+        seven_day_reserve_percent: 10,
+        seven_day_utilization_ratio: 0.72,
+        seven_day_resets_at: '2026-03-12T00:00:00.000Z',
+        seven_day_contribution_cap_exhausted: true,
+        provider_usage_fetched_at: '2026-03-09T02:01:00.000Z',
+        claude_five_hour_cap_exhaustion_cycles_observed: 2,
+        claude_five_hour_usage_units_before_cap_exhaustion_last_window: 48000,
+        claude_five_hour_avg_usage_units_before_cap_exhaustion: 47000,
+        claude_seven_day_cap_exhaustion_cycles_observed: 1,
+        claude_seven_day_usage_units_before_cap_exhaustion_last_window: 220000,
+        claude_seven_day_avg_usage_units_before_cap_exhaustion: 220000,
+        created_at: '2026-02-21T00:00:00.000Z',
+        expires_at: null
+      }
+    ]);
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/tokens/health', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/tokens/health',
+      headers: {
+        authorization: 'Bearer admin_token'
+      },
+      query: {
+        provider: 'anthropic'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(res.body).toEqual({
+      window: '7d',
+      tokens: [
+        {
+          credentialId: '33333333-3333-4333-8333-333333333333',
+          displayKey: 'cred_3333...3333',
+          debugLabel: 'gamma',
+          provider: 'anthropic',
+          status: 'active',
+          consecutiveFailures: 0,
+          consecutiveRateLimitCount: 1,
+          lastFailedStatus: null,
+          lastFailedAt: null,
+          lastRateLimitedAt: '2026-03-09T02:00:00.000Z',
+          maxedAt: null,
+          rateLimitedUntil: null,
+          nextProbeAt: null,
+          lastProbeAt: null,
+          monthlyContributionLimitUnits: null,
+          monthlyContributionUsedUnits: 0,
+          monthlyWindowStartAt: null,
+          maxedEvents7d: 0,
+          requestsBeforeMaxedLastWindow: null,
+          avgRequestsBeforeMaxed: null,
+          avgUsageUnitsBeforeMaxed: null,
+          avgRecoveryTimeMs: null,
+          estimatedDailyCapacityUnits: null,
+          maxingCyclesObserved: 0,
+          utilizationRate24h: null,
+          fiveHourReservePercent: 20,
+          fiveHourUtilizationRatio: 0.6,
+          fiveHourResetsAt: '2026-03-09T05:00:00.000Z',
+          fiveHourContributionCapExhausted: false,
+          sevenDayReservePercent: 10,
+          sevenDayUtilizationRatio: 0.72,
+          sevenDayResetsAt: '2026-03-12T00:00:00.000Z',
+          sevenDayContributionCapExhausted: true,
+          providerUsageFetchedAt: '2026-03-09T02:01:00.000Z',
+          claudeFiveHourCapExhaustionCyclesObserved: 2,
+          claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow: 48000,
+          claudeFiveHourAvgUsageUnitsBeforeCapExhaustion: 47000,
+          claudeSevenDayCapExhaustionCyclesObserved: 1,
+          claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow: 220000,
+          claudeSevenDayAvgUsageUnitsBeforeCapExhaustion: 220000,
+          createdAt: '2026-02-21T00:00:00.000Z',
+          expiresAt: null
         }
       ]
     });
@@ -1014,7 +1161,16 @@ describe('analytics routes', () => {
         monthly_contribution_used_units: 55,
         monthly_contribution_limit_units: 500,
         maxed_events_7d: 2,
-        utilization_rate_24h: 0.75
+        utilization_rate_24h: 0.75,
+        five_hour_reserve_percent: null,
+        five_hour_utilization_ratio: null,
+        five_hour_resets_at: null,
+        five_hour_contribution_cap_exhausted: null,
+        seven_day_reserve_percent: null,
+        seven_day_utilization_ratio: null,
+        seven_day_resets_at: null,
+        seven_day_contribution_cap_exhausted: null,
+        provider_usage_fetched_at: null
       }
     ]);
     analytics.getTokenRouting.mockResolvedValue([
@@ -1066,6 +1222,7 @@ describe('analytics routes', () => {
     });
     expect((res.body as any).window).toBe('5h');
     expect(typeof (res.body as any).snapshotAt).toBe('string');
+    expect((res.body as any).warnings).toEqual([]);
     expect((res.body as any).tokens).toEqual([
       {
         credentialId: '11111111-1111-4111-8111-111111111111',
@@ -1081,11 +1238,317 @@ describe('analytics routes', () => {
         maxedEvents7d: 2,
         monthlyContributionUsedUnits: 55,
         monthlyContributionLimitUnits: 500,
+        fiveHourReservePercent: null,
+        fiveHourUtilizationRatio: null,
+        fiveHourResetsAt: null,
+        fiveHourContributionCapExhausted: null,
+        sevenDayReservePercent: null,
+        sevenDayUtilizationRatio: null,
+        sevenDayResetsAt: null,
+        sevenDayContributionCapExhausted: null,
+        providerUsageFetchedAt: null,
+        claudeFiveHourCapExhaustionCyclesObserved: null,
+        claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow: null,
+        claudeFiveHourAvgUsageUnitsBeforeCapExhaustion: null,
+        claudeSevenDayCapExhaustionCyclesObserved: null,
+        claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow: null,
+        claudeSevenDayAvgUsageUnitsBeforeCapExhaustion: null,
         latencyP50Ms: 220,
         errorRate: 0,
         authFailures24h: 1,
         rateLimited24h: 2
       }
+    ]);
+  });
+
+  it('surfaces Claude provider-usage warnings in dashboard snapshots', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-12T12:10:00.000Z'));
+
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    analytics.getSystemSummary.mockResolvedValue({
+      total_requests: 10,
+      total_usage_units: 100,
+      active_tokens: 2,
+      maxed_tokens: 0,
+      total_tokens: 2,
+      maxed_events_7d: 0,
+      error_rate: 0,
+      fallback_rate: 0,
+      by_provider: [],
+      by_model: [],
+      by_source: []
+    });
+    analytics.getTokenUsage.mockResolvedValue([]);
+    analytics.getTokenHealth.mockResolvedValue([
+      {
+        credential_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        debug_label: 'alpha',
+        provider: 'anthropic',
+        status: 'active',
+        monthly_contribution_used_units: 0,
+        maxed_events_7d: 0,
+        maxing_cycles_observed: 0,
+        five_hour_reserve_percent: 20,
+        five_hour_utilization_ratio: null,
+        five_hour_resets_at: null,
+        five_hour_contribution_cap_exhausted: null,
+        seven_day_reserve_percent: 0,
+        seven_day_utilization_ratio: null,
+        seven_day_resets_at: null,
+        seven_day_contribution_cap_exhausted: null,
+        provider_usage_fetched_at: null,
+        last_refresh_error: null
+      },
+      {
+        credential_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        debug_label: 'beta',
+        provider: 'anthropic',
+        status: 'active',
+        monthly_contribution_used_units: 0,
+        maxed_events_7d: 0,
+        maxing_cycles_observed: 0,
+        five_hour_reserve_percent: 0,
+        five_hour_utilization_ratio: 0.55,
+        five_hour_resets_at: '2026-03-12T14:00:00.000Z',
+        five_hour_contribution_cap_exhausted: false,
+        seven_day_reserve_percent: 10,
+        seven_day_utilization_ratio: 0.95,
+        seven_day_resets_at: '2026-03-15T00:00:00.000Z',
+        seven_day_contribution_cap_exhausted: true,
+        provider_usage_fetched_at: '2026-03-12T12:07:00.000Z',
+        last_refresh_error: null
+      }
+    ]);
+    analytics.getTokenRouting.mockResolvedValue([]);
+    analytics.getBuyers.mockResolvedValue([]);
+    analytics.getAnomalies.mockResolvedValue({ checks: {}, ok: true });
+    analytics.getEvents.mockResolvedValue([]);
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/dashboard', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/dashboard',
+      headers: {
+        authorization: 'Bearer admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect((res.body as any).warnings).toEqual([
+      'alpha: provider_usage_snapshot_missing - reserved Claude token has no provider-usage snapshot yet; pooled routing excludes it until one arrives.',
+      'beta: provider_usage_snapshot_soft_stale - last Claude usage snapshot is 3m old; routing is still using the last successful snapshot.',
+      'beta: usage_exhausted_7d - pooled Claude routing is at the 7d cap until 2026-03-15T00:00:00.000Z.'
+    ]);
+  });
+
+  it('surfaces missing-snapshot and fetch/backoff warnings even before any Claude snapshot exists', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-12T12:10:00.000Z'));
+
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    analytics.getSystemSummary.mockResolvedValue({
+      total_requests: 10,
+      total_usage_units: 100,
+      active_tokens: 3,
+      maxed_tokens: 0,
+      total_tokens: 3,
+      maxed_events_7d: 0,
+      error_rate: 0,
+      fallback_rate: 0,
+      by_provider: [],
+      by_model: [],
+      by_source: []
+    });
+    analytics.getTokenUsage.mockResolvedValue([]);
+    analytics.getTokenHealth.mockResolvedValue([
+      {
+        credential_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        debug_label: 'alpha',
+        provider: 'anthropic',
+        status: 'active',
+        monthly_contribution_used_units: 0,
+        maxed_events_7d: 0,
+        maxing_cycles_observed: 0,
+        five_hour_reserve_percent: 20,
+        five_hour_utilization_ratio: null,
+        five_hour_resets_at: null,
+        five_hour_contribution_cap_exhausted: null,
+        seven_day_reserve_percent: 0,
+        seven_day_utilization_ratio: null,
+        seven_day_resets_at: null,
+        seven_day_contribution_cap_exhausted: null,
+        provider_usage_fetched_at: null,
+        last_refresh_error: null
+      },
+      {
+        credential_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        debug_label: 'beta',
+        provider: 'anthropic',
+        status: 'active',
+        monthly_contribution_used_units: 0,
+        maxed_events_7d: 0,
+        maxing_cycles_observed: 0,
+        five_hour_reserve_percent: 0,
+        five_hour_utilization_ratio: null,
+        five_hour_resets_at: null,
+        five_hour_contribution_cap_exhausted: null,
+        seven_day_reserve_percent: 0,
+        seven_day_utilization_ratio: null,
+        seven_day_resets_at: null,
+        seven_day_contribution_cap_exhausted: null,
+        provider_usage_fetched_at: null,
+        last_refresh_error: 'provider_usage_fetch_failed'
+      },
+      {
+        credential_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        debug_label: 'gamma',
+        provider: 'anthropic',
+        status: 'active',
+        monthly_contribution_used_units: 0,
+        maxed_events_7d: 0,
+        maxing_cycles_observed: 0,
+        five_hour_reserve_percent: 0,
+        five_hour_utilization_ratio: null,
+        five_hour_resets_at: null,
+        five_hour_contribution_cap_exhausted: null,
+        seven_day_reserve_percent: 0,
+        seven_day_utilization_ratio: null,
+        seven_day_resets_at: null,
+        seven_day_contribution_cap_exhausted: null,
+        provider_usage_fetched_at: null,
+        last_refresh_error: 'provider_usage_fetch_backoff_active'
+      }
+    ]);
+    analytics.getTokenRouting.mockResolvedValue([]);
+    analytics.getBuyers.mockResolvedValue([]);
+    analytics.getAnomalies.mockResolvedValue({ checks: {}, ok: true });
+    analytics.getEvents.mockResolvedValue([]);
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/dashboard', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/dashboard',
+      headers: {
+        authorization: 'Bearer admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect((res.body as any).warnings).toEqual([
+      'alpha: provider_usage_snapshot_missing - reserved Claude token has no provider-usage snapshot yet; pooled routing excludes it until one arrives.',
+      'beta: provider_usage_fetch_failed - last Claude usage refresh failed; dashboard freshness/cap state may lag until a successful refresh.',
+      'gamma: provider_usage_fetch_backoff_active - Claude usage refresh is temporarily backing off after recent fetch failures; dashboard freshness/cap state may lag until retry.'
+    ]);
+  });
+
+  it('does not surface provider-usage warnings for revoked or expired Claude credentials', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-12T12:10:00.000Z'));
+
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    analytics.getSystemSummary.mockResolvedValue({
+      total_requests: 10,
+      total_usage_units: 100,
+      active_tokens: 1,
+      maxed_tokens: 0,
+      total_tokens: 3,
+      maxed_events_7d: 0,
+      error_rate: 0,
+      fallback_rate: 0,
+      by_provider: [],
+      by_model: [],
+      by_source: []
+    });
+    analytics.getTokenUsage.mockResolvedValue([]);
+    analytics.getTokenHealth.mockResolvedValue([
+      {
+        credential_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        debug_label: 'alpha',
+        provider: 'anthropic',
+        status: 'active',
+        monthly_contribution_used_units: 0,
+        maxed_events_7d: 0,
+        maxing_cycles_observed: 0,
+        five_hour_reserve_percent: 0,
+        five_hour_utilization_ratio: 0.55,
+        five_hour_resets_at: '2026-03-12T14:00:00.000Z',
+        five_hour_contribution_cap_exhausted: false,
+        seven_day_reserve_percent: 0,
+        seven_day_utilization_ratio: 0.65,
+        seven_day_resets_at: '2026-03-15T00:00:00.000Z',
+        seven_day_contribution_cap_exhausted: false,
+        provider_usage_fetched_at: '2026-03-12T12:09:00.000Z',
+        last_refresh_error: 'provider_usage_fetch_failed'
+      },
+      {
+        credential_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        debug_label: 'beta',
+        provider: 'anthropic',
+        status: 'revoked',
+        monthly_contribution_used_units: 0,
+        maxed_events_7d: 0,
+        maxing_cycles_observed: 0,
+        five_hour_reserve_percent: 0,
+        five_hour_utilization_ratio: null,
+        five_hour_resets_at: null,
+        five_hour_contribution_cap_exhausted: null,
+        seven_day_reserve_percent: 0,
+        seven_day_utilization_ratio: null,
+        seven_day_resets_at: null,
+        seven_day_contribution_cap_exhausted: null,
+        provider_usage_fetched_at: null,
+        last_refresh_error: 'provider_usage_fetch_backoff_active'
+      },
+      {
+        credential_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        debug_label: 'gamma',
+        provider: 'anthropic',
+        status: 'expired',
+        monthly_contribution_used_units: 0,
+        maxed_events_7d: 0,
+        maxing_cycles_observed: 0,
+        five_hour_reserve_percent: 20,
+        five_hour_utilization_ratio: null,
+        five_hour_resets_at: null,
+        five_hour_contribution_cap_exhausted: null,
+        seven_day_reserve_percent: 0,
+        seven_day_utilization_ratio: null,
+        seven_day_resets_at: null,
+        seven_day_contribution_cap_exhausted: null,
+        provider_usage_fetched_at: null,
+        last_refresh_error: null
+      }
+    ]);
+    analytics.getTokenRouting.mockResolvedValue([]);
+    analytics.getBuyers.mockResolvedValue([]);
+    analytics.getAnomalies.mockResolvedValue({ checks: {}, ok: true });
+    analytics.getEvents.mockResolvedValue([]);
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/dashboard', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/dashboard',
+      headers: {
+        authorization: 'Bearer admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect((res.body as any).warnings).toEqual([
+      'alpha: provider_usage_fetch_failed - last Claude usage refresh failed; dashboard freshness/cap state may lag until a successful refresh.'
     ]);
   });
 
@@ -1365,6 +1828,21 @@ describe('analytics routes', () => {
         requests: 0,
         usageUnits: 0,
         percentOfWindow: 0,
+        fiveHourReservePercent: null,
+        fiveHourUtilizationRatio: null,
+        fiveHourResetsAt: null,
+        fiveHourContributionCapExhausted: null,
+        sevenDayReservePercent: null,
+        sevenDayUtilizationRatio: null,
+        sevenDayResetsAt: null,
+        sevenDayContributionCapExhausted: null,
+        providerUsageFetchedAt: null,
+        claudeFiveHourCapExhaustionCyclesObserved: null,
+        claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow: null,
+        claudeFiveHourAvgUsageUnitsBeforeCapExhaustion: null,
+        claudeSevenDayCapExhaustionCyclesObserved: null,
+        claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow: null,
+        claudeSevenDayAvgUsageUnitsBeforeCapExhaustion: null,
         latencyP50Ms: 180,
         errorRate: 0,
         authFailures24h: 2,

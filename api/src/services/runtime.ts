@@ -9,6 +9,7 @@ import { SellerKeyRepository } from '../repos/sellerKeyRepository.js';
 import { UsageLedgerRepository } from '../repos/usageLedgerRepository.js';
 import { UsageQueryRepository } from '../repos/usageQueryRepository.js';
 import { TokenCredentialRepository } from '../repos/tokenCredentialRepository.js';
+import { TokenCredentialProviderUsageRepository } from '../repos/tokenCredentialProviderUsageRepository.js';
 import { AnalyticsRepository } from '../repos/analyticsRepository.js';
 import { AnalyticsDashboardSnapshotRepository } from '../repos/analyticsDashboardSnapshotRepository.js';
 import { RequestLogRepository } from '../repos/requestLogRepository.js';
@@ -38,6 +39,7 @@ export const runtime = {
     usageLedger: new UsageLedgerRepository(sql),
     usageQuery: new UsageQueryRepository(sql),
     tokenCredentials: new TokenCredentialRepository(sql),
+    tokenCredentialProviderUsage: new TokenCredentialProviderUsageRepository(sql),
     analytics: new AnalyticsRepository(sql),
     analyticsDashboardSnapshots: new AnalyticsDashboardSnapshotRepository(sql),
     requestLog: new RequestLogRepository(sql)
