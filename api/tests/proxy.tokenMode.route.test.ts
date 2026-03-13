@@ -709,7 +709,7 @@ describe('proxy token-mode route behavior', () => {
     expect(upstreamSpy).not.toHaveBeenCalled();
   });
 
-  it('routes a buyer onto its exact-label Claude token even when only the shared cap is exhausted', async () => {
+  it('keeps an exact-label Claude token eligible without prioritizing it when only the shared cap is exhausted', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
       id: '11111111-1111-4111-8111-111111111111',
@@ -777,12 +777,19 @@ describe('proxy token-mode route behavior', () => {
         updatedAt: new Date('2026-03-01T00:00:00Z')
       } as any
     ]);
-    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ id: 'resp_affinity_ok', usage: { input_tokens: 1, output_tokens: 1 } }), {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ type: 'error', error: { type: 'permission_error', message: 'blocked' } }), {
+          status: 403,
+          headers: { 'content-type': 'application/json' }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: 'resp_affinity_ok', usage: { input_tokens: 1, output_tokens: 1 } }), {
         status: 200,
         headers: { 'content-type': 'application/json' }
-      })
-    );
+        })
+      );
 
     const req = createMockReq({
       method: 'POST',
@@ -809,12 +816,16 @@ describe('proxy token-mode route behavior', () => {
 
     expect(res.statusCode).toBe(200);
     expect((res.body as any).id).toBe('resp_affinity_ok');
-    const fetchArgs = upstreamSpy.mock.calls[0];
-    const headers = (fetchArgs?.[1] as RequestInit)?.headers as Record<string, string>;
-    expect(headers.authorization).toBe('Bearer sk-ant-oat01-shirtless');
-    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls[0]?.[0]?.routeDecision;
-    expect(routeDecision?.tokenCredentialLabel).toBe('shirtless');
-    expect(routeDecision?.buyerLabelAffinityBypassApplied).toBe(true);
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+    const firstHeaders = (upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.headers as Record<string, string>;
+    const secondHeaders = (upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.headers as Record<string, string>;
+    expect(firstHeaders.authorization).toBe('Bearer sk-ant-oat01-alex');
+    expect(secondHeaders.authorization).toBe('Bearer sk-ant-oat01-shirtless');
+    const firstRouteDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls[0]?.[0]?.routeDecision;
+    const secondRouteDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls[1]?.[0]?.routeDecision;
+    expect(firstRouteDecision?.buyerLabelAffinityBypassApplied).toBe(false);
+    expect(secondRouteDecision?.tokenCredentialLabel).toBe('shirtless');
+    expect(secondRouteDecision?.buyerLabelAffinityBypassApplied).toBe(true);
   });
 
   it('does not bypass true provider exhaustion for an exact-label Claude match', async () => {

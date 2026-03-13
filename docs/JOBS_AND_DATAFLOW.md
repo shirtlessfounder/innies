@@ -45,14 +45,14 @@ Registered in `api/src/jobs/registry.ts`.
 
 ### `token-credential-healthcheck-hourly`
 - Source: `tokenCredentialHealthJob.ts`
-- Default cadence: hourly
+- Default cadence: every 10 minutes
 - Action: probes `maxed` token credentials and reactivates successful ones
 - Main env knobs:
   - `TOKEN_CREDENTIAL_PROBE_ENABLED`
   - `TOKEN_CREDENTIAL_PROBE_SCHEDULE_MS`
   - `TOKEN_CREDENTIAL_PROBE_MAX_KEYS`
   - `TOKEN_CREDENTIAL_PROBE_TIMEOUT_MS`
-  - `TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS`
+  - `TOKEN_CREDENTIAL_PROBE_INTERVAL_MINUTES`
   - `TOKEN_CREDENTIAL_PROBE_MODEL`
 
 ### `daily-aggregates-incremental-5m`

@@ -18,7 +18,7 @@ import {
 } from '../services/claudeContributionCapState.js';
 import {
   probeAndUpdateTokenCredential,
-  readTokenCredentialProbeIntervalHours,
+  readTokenCredentialProbeIntervalMinutes,
   readTokenCredentialProbeTimeoutMs
 } from '../services/tokenCredentialProbe.js';
 
@@ -57,7 +57,7 @@ export function createTokenCredentialProviderUsageJob(
         DEFAULT_RATE_LIMIT_ESCALATION_THRESHOLD
       );
       const probeTimeoutMs = readTokenCredentialProbeTimeoutMs();
-      const probeIntervalHours = readTokenCredentialProbeIntervalHours();
+      const probeIntervalMinutes = readTokenCredentialProbeIntervalMinutes();
       const credentials = await tokenCredentialsRepo.listActiveOauthByProvider('anthropic');
       const existingSnapshots = typeof (providerUsageRepo as {
         listByTokenCredentialIds?: (ids: string[]) => Promise<TokenCredentialProviderUsageSnapshot[]>;
@@ -238,7 +238,7 @@ export function createTokenCredentialProviderUsageJob(
           authProbeChecked += 1;
           const result = await probeAndUpdateTokenCredential(tokenCredentialsRepo, credential, {
             timeoutMs: probeTimeoutMs,
-            probeIntervalHours
+            probeIntervalMinutes
           });
           if (result.reactivated) {
             authProbeReactivated += 1;

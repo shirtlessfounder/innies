@@ -2,7 +2,7 @@ import { type TokenCredential, type TokenCredentialRepository } from '../repos/t
 import { isOpenAiOauthAccessToken, resolveOpenAiOauthAccountId } from '../utils/openaiOauth.js';
 
 const DEFAULT_TIMEOUT_MS = 10000;
-const DEFAULT_INTERVAL_HOURS = 2;
+const DEFAULT_INTERVAL_MINUTES = 10;
 
 const ANTHROPIC_DEFAULT_BETAS = [
   'fine-grained-tool-streaming-2025-05-14',
@@ -49,8 +49,17 @@ export function readTokenCredentialProbeTimeoutMs(): number {
   return readIntEnv('TOKEN_CREDENTIAL_PROBE_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
 }
 
-export function readTokenCredentialProbeIntervalHours(): number {
-  return readIntEnv('TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS', DEFAULT_INTERVAL_HOURS);
+export function readTokenCredentialProbeIntervalMinutes(): number {
+  const minutes = process.env.TOKEN_CREDENTIAL_PROBE_INTERVAL_MINUTES;
+  if (minutes) return readIntEnv('TOKEN_CREDENTIAL_PROBE_INTERVAL_MINUTES', DEFAULT_INTERVAL_MINUTES);
+
+  const legacyHours = process.env.TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS;
+  if (legacyHours) {
+    const parsedHours = readIntEnv('TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS', Math.ceil(DEFAULT_INTERVAL_MINUTES / 60));
+    return Math.max(1, parsedHours * 60);
+  }
+
+  return DEFAULT_INTERVAL_MINUTES;
 }
 
 function providerBaseUrl(provider: string): string | null {
@@ -155,11 +164,11 @@ export async function probeAndUpdateTokenCredential(
   credential: TokenCredential,
   options?: {
     timeoutMs?: number;
-    probeIntervalHours?: number;
+    probeIntervalMinutes?: number;
   }
 ): Promise<TokenCredentialProbeOutcome> {
   const timeoutMs = options?.timeoutMs ?? readTokenCredentialProbeTimeoutMs();
-  const probeIntervalHours = options?.probeIntervalHours ?? readTokenCredentialProbeIntervalHours();
+  const probeIntervalMinutes = options?.probeIntervalMinutes ?? readTokenCredentialProbeIntervalMinutes();
   const result = await probeTokenCredentialUpstream(credential, timeoutMs);
 
   if (result.ok) {
@@ -174,7 +183,7 @@ export async function probeAndUpdateTokenCredential(
     };
   }
 
-  const nextProbeAt = new Date(Date.now() + (probeIntervalHours * 60 * 60 * 1000));
+  const nextProbeAt = new Date(Date.now() + (probeIntervalMinutes * 60 * 1000));
   await repo.markProbeFailure(
     credential.id,
     nextProbeAt,

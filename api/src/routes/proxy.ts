@@ -150,20 +150,6 @@ function findUniqueBuyerLabelMatchedCredentialId(
   return matchedCredentialId;
 }
 
-function prioritizeMatchedCredential(
-  credentials: TokenCredential[],
-  matchedCredentialId: string | null
-): TokenCredential[] {
-  if (!matchedCredentialId || credentials.length <= 1) return credentials;
-  const matchIndex = credentials.findIndex((credential) => credential.id === matchedCredentialId);
-  if (matchIndex <= 0) return credentials;
-  return [
-    credentials[matchIndex],
-    ...credentials.slice(0, matchIndex),
-    ...credentials.slice(matchIndex + 1)
-  ];
-}
-
 function isProviderUsageWindowExhausted(utilizationRatio: unknown): boolean {
   return typeof utilizationRatio === 'number' && utilizationRatio >= 1;
 }
@@ -434,9 +420,20 @@ function tokenCredentialMaxedFailureThreshold(): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 10;
 }
 
-function tokenCredentialProbeIntervalHours(): number {
-  const parsed = Number(process.env.TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS || 2);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 4;
+function tokenCredentialProbeIntervalMinutes(): number {
+  const minutes = process.env.TOKEN_CREDENTIAL_PROBE_INTERVAL_MINUTES;
+  if (minutes) {
+    const parsedMinutes = Number(minutes);
+    return Number.isFinite(parsedMinutes) && parsedMinutes > 0 ? Math.floor(parsedMinutes) : 10;
+  }
+
+  const legacyHours = process.env.TOKEN_CREDENTIAL_PROBE_INTERVAL_HOURS;
+  if (legacyHours) {
+    const parsedHours = Number(legacyHours);
+    return Number.isFinite(parsedHours) && parsedHours > 0 ? Math.floor(parsedHours * 60) : 10;
+  }
+
+  return 10;
 }
 
 function tokenCredentialRateLimitThreshold(): number {
@@ -882,7 +879,7 @@ async function resolveEligibleTokenCredentials(input: {
   const buyerLabelMatchedCredentialId = canonicalizeProvider(input.provider) === 'anthropic'
     ? findUniqueBuyerLabelMatchedCredentialId(seededCredentials, input.buyerKeyLabel)
     : null;
-  const orderedCredentials = prioritizeMatchedCredential(seededCredentials, buyerLabelMatchedCredentialId);
+  const orderedCredentials = seededCredentials;
 
   const providerUsageRouteMeta = new Map<string, Record<string, unknown>>();
   if (canonicalizeProvider(input.provider) !== 'anthropic' || orderedCredentials.length === 0) {
@@ -1154,7 +1151,7 @@ async function recordTokenCredentialOutcome(input: {
       cooldownThreshold: threshold,
       cooldownUntil,
       threshold,
-      nextProbeAt: new Date(Date.now() + (tokenCredentialProbeIntervalHours() * 60 * 60 * 1000)),
+      nextProbeAt: new Date(Date.now() + (tokenCredentialProbeIntervalMinutes() * 60 * 1000)),
       reason: 'upstream_429_consecutive_rate_limit',
       requestId,
       attemptNo
@@ -1181,7 +1178,7 @@ async function recordTokenCredentialOutcome(input: {
   const threshold = isOauthCredential(credential, provider)
     ? baseThreshold * 3
     : baseThreshold;
-  const nextProbeAt = new Date(Date.now() + (tokenCredentialProbeIntervalHours() * 60 * 60 * 1000));
+    const nextProbeAt = new Date(Date.now() + (tokenCredentialProbeIntervalMinutes() * 60 * 1000));
   const result = await runtime.repos.tokenCredentials.recordFailureAndMaybeMax({
     id: credential.id,
     statusCode: upstreamStatus,
