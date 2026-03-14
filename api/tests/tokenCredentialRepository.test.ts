@@ -694,7 +694,19 @@ describe('tokenCredentialRepository', () => {
         revoked_at: null,
         monthly_contribution_limit_units: null,
         monthly_contribution_used_units: 0,
-        monthly_window_start_at: '2026-03-01T00:00:00Z'
+        monthly_window_start_at: '2026-03-01T00:00:00Z',
+        five_hour_reserve_percent: 0,
+        seven_day_reserve_percent: 0,
+        debug_label: 'codex-1',
+        consecutive_failure_count: 0,
+        consecutive_rate_limit_count: 0,
+        last_failed_status: null,
+        last_failed_at: null,
+        last_rate_limited_at: null,
+        maxed_at: null,
+        rate_limited_until: null,
+        next_probe_at: null,
+        last_probe_at: '2026-03-01T00:01:00Z'
       }],
       rowCount: 1
     }]);
@@ -709,6 +721,13 @@ describe('tokenCredentialRepository', () => {
 
     expect(updated?.rotationVersion).toBe(7);
     expect(db.queries[0].sql).not.toContain('rotation_version = rotation_version + 1');
+    expect(db.queries[0].sql).toContain('consecutive_failure_count = 0');
     expect(db.queries[0].sql).toContain('consecutive_rate_limit_count = 0');
+    expect(db.queries[0].sql).toContain('last_failed_status = null');
+    expect(db.queries[0].sql).toContain('last_failed_at = null');
+    expect(db.queries[0].sql).toContain('last_rate_limited_at = null');
+    expect(db.queries[0].sql).toContain('maxed_at = null');
+    expect(db.queries[0].sql).toContain('next_probe_at = null');
+    expect(db.queries[0].sql).toContain('last_probe_at = now()');
   });
 });

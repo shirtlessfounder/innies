@@ -260,21 +260,23 @@ Response shape:
 - `sevenDayReservePercent`: resulting stored 7d reserve percent
 
 ### `POST /v1/admin/token-credentials/:id/probe`
-Probe a `maxed` token credential immediately (admin only).
+Probe an `active` or `maxed` token credential immediately (admin only).
 
 Response shape:
 - `probeOk`: whether the upstream probe succeeded
-- `reactivated`: whether Innies flipped the credential back to `active`
+- `reactivated`: whether Innies flipped a previously `maxed` credential back to `active`
 - `status`: resulting Innies status (`active|maxed`)
 - `upstreamStatus`: HTTP status from upstream probe when available
 - `reason`: probe result reason (`ok|status_<code>|network:<message>|unsupported_provider:<provider>`)
-- `nextProbeAt`: next scheduled automatic probe time when the manual probe failed
+- `nextProbeAt`: next scheduled automatic probe time when a `maxed` manual probe failed; `null` for active-credential diagnostic probes
 
 Notes:
-- intended operator use: immediately test whether a quarantined credential has recovered without waiting for the background healthcheck
-- only `maxed`, unexpired credentials can be manually probed
-- successful probe reactivates the credential immediately so routing can use it again
-- failed probe keeps the credential `maxed` and pushes `nextProbeAt` forward by the normal probe interval
+- intended operator use: immediately test whether a quarantined credential has recovered, or run a live diagnostic against an active credential, without waiting for the background healthcheck
+- only `active` or `maxed`, unexpired credentials can be manually probed
+- successful `maxed` probe reactivates the credential immediately so routing can use it again
+- successful `active` probe is diagnostic-only and leaves the credential state unchanged
+- failed `maxed` probe keeps the credential `maxed` and pushes `nextProbeAt` forward by the normal probe interval
+- failed `active` probe is diagnostic-only and leaves the credential state unchanged
 
 ### `POST /v1/admin/token-credentials/:id/provider-usage-refresh`
 Refresh Claude provider usage for a token immediately (admin only).

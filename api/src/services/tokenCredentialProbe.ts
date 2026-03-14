@@ -169,16 +169,30 @@ export async function probeAndUpdateTokenCredential(
 ): Promise<TokenCredentialProbeOutcome> {
   const timeoutMs = options?.timeoutMs ?? readTokenCredentialProbeTimeoutMs();
   const probeIntervalMinutes = options?.probeIntervalMinutes ?? readTokenCredentialProbeIntervalMinutes();
+  const isMaxedProbe = credential.status === 'maxed' || credential.status === undefined;
   const result = await probeTokenCredentialUpstream(credential, timeoutMs);
 
   if (result.ok) {
-    const reactivated = await repo.reactivateFromMaxed(credential.id);
+    const reactivated = isMaxedProbe
+      ? await repo.reactivateFromMaxed(credential.id)
+      : false;
     return {
       ok: true,
       statusCode: result.statusCode ?? null,
       reason: result.reason,
       reactivated,
-      status: reactivated ? 'active' : 'maxed',
+      status: reactivated ? 'active' : (isMaxedProbe ? 'maxed' : 'active'),
+      nextProbeAt: null
+    };
+  }
+
+  if (!isMaxedProbe) {
+    return {
+      ok: false,
+      statusCode: result.statusCode ?? null,
+      reason: result.reason,
+      reactivated: false,
+      status: 'active',
       nextProbeAt: null
     };
   }

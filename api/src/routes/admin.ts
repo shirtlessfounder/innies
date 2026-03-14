@@ -843,8 +843,8 @@ router.post('/v1/admin/token-credentials/:id/probe', requireApiKey(runtime.repos
     if (!existing) {
       throw new AppError('invalid_request', 404, 'Token credential not found');
     }
-    if (existing.status !== 'maxed') {
-      throw new AppError('invalid_request', 409, 'Token credential must be maxed before manual probe', {
+    if (existing.status !== 'active' && existing.status !== 'maxed') {
+      throw new AppError('invalid_request', 409, 'Token credential must be active or maxed before manual probe', {
         status: existing.status
       });
     }

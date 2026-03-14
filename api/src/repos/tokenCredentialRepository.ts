@@ -362,8 +362,15 @@ export class TokenCredentialRepository {
           then ${currentUtcMonthStartExpr()}
           else monthly_window_start_at
         end,
+        consecutive_failure_count = 0,
+        last_failed_status = null,
+        last_failed_at = null,
         consecutive_rate_limit_count = 0,
+        last_rate_limited_at = null,
         rate_limited_until = null,
+        maxed_at = null,
+        next_probe_at = null,
+        last_probe_at = now(),
         status = 'active',
         rotated_at = now(),
         updated_at = now()

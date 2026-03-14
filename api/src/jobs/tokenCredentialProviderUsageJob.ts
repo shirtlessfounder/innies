@@ -27,6 +27,7 @@ import {
 
 const DEFAULT_RATE_LIMIT_ESCALATION_THRESHOLD = 10;
 const DEFAULT_LEGACY_MAXED_RECOVERY_LIMIT = 25;
+const DEFAULT_PROVIDER_EXHAUSTION_REVALIDATE_MS = 5 * 60 * 1000;
 
 function envFlag(name: string, fallback: boolean): boolean {
   const value = process.env[name];
@@ -58,6 +59,10 @@ export function createTokenCredentialProviderUsageJob(
       const escalationThreshold = readIntEnv(
         'TOKEN_CREDENTIAL_RATE_LIMIT_CONSECUTIVE_FAILURES',
         DEFAULT_RATE_LIMIT_ESCALATION_THRESHOLD
+      );
+      const providerExhaustionRevalidateMs = readIntEnv(
+        'TOKEN_CREDENTIAL_PROVIDER_USAGE_EXHAUSTED_REVALIDATE_MS',
+        DEFAULT_PROVIDER_EXHAUSTION_REVALIDATE_MS
       );
       const probeTimeoutMs = readTokenCredentialProbeTimeoutMs();
       const probeIntervalMinutes = readTokenCredentialProbeIntervalMinutes();
@@ -150,12 +155,22 @@ export function createTokenCredentialProviderUsageJob(
           continue;
         }
 
+        const existingSnapshot = existingSnapshotsByCredentialId.get(credential.id) ?? null;
         const providerExhaustionHold = readClaudeContributionCapProviderExhaustionHold({
           credential,
-          snapshot: existingSnapshotsByCredentialId.get(credential.id) ?? null,
+          snapshot: existingSnapshot,
           now: ctx.now
         });
-        if (providerExhaustionHold.hasActiveHold && providerExhaustionHold.nextRefreshAt) {
+        const snapshotFetchedAt = existingSnapshot?.fetchedAt ?? null;
+        const snapshotAgeMs = snapshotFetchedAt
+          ? Math.max(0, ctx.now.getTime() - snapshotFetchedAt.getTime())
+          : null;
+        const recentlyVerifiedExhausted = snapshotAgeMs !== null && snapshotAgeMs < providerExhaustionRevalidateMs;
+        if (
+          providerExhaustionHold.hasActiveHold
+          && providerExhaustionHold.nextRefreshAt
+          && recentlyVerifiedExhausted
+        ) {
           paused += 1;
           await tokenCredentialsRepo.setProviderUsageWarning(credential.id, null);
           ctx.logger.info('token credential provider usage refresh paused (provider exhausted)', {
@@ -163,7 +178,8 @@ export function createTokenCredentialProviderUsageJob(
             credentialLabel: credential.debugLabel ?? null,
             provider: credential.provider,
             reason: providerExhaustionHold.reason,
-            nextRefreshAt: providerExhaustionHold.nextRefreshAt.toISOString()
+            nextRefreshAt: providerExhaustionHold.nextRefreshAt.toISOString(),
+            snapshotAgeMs
           });
           continue;
         }

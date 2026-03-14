@@ -1082,7 +1082,7 @@ describe('admin token credential routes idempotent replay', () => {
     expect(commitSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects manual probe when the credential is not maxed', async () => {
+  it('probes an active credential immediately without requiring a maxed transition', async () => {
     vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
       replay: false,
       input: {
@@ -1100,6 +1100,15 @@ describe('admin token credential routes idempotent replay', () => {
       status: 'active',
       expiresAt: new Date('2026-03-20T00:00:00.000Z')
     } as any);
+    const probeSpy = vi.spyOn(probeModule, 'probeAndUpdateTokenCredential').mockResolvedValue({
+      ok: true,
+      statusCode: 200,
+      reason: 'ok',
+      reactivated: false,
+      status: 'active',
+      nextProbeAt: null
+    });
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
 
     const req = createMockReq({
       method: 'POST',
@@ -1116,9 +1125,60 @@ describe('admin token credential routes idempotent replay', () => {
     await invoke(probeHandlers[0], req, res);
     await invoke(probeHandlers[1], req, res);
 
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any)).toEqual({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      provider: 'openai',
+      debugLabel: 'niyant-codex',
+      probeOk: true,
+      reactivated: false,
+      status: 'active',
+      upstreamStatus: 200,
+      reason: 'ok',
+      nextProbeAt: null
+    });
+    expect(probeSpy).toHaveBeenCalledTimes(1);
+    expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects manual probe when the credential is neither active nor maxed', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_probe_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123459x',
+        requestHash: 'probe_h_2_paused'
+      }
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      debugLabel: 'niyant-codex',
+      status: 'paused',
+      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+    } as any);
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/probe',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123459x'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const res = createMockRes();
+
+    await invoke(probeHandlers[0], req, res);
+    await invoke(probeHandlers[1], req, res);
+
     expect(res.statusCode).toBe(409);
     expect((res.body as any).code).toBe('invalid_request');
-    expect(String((res.body as any).message)).toContain('must be maxed');
+    expect(String((res.body as any).message)).toContain('must be active or maxed');
     expect(probeModule.probeAndUpdateTokenCredential).not.toHaveBeenCalled();
   });
 

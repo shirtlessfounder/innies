@@ -13,29 +13,38 @@ source "${SCRIPT_DIR}/_common.sh"
 ensure_database_url
 ensure_psql
 
-echo 'Maxed token credentials:'
-maxed_rows="$(
+echo 'Active and maxed token credentials:'
+probe_rows="$(
   psql "$DATABASE_URL" -X -A -F $'\t' -t -v ON_ERROR_STOP=1 <<'SQL'
 select
   id,
   coalesce(debug_label, ''),
+  status,
   provider,
   coalesce(next_probe_at::text, '')
 from in_token_credentials
-where status = 'maxed'
-order by provider asc, coalesce(debug_label, '') asc, updated_at desc;
+where status in ('active', 'maxed')
+order by
+  case status when 'maxed' then 0 else 1 end,
+  provider asc,
+  coalesce(debug_label, '') asc,
+  updated_at desc;
 SQL
 )"
-maxed_rows="$(printf '%s\n' "$maxed_rows" | sed '/^[[:space:]]*$/d')"
+probe_rows="$(printf '%s\n' "$probe_rows" | sed '/^[[:space:]]*$/d')"
 
-if [[ -z "$maxed_rows" ]]; then
+if [[ -z "$probe_rows" ]]; then
   echo '  (none)'
 else
-  printf '%s\n' "$maxed_rows" | while IFS=$'\t' read -r listed_id listed_label listed_provider listed_next_probe_at; do
+  printf '%s\n' "$probe_rows" | while IFS=$'\t' read -r listed_id listed_label listed_status listed_provider listed_next_probe_at; do
+    next_probe_suffix=''
+    if [[ "$listed_status" == 'maxed' ]]; then
+      next_probe_suffix=" nextProbeAt=${listed_next_probe_at:-null}"
+    fi
     if [[ -n "$listed_label" ]]; then
-      echo "  - ${listed_label} (${listed_provider}) id=${listed_id} nextProbeAt=${listed_next_probe_at:-null}"
+      echo "  - ${listed_label} (${listed_provider}, ${listed_status}) id=${listed_id}${next_probe_suffix}"
     else
-      echo "  - (no label) (${listed_provider}) id=${listed_id} nextProbeAt=${listed_next_probe_at:-null}"
+      echo "  - (no label) (${listed_provider}, ${listed_status}) id=${listed_id}${next_probe_suffix}"
     fi
   done
 fi
@@ -43,11 +52,31 @@ echo
 
 credential_input="$(prompt 'token credential id or exact debug label')"
 credential_id="$(resolve_token_credential_id "$credential_input")"
+selected_row="$(
+  psql "$DATABASE_URL" -X -A -F $'\t' -t -v ON_ERROR_STOP=1 -v credential_id="$credential_id" 2>/dev/null <<'SQL'
+select
+  coalesce(debug_label, ''),
+  provider,
+  status,
+  coalesce(next_probe_at::text, '')
+from in_token_credentials
+where id = :'credential_id'
+  and status in ('active', 'maxed')
+limit 1;
+SQL
+)"
+selected_row="$(printf '%s' "$selected_row" | tr -d '\r\n')"
+if [[ -z "$selected_row" ]]; then
+  echo 'error: token credential not found, or it is not active/maxed' >&2
+  exit 1
+fi
+IFS=$'\t' read -r selected_label selected_provider selected_status selected_next_probe_at <<< "$selected_row"
 ensure_admin_token
 idk="$(prompt 'Idempotency-Key (press Enter to auto-generate)' "$(gen_idempotency_key)")"
 
 echo "tokenCredentialId: $credential_id"
 echo 'Action: direct manual probe'
+echo "current status: $selected_status"
 
 headers_file="$(mktemp)"
 body_file="$(mktemp)"
@@ -105,6 +134,17 @@ elif [[ "$probe_ok" == "true" ]]; then
   echo "upstream: ${result_upstream_status} (${result_reason})"
   echo "status: $result_status"
   echo 'summary: upstream probe succeeded, but Innies did not mark the credential active.'
+elif [[ "$selected_status" == "active" ]]; then
+  echo
+  echo 'Probe result: PROBE FAILED, NO STATUS CHANGE'
+  if [[ -n "$result_label" ]]; then
+    echo "credential: $result_label ($result_provider)"
+  else
+    echo "credential: $credential_id ($result_provider)"
+  fi
+  echo "upstream: ${result_upstream_status} (${result_reason})"
+  echo "status: $result_status"
+  echo 'summary: upstream probe failed; Innies left this credential active and did not schedule a recovery probe.'
 else
   echo
   echo 'Probe result: STILL MAXED'
