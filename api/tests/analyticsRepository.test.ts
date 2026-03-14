@@ -61,8 +61,9 @@ describe('AnalyticsRepository', () => {
     expect(tokenCountsQuery?.sql).toContain('from in_token_credential_provider_usage pu');
     expect(tokenCountsQuery?.sql).toContain('FROM in_token_credentials tc');
     expect(tokenCountsQuery?.sql).toContain("where tc.provider = $1");
-    expect(tokenCountsQuery?.sql).toContain("count(*) FILTER (WHERE status = 'active' AND NOT usage_maxed) AS active_tokens");
-    expect(tokenCountsQuery?.sql).toContain("count(*) FILTER (WHERE usage_maxed) AS maxed_tokens");
+    expect(tokenCountsQuery?.sql).toContain("when tc.expires_at <= now() then 'expired'");
+    expect(tokenCountsQuery?.sql).toContain("count(*) FILTER (WHERE status <> 'expired' AND status <> 'revoked' AND NOT usage_maxed) AS active_tokens");
+    expect(tokenCountsQuery?.sql).toContain("count(*) FILTER (WHERE status <> 'expired' AND status <> 'revoked' AND usage_maxed) AS maxed_tokens");
     expect(tokenCountsQuery?.params).toEqual(['openai']);
     expect(maxedQuery?.sql).toContain('AND provider = $1');
     expect(maxedQuery?.params).toEqual(['openai']);
@@ -116,6 +117,7 @@ describe('AnalyticsRepository', () => {
 
     expect(db.queries[0]?.sql).toContain(`from in_token_credential_provider_usage pu`);
     expect(db.queries[0]?.sql).toContain(`left join provider_usage pu on pu.token_credential_id = cb.id`);
+    expect(db.queries[0]?.sql).toContain(`when tc.expires_at <= now() then 'expired'`);
     expect(db.queries[0]?.sql).toContain(`case
             when tc.provider = 'anthropic' then tc.five_hour_reserve_percent`);
     expect(db.queries[0]?.sql).toContain(`pu.five_hour_utilization_ratio`);
@@ -144,6 +146,7 @@ describe('AnalyticsRepository', () => {
     expect(db.queries[1]?.sql).toContain(`null::integer as five_hour_reserve_percent`);
     expect(db.queries[1]?.sql).toContain(`null::integer as seven_day_reserve_percent`);
     expect(db.queries[1]?.sql).toContain(`from in_token_credential_provider_usage pu`);
+    expect(db.queries[1]?.sql).toContain(`when tc.expires_at <= now() then 'expired'`);
   });
 
   it('falls back to null provider-usage fields when the snapshot table is missing', async () => {

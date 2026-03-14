@@ -573,6 +573,9 @@ describe('tokenCredentialProviderUsageJob', () => {
 
     await job.run(ctx as any);
 
+    expect(tokenRepo.listActiveOauthByProvider).toHaveBeenCalledWith('anthropic', {
+      includeRecoverableExpired: true
+    });
     expect(tokenRepo.refreshInPlace).toHaveBeenCalledWith(expect.objectContaining({
       id: 'cred_auth_refresh',
       accessToken: 'sk-ant-oat01-refreshed',
@@ -581,6 +584,102 @@ describe('tokenCredentialProviderUsageJob', () => {
     expect(tokenRepo.recordFailureAndMaybeMax).not.toHaveBeenCalled();
     expect(usageRepo.upsertSnapshot).toHaveBeenCalledTimes(1);
     expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('marks expired Claude credentials as expired instead of parking them when refresh still fails auth', async () => {
+    process.env.ANTHROPIC_OAUTH_USAGE_BASE_URL = 'https://anthropic.internal.test';
+    const tokenRepo = {
+      listActiveOauthByProvider: vi.fn(async () => [{
+        id: 'cred_expired_auth_fail',
+        orgId: 'org_1',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-expired-hard',
+        refreshToken: 'rt_claude_bad',
+        expiresAt: new Date('2026-03-03T23:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z'),
+        fiveHourReservePercent: 10,
+        sevenDayReservePercent: 15,
+        debugLabel: 'expired-auth-fail',
+        consecutiveFailureCount: 0,
+        consecutiveRateLimitCount: 0,
+        lastFailedStatus: null,
+        lastFailedAt: null,
+        lastRateLimitedAt: null,
+        maxedAt: null,
+        rateLimitedUntil: null,
+        nextProbeAt: null,
+        lastProbeAt: null
+      }]),
+      refreshInPlace: vi.fn(async () => null),
+      markExpired: vi.fn(async () => true),
+      recordFailureAndMaybeMax: vi.fn(async () => ({
+        status: 'maxed',
+        consecutiveFailures: 1,
+        newlyMaxed: true
+      })),
+      markProbeFailure: vi.fn(async () => false),
+      clearRateLimitBackoff: vi.fn(async () => false),
+      setProviderUsageWarning: vi.fn(async () => false),
+      listMaxedForProbe: vi.fn(async () => []),
+      syncClaudeContributionCapLifecycle: vi.fn(async () => ({ fiveHourTransition: null, sevenDayTransition: null })),
+      reactivateFromMaxed: vi.fn(async () => false)
+    };
+    const usageRepo = {
+      upsertSnapshot: vi.fn()
+    };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: URL | RequestInfo) => {
+      const url = String(input);
+      if (url === 'https://anthropic.internal.test/api/oauth/usage') {
+        return new Response(JSON.stringify({
+          type: 'error',
+          error: {
+            type: 'authentication_error',
+            message: 'OAuth token has expired.',
+            details: { error_code: 'token_expired' }
+          }
+        }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      if (url === 'https://platform.claude.com/v1/oauth/token') {
+        return new Response(JSON.stringify({
+          error: 'invalid_grant'
+        }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      throw new Error(`unexpected fetch target: ${url}`);
+    });
+    const job = createTokenCredentialProviderUsageJob(tokenRepo as any, usageRepo as any);
+    const ctx = createCtx();
+
+    await job.run(ctx as any);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(tokenRepo.markExpired).toHaveBeenCalledWith(
+      'cred_expired_auth_fail',
+      'upstream_401_provider_usage_refresh'
+    );
+    expect(tokenRepo.recordFailureAndMaybeMax).not.toHaveBeenCalled();
+    expect(tokenRepo.markProbeFailure).not.toHaveBeenCalled();
+    expect(ctx.logger.error).toHaveBeenCalledWith(
+      'token credential provider usage expired refresh failed',
+      expect.objectContaining({
+        credentialId: 'cred_expired_auth_fail',
+        credentialLabel: 'expired-auth-fail',
+        statusCode: 401
+      })
+    );
   });
 
   it('contains snapshot write failures and keeps processing later credentials', async () => {

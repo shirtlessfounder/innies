@@ -149,6 +149,16 @@ type TokenHealthSqlOptions = {
   includeProviderUsage: boolean;
 };
 
+function effectiveTokenStatusSql(statusSql: string, expiresAtSql: string): string {
+  return `
+        case
+          when ${statusSql} = 'revoked' then 'revoked'
+          when ${expiresAtSql} <= now() then 'expired'
+          else ${statusSql}
+        end
+      `;
+}
+
 function buildSystemSummaryTokenCountsSql(input: {
   providerFilter: string;
   options: TokenHealthSqlOptions;
@@ -174,9 +184,12 @@ function buildSystemSummaryTokenCountsSql(input: {
   const sevenDayReservePercent = input.options.includeReserveColumns
     ? 'coalesce(tc.seven_day_reserve_percent, 0)'
     : '0';
+  const effectiveStatus = effectiveTokenStatusSql('tc.status', 'tc.expires_at');
   const usageMaxedExpression = input.options.includeProviderUsage
     ? `
           case
+            when ${effectiveStatus} in ('expired', 'revoked')
+            then false
             when tc.provider = 'anthropic'
             then (
               pu.token_credential_id is not null
@@ -197,16 +210,16 @@ function buildSystemSummaryTokenCountsSql(input: {
         SELECT
           tc.id,
           tc.provider,
-          tc.status,
+          ${effectiveStatus} AS status,
           ${usageMaxedExpression} AS usage_maxed
         FROM ${TABLES.tokenCredentials} tc
         ${providerUsageJoin}
         ${input.providerFilter}
       )
       SELECT
-        count(*) FILTER (WHERE status = 'active' AND NOT usage_maxed) AS active_tokens,
-        count(*) FILTER (WHERE usage_maxed) AS maxed_tokens,
-        count(*) AS total_tokens
+        count(*) FILTER (WHERE status <> 'expired' AND status <> 'revoked' AND NOT usage_maxed) AS active_tokens,
+        count(*) FILTER (WHERE status <> 'expired' AND status <> 'revoked' AND usage_maxed) AS maxed_tokens,
+        count(*) FILTER (WHERE status <> 'expired' AND status <> 'revoked') AS total_tokens
       FROM token_inventory
     `;
 }
@@ -282,6 +295,7 @@ function buildTokenHealthSql(input: {
         null::boolean as seven_day_contribution_cap_exhausted,
         null::timestamptz as provider_usage_fetched_at,
       `;
+  const effectiveStatus = effectiveTokenStatusSql('tc.status', 'tc.expires_at');
 
   return `
       WITH credential_base AS (
@@ -289,7 +303,7 @@ function buildTokenHealthSql(input: {
           tc.id,
           tc.debug_label,
           tc.provider,
-          tc.status,
+          ${effectiveStatus} AS status,
           coalesce(tc.consecutive_failure_count, 0) AS consecutive_failure_count,
           coalesce(tc.consecutive_rate_limit_count, 0) AS consecutive_rate_limit_count,
           tc.last_failed_status,

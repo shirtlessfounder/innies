@@ -228,6 +228,45 @@ describe('tokenCredentialRepository', () => {
     expect(found?.sevenDayReservePercent).toBe(15);
     expect(db.queries[0].sql).not.toContain("auth_scheme = 'bearer'");
     expect(db.queries[0].sql).toContain("status = 'active'");
+    expect(db.queries[0].params).toEqual(['anthropic', false]);
+  });
+
+  it('includes expired provider poll candidates when a refresh token is available and recovery is enabled', async () => {
+    process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 22).toString('base64');
+    const db = new SequenceSqlClient([{
+      rows: [{
+        id: 'cred_oauth_expired',
+        org_id: '00000000-0000-0000-0000-000000000001',
+        provider: 'anthropic',
+        auth_scheme: 'bearer',
+        encrypted_access_token: encryptSecret('sk-ant-oat01-expired'),
+        encrypted_refresh_token: encryptSecret('oauth-refresh-live'),
+        expires_at: '2026-03-01T00:00:00Z',
+        status: 'expired',
+        rotation_version: 4,
+        created_at: '2026-03-01T00:00:00Z',
+        updated_at: '2026-03-01T02:00:00Z',
+        revoked_at: null,
+        monthly_contribution_limit_units: null,
+        monthly_contribution_used_units: 0,
+        monthly_window_start_at: '2026-03-01T00:00:00Z',
+        five_hour_reserve_percent: 10,
+        seven_day_reserve_percent: 15,
+        debug_label: 'claude-oauth-expired'
+      }],
+      rowCount: 1
+    }]);
+    const repo = new TokenCredentialRepository(db);
+
+    const [found] = await repo.listActiveOauthByProvider('anthropic', {
+      includeRecoverableExpired: true
+    });
+
+    expect(found?.status).toBe('expired');
+    expect(found?.refreshToken).toBe('oauth-refresh-live');
+    expect(db.queries[0].sql).toContain("status in ('active', 'expired')");
+    expect(db.queries[0].sql).toContain('encrypted_refresh_token is not null');
+    expect(db.queries[0].params).toEqual(['anthropic', true]);
   });
 
   it('falls back cleanly when contribution-cap columns are missing from maxed probe reads', async () => {

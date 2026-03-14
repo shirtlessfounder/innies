@@ -1711,6 +1711,82 @@ describe('analytics routes', () => {
     ]);
   });
 
+  it('treats expired Claude rows as expired in dashboard output and suppresses stale provider-usage warnings', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-14T13:45:00.000Z'));
+
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    analytics.getSystemSummary.mockResolvedValue({
+      total_requests: 10,
+      total_usage_units: 100,
+      active_tokens: 1,
+      maxed_tokens: 0,
+      total_tokens: 1,
+      maxed_events_7d: 0,
+      error_rate: 0,
+      fallback_rate: 0,
+      by_provider: [],
+      by_model: [],
+      by_source: []
+    });
+    analytics.getTokenUsage.mockResolvedValue([]);
+    analytics.getTokenHealth.mockResolvedValue([
+      {
+        credential_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        debug_label: 'shirtless',
+        provider: 'anthropic',
+        status: 'active',
+        monthly_contribution_used_units: 0,
+        maxed_events_7d: 0,
+        maxing_cycles_observed: 0,
+        five_hour_reserve_percent: 10,
+        five_hour_utilization_ratio: 0.9,
+        five_hour_resets_at: '2026-03-14T10:00:00.269Z',
+        five_hour_contribution_cap_exhausted: true,
+        seven_day_reserve_percent: 15,
+        seven_day_utilization_ratio: 0.59,
+        seven_day_resets_at: '2026-03-20T04:00:00.269Z',
+        seven_day_contribution_cap_exhausted: false,
+        provider_usage_fetched_at: '2026-03-14T09:58:51.583Z',
+        last_refresh_error: 'provider_usage_fetch_backoff_active',
+        expires_at: '2026-03-14T10:03:52.209Z'
+      }
+    ]);
+    analytics.getTokenRouting.mockResolvedValue([]);
+    analytics.getBuyers.mockResolvedValue([]);
+    analytics.getAnomalies.mockResolvedValue({ checks: {}, ok: true });
+    analytics.getEvents.mockResolvedValue([]);
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/dashboard', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/dashboard',
+      headers: {
+        authorization: 'Bearer admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect((res.body as any).summary).toEqual(expect.objectContaining({
+      activeTokens: 0,
+      maxedTokens: 0,
+      totalTokens: 0
+    }));
+    expect((res.body as any).tokens).toEqual([
+      expect.objectContaining({
+        credentialId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        debugLabel: 'shirtless',
+        provider: 'anthropic',
+        status: 'expired'
+      })
+    ]);
+    expect((res.body as any).warnings).toEqual([]);
+  });
+
   it('keeps true 100%-usage exhaustion warnings visible without degrading them into stale-snapshot warnings', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-12T12:20:00.000Z'));
