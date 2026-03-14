@@ -22,19 +22,22 @@ import {
 import { extractRequestPreview, extractResponsePreview } from '../utils/requestLogPreview.js';
 import {
   isOpenAiOauthAccessToken,
-  resolveOpenAiOauthAccountId,
-  resolveOpenAiOauthClientId,
-  resolveOpenAiOauthExpiresAt
+  resolveOpenAiOauthAccountId
 } from '../utils/openaiOauth.js';
 import {
   CLAUDE_REPEATED_429_LOCAL_BACKOFF_REASON,
+  anthropicOauthUsageAuthFailureStatusCode,
   evaluateClaudeContributionCap,
   isAnthropicOauthTokenCredential,
+  parkAnthropicOauthCredentialAfterUsageAuthFailure,
   providerUsageWarningReasonFromRefreshOutcome,
-  readTokenCredentialRateLimitLongBackoffMinutes,
-  refreshAnthropicOauthUsageNow
+  readTokenCredentialRateLimitLongBackoffMinutes
 } from '../services/tokenCredentialProviderUsage.js';
 import { readClaudeContributionCapSnapshotState } from '../services/claudeContributionCapState.js';
+import {
+  attemptTokenCredentialRefresh,
+  refreshAnthropicOauthUsageWithCredentialRefresh
+} from '../services/tokenCredentialOauthRefresh.js';
 
 const router = Router();
 
@@ -1032,15 +1035,30 @@ async function recordTokenCredentialOutcome(input: {
       });
 
       if (result?.backoffKind === 'extended') {
-        const refreshResult = await refreshAnthropicOauthUsageNow(
+        const refreshedUsage = await refreshAnthropicOauthUsageWithCredentialRefresh(
           runtime.repos.tokenCredentialProviderUsage,
+          runtime.repos.tokenCredentials,
           credential,
           { ignoreRetryBackoff: true }
         );
+        const refreshResult = refreshedUsage.outcome;
+        const usageAuthFailureStatusCode = anthropicOauthUsageAuthFailureStatusCode(refreshResult);
+        if (usageAuthFailureStatusCode !== null) {
+          const nextProbeAt = new Date(Date.now() + (tokenCredentialProbeIntervalMinutes() * 60 * 1000));
+          await parkAnthropicOauthCredentialAfterUsageAuthFailure(runtime.repos.tokenCredentials, credential, {
+            statusCode: usageAuthFailureStatusCode,
+            nextProbeAt,
+            reason: `upstream_${usageAuthFailureStatusCode}_provider_usage_refresh`,
+            requestId,
+            attemptNo
+          });
+        }
         try {
           await runtime.repos.tokenCredentials.setProviderUsageWarning(
             credential.id,
-            providerUsageWarningReasonFromRefreshOutcome(refreshResult)
+            usageAuthFailureStatusCode === null
+              ? providerUsageWarningReasonFromRefreshOutcome(refreshResult)
+              : null
           );
         } catch (error) {
           console.error('[token-credential] provider-usage-warning-sync-failed', {
@@ -1353,89 +1371,6 @@ function normalizeTokenModeUpstreamPayload(input: {
     // Codex ChatGPT backend currently requires streaming on this path.
     stream: true
   };
-}
-
-async function attemptOpenAiOauthRefresh(credential: TokenCredential): Promise<TokenCredential | null> {
-  if (!credential.refreshToken) return null;
-  if (!isOpenAiOauthAccessToken(credential.accessToken)) return null;
-
-  const clientId = resolveOpenAiOauthClientId(credential.accessToken);
-  if (!clientId) return null;
-
-  const refreshUrl = process.env.OPENAI_OAUTH_TOKEN_ENDPOINT || 'https://auth.openai.com/oauth/token';
-  const form = new URLSearchParams({
-    grant_type: 'refresh_token',
-    client_id: clientId,
-    refresh_token: credential.refreshToken
-  });
-
-  const response = await fetch(refreshUrl, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/x-www-form-urlencoded',
-      accept: 'application/json'
-    },
-    body: form.toString()
-  }).catch(() => null);
-
-  if (!response?.ok) return null;
-
-  const payload = await response.json().catch(() => ({} as Record<string, unknown>));
-  const accessToken = typeof payload.access_token === 'string' ? payload.access_token : null;
-  if (!accessToken) return null;
-
-  const refreshToken = typeof payload.refresh_token === 'string' && payload.refresh_token.trim().length > 0
-    ? payload.refresh_token
-    : credential.refreshToken;
-  const expiresAt = typeof payload.expires_at === 'string'
-    ? new Date(payload.expires_at)
-    : (typeof payload.expires_in === 'number'
-      ? new Date(Date.now() + (payload.expires_in * 1000))
-      : (resolveOpenAiOauthExpiresAt(accessToken) ?? credential.expiresAt));
-
-  return runtime.repos.tokenCredentials.refreshInPlace({
-    id: credential.id,
-    accessToken,
-    refreshToken,
-    expiresAt
-  });
-}
-
-async function attemptCredentialRefresh(credential: TokenCredential): Promise<TokenCredential | null> {
-  const openAiOauthCredential = await attemptOpenAiOauthRefresh(credential);
-  if (openAiOauthCredential) return openAiOauthCredential;
-
-  if (!credential.refreshToken) return null;
-  const refreshUrl = process.env.TOKEN_REFRESH_ENDPOINT;
-  if (!refreshUrl) return null;
-
-  const response = await fetch(refreshUrl, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      provider: credential.provider,
-      orgId: credential.orgId,
-      refreshToken: credential.refreshToken
-    })
-  }).catch(() => null);
-
-  if (!response?.ok) return null;
-  const payload = await response.json().catch(() => ({} as Record<string, unknown>));
-  const accessToken = typeof payload.access_token === 'string' ? payload.access_token : null;
-  if (!accessToken) return null;
-  const refreshToken = typeof payload.refresh_token === 'string'
-    ? payload.refresh_token
-    : credential.refreshToken;
-  const expiresAt = typeof payload.expires_at === 'string'
-    ? new Date(payload.expires_at)
-    : (typeof payload.expires_in === 'number' ? new Date(Date.now() + (payload.expires_in * 1000)) : credential.expiresAt);
-
-  return runtime.repos.tokenCredentials.refreshInPlace({
-    id: credential.id,
-    accessToken,
-    refreshToken,
-    expiresAt
-  });
 }
 
 function extractLastTokenCount(raw: string, field: 'input_tokens' | 'output_tokens'): number | null {
@@ -2181,7 +2116,7 @@ async function executeTokenModeNonStreaming(input: {
           continue;
         }
         if (!refreshed) {
-          const next = await attemptCredentialRefresh(credential);
+          const next = await attemptTokenCredentialRefresh(runtime.repos.tokenCredentials, credential);
           refreshed = true;
           if (next) {
             logRetryAudit({
@@ -2823,7 +2758,7 @@ async function executeTokenModeStreaming(input: {
           continue;
         }
         if (!refreshed) {
-          const next = await attemptCredentialRefresh(credential);
+          const next = await attemptTokenCredentialRefresh(runtime.repos.tokenCredentials, credential);
           refreshed = true;
           if (next) {
             logRetryAudit({

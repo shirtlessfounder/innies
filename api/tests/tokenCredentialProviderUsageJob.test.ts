@@ -277,6 +277,232 @@ describe('tokenCredentialProviderUsageJob', () => {
     expect(tokenRepo.setProviderUsageWarning).toHaveBeenCalledWith('cred_2', 'provider_usage_fetch_failed');
   });
 
+  it('parks active Claude credentials when provider usage refresh returns auth failure', async () => {
+    const tokenRepo = {
+      listActiveOauthByProvider: vi.fn(async () => [{
+        id: 'cred_auth_fail',
+        orgId: 'org_1',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-expired',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-10T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z'),
+        fiveHourReservePercent: 10,
+        sevenDayReservePercent: 15,
+        debugLabel: 'shirtless',
+        consecutiveFailureCount: 0,
+        consecutiveRateLimitCount: 0,
+        lastFailedStatus: null,
+        lastFailedAt: null,
+        lastRateLimitedAt: null,
+        maxedAt: null,
+        rateLimitedUntil: null,
+        nextProbeAt: null,
+        lastProbeAt: null
+      }]),
+      recordFailureAndMaybeMax: vi.fn(async () => ({
+        status: 'maxed',
+        consecutiveFailures: 1,
+        newlyMaxed: true
+      })),
+      markProbeFailure: vi.fn(async () => false),
+      clearRateLimitBackoff: vi.fn(async () => false),
+      setProviderUsageWarning: vi.fn(async () => false),
+      listMaxedForProbe: vi.fn(async () => []),
+      syncClaudeContributionCapLifecycle: vi.fn(async () => ({ fiveHourTransition: null, sevenDayTransition: null })),
+      reactivateFromMaxed: vi.fn(async () => false)
+    };
+    const usageRepo = {
+      upsertSnapshot: vi.fn()
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        type: 'error',
+        error: {
+          type: 'authentication_error',
+          message: 'OAuth token has expired.',
+          details: { error_code: 'token_expired' }
+        }
+      }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const job = createTokenCredentialProviderUsageJob(tokenRepo as any, usageRepo as any);
+    const ctx = createCtx();
+
+    await job.run(ctx as any);
+
+    expect(tokenRepo.recordFailureAndMaybeMax).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'cred_auth_fail',
+      statusCode: 401,
+      threshold: 1,
+      reason: 'upstream_401_provider_usage_refresh'
+    }));
+    expect(tokenRepo.markProbeFailure).not.toHaveBeenCalled();
+    expect(tokenRepo.setProviderUsageWarning).not.toHaveBeenCalled();
+    expect(ctx.logger.info).toHaveBeenCalledWith(
+      'token credential provider usage auth failure parked',
+      expect.objectContaining({
+        credentialId: 'cred_auth_fail',
+        credentialLabel: 'shirtless',
+        statusCode: 401
+      })
+    );
+  });
+
+  it('refreshes expired Claude credentials before parking them on provider usage auth failure', async () => {
+    process.env.ANTHROPIC_OAUTH_USAGE_BASE_URL = 'https://anthropic.internal.test';
+    const tokenRepo = {
+      listActiveOauthByProvider: vi.fn(async () => [{
+        id: 'cred_auth_refresh',
+        orgId: 'org_1',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-expired',
+        refreshToken: 'rt_claude_old',
+        expiresAt: new Date('2026-03-10T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z'),
+        fiveHourReservePercent: 10,
+        sevenDayReservePercent: 15,
+        debugLabel: 'shirtless',
+        consecutiveFailureCount: 0,
+        consecutiveRateLimitCount: 0,
+        lastFailedStatus: null,
+        lastFailedAt: null,
+        lastRateLimitedAt: null,
+        maxedAt: null,
+        rateLimitedUntil: null,
+        nextProbeAt: null,
+        lastProbeAt: null
+      }]),
+      refreshInPlace: vi.fn(async () => ({
+        id: 'cred_auth_refresh',
+        orgId: 'org_1',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-refreshed',
+        refreshToken: 'rt_claude_new',
+        expiresAt: new Date('2026-03-10T01:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z'),
+        fiveHourReservePercent: 10,
+        sevenDayReservePercent: 15,
+        debugLabel: 'shirtless',
+        consecutiveFailureCount: 0,
+        consecutiveRateLimitCount: 0,
+        lastFailedStatus: null,
+        lastFailedAt: null,
+        lastRateLimitedAt: null,
+        maxedAt: null,
+        rateLimitedUntil: null,
+        nextProbeAt: null,
+        lastProbeAt: null
+      })),
+      recordFailureAndMaybeMax: vi.fn(async () => ({
+        status: 'maxed',
+        consecutiveFailures: 1,
+        newlyMaxed: true
+      })),
+      markProbeFailure: vi.fn(async () => false),
+      clearRateLimitBackoff: vi.fn(async () => false),
+      setProviderUsageWarning: vi.fn(async () => false),
+      listMaxedForProbe: vi.fn(async () => []),
+      syncClaudeContributionCapLifecycle: vi.fn(async () => ({ fiveHourTransition: null, sevenDayTransition: null })),
+      reactivateFromMaxed: vi.fn(async () => false)
+    };
+    const usageRepo = {
+      upsertSnapshot: vi.fn(async (input: any) => ({
+        tokenCredentialId: input.tokenCredentialId,
+        orgId: input.orgId,
+        provider: input.provider,
+        usageSource: input.usageSource,
+        fiveHourUtilizationRatio: input.fiveHourUtilizationRatio,
+        fiveHourResetsAt: input.fiveHourResetsAt,
+        sevenDayUtilizationRatio: input.sevenDayUtilizationRatio,
+        sevenDayResetsAt: input.sevenDayResetsAt,
+        rawPayload: input.rawPayload,
+        fetchedAt: input.fetchedAt,
+        createdAt: input.fetchedAt,
+        updatedAt: input.fetchedAt
+      }))
+    };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://anthropic.internal.test/api/oauth/usage') {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        if (headers.authorization === 'Bearer sk-ant-oat01-expired') {
+          return new Response(JSON.stringify({
+            type: 'error',
+            error: {
+              type: 'authentication_error',
+              message: 'OAuth token has expired.',
+              details: { error_code: 'token_expired' }
+            }
+          }), {
+            status: 401,
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        return new Response(JSON.stringify({
+          '5h': { percent: 35, resets_at: '2026-03-04T05:00:00Z' },
+          '7d': { percent: 12, resets_at: '2026-03-09T00:00:00Z' }
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      if (url === 'https://platform.claude.com/v1/oauth/token') {
+        expect(String(init?.body)).toContain('grant_type=refresh_token');
+        expect(String(init?.body)).toContain('client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e');
+        expect(String(init?.body)).toContain('refresh_token=rt_claude_old');
+        return new Response(JSON.stringify({
+          access_token: 'sk-ant-oat01-refreshed',
+          refresh_token: 'rt_claude_new',
+          expires_in: 3600
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      throw new Error(`unexpected fetch target: ${url}`);
+    });
+    const job = createTokenCredentialProviderUsageJob(tokenRepo as any, usageRepo as any);
+    const ctx = createCtx();
+
+    await job.run(ctx as any);
+
+    expect(tokenRepo.refreshInPlace).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'cred_auth_refresh',
+      accessToken: 'sk-ant-oat01-refreshed',
+      refreshToken: 'rt_claude_new'
+    }));
+    expect(tokenRepo.recordFailureAndMaybeMax).not.toHaveBeenCalled();
+    expect(usageRepo.upsertSnapshot).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
   it('contains snapshot write failures and keeps processing later credentials', async () => {
     process.env.ANTHROPIC_OAUTH_USAGE_BASE_URL = 'https://anthropic.internal.test';
     const tokenRepo = {

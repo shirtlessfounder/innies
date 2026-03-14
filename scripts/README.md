@@ -20,6 +20,7 @@ innies-pause-token
 innies-set-contribution-cap
 innies-set-refresh-token
 innies-requeue-token-probe
+innies-refresh-token-usage
 innies-set-preference
 innies-get-preference
 innies-check-preference
@@ -33,6 +34,7 @@ What they do:
 - `innies-set-contribution-cap`: set the 5h / 7d reserve percents for a Claude token credential
 - `innies-set-refresh-token`: set or clear the stored OAuth refresh token for an existing credential id
 - `innies-requeue-token-probe`: directly probe a maxed token credential now; successful probes immediately reactivate it
+- `innies-refresh-token-usage`: fetch Claude provider usage for a token now and print raw plus parsed 5h / 7d values
 - `innies-set-preference`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
 - `innies-get-preference`: read the current buyer key preference
 - `innies-check-preference`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
@@ -64,6 +66,10 @@ Behavior:
 - `innies-requeue-token-probe` prints the currently maxed credentials first so you can pick a live `debugLabel` or UUID
 - `innies-requeue-token-probe` also needs `INNIES_ADMIN_API_KEY` (or prompts for it) because it calls the admin API probe endpoint directly
 - `innies-requeue-token-probe` now prints a plain-English result summary (`REACTIVATED` vs `STILL MAXED`) before the raw JSON response
+- `innies-refresh-token-usage` accepts a credential number, UUID, or exact Claude `debugLabel`; it needs `DATABASE_URL`
+- `innies-refresh-token-usage` lists Claude credentials in `active|paused|maxed` first so you can pick a live token quickly
+- `innies-refresh-token-usage` also needs `INNIES_ADMIN_API_KEY` (or prompts for it) because it calls the admin API provider-usage refresh endpoint directly
+- `innies-refresh-token-usage` bypasses in-memory usage-fetch backoff and prints both parsed 5h / 7d usage plus the raw Anthropic payload
 - `label` maps to API field `debugLabel`
 - set/get preference accept either the buyer-key UUID or the live buyer key value; live-key lookup uses `DATABASE_URL`
 - script-side default provider display for `null` preference follows `BUYER_PROVIDER_PREFERENCE_DEFAULT` (legacy alias `INNIES_BUYER_PROVIDER_PREFERENCE_DEFAULT` also works)

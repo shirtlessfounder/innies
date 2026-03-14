@@ -4,6 +4,14 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireApiKey } from '../middleware/auth.js';
 import { runtime } from '../services/runtime.js';
+import { readClaudeContributionCapSnapshotState } from '../services/claudeContributionCapState.js';
+import {
+  anthropicOauthUsageAuthFailureStatusCode,
+  isAnthropicOauthTokenCredential,
+  parkAnthropicOauthCredentialAfterUsageAuthFailure,
+  providerUsageWarningReasonFromRefreshOutcome
+} from '../services/tokenCredentialProviderUsage.js';
+import { refreshAnthropicOauthUsageWithCredentialRefresh } from '../services/tokenCredentialOauthRefresh.js';
 import {
   probeAndUpdateTokenCredential,
   readTokenCredentialProbeIntervalMinutes,
@@ -876,6 +884,207 @@ router.post('/v1/admin/token-credentials/:id/probe', requireApiKey(runtime.repos
         upstreamStatus: probeOutcome.statusCode,
         reason: probeOutcome.reason,
         nextProbeAt: responseBody.nextProbeAt
+      }
+    });
+
+    await runtime.services.idempotency.commit(idemStart, {
+      responseCode: 200,
+      responseBody,
+      responseDigest: sha256Hex(stableJson(responseBody)),
+      responseRef: id
+    });
+
+    res.status(200).json(responseBody);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/admin/token-credentials/:id/provider-usage-refresh', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const id = z.string().uuid().parse(req.params.id);
+    const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
+    const requestHash = sha256Hex(stableJson({ id, apiKeyId: req.auth?.apiKeyId }));
+    const tenantScope = req.auth?.orgId ?? `admin:${req.auth?.apiKeyId}`;
+
+    const idemStart = await runtime.services.idempotency.start({
+      scope: 'admin_token_credentials_provider_usage_refresh_v1',
+      tenantScope,
+      idempotencyKey,
+      requestHash
+    });
+
+    if (idemStart.replay) {
+      if (!idemStart.responseBody) {
+        throw new AppError('idempotency_replay_unavailable', 409, 'Idempotent replay not available for this request');
+      }
+      res.setHeader('x-idempotent-replay', 'true');
+      res.status(idemStart.responseCode).json(idemStart.responseBody);
+      return;
+    }
+
+    const existing = await runtime.repos.tokenCredentials.getById(id);
+    if (!existing) {
+      throw new AppError('invalid_request', 404, 'Token credential not found');
+    }
+    if (existing.status === 'revoked') {
+      throw new AppError('invalid_request', 409, 'Revoked token credential cannot refresh provider usage');
+    }
+    if (existing.status === 'expired' || existing.expiresAt.getTime() <= Date.now()) {
+      throw new AppError('invalid_request', 409, 'Expired token credential cannot refresh provider usage');
+    }
+    if (!isAnthropicOauthTokenCredential(existing)) {
+      throw new AppError(
+        'invalid_request',
+        409,
+        'Claude provider usage refresh is only supported for Anthropic OAuth credentials',
+        {
+          provider: existing.provider,
+          status: existing.status
+        }
+      );
+    }
+
+    const refreshedUsage = await refreshAnthropicOauthUsageWithCredentialRefresh(
+      runtime.repos.tokenCredentialProviderUsage,
+      runtime.repos.tokenCredentials,
+      existing,
+      { ignoreRetryBackoff: true }
+    );
+    const effectiveCredential = refreshedUsage.credential;
+    const refreshOutcome = refreshedUsage.outcome;
+    const authFailureStatusCode = anthropicOauthUsageAuthFailureStatusCode(refreshOutcome);
+    const nextProbeAt = authFailureStatusCode !== null
+      ? new Date(Date.now() + (readTokenCredentialProbeIntervalMinutes() * 60 * 1000))
+      : null;
+    const parkedOutcome = authFailureStatusCode !== null
+      ? await parkAnthropicOauthCredentialAfterUsageAuthFailure(runtime.repos.tokenCredentials, effectiveCredential, {
+        statusCode: authFailureStatusCode,
+        nextProbeAt: nextProbeAt!,
+        reason: `upstream_${authFailureStatusCode}_provider_usage_refresh`
+      })
+      : null;
+    const warningReason = authFailureStatusCode === null
+      ? providerUsageWarningReasonFromRefreshOutcome(refreshOutcome)
+      : null;
+    const stateSyncErrors: string[] = [];
+    let lifecycle = {
+      fiveHourTransition: null as 'exhausted' | 'cleared' | null,
+      sevenDayTransition: null as 'exhausted' | 'cleared' | null
+    };
+    let snapshotSummary: {
+      usageSource: string;
+      fetchedAt: string;
+      fiveHourUtilizationRatio: number;
+      fiveHourUsedPercent: number;
+      fiveHourResetsAt: string | null;
+      fiveHourContributionCapExhausted: boolean;
+      fiveHourProviderUsageExhausted: boolean;
+      sevenDayUtilizationRatio: number;
+      sevenDayUsedPercent: number;
+      sevenDayResetsAt: string | null;
+      sevenDayContributionCapExhausted: boolean;
+      sevenDayProviderUsageExhausted: boolean;
+    } | null = null;
+
+    if (refreshOutcome.ok || warningReason !== null) {
+      try {
+        await runtime.repos.tokenCredentials.setProviderUsageWarning(id, refreshOutcome.ok ? null : warningReason);
+      } catch (error) {
+        stateSyncErrors.push(error instanceof Error ? error.message : 'provider_usage_warning_sync_failed');
+      }
+    }
+
+    if (refreshOutcome.ok) {
+      const state = readClaudeContributionCapSnapshotState({
+        credential: effectiveCredential,
+        snapshot: refreshOutcome.snapshot
+      });
+
+      snapshotSummary = {
+        usageSource: refreshOutcome.snapshot.usageSource,
+        fetchedAt: refreshOutcome.snapshot.fetchedAt.toISOString(),
+        fiveHourUtilizationRatio: refreshOutcome.snapshot.fiveHourUtilizationRatio,
+        fiveHourUsedPercent: refreshOutcome.snapshot.fiveHourUtilizationRatio * 100,
+        fiveHourResetsAt: refreshOutcome.snapshot.fiveHourResetsAt?.toISOString() ?? null,
+        fiveHourContributionCapExhausted: state.fiveHourContributionCapExhausted,
+        fiveHourProviderUsageExhausted: refreshOutcome.snapshot.fiveHourUtilizationRatio >= 1,
+        sevenDayUtilizationRatio: refreshOutcome.snapshot.sevenDayUtilizationRatio,
+        sevenDayUsedPercent: refreshOutcome.snapshot.sevenDayUtilizationRatio * 100,
+        sevenDayResetsAt: refreshOutcome.snapshot.sevenDayResetsAt?.toISOString() ?? null,
+        sevenDayContributionCapExhausted: state.sevenDayContributionCapExhausted,
+        sevenDayProviderUsageExhausted: refreshOutcome.snapshot.sevenDayUtilizationRatio >= 1
+      };
+
+      if (
+        state.fetchedAt !== null
+        && state.fiveHourUtilizationRatio !== null
+        && state.sevenDayUtilizationRatio !== null
+        && state.fiveHourSharedThresholdPercent !== null
+        && state.sevenDaySharedThresholdPercent !== null
+      ) {
+        try {
+          lifecycle = await runtime.repos.tokenCredentials.syncClaudeContributionCapLifecycle({
+            id: effectiveCredential.id,
+            orgId: effectiveCredential.orgId,
+            provider: effectiveCredential.provider,
+            snapshotFetchedAt: state.fetchedAt,
+            fiveHourReservePercent: state.fiveHourReservePercent,
+            fiveHourUtilizationRatio: state.fiveHourUtilizationRatio,
+            fiveHourResetsAt: state.fiveHourResetsAt,
+            fiveHourSharedThresholdPercent: state.fiveHourSharedThresholdPercent,
+            fiveHourContributionCapExhausted: state.fiveHourContributionCapExhausted,
+            sevenDayReservePercent: state.sevenDayReservePercent,
+            sevenDayUtilizationRatio: state.sevenDayUtilizationRatio,
+            sevenDayResetsAt: state.sevenDayResetsAt,
+            sevenDaySharedThresholdPercent: state.sevenDaySharedThresholdPercent,
+            sevenDayContributionCapExhausted: state.sevenDayContributionCapExhausted
+          });
+        } catch (error) {
+          stateSyncErrors.push(error instanceof Error ? error.message : 'contribution_cap_lifecycle_sync_failed');
+        }
+      }
+    }
+
+    const responseBody = {
+      ok: true,
+      id,
+      provider: effectiveCredential.provider,
+      debugLabel: effectiveCredential.debugLabel,
+      status: parkedOutcome?.status ?? effectiveCredential.status,
+      refreshOk: refreshOutcome.ok,
+      upstreamStatus: refreshOutcome.ok ? 200 : refreshOutcome.statusCode,
+      reason: refreshOutcome.ok ? 'ok' : refreshOutcome.reason,
+      category: refreshOutcome.ok ? null : refreshOutcome.category,
+      warningReason,
+      nextProbeAt: nextProbeAt?.toISOString() ?? null,
+      retryAfterMs: refreshOutcome.ok ? null : (refreshOutcome.retryAfterMs ?? null),
+      errorMessage: refreshOutcome.ok ? null : (refreshOutcome.errorMessage ?? null),
+      reserve: {
+        fiveHourReservePercent: effectiveCredential.fiveHourReservePercent,
+        sevenDayReservePercent: effectiveCredential.sevenDayReservePercent
+      },
+      snapshot: snapshotSummary,
+      lifecycle,
+      rawPayload: refreshOutcome.rawPayload ?? null,
+      stateSyncErrors
+    } as const;
+
+    await logSensitiveAction(runtime.repos.auditLogs, req.auth, {
+      action: 'token_credential.provider_usage_refresh',
+      targetType: 'token_credential',
+      targetId: id,
+      orgId: effectiveCredential.orgId,
+      metadata: {
+        provider: effectiveCredential.provider,
+        debugLabel: effectiveCredential.debugLabel,
+        refreshOk: refreshOutcome.ok,
+        upstreamStatus: responseBody.upstreamStatus,
+        reason: responseBody.reason,
+        category: responseBody.category,
+        warningReason: responseBody.warningReason,
+        nextProbeAt: responseBody.nextProbeAt,
+        stateSyncErrors: responseBody.stateSyncErrors
       }
     });
 
