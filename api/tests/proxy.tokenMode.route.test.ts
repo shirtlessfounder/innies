@@ -3256,6 +3256,136 @@ describe('proxy token-mode route behavior', () => {
     fetchSpy.mockRestore();
   });
 
+  it('refreshes Claude oauth credentials against platform.claude.com before failing over', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.ANTHROPIC_UPSTREAM_BASE_URL = 'https://anthropic.internal.test';
+
+    const firstToken = 'sk-ant-oat01-expired';
+    const secondToken = 'sk-ant-oat01-refreshed';
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'anthropic'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'anthropic',
+      model: 'claude-opus-4-6',
+      supports_streaming: false
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'eeee2222-0000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: firstToken,
+      refreshToken: 'rt_claude_old',
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+    const refreshInPlaceSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'refreshInPlace').mockResolvedValue({
+      id: 'eeee2222-0000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: secondToken,
+      refreshToken: 'rt_claude_new',
+      expiresAt: new Date('2026-03-03T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any);
+
+    let upstreamAttempts = 0;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://anthropic.internal.test/v1/messages') {
+        upstreamAttempts += 1;
+        if (upstreamAttempts === 1) {
+          return new Response(JSON.stringify({
+            type: 'error',
+            error: {
+              type: 'authentication_error',
+              message: 'OAuth token has expired.',
+              details: { error_code: 'token_expired' }
+            }
+          }), {
+            status: 401,
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        return new Response(JSON.stringify({ id: 'msg_claude_refresh_ok', type: 'message' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      if (url === 'https://platform.claude.com/v1/oauth/token') {
+        expect(String(init?.body)).toContain('grant_type=refresh_token');
+        expect(String(init?.body)).toContain('client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e');
+        expect(String(init?.body)).toContain('refresh_token=rt_claude_old');
+        expect((init?.headers as Record<string, string>)['anthropic-beta']).toBe('oauth-2025-04-20');
+        return new Response(JSON.stringify({
+          access_token: secondToken,
+          refresh_token: 'rt_claude_new',
+          expires_in: 3600
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      throw new Error(`unexpected fetch target: ${url}`);
+    });
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-app': 'cli',
+        'user-agent': 'claude-cli/1.0.0'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 32,
+        messages: [{ role: 'user', content: 'refresh me' }],
+        stream: false
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('msg_claude_refresh_ok');
+    expect(refreshInPlaceSpy).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'eeee2222-0000-4000-8000-000000000000',
+      accessToken: secondToken,
+      refreshToken: 'rt_claude_new'
+    }));
+    const secondUpstreamCall = fetchSpy.mock.calls.filter(([target]) => String(target) === 'https://anthropic.internal.test/v1/messages')[1];
+    const secondHeaders = (secondUpstreamCall?.[1]?.headers ?? {}) as Record<string, string>;
+    expect(secondHeaders.authorization).toBe(`Bearer ${secondToken}`);
+    fetchSpy.mockRestore();
+  });
+
   it('translates compat anthropic requests onto openai responses when buyer preference is openai', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     process.env.OPENAI_UPSTREAM_BASE_URL = 'https://openai.internal.test';

@@ -23,10 +23,11 @@ Use this to get your own Claude or Codex/OpenAI login into a form an Innies admi
 
 4. On macOS, Claude OAuth credentials are stored in Keychain, not in a stable plain-text file.
 
-5. Innies needs the Anthropic bearer token that starts with:
+5. Innies needs both:
 
    ```text
-   sk-ant-oat...
+   access token: sk-ant-oat...
+   refresh token: <your Claude OAuth refresh token>
    ```
 
 ## Codex
@@ -56,6 +57,7 @@ Use this to get your own Claude or Codex/OpenAI login into a form an Innies admi
 Claude:
 - provider: `anthropic`
 - token: `sk-ant-oat...`
+- refresh token: optional, but useful if you have it
 
 Codex:
 - provider: `openai`

@@ -25,6 +25,7 @@
 - `POST /v1/admin/token-credentials/:id/revoke`
 - `PATCH /v1/admin/token-credentials/:id/contribution-cap`
 - `POST /v1/admin/token-credentials/:id/probe`
+- `POST /v1/admin/token-credentials/:id/provider-usage-refresh`
 - `PATCH /v1/admin/buyer-keys/:id/provider-preference`
 - Header: `Idempotency-Key`
 - Format: UUIDv7 or opaque token length >= 32.
@@ -166,6 +167,8 @@ Create token credential for an org/provider (admin only).
 Contract: appends an additional credential for the same `(org, provider)` token pool.
 Credential material:
 - `anthropic`: Claude Code OAuth bearer token (`sk-ant-oat...`)
+  - expected fields: access token, refresh token when available
+  - runtime behavior: when a refresh token is stored, Innies can best-effort refresh Claude OAuth credentials against `platform.claude.com/v1/oauth/token`
 - `openai`: Codex/OpenAI OAuth/session token material, not a public OpenAI API key
   - expected fields: access token, refresh token when available
   - runtime behavior: Innies derives ChatGPT account context from the access token and uses OpenAI OAuth refresh against `auth.openai.com/oauth/token`
@@ -181,6 +184,8 @@ Behavior:
 - if `previousCredentialId` is provided, it may target an `active` or `maxed` credential in that `(org, provider)` lane; Innies revokes that prior credential after inserting the replacement
 Credential material:
 - `anthropic`: Claude Code OAuth bearer token (`sk-ant-oat...`)
+  - expected fields: access token, refresh token when available
+  - runtime behavior: when a refresh token is stored, Innies can best-effort refresh Claude OAuth credentials against `platform.claude.com/v1/oauth/token`
 - `openai`: Codex/OpenAI OAuth/session token material, not a public OpenAI API key
   - expected fields: access token, refresh token when available
   - runtime behavior: Innies derives ChatGPT account context from the access token and uses OpenAI OAuth refresh against `auth.openai.com/oauth/token`
@@ -270,6 +275,43 @@ Notes:
 - only `maxed`, unexpired credentials can be manually probed
 - successful probe reactivates the credential immediately so routing can use it again
 - failed probe keeps the credential `maxed` and pushes `nextProbeAt` forward by the normal probe interval
+
+### `POST /v1/admin/token-credentials/:id/provider-usage-refresh`
+Refresh Claude provider usage for a token immediately (admin only).
+
+Response shape:
+- `refreshOk`: whether the Anthropic usage refresh succeeded
+- `status`: current Innies credential status
+- `upstreamStatus`: upstream HTTP status when available
+- `reason`: refresh result reason (`ok|status_<code>|network:<message>|invalid_payload:*|provider_usage_snapshot_write_failed`)
+- `category`: refresh failure category (`fetch_failed|fetch_backoff|snapshot_write_failed`) or `null`
+- `warningReason`: operator warning state synced from the refresh result when applicable
+- `nextProbeAt`: next scheduled auth-recovery probe time when a usage refresh auth-failure parked the credential
+- `retryAfterMs`: retry backoff duration when the refresh failed and surfaced one
+- `reserve`: stored `fiveHourReservePercent` / `sevenDayReservePercent`
+- `snapshot`: parsed snapshot summary when refresh succeeded:
+  - `usageSource`
+  - `fetchedAt`
+  - `fiveHourUtilizationRatio`
+  - `fiveHourUsedPercent`
+  - `fiveHourResetsAt`
+  - `fiveHourContributionCapExhausted`
+  - `fiveHourProviderUsageExhausted`
+  - `sevenDayUtilizationRatio`
+  - `sevenDayUsedPercent`
+  - `sevenDayResetsAt`
+  - `sevenDayContributionCapExhausted`
+  - `sevenDayProviderUsageExhausted`
+- `lifecycle`: contribution-cap lifecycle transitions emitted during sync (`fiveHourTransition`, `sevenDayTransition`)
+- `rawPayload`: raw Anthropic usage payload when one was returned
+- `stateSyncErrors`: non-fatal warning/lifecycle sync errors encountered after refresh
+
+Notes:
+- intended operator use: compare Anthropic's raw quota payload with Innies' parsed 5h / 7d view for a specific Claude token
+- supported only for unexpired Anthropic OAuth credentials
+- route bypasses in-memory usage-fetch backoff so operators can debug a token immediately
+- successful refresh persists the latest snapshot locally and attempts to sync warning + contribution-cap lifecycle state
+- upstream `401` / `403` from the usage endpoint is treated as an auth failure: Innies parks the credential, schedules probe recovery, and stops treating the token like merely stale quota state
 
 ### `GET /v1/admin/buyer-keys/:id/provider-preference`
 Read provider preference for a buyer API key (admin only).

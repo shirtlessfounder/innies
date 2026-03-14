@@ -5,6 +5,7 @@ import { AppError } from '../src/utils/errors.js';
 type RuntimeModule = typeof import('../src/services/runtime.js');
 type AdminRouteModule = typeof import('../src/routes/admin.js');
 type ProbeModule = typeof import('../src/services/tokenCredentialProbe.js');
+type ProviderUsageModule = typeof import('../src/services/tokenCredentialProviderUsage.js');
 
 type MockReq = {
   method: string;
@@ -120,6 +121,7 @@ function getRouteHandlers(router: any, routePath: string): Array<(req: any, res:
 describe('admin token credential routes idempotent replay', () => {
   let runtimeModule: RuntimeModule;
   let probeModule: ProbeModule;
+  let providerUsageModule: ProviderUsageModule;
   let createHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let rotateHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let revokeHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
@@ -128,12 +130,14 @@ describe('admin token credential routes idempotent replay', () => {
   let refreshTokenHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let contributionCapHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let probeHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let providerUsageRefreshHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
 
   beforeAll(async () => {
     process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@127.0.0.1:5432/innies_test';
     process.env.SELLER_SECRET_ENC_KEY_B64 = process.env.SELLER_SECRET_ENC_KEY_B64 || Buffer.alloc(32, 7).toString('base64');
     runtimeModule = await import('../src/services/runtime.js');
     probeModule = await import('../src/services/tokenCredentialProbe.js');
+    providerUsageModule = await import('../src/services/tokenCredentialProviderUsage.js');
     const mod = await import('../src/routes/admin.js') as AdminRouteModule;
     createHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials');
     rotateHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/rotate');
@@ -143,6 +147,7 @@ describe('admin token credential routes idempotent replay', () => {
     refreshTokenHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/refresh-token');
     contributionCapHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/contribution-cap');
     probeHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/probe');
+    providerUsageRefreshHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/provider-usage-refresh');
   });
 
   beforeEach(() => {
@@ -204,14 +209,47 @@ describe('admin token credential routes idempotent replay', () => {
       status: 'active',
       nextProbeAt: null
     });
+    vi.spyOn(providerUsageModule, 'refreshAnthropicOauthUsageNow').mockResolvedValue({
+      ok: true,
+      rawPayload: {
+        '5h': { percent: 1, resets_at: '2026-03-14T01:00:00.000Z' },
+        '7d': { percent: 42, resets_at: '2026-03-21T00:00:00.000Z' }
+      },
+      snapshot: {
+        tokenCredentialId: 'z',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'anthropic',
+        usageSource: 'anthropic_oauth_usage',
+        fiveHourUtilizationRatio: 0.01,
+        fiveHourResetsAt: new Date('2026-03-14T01:00:00.000Z'),
+        sevenDayUtilizationRatio: 0.42,
+        sevenDayResetsAt: new Date('2026-03-21T00:00:00.000Z'),
+        rawPayload: {
+          '5h': { percent: 1, resets_at: '2026-03-14T01:00:00.000Z' },
+          '7d': { percent: 42, resets_at: '2026-03-21T00:00:00.000Z' }
+        },
+        fetchedAt: new Date('2026-03-13T23:00:00.000Z'),
+        createdAt: new Date('2026-03-13T23:00:00.000Z'),
+        updatedAt: new Date('2026-03-13T23:00:00.000Z')
+      }
+    } as any);
     vi.spyOn(runtimeModule.runtime.repos.auditLogs, 'createEvent').mockResolvedValue({ id: 'audit_1' } as any);
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
       id: 'z',
       orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
       provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'sk-ant-oat01-default',
+      fiveHourReservePercent: 0,
+      sevenDayReservePercent: 0,
       debugLabel: 'oauth-main-1',
       status: 'maxed',
       expiresAt: new Date('2026-03-20T00:00:00.000Z')
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'setProviderUsageWarning').mockResolvedValue(false);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'syncClaudeContributionCapLifecycle').mockResolvedValue({
+      fiveHourTransition: null,
+      sevenDayTransition: null
     } as any);
   });
 
@@ -219,7 +257,7 @@ describe('admin token credential routes idempotent replay', () => {
     vi.restoreAllMocks();
   });
 
-  it('replays create/rotate/revoke/pause/unpause/refresh-token/contribution-cap/probe deterministically without executing mutations', async () => {
+  it('replays create/rotate/revoke/pause/unpause/refresh-token/contribution-cap/probe/provider-usage-refresh deterministically without executing mutations', async () => {
     const headers = {
       authorization: 'Bearer in_admin_token',
       'content-type': 'application/json',
@@ -348,6 +386,19 @@ describe('admin token credential routes idempotent replay', () => {
     expect(resProbe.headers['x-idempotent-replay']).toBe('true');
     expect((resProbe.body as any).replayed).toBe(true);
 
+    const reqProviderUsageRefresh = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/provider-usage-refresh',
+      headers,
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const resProviderUsageRefresh = createMockRes();
+    await invoke(providerUsageRefreshHandlers[0], reqProviderUsageRefresh, resProviderUsageRefresh);
+    await invoke(providerUsageRefreshHandlers[1], reqProviderUsageRefresh, resProviderUsageRefresh);
+    expect(resProviderUsageRefresh.statusCode).toBe(200);
+    expect(resProviderUsageRefresh.headers['x-idempotent-replay']).toBe('true');
+    expect((resProviderUsageRefresh.body as any).replayed).toBe(true);
+
     expect(runtimeModule.runtime.services.tokenCredentials.create).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.tokenCredentials.rotate).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.tokenCredentials.revoke).not.toHaveBeenCalled();
@@ -357,6 +408,7 @@ describe('admin token credential routes idempotent replay', () => {
     expect(runtimeModule.runtime.services.tokenCredentials.updateContributionCap).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.repos.tokenCredentials.getById).not.toHaveBeenCalled();
     expect(probeModule.probeAndUpdateTokenCredential).not.toHaveBeenCalled();
+    expect(providerUsageModule.refreshAnthropicOauthUsageNow).not.toHaveBeenCalled();
   });
 
   it('allows creating additional credentials for same org/provider', async () => {
@@ -1068,5 +1120,267 @@ describe('admin token credential routes idempotent replay', () => {
     expect((res.body as any).code).toBe('invalid_request');
     expect(String((res.body as any).message)).toContain('must be maxed');
     expect(probeModule.probeAndUpdateTokenCredential).not.toHaveBeenCalled();
+  });
+
+  it('refreshes Claude provider usage on demand and returns raw plus parsed usage state for active tokens', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_provider_usage_refresh_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123460',
+        requestHash: 'provider_usage_refresh_h_1'
+      }
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'sk-ant-oat01-shirtless',
+      fiveHourReservePercent: 0,
+      sevenDayReservePercent: 0,
+      debugLabel: 'shirtless',
+      status: 'active',
+      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+    } as any);
+    const refreshSpy = vi.spyOn(providerUsageModule, 'refreshAnthropicOauthUsageNow').mockResolvedValue({
+      ok: true,
+      rawPayload: {
+        '5h': { percent: 1, resets_at: '2026-03-14T01:00:00.000Z' },
+        '7d': { percent: 42, resets_at: '2026-03-21T00:00:00.000Z' }
+      },
+      snapshot: {
+        tokenCredentialId: '11111111-1111-4111-8111-111111111111',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'anthropic',
+        usageSource: 'anthropic_oauth_usage',
+        fiveHourUtilizationRatio: 0.01,
+        fiveHourResetsAt: new Date('2026-03-14T01:00:00.000Z'),
+        sevenDayUtilizationRatio: 0.42,
+        sevenDayResetsAt: new Date('2026-03-21T00:00:00.000Z'),
+        rawPayload: {
+          '5h': { percent: 1, resets_at: '2026-03-14T01:00:00.000Z' },
+          '7d': { percent: 42, resets_at: '2026-03-21T00:00:00.000Z' }
+        },
+        fetchedAt: new Date('2026-03-13T23:00:00.000Z'),
+        createdAt: new Date('2026-03-13T23:00:00.000Z'),
+        updatedAt: new Date('2026-03-13T23:00:00.000Z')
+      }
+    } as any);
+    const setWarningSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'setProviderUsageWarning').mockResolvedValue(true);
+    const lifecycleSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'syncClaudeContributionCapLifecycle').mockResolvedValue({
+      fiveHourTransition: null,
+      sevenDayTransition: null
+    } as any);
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/provider-usage-refresh',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123460'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const res = createMockRes();
+
+    await invoke(providerUsageRefreshHandlers[0], req, res);
+    await invoke(providerUsageRefreshHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any)).toEqual({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      provider: 'anthropic',
+      debugLabel: 'shirtless',
+      status: 'active',
+      refreshOk: true,
+      upstreamStatus: 200,
+      reason: 'ok',
+      category: null,
+      warningReason: null,
+      nextProbeAt: null,
+      retryAfterMs: null,
+      errorMessage: null,
+      reserve: {
+        fiveHourReservePercent: 0,
+        sevenDayReservePercent: 0
+      },
+      snapshot: {
+        usageSource: 'anthropic_oauth_usage',
+        fetchedAt: '2026-03-13T23:00:00.000Z',
+        fiveHourUtilizationRatio: 0.01,
+        fiveHourUsedPercent: 1,
+        fiveHourResetsAt: '2026-03-14T01:00:00.000Z',
+        fiveHourContributionCapExhausted: false,
+        fiveHourProviderUsageExhausted: false,
+        sevenDayUtilizationRatio: 0.42,
+        sevenDayUsedPercent: 42,
+        sevenDayResetsAt: '2026-03-21T00:00:00.000Z',
+        sevenDayContributionCapExhausted: false,
+        sevenDayProviderUsageExhausted: false
+      },
+      lifecycle: {
+        fiveHourTransition: null,
+        sevenDayTransition: null
+      },
+      rawPayload: {
+        '5h': { percent: 1, resets_at: '2026-03-14T01:00:00.000Z' },
+        '7d': { percent: 42, resets_at: '2026-03-21T00:00:00.000Z' }
+      },
+      stateSyncErrors: []
+    });
+    expect(refreshSpy).toHaveBeenCalledWith(
+      runtimeModule.runtime.repos.tokenCredentialProviderUsage,
+      expect.objectContaining({
+        id: '11111111-1111-4111-8111-111111111111',
+        debugLabel: 'shirtless'
+      }),
+      { ignoreRetryBackoff: true }
+    );
+    expect(setWarningSpy).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111', null);
+    expect(lifecycleSpy).toHaveBeenCalledWith(expect.objectContaining({
+      id: '11111111-1111-4111-8111-111111111111',
+      fiveHourUtilizationRatio: 0.01,
+      sevenDayUtilizationRatio: 0.42
+    }));
+    expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('parks Claude credentials on provider usage auth failure and returns the next probe time', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_provider_usage_refresh_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123462',
+        requestHash: 'provider_usage_refresh_h_3'
+      }
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'sk-ant-oat01-shirtless',
+      fiveHourReservePercent: 10,
+      sevenDayReservePercent: 15,
+      debugLabel: 'shirtless',
+      status: 'active',
+      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+    } as any);
+    vi.spyOn(providerUsageModule, 'refreshAnthropicOauthUsageNow').mockResolvedValue({
+      ok: false,
+      reason: 'status_401',
+      statusCode: 401,
+      category: 'fetch_failed',
+      warningReason: 'provider_usage_fetch_failed',
+      rawPayload: {
+        type: 'error',
+        error: {
+          type: 'authentication_error',
+          message: 'OAuth token has expired.'
+        }
+      }
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'recordFailureAndMaybeMax').mockResolvedValue({
+      status: 'maxed',
+      consecutiveFailures: 1,
+      newlyMaxed: true
+    } as any);
+    const setWarningSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'setProviderUsageWarning').mockResolvedValue(false);
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/provider-usage-refresh',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123462'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const res = createMockRes();
+
+    await invoke(providerUsageRefreshHandlers[0], req, res);
+    await invoke(providerUsageRefreshHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any)).toEqual(expect.objectContaining({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      provider: 'anthropic',
+      debugLabel: 'shirtless',
+      status: 'maxed',
+      refreshOk: false,
+      upstreamStatus: 401,
+      reason: 'status_401',
+      category: 'fetch_failed',
+      warningReason: null,
+      nextProbeAt: expect.any(String),
+      retryAfterMs: null,
+      snapshot: null,
+      rawPayload: {
+        type: 'error',
+        error: {
+          type: 'authentication_error',
+          message: 'OAuth token has expired.'
+        }
+      }
+    }));
+    expect(runtimeModule.runtime.repos.tokenCredentials.recordFailureAndMaybeMax).toHaveBeenCalledWith(expect.objectContaining({
+      id: '11111111-1111-4111-8111-111111111111',
+      statusCode: 401,
+      threshold: 1,
+      reason: 'upstream_401_provider_usage_refresh'
+    }));
+    expect(setWarningSpy).not.toHaveBeenCalled();
+    expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects manual provider usage refresh for non-Claude OAuth credentials', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_provider_usage_refresh_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123461',
+        requestHash: 'provider_usage_refresh_h_2'
+      }
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: 'openai-live-token',
+      debugLabel: 'niyant-codex',
+      status: 'active',
+      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+    } as any);
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/provider-usage-refresh',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123461'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const res = createMockRes();
+
+    await invoke(providerUsageRefreshHandlers[0], req, res);
+    await invoke(providerUsageRefreshHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(409);
+    expect((res.body as any).code).toBe('invalid_request');
+    expect(String((res.body as any).message)).toContain('Anthropic OAuth credentials');
+    expect(providerUsageModule.refreshAnthropicOauthUsageNow).not.toHaveBeenCalled();
   });
 });

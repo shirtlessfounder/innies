@@ -1,4 +1,4 @@
-import type { TokenCredential } from '../repos/tokenCredentialRepository.js';
+import { type TokenCredential, type TokenCredentialRepository } from '../repos/tokenCredentialRepository.js';
 import type {
   ProviderUsageSource,
   TokenCredentialProviderUsageRepository,
@@ -47,6 +47,47 @@ export type AnthropicOauthUsageRefreshOutcome =
       retryAfterMs?: number;
       errorMessage?: string;
     };
+
+export function anthropicOauthUsageAuthFailureStatusCode(
+  outcome: AnthropicOauthUsageRefreshOutcome
+): 401 | 403 | null {
+  if (outcome.ok) return null;
+  return outcome.statusCode === 401 || outcome.statusCode === 403
+    ? outcome.statusCode
+    : null;
+}
+
+export async function parkAnthropicOauthCredentialAfterUsageAuthFailure(
+  repo: TokenCredentialRepository,
+  credential: TokenCredential,
+  input: {
+    statusCode: 401 | 403;
+    nextProbeAt: Date;
+    reason: string;
+    requestId?: string | null;
+    attemptNo?: number | null;
+  }
+): Promise<{
+  status: 'active' | 'paused' | 'rotating' | 'maxed' | 'expired' | 'revoked';
+  consecutiveFailures: number;
+  newlyMaxed: boolean;
+} | null> {
+  const parked = await repo.recordFailureAndMaybeMax({
+    id: credential.id,
+    statusCode: input.statusCode,
+    threshold: 1,
+    nextProbeAt: input.nextProbeAt,
+    reason: input.reason,
+    requestId: input.requestId ?? null,
+    attemptNo: input.attemptNo ?? null
+  });
+
+  if (parked && parked.status === 'maxed' && !parked.newlyMaxed) {
+    await repo.markProbeFailure(credential.id, input.nextProbeAt, input.reason);
+  }
+
+  return parked;
+}
 
 export function providerUsageWarningReasonFromRefreshOutcome(
   outcome: AnthropicOauthUsageRefreshOutcome
