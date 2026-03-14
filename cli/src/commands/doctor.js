@@ -2,6 +2,8 @@ import { spawnSync } from 'node:child_process';
 import { access, constants } from 'node:fs/promises';
 import { loadConfig } from '../config.js';
 import { fileExists } from '../utils.js';
+import { getClaudeLinkStatus } from './link.js';
+import { resolveWrappedBinary } from './wrapperRuntime.js';
 
 function findCommand(bin) {
   // Try login shell first, then fall back to current shell's PATH.
@@ -68,6 +70,27 @@ export async function runDoctor() {
     note: claudeBinary.note
   });
 
+  if (claudeBinary.ok) {
+    try {
+      const runtimeTarget = resolveWrappedBinary({
+        binaryName: 'claude',
+        displayName: 'Claude',
+        overrideEnvVar: 'INNIES_CLAUDE_BIN'
+      });
+      checks.push({
+        name: 'claude_runtime_target',
+        ok: true,
+        note: runtimeTarget
+      });
+    } catch (error) {
+      checks.push({
+        name: 'claude_runtime_target',
+        ok: false,
+        note: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
   const codexBinary = await resolveBinary('codex', 'INNIES_CODEX_BIN');
   checks.push({
     name: 'codex_binary',
@@ -76,17 +99,26 @@ export async function runDoctor() {
   });
 
   const linkedWrapperPath = `${process.env.HOME ?? ''}/.local/bin/claude`;
-  const wrapperPresent = await fileExists(linkedWrapperPath);
-  if (!wrapperPresent) {
+  const wrapperStatus = await getClaudeLinkStatus(linkedWrapperPath);
+  if (wrapperStatus.classification === 'missing') {
     warnings.push({
       name: 'claude_link_wrapper',
       note: `${linkedWrapperPath} (optional; run innies link claude)`
     });
-  } else {
+  } else if (wrapperStatus.classification === 'managed') {
+    const activeWrapper = claudeBinary.note === linkedWrapperPath;
     checks.push({
       name: 'claude_link_wrapper',
       ok: true,
-      note: linkedWrapperPath
+      note: activeWrapper
+        ? `${linkedWrapperPath} (active; plain claude routes through innies)`
+        : `${linkedWrapperPath} (managed; not first in PATH)`
+    });
+  } else if (await fileExists(linkedWrapperPath)) {
+    checks.push({
+      name: 'claude_link_wrapper',
+      ok: true,
+      note: `${linkedWrapperPath} (occupied by non-Innies executable)`
     });
   }
 

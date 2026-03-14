@@ -5,7 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { resolveWrappedBinary } from '../src/commands/wrapperRuntime.js';
+import {
+  printConnectionStatus,
+  resolveWrappedBinary
+} from '../src/commands/wrapperRuntime.js';
 
 test('resolveWrappedBinary follows a symlinked wrapper path to the real Claude binary', async () => {
   const home = await mkdtemp(join(tmpdir(), 'innies-cli-wrapper-'));
@@ -37,4 +40,37 @@ test('resolveWrappedBinary follows a symlinked wrapper path to the real Claude b
     process.env.HOME = originalHome;
     process.env.PATH = originalPath;
   }
+});
+
+test('printConnectionStatus writes the wrapper banner to stderr, not stdout', () => {
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  let captured = '';
+
+  process.stderr.write = ((chunk, encoding, callback) => {
+    const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+    captured += text;
+
+    if (typeof encoding === 'function') {
+      encoding();
+    } else if (typeof callback === 'function') {
+      callback();
+    }
+
+    return true;
+  });
+
+  try {
+    printConnectionStatus({
+      model: 'claude-opus-4-6',
+      proxyUrl: 'https://api.innies.computer/v1/proxy',
+      correlationId: 'req_123'
+    });
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+
+  assert.equal(
+    captured,
+    'Innies connected | model claude-opus-4-6 | proxy https://api.innies.computer/v1/proxy | request req_123\n'
+  );
 });

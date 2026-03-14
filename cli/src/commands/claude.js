@@ -3,6 +3,7 @@ import { loadConfig, resolveProviderDefaultModel } from '../config.js';
 import { buildCorrelationId, fail } from '../utils.js';
 import {
   classifyRuntimeFailure,
+  printConnectionStatus,
   printRuntimeGuidance,
   resolveWrappedBinary,
   shouldCaptureCommandOutput
@@ -92,9 +93,7 @@ export async function runClaude(args) {
     overrideEnvVar: 'INNIES_CLAUDE_BIN'
   });
 
-  console.log(
-    `Innies connected | model ${model} | proxy ${proxyUrl} | request ${correlationId}`
-  );
+  printConnectionStatus({ model, proxyUrl, correlationId });
 
   const env = {
     ...process.env,

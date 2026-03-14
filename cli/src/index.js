@@ -3,7 +3,7 @@ import { runLogin } from './commands/login.js';
 import { runDoctor } from './commands/doctor.js';
 import { runClaude } from './commands/claude.js';
 import { runCodex } from './commands/codex.js';
-import { runLinkClaude } from './commands/link.js';
+import { runLinkClaude, runUnlinkClaude } from './commands/link.js';
 import { fail, printUsage } from './utils.js';
 
 async function main() {
@@ -48,6 +48,15 @@ async function main() {
       return;
     }
     fail('Unknown link target. Supported: claude');
+  }
+
+  if (command === 'unlink') {
+    const target = args[1];
+    if (target === 'claude') {
+      await runUnlinkClaude();
+      return;
+    }
+    fail('Unknown unlink target. Supported: claude');
   }
 
   fail(`Unknown command: ${command}`);
