@@ -310,7 +310,7 @@ Response shape:
 
 Notes:
 - intended operator use: compare Anthropic's raw quota payload with Innies' parsed 5h / 7d view for a specific Claude token
-- supported only for unexpired Anthropic OAuth credentials
+- supported for Anthropic OAuth credentials; expired access tokens can still be refreshed here when Innies has a stored OAuth refresh token
 - route bypasses in-memory usage-fetch backoff so operators can debug a token immediately
 - successful refresh persists the latest snapshot locally and attempts to sync warning + contribution-cap lifecycle state
 - upstream `401` / `403` from the usage endpoint is treated as an auth failure: Innies parks the credential, schedules probe recovery, and stops treating the token like merely stale quota state

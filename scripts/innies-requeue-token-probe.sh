@@ -24,6 +24,7 @@ select
   coalesce(next_probe_at::text, '')
 from in_token_credentials
 where status in ('active', 'maxed')
+  and expires_at > now()
 order by
   case status when 'maxed' then 0 else 1 end,
   provider asc,
@@ -62,6 +63,7 @@ select
 from in_token_credentials
 where id = :'credential_id'
   and status in ('active', 'maxed')
+  and expires_at > now()
 limit 1;
 SQL
 )"

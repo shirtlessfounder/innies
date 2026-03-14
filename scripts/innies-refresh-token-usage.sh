@@ -20,12 +20,20 @@ credential_rows="$(
 select
   id,
   coalesce(debug_label, ''),
-  status,
+  case
+    when expires_at <= now() then 'expired'
+    else status
+  end as display_status,
   to_char(updated_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as updated_at_utc
 from in_token_credentials
 where provider = 'anthropic'
-  and status in ('active', 'paused', 'maxed')
-order by updated_at desc;
+  and (
+    (status in ('active', 'paused', 'maxed') and expires_at > now())
+    or (expires_at <= now() and encrypted_refresh_token is not null and status <> 'revoked')
+  )
+order by
+  case when expires_at <= now() then 1 else 0 end,
+  updated_at desc;
 SQL
 )"
 credential_rows="$(printf '%s\n' "$credential_rows" | sed '/^[[:space:]]*$/d')"

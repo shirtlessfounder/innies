@@ -6,6 +6,7 @@ type RuntimeModule = typeof import('../src/services/runtime.js');
 type AdminRouteModule = typeof import('../src/routes/admin.js');
 type ProbeModule = typeof import('../src/services/tokenCredentialProbe.js');
 type ProviderUsageModule = typeof import('../src/services/tokenCredentialProviderUsage.js');
+type OauthRefreshModule = typeof import('../src/services/tokenCredentialOauthRefresh.js');
 
 type MockReq = {
   method: string;
@@ -122,6 +123,7 @@ describe('admin token credential routes idempotent replay', () => {
   let runtimeModule: RuntimeModule;
   let probeModule: ProbeModule;
   let providerUsageModule: ProviderUsageModule;
+  let oauthRefreshModule: OauthRefreshModule;
   let createHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let rotateHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let revokeHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
@@ -138,6 +140,7 @@ describe('admin token credential routes idempotent replay', () => {
     runtimeModule = await import('../src/services/runtime.js');
     probeModule = await import('../src/services/tokenCredentialProbe.js');
     providerUsageModule = await import('../src/services/tokenCredentialProviderUsage.js');
+    oauthRefreshModule = await import('../src/services/tokenCredentialOauthRefresh.js');
     const mod = await import('../src/routes/admin.js') as AdminRouteModule;
     createHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials');
     rotateHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/rotate');
@@ -1400,6 +1403,177 @@ describe('admin token credential routes idempotent replay', () => {
     }));
     expect(setWarningSpy).not.toHaveBeenCalled();
     expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows provider usage refresh to recover an expired Anthropic OAuth credential when a refresh token is stored', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_provider_usage_refresh_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123463',
+        requestHash: 'provider_usage_refresh_h_4'
+      }
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'sk-ant-oat01-expired',
+      refreshToken: 'refresh-token-live',
+      fiveHourReservePercent: 10,
+      sevenDayReservePercent: 15,
+      debugLabel: 'aelix',
+      status: 'active',
+      expiresAt: new Date('2026-03-14T10:10:41.407Z')
+    } as any);
+    const refreshSpy = vi.spyOn(oauthRefreshModule, 'refreshAnthropicOauthUsageWithCredentialRefresh').mockResolvedValue({
+      credential: {
+        id: '11111111-1111-4111-8111-111111111111',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-refreshed',
+        refreshToken: 'refresh-token-live',
+        fiveHourReservePercent: 10,
+        sevenDayReservePercent: 15,
+        debugLabel: 'aelix',
+        status: 'active',
+        expiresAt: new Date('2026-03-14T15:10:41.407Z')
+      },
+      refreshedCredential: {
+        id: '11111111-1111-4111-8111-111111111111',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-refreshed',
+        refreshToken: 'refresh-token-live',
+        fiveHourReservePercent: 10,
+        sevenDayReservePercent: 15,
+        debugLabel: 'aelix',
+        status: 'active',
+        expiresAt: new Date('2026-03-14T15:10:41.407Z')
+      },
+      outcome: {
+        ok: true,
+        rawPayload: {
+          five_hour: { utilization: 0, resets_at: null },
+          seven_day: { utilization: 18, resets_at: '2026-03-20T14:00:00.470Z' }
+        },
+        snapshot: {
+          tokenCredentialId: '11111111-1111-4111-8111-111111111111',
+          orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+          provider: 'anthropic',
+          usageSource: 'anthropic_oauth_usage',
+          fiveHourUtilizationRatio: 0,
+          fiveHourResetsAt: null,
+          sevenDayUtilizationRatio: 0.18,
+          sevenDayResetsAt: new Date('2026-03-20T14:00:00.470Z'),
+          rawPayload: {
+            five_hour: { utilization: 0, resets_at: null },
+            seven_day: { utilization: 18, resets_at: '2026-03-20T14:00:00.470Z' }
+          },
+          fetchedAt: new Date('2026-03-14T12:50:00.000Z'),
+          createdAt: new Date('2026-03-14T12:50:00.000Z'),
+          updatedAt: new Date('2026-03-14T12:50:00.000Z')
+        }
+      }
+    } as any);
+    const setWarningSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'setProviderUsageWarning').mockResolvedValue(true);
+    const lifecycleSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'syncClaudeContributionCapLifecycle').mockResolvedValue({
+      fiveHourTransition: null,
+      sevenDayTransition: null
+    } as any);
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/provider-usage-refresh',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123463'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const res = createMockRes();
+
+    await invoke(providerUsageRefreshHandlers[0], req, res);
+    await invoke(providerUsageRefreshHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any)).toEqual(expect.objectContaining({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      provider: 'anthropic',
+      debugLabel: 'aelix',
+      status: 'active',
+      refreshOk: true,
+      upstreamStatus: 200,
+      reason: 'ok',
+      nextProbeAt: null,
+      snapshot: expect.objectContaining({
+        fiveHourUsedPercent: 0,
+        sevenDayUsedPercent: 18
+      })
+    }));
+    expect(refreshSpy).toHaveBeenCalledWith(
+      runtimeModule.runtime.repos.tokenCredentialProviderUsage,
+      runtimeModule.runtime.repos.tokenCredentials,
+      expect.objectContaining({
+        id: '11111111-1111-4111-8111-111111111111',
+        debugLabel: 'aelix'
+      }),
+      { ignoreRetryBackoff: true }
+    );
+    expect(setWarningSpy).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111', null);
+    expect(lifecycleSpy).toHaveBeenCalledTimes(1);
+    expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects expired provider usage refresh when no refresh token is stored', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_provider_usage_refresh_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123464',
+        requestHash: 'provider_usage_refresh_h_5'
+      }
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'sk-ant-oat01-expired',
+      refreshToken: null,
+      debugLabel: 'expired-no-refresh',
+      status: 'active',
+      expiresAt: new Date('2026-03-14T10:10:41.407Z')
+    } as any);
+    const refreshSpy = vi.spyOn(oauthRefreshModule, 'refreshAnthropicOauthUsageWithCredentialRefresh');
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/provider-usage-refresh',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123464'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const res = createMockRes();
+
+    await invoke(providerUsageRefreshHandlers[0], req, res);
+    await invoke(providerUsageRefreshHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(409);
+    expect((res.body as any).code).toBe('invalid_request');
+    expect(String((res.body as any).message)).toContain('without a stored refresh token');
+    expect(refreshSpy).not.toHaveBeenCalled();
   });
 
   it('rejects manual provider usage refresh for non-Claude OAuth credentials', async () => {
