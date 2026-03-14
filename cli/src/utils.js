@@ -13,6 +13,7 @@ export function printUsage() {
       '  innies claude [-- <claude args...>]',
       '  innies codex [-- <codex args...>]',
       '  innies link claude',
+      '  innies unlink claude',
       ''
     ].join('\n')
   );

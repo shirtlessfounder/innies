@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { loadConfig } from '../config.js';
@@ -40,6 +40,13 @@ export async function assertClaudeLinkPathSafe(path = wrapperPath()) {
   }
 }
 
+export async function getClaudeLinkStatus(path = wrapperPath()) {
+  return {
+    path,
+    classification: await classifyExistingClaudePath(path)
+  };
+}
+
 export async function runLinkClaude() {
   const config = await loadConfig(true);
   if (!config) {
@@ -64,4 +71,24 @@ export async function runLinkClaude() {
   console.log('Claude wrapper linked.');
   console.log(`Created: ${path}`);
   console.log('Ensure ~/.local/bin is before other Claude install paths in PATH.');
+}
+
+export async function runUnlinkClaude(path = wrapperPath()) {
+  const { classification } = await getClaudeLinkStatus(path);
+
+  if (classification === 'missing') {
+    console.log('Claude wrapper already absent.');
+    console.log(`Path: ${path}`);
+    return;
+  }
+
+  if (classification === 'external') {
+    fail(
+      `Refusing to remove non-Innies ${path}. Remove it manually if that is actually what you want.`
+    );
+  }
+
+  await unlink(path);
+  console.log('Claude wrapper removed.');
+  console.log(`Removed: ${path}`);
 }

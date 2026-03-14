@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -58,4 +58,38 @@ test('assertClaudeLinkPathSafe rejects overwriting a real Claude symlink', async
     process.exit = originalExit;
     console.error = originalError;
   }
+});
+
+test('getClaudeLinkStatus reports managed and missing wrapper states', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'innies-cli-link-'));
+  const path = join(home, '.local', 'bin', 'claude');
+  await mkdir(join(home, '.local', 'bin'), { recursive: true });
+
+  const linkModule = await importLinkModuleForHome(home);
+  assert.deepEqual(await linkModule.getClaudeLinkStatus(path), {
+    path,
+    classification: 'missing'
+  });
+
+  await writeFile(path, '#!/usr/bin/env bash\nexec innies claude "$@"\n', { mode: 0o755 });
+  assert.deepEqual(await linkModule.getClaudeLinkStatus(path), {
+    path,
+    classification: 'managed'
+  });
+});
+
+test('runUnlinkClaude removes only the innies-managed wrapper', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'innies-cli-link-'));
+  const path = join(home, '.local', 'bin', 'claude');
+  await mkdir(join(home, '.local', 'bin'), { recursive: true });
+  await writeFile(path, '#!/usr/bin/env bash\nexec innies claude "$@"\n', { mode: 0o755 });
+
+  const linkModule = await importLinkModuleForHome(home);
+  await linkModule.runUnlinkClaude(path);
+
+  await assert.rejects(readFile(path, 'utf8'));
+  assert.deepEqual(await linkModule.getClaudeLinkStatus(path), {
+    path,
+    classification: 'missing'
+  });
 });

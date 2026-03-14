@@ -57,7 +57,7 @@ Behavior:
   - prefers non-wrapper Claude binary from `which -a claude`
   - supports `INNIES_CLAUDE_BIN` override
 - recursion guard via `INNIES_CLAUDE_WRAPPED`
-- prints one-line runtime status (model/proxy/request-id)
+- prints one-line runtime status (model/proxy/request-id) to stderr so stdout stays clean for `-p` / exact-output flows
 
 ### `innies codex [-- <codex args...>]`
 Wraps Codex CLI execution and injects Innies env/config wiring for the Codex/OpenAI lane.
@@ -91,7 +91,7 @@ Behavior:
   - prefers non-wrapper Codex binary from `which -a codex`
   - supports `INNIES_CODEX_BIN` override
 - recursion guard via `INNIES_CODEX_WRAPPED`
-- prints one-line runtime status (model/proxy/request-id)
+- prints one-line runtime status (model/proxy/request-id) to stderr so stdout stays clean for exact-output flows
 
 ### `innies link claude`
 Creates wrapper shim at `~/.local/bin/claude`:
@@ -102,6 +102,13 @@ This allows normal `claude` usage to route through Innies if `~/.local/bin` appe
 Safety behavior:
 - refuses to overwrite an existing non-Innies `~/.local/bin/claude`
 - if `~/.local/bin/claude` is already occupied by a real Claude install, use `innies claude` directly or move the original binary before linking
+
+### `innies unlink claude`
+Removes the managed `~/.local/bin/claude` wrapper created by `innies link claude`.
+
+Safety behavior:
+- refuses to remove a non-Innies `~/.local/bin/claude`
+- if the wrapper is already absent, exits cleanly and reports the path
 
 ## Error UX
 - Missing login: `Run: innies login --token <in_token>`

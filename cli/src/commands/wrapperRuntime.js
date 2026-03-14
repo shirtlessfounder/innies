@@ -142,6 +142,12 @@ export function printRuntimeGuidance(failureClass) {
   }
 }
 
+export function printConnectionStatus({ model, proxyUrl, correlationId }) {
+  process.stderr.write(
+    `Innies connected | model ${model} | proxy ${proxyUrl} | request ${correlationId}\n`
+  );
+}
+
 export function shouldCaptureCommandOutput(envVar) {
   return process.env[envVar] === '1';
 }
