@@ -63,11 +63,11 @@ Behavior:
   - `paste` to read the refresh token from clipboard
   - `clear` to remove the stored refresh token
 - `innies-requeue-token-probe` accepts either the token credential UUID or an exact `debugLabel`; it needs `DATABASE_URL`
-- `innies-requeue-token-probe` prints the currently active and maxed credentials first so you can pick a live `debugLabel` or UUID
+- `innies-requeue-token-probe` prints only unexpired `active` / `maxed` credentials first so you can pick a live `debugLabel` or UUID
 - `innies-requeue-token-probe` also needs `INNIES_ADMIN_API_KEY` (or prompts for it) because it calls the admin API probe endpoint directly
 - `innies-requeue-token-probe` now prints a plain-English result summary (`REACTIVATED`, `PROBE OK, NO STATUS CHANGE`, or `PROBE FAILED, NO STATUS CHANGE`) before the raw JSON response
 - `innies-refresh-token-usage` accepts a credential number, UUID, or exact Claude `debugLabel`; it needs `DATABASE_URL`
-- `innies-refresh-token-usage` lists Claude credentials in `active|paused|maxed` first so you can pick a live token quickly
+- `innies-refresh-token-usage` lists unexpired Claude credentials in `active|paused|maxed`, plus expired Claude OAuth credentials that still have a stored refresh token (shown as `expired`) so you can recover them manually
 - `innies-refresh-token-usage` also needs `INNIES_ADMIN_API_KEY` (or prompts for it) because it calls the admin API provider-usage refresh endpoint directly
 - `innies-refresh-token-usage` bypasses in-memory usage-fetch backoff and prints both parsed 5h / 7d usage plus the raw Anthropic payload
 - `label` maps to API field `debugLabel`

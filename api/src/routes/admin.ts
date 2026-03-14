@@ -930,9 +930,6 @@ router.post('/v1/admin/token-credentials/:id/provider-usage-refresh', requireApi
     if (existing.status === 'revoked') {
       throw new AppError('invalid_request', 409, 'Revoked token credential cannot refresh provider usage');
     }
-    if (existing.status === 'expired' || existing.expiresAt.getTime() <= Date.now()) {
-      throw new AppError('invalid_request', 409, 'Expired token credential cannot refresh provider usage');
-    }
     if (!isAnthropicOauthTokenCredential(existing)) {
       throw new AppError(
         'invalid_request',
@@ -942,6 +939,14 @@ router.post('/v1/admin/token-credentials/:id/provider-usage-refresh', requireApi
           provider: existing.provider,
           status: existing.status
         }
+      );
+    }
+    const expiredAtRequestStart = existing.status === 'expired' || existing.expiresAt.getTime() <= Date.now();
+    if (expiredAtRequestStart && !existing.refreshToken) {
+      throw new AppError(
+        'invalid_request',
+        409,
+        'Expired token credential cannot refresh provider usage without a stored refresh token'
       );
     }
 
@@ -954,10 +959,11 @@ router.post('/v1/admin/token-credentials/:id/provider-usage-refresh', requireApi
     const effectiveCredential = refreshedUsage.credential;
     const refreshOutcome = refreshedUsage.outcome;
     const authFailureStatusCode = anthropicOauthUsageAuthFailureStatusCode(refreshOutcome);
-    const nextProbeAt = authFailureStatusCode !== null
+    const shouldParkAfterAuthFailure = authFailureStatusCode !== null && existing.status !== 'expired';
+    const nextProbeAt = shouldParkAfterAuthFailure
       ? new Date(Date.now() + (readTokenCredentialProbeIntervalMinutes() * 60 * 1000))
       : null;
-    const parkedOutcome = authFailureStatusCode !== null
+    const parkedOutcome = shouldParkAfterAuthFailure
       ? await parkAnthropicOauthCredentialAfterUsageAuthFailure(runtime.repos.tokenCredentials, effectiveCredential, {
         statusCode: authFailureStatusCode,
         nextProbeAt: nextProbeAt!,
