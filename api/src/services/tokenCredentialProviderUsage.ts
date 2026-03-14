@@ -202,7 +202,7 @@ function readDateField(record: Record<string, unknown>, keys: string[]): Date | 
 function normalizeUtilizationRatio(value: number | null): number | null {
   if (value === null) return null;
   if (value < 0) return 0;
-  if (value <= 1) return value;
+  // Anthropic reports utilization as a 0..100 percentage, not a 0..1 ratio.
   if (value <= 100) return value / 100;
   return 1;
 }
