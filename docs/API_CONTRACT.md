@@ -420,6 +420,7 @@ Notes:
   - `claudeSevenDayAvgUsageUnitsBeforeCapExhaustion`
 - those fields are Claude-only and stay `null` on non-Claude rows
 - Claude rows may also keep them `null` when a fresh provider-usage snapshot has not been fetched yet or analytics is reading against a pre-migration environment
+- analytics should treat rows with `expiresAt <= now` as `expired` for operator-facing status/counting even if the stored DB `status` has not been swept yet
 - maxed-cycle metrics (`requestsBeforeMaxedLastWindow`, `avgRequestsBeforeMaxed`, `avgUsageUnitsBeforeMaxed`, `estimatedDailyCapacityUnits`, `maxingCyclesObserved`) anchor on `maxedAt`
 - Claude cap-cycle metrics anchor on durable `contribution_cap_exhausted` / `contribution_cap_cleared` lifecycle events, not auth-style `maxed`
 - recovery metrics (`avgRecoveryTimeMs`) anchor on `reactivated` timestamps and stay `null` unless at least one completed maxed→reactivated pair lands in-window
@@ -948,9 +949,10 @@ Response example:
     - Claude OAuth creds keep repeated-`429` handling local and do not auto-max; once the threshold is hit, routing applies the longer local backoff and recovery comes from provider-usage refresh + fresh quota state rather than a durable `maxed` transition
   - Auto-maxed credentials are removed from active routing pool until probe reactivation for auth-like failures only.
   - Successful routed request on an active/rotating credential resets both auth-failure and `429` counters and clears temporary rate-limit penalties.
-- Token credential probe/reactivation:
+  - Token credential probe/reactivation:
   - Background jobs:
     - Claude OAuth auth-failure recovery is supervised by `token-credential-provider-usage-minute`, which checks due auth-broken Claude creds each minute and only probes when `nextProbeAt` is due.
+    - the same Claude usage-refresh job also re-checks expired Claude OAuth creds when a stored refresh token exists, so they can auto-refresh back to `active` instead of falling out of quota polling indefinitely.
     - `token-credential-healthcheck-hourly` remains the generic maxed-token probe loop for non-Claude credentials; the job name is legacy, but the default cadence is now 10m.
   - Enabled by default (`TOKEN_CREDENTIAL_PROBE_ENABLED=true`).
   - Schedule default: 10m (`TOKEN_CREDENTIAL_PROBE_SCHEDULE_MS=600000`).

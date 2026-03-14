@@ -615,18 +615,42 @@ export class TokenCredentialRepository {
     });
   }
 
-  async listActiveOauthByProvider(provider: string): Promise<TokenCredential[]> {
+  async listActiveOauthByProvider(
+    provider: string,
+    options?: {
+      includeRecoverableExpired?: boolean;
+    }
+  ): Promise<TokenCredential[]> {
     const sql = (includeContributionCapColumns: boolean) => `
       select
         ${tokenCredentialSelectColumns(includeContributionCapColumns)}
       from ${TABLES.tokenCredentials}
       where provider = $1
-        and status = 'active'
-        and expires_at > now()
-      order by updated_at desc, rotation_version desc
+        and (
+          (
+            status = 'active'
+            and expires_at > now()
+          )
+          or (
+            $2::boolean = true
+            and status in ('active', 'expired')
+            and expires_at <= now()
+            and encrypted_refresh_token is not null
+          )
+        )
+      order by
+        case
+          when expires_at > now() then 0
+          else 1
+        end asc,
+        updated_at desc,
+        rotation_version desc
     `;
 
-    const result = await queryTokenCredentialRowsWithContributionCapFallback(this.db, sql, [provider]);
+    const result = await queryTokenCredentialRowsWithContributionCapFallback(this.db, sql, [
+      provider,
+      options?.includeRecoverableExpired === true
+    ]);
     return result.rows.map(mapRow);
   }
 

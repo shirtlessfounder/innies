@@ -405,6 +405,19 @@ function normalizeTokenStatus(value: unknown, field: string): typeof TOKEN_STATU
   throw new AppError('internal_error', 500, `Analytics repository returned invalid ${field}`);
 }
 
+function coerceExpiredTokenStatus(
+  status: typeof TOKEN_STATUSES[number],
+  expiresAt: string | null
+): typeof TOKEN_STATUSES[number] {
+  if (status === 'expired' || status === 'revoked') return status;
+  if (!expiresAt) return status;
+  const expiresAtMs = Date.parse(expiresAt);
+  if (!Number.isFinite(expiresAtMs)) return status;
+  return expiresAtMs <= Date.now()
+    ? 'expired'
+    : status;
+}
+
 function deriveDashboardTokenStatus(input: {
   provider: string;
   status: string;
@@ -621,94 +634,107 @@ function normalizeTokenUsageRows(value: unknown) {
 }
 
 function normalizeTokenHealthRows(value: unknown) {
-  return readObjectArray(value, 'tokens').map((record) => ({
-    credentialId: readRequiredString(record, ['credentialId', 'credential_id'], 'credentialId'),
-    displayKey: readOptionalString(record, ['displayKey', 'display_key']) ?? formatDisplayKey(
-      readRequiredString(record, ['credentialId', 'credential_id'], 'credentialId'),
-      'cred'
-    ),
-    debugLabel: readOptionalString(record, ['debugLabel', 'debug_label']),
-    provider: normalizeProvider(pick(record, ['provider']), 'provider'),
-    status: normalizeTokenStatus(pick(record, ['status']), 'status'),
-    consecutiveFailures: readOptionalNumber(record, ['consecutiveFailures', 'consecutive_failure_count'], 0) ?? 0,
-    consecutiveRateLimitCount: readOptionalNumber(record, ['consecutiveRateLimitCount', 'consecutive_rate_limit_count'], 0) ?? 0,
-    lastFailedStatus: readOptionalNumber(record, ['lastFailedStatus', 'last_failed_status']),
-    lastFailedAt: readOptionalIsoDate(record, ['lastFailedAt', 'last_failed_at']),
-    lastRateLimitedAt: readOptionalIsoDate(record, ['lastRateLimitedAt', 'last_rate_limited_at']),
-    maxedAt: readOptionalIsoDate(record, ['maxedAt', 'maxed_at']),
-    rateLimitedUntil: readOptionalIsoDate(record, ['rateLimitedUntil', 'rate_limited_until']),
-    nextProbeAt: readOptionalIsoDate(record, ['nextProbeAt', 'next_probe_at']),
-    lastProbeAt: readOptionalIsoDate(record, ['lastProbeAt', 'last_probe_at']),
-    monthlyContributionLimitUnits: readOptionalNumber(record, ['monthlyContributionLimitUnits', 'monthly_contribution_limit_units']),
-    monthlyContributionUsedUnits: readOptionalNumber(record, ['monthlyContributionUsedUnits', 'monthly_contribution_used_units'], 0) ?? 0,
-    monthlyWindowStartAt: readOptionalIsoDate(record, ['monthlyWindowStartAt', 'monthly_window_start_at']),
-    maxedEvents7d: readOptionalNumber(record, ['maxedEvents7d', 'maxed_events_7d'], 0) ?? 0,
-    requestsBeforeMaxedLastWindow: readOptionalNumber(record, ['requestsBeforeMaxedLastWindow', 'requests_before_maxed_last_window']),
-    avgRequestsBeforeMaxed: readOptionalNumber(record, ['avgRequestsBeforeMaxed', 'avg_requests_before_maxed']),
-    avgUsageUnitsBeforeMaxed: readOptionalNumber(record, ['avgUsageUnitsBeforeMaxed', 'avg_usage_units_before_maxed']),
-    avgRecoveryTimeMs: readOptionalNumber(record, ['avgRecoveryTimeMs', 'avg_recovery_time_ms']),
-    estimatedDailyCapacityUnits: readOptionalNumber(record, ['estimatedDailyCapacityUnits', 'estimated_daily_capacity_units']),
-    maxingCyclesObserved: readOptionalNumber(record, ['maxingCyclesObserved', 'maxing_cycles_observed']),
-    utilizationRate24h: readOptionalNumber(record, ['utilizationRate24h', 'utilization_rate_24h']),
-    fiveHourReservePercent: readOptionalNumber(record, ['fiveHourReservePercent', 'five_hour_reserve_percent']),
-    fiveHourUtilizationRatio: readOptionalNumber(record, ['fiveHourUtilizationRatio', 'five_hour_utilization_ratio']),
-    fiveHourResetsAt: readOptionalIsoDate(record, ['fiveHourResetsAt', 'five_hour_resets_at']),
-    fiveHourContributionCapExhausted: readNullableBoolean(
-      record,
-      ['fiveHourContributionCapExhausted', 'five_hour_contribution_cap_exhausted']
-    ),
-    sevenDayReservePercent: readOptionalNumber(record, ['sevenDayReservePercent', 'seven_day_reserve_percent']),
-    sevenDayUtilizationRatio: readOptionalNumber(record, ['sevenDayUtilizationRatio', 'seven_day_utilization_ratio']),
-    sevenDayResetsAt: readOptionalIsoDate(record, ['sevenDayResetsAt', 'seven_day_resets_at']),
-    sevenDayContributionCapExhausted: readNullableBoolean(
-      record,
-      ['sevenDayContributionCapExhausted', 'seven_day_contribution_cap_exhausted']
-    ),
-    providerUsageFetchedAt: readOptionalIsoDate(record, ['providerUsageFetchedAt', 'provider_usage_fetched_at']),
-    claudeFiveHourCapExhaustionCyclesObserved: readOptionalNumber(
-      record,
-      ['claudeFiveHourCapExhaustionCyclesObserved', 'claude_five_hour_cap_exhaustion_cycles_observed']
-    ),
-    claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow: readOptionalNumber(
-      record,
-      [
-        'claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow',
-        'claude_five_hour_usage_units_before_cap_exhaustion_last_window'
-      ]
-    ),
-    claudeFiveHourAvgUsageUnitsBeforeCapExhaustion: readOptionalNumber(
-      record,
-      ['claudeFiveHourAvgUsageUnitsBeforeCapExhaustion', 'claude_five_hour_avg_usage_units_before_cap_exhaustion']
-    ),
-    claudeSevenDayCapExhaustionCyclesObserved: readOptionalNumber(
-      record,
-      ['claudeSevenDayCapExhaustionCyclesObserved', 'claude_seven_day_cap_exhaustion_cycles_observed']
-    ),
-    claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow: readOptionalNumber(
-      record,
-      [
-        'claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow',
-        'claude_seven_day_usage_units_before_cap_exhaustion_last_window'
-      ]
-    ),
-    claudeSevenDayAvgUsageUnitsBeforeCapExhaustion: readOptionalNumber(
-      record,
-      ['claudeSevenDayAvgUsageUnitsBeforeCapExhaustion', 'claude_seven_day_avg_usage_units_before_cap_exhaustion']
-    ),
-    createdAt: readOptionalIsoDate(record, ['createdAt', 'created_at']),
-    expiresAt: readOptionalIsoDate(record, ['expiresAt', 'expires_at'])
-  }));
+  return readObjectArray(value, 'tokens').map((record) => {
+    const credentialId = readRequiredString(record, ['credentialId', 'credential_id'], 'credentialId');
+    const expiresAt = readOptionalIsoDate(record, ['expiresAt', 'expires_at']);
+    const status = coerceExpiredTokenStatus(
+      normalizeTokenStatus(pick(record, ['status']), 'status'),
+      expiresAt
+    );
+
+    return {
+      credentialId,
+      displayKey: readOptionalString(record, ['displayKey', 'display_key']) ?? formatDisplayKey(
+        credentialId,
+        'cred'
+      ),
+      debugLabel: readOptionalString(record, ['debugLabel', 'debug_label']),
+      provider: normalizeProvider(pick(record, ['provider']), 'provider'),
+      status,
+      consecutiveFailures: readOptionalNumber(record, ['consecutiveFailures', 'consecutive_failure_count'], 0) ?? 0,
+      consecutiveRateLimitCount: readOptionalNumber(record, ['consecutiveRateLimitCount', 'consecutive_rate_limit_count'], 0) ?? 0,
+      lastFailedStatus: readOptionalNumber(record, ['lastFailedStatus', 'last_failed_status']),
+      lastFailedAt: readOptionalIsoDate(record, ['lastFailedAt', 'last_failed_at']),
+      lastRateLimitedAt: readOptionalIsoDate(record, ['lastRateLimitedAt', 'last_rate_limited_at']),
+      maxedAt: readOptionalIsoDate(record, ['maxedAt', 'maxed_at']),
+      rateLimitedUntil: readOptionalIsoDate(record, ['rateLimitedUntil', 'rate_limited_until']),
+      nextProbeAt: readOptionalIsoDate(record, ['nextProbeAt', 'next_probe_at']),
+      lastProbeAt: readOptionalIsoDate(record, ['lastProbeAt', 'last_probe_at']),
+      monthlyContributionLimitUnits: readOptionalNumber(record, ['monthlyContributionLimitUnits', 'monthly_contribution_limit_units']),
+      monthlyContributionUsedUnits: readOptionalNumber(record, ['monthlyContributionUsedUnits', 'monthly_contribution_used_units'], 0) ?? 0,
+      monthlyWindowStartAt: readOptionalIsoDate(record, ['monthlyWindowStartAt', 'monthly_window_start_at']),
+      maxedEvents7d: readOptionalNumber(record, ['maxedEvents7d', 'maxed_events_7d'], 0) ?? 0,
+      requestsBeforeMaxedLastWindow: readOptionalNumber(record, ['requestsBeforeMaxedLastWindow', 'requests_before_maxed_last_window']),
+      avgRequestsBeforeMaxed: readOptionalNumber(record, ['avgRequestsBeforeMaxed', 'avg_requests_before_maxed']),
+      avgUsageUnitsBeforeMaxed: readOptionalNumber(record, ['avgUsageUnitsBeforeMaxed', 'avg_usage_units_before_maxed']),
+      avgRecoveryTimeMs: readOptionalNumber(record, ['avgRecoveryTimeMs', 'avg_recovery_time_ms']),
+      estimatedDailyCapacityUnits: readOptionalNumber(record, ['estimatedDailyCapacityUnits', 'estimated_daily_capacity_units']),
+      maxingCyclesObserved: readOptionalNumber(record, ['maxingCyclesObserved', 'maxing_cycles_observed']),
+      utilizationRate24h: readOptionalNumber(record, ['utilizationRate24h', 'utilization_rate_24h']),
+      fiveHourReservePercent: readOptionalNumber(record, ['fiveHourReservePercent', 'five_hour_reserve_percent']),
+      fiveHourUtilizationRatio: readOptionalNumber(record, ['fiveHourUtilizationRatio', 'five_hour_utilization_ratio']),
+      fiveHourResetsAt: readOptionalIsoDate(record, ['fiveHourResetsAt', 'five_hour_resets_at']),
+      fiveHourContributionCapExhausted: readNullableBoolean(
+        record,
+        ['fiveHourContributionCapExhausted', 'five_hour_contribution_cap_exhausted']
+      ),
+      sevenDayReservePercent: readOptionalNumber(record, ['sevenDayReservePercent', 'seven_day_reserve_percent']),
+      sevenDayUtilizationRatio: readOptionalNumber(record, ['sevenDayUtilizationRatio', 'seven_day_utilization_ratio']),
+      sevenDayResetsAt: readOptionalIsoDate(record, ['sevenDayResetsAt', 'seven_day_resets_at']),
+      sevenDayContributionCapExhausted: readNullableBoolean(
+        record,
+        ['sevenDayContributionCapExhausted', 'seven_day_contribution_cap_exhausted']
+      ),
+      providerUsageFetchedAt: readOptionalIsoDate(record, ['providerUsageFetchedAt', 'provider_usage_fetched_at']),
+      claudeFiveHourCapExhaustionCyclesObserved: readOptionalNumber(
+        record,
+        ['claudeFiveHourCapExhaustionCyclesObserved', 'claude_five_hour_cap_exhaustion_cycles_observed']
+      ),
+      claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow: readOptionalNumber(
+        record,
+        [
+          'claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow',
+          'claude_five_hour_usage_units_before_cap_exhaustion_last_window'
+        ]
+      ),
+      claudeFiveHourAvgUsageUnitsBeforeCapExhaustion: readOptionalNumber(
+        record,
+        ['claudeFiveHourAvgUsageUnitsBeforeCapExhaustion', 'claude_five_hour_avg_usage_units_before_cap_exhaustion']
+      ),
+      claudeSevenDayCapExhaustionCyclesObserved: readOptionalNumber(
+        record,
+        ['claudeSevenDayCapExhaustionCyclesObserved', 'claude_seven_day_cap_exhaustion_cycles_observed']
+      ),
+      claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow: readOptionalNumber(
+        record,
+        [
+          'claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow',
+          'claude_seven_day_usage_units_before_cap_exhaustion_last_window'
+        ]
+      ),
+      claudeSevenDayAvgUsageUnitsBeforeCapExhaustion: readOptionalNumber(
+        record,
+        ['claudeSevenDayAvgUsageUnitsBeforeCapExhaustion', 'claude_seven_day_avg_usage_units_before_cap_exhaustion']
+      ),
+      createdAt: readOptionalIsoDate(record, ['createdAt', 'created_at']),
+      expiresAt
+    };
+  });
 }
 
 function normalizeProviderUsageWarningRows(value: unknown) {
   return readObjectArray(value, 'tokens').map((record) => {
     const credentialId = readRequiredString(record, ['credentialId', 'credential_id'], 'credentialId');
+    const expiresAt = readOptionalIsoDate(record, ['expiresAt', 'expires_at']);
     return {
       credentialId,
       displayKey: readOptionalString(record, ['displayKey', 'display_key']) ?? formatDisplayKey(credentialId, 'cred'),
       debugLabel: readOptionalString(record, ['debugLabel', 'debug_label']),
       provider: normalizeProvider(pick(record, ['provider']), 'provider'),
-      status: normalizeTokenStatus(pick(record, ['status']), 'status'),
+      status: coerceExpiredTokenStatus(
+        normalizeTokenStatus(pick(record, ['status']), 'status'),
+        expiresAt
+      ),
       consecutiveFailures: readOptionalNumber(record, ['consecutiveFailures', 'consecutive_failure_count'], 0) ?? 0,
       consecutiveRateLimitCount: readOptionalNumber(record, ['consecutiveRateLimitCount', 'consecutive_rate_limit_count'], 0) ?? 0,
       lastFailedStatus: readOptionalNumber(record, ['lastFailedStatus', 'last_failed_status']),

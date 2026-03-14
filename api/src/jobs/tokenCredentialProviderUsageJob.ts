@@ -66,7 +66,9 @@ export function createTokenCredentialProviderUsageJob(
       );
       const probeTimeoutMs = readTokenCredentialProbeTimeoutMs();
       const probeIntervalMinutes = readTokenCredentialProbeIntervalMinutes();
-      const credentials = await tokenCredentialsRepo.listActiveOauthByProvider('anthropic');
+      const credentials = await tokenCredentialsRepo.listActiveOauthByProvider('anthropic', {
+        includeRecoverableExpired: true
+      });
       const existingSnapshots = typeof (providerUsageRepo as {
         listByTokenCredentialIds?: (ids: string[]) => Promise<TokenCredentialProviderUsageSnapshot[]>;
       }).listByTokenCredentialIds === 'function'
@@ -155,6 +157,7 @@ export function createTokenCredentialProviderUsageJob(
           continue;
         }
 
+        const expiredAtRunStart = credential.status === 'expired' || credential.expiresAt.getTime() <= ctx.now.getTime();
         const existingSnapshot = existingSnapshotsByCredentialId.get(credential.id) ?? null;
         const providerExhaustionHold = readClaudeContributionCapProviderExhaustionHold({
           credential,
@@ -167,6 +170,8 @@ export function createTokenCredentialProviderUsageJob(
           : null;
         const recentlyVerifiedExhausted = snapshotAgeMs !== null && snapshotAgeMs < providerExhaustionRevalidateMs;
         if (
+          !expiredAtRunStart
+          &&
           providerExhaustionHold.hasActiveHold
           && providerExhaustionHold.nextRefreshAt
           && recentlyVerifiedExhausted
@@ -193,6 +198,22 @@ export function createTokenCredentialProviderUsageJob(
         const result = refreshedUsage.outcome;
         const authFailureStatusCode = anthropicOauthUsageAuthFailureStatusCode(result);
         if (authFailureStatusCode !== null) {
+          if (expiredAtRunStart) {
+            await tokenCredentialsRepo.markExpired(
+              credentialForUsage.id,
+              `upstream_${authFailureStatusCode}_provider_usage_refresh`
+            );
+            failed += 1;
+            ctx.logger.error('token credential provider usage expired refresh failed', {
+              credentialId: credentialForUsage.id,
+              credentialLabel: credentialForUsage.debugLabel ?? null,
+              provider: credentialForUsage.provider,
+              statusCode: authFailureStatusCode,
+              detailReason: result.ok ? null : result.reason
+            });
+            continue;
+          }
+
           const nextProbeAt = new Date(ctx.now.getTime() + (probeIntervalMinutes * 60 * 1000));
           await parkAnthropicOauthCredentialAfterUsageAuthFailure(tokenCredentialsRepo, credentialForUsage, {
             statusCode: authFailureStatusCode,
