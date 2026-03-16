@@ -363,8 +363,7 @@ export function TokenTable({
               />
             </th>
             <th className={styles.numeric}>7D RESET</th>
-            {/* Re-enable Util 24h / Maxed 7d once the token table has room for more operator-only columns again. */}
-            {/* <th className={styles.numeric} aria-sort={sortAria(sort.key === 'utilizationRate24h', sort.direction)}>
+            <th className={styles.numeric} aria-sort={sortAria(sort.key === 'utilizationRate24h', sort.direction)}>
               <SortHeaderButton
                 active={sort.key === 'utilizationRate24h'}
                 direction={sort.direction}
@@ -381,7 +380,7 @@ export function TokenTable({
                 numeric
                 onClick={() => onSort('maxedEvents7d', 'desc')}
               />
-            </th> */}
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -438,9 +437,8 @@ export function TokenTable({
                   </span>
                 </td>
                 <td className={styles.numeric}>{formatShortTimestamp(row.sevenDayResetsAt)}</td>
-                {/* Re-enable the hidden token-health cells when we bring the Util 24h / Maxed 7d headers back. */}
-                {/* <td className={styles.numeric}>{formatPercent(row.utilizationRate24h)}</td>
-                <td className={styles.numeric}>{formatCount(row.maxedEvents7d)}</td> */}
+                <td className={styles.numeric}>{formatPercent(row.utilizationRate24h)}</td>
+                <td className={styles.numeric}>{formatCount(row.maxedEvents7d)}</td>
               </tr>
             );
           })}
