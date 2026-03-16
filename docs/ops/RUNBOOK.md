@@ -6,7 +6,7 @@ Operator playbooks for the three most common incidents. Each uses `curl` against
 
 ```bash
 export BASE_URL="${INNIES_BASE_URL:-http://localhost:4010}"
-export ADMIN_KEY="${INNIES_ADMIN_API_KEY}"
+export ADMIN_TOKEN="${INNIES_ADMIN_API_KEY}"
 ```
 
 All commands below assume these two variables are set. Append `?window=5h` (or `24h`, `7d`, `1m`, `all`) to any endpoint to change the time range. Default is `24h` unless noted.
@@ -20,7 +20,7 @@ Goal: identify which token(s) or provider(s) are slow.
 ### Step 1 — Check system-wide latency
 
 ```bash
-curl -s -H "Authorization: Bearer $ADMIN_KEY" \
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   "$BASE_URL/v1/admin/analytics/system?window=5h" | jq '{
     latencyP50Ms, latencyP95Ms, ttfbP50Ms, ttfbP95Ms, errorRate, fallbackRate
   }'
@@ -31,7 +31,7 @@ If `latencyP95Ms` is elevated, drill into per-token data.
 ### Step 2 — Per-token latency breakdown
 
 ```bash
-curl -s -H "Authorization: Bearer $ADMIN_KEY" \
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   "$BASE_URL/v1/admin/analytics/tokens/routing?window=5h" | jq '.tokens
     | sort_by(-.latencyP95Ms)
     | .[:10]
@@ -43,7 +43,7 @@ Look for tokens with a `latencyP95Ms` much higher than the system average. Cross
 ### Step 3 — Filter by provider
 
 ```bash
-curl -s -H "Authorization: Bearer $ADMIN_KEY" \
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   "$BASE_URL/v1/admin/analytics/tokens/routing?window=5h&provider=anthropic" | jq '.tokens
     | sort_by(-.latencyP95Ms)
     | .[:5]
@@ -55,7 +55,7 @@ Replace `anthropic` with `openai` to compare. If one provider's tokens are unifo
 ### Step 4 — Check time series for when it started
 
 ```bash
-curl -s -H "Authorization: Bearer $ADMIN_KEY" \
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   "$BASE_URL/v1/admin/analytics/timeseries?window=24h" | jq '.series
     | .[] | {ts: .timestamp, p95: .latencyP95Ms, errors: .errorCount}'
 ```
@@ -65,7 +65,7 @@ Look for the inflection point where p95 jumped. Correlate with events (see Step 
 ### Step 5 — Check recent events for context
 
 ```bash
-curl -s -H "Authorization: Bearer $ADMIN_KEY" \
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   "$BASE_URL/v1/admin/analytics/events?window=5h&limit=20" | jq '.events[]
     | select(.severity != "info")
     | {type, severity, credentialLabel, summary, createdAt}'
@@ -82,7 +82,7 @@ Goal: detect a burst of errors and identify the source.
 ### Step 1 — Check system error rate
 
 ```bash
-curl -s -H "Authorization: Bearer $ADMIN_KEY" \
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   "$BASE_URL/v1/admin/analytics/system?window=5h" | jq '{
     errorRate, fallbackRate, totalRequests, maxedTokens, activeTokens
   }'
@@ -93,7 +93,7 @@ curl -s -H "Authorization: Bearer $ADMIN_KEY" \
 ### Step 2 — Per-token error breakdown
 
 ```bash
-curl -s -H "Authorization: Bearer $ADMIN_KEY" \
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   "$BASE_URL/v1/admin/analytics/tokens/routing?window=5h" | jq '.tokens
     | sort_by(-.errorCount)
     | .[:10]
@@ -108,7 +108,7 @@ Key signals:
 ### Step 3 — Token health status
 
 ```bash
-curl -s -H "Authorization: Bearer $ADMIN_KEY" \
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   "$BASE_URL/v1/admin/analytics/tokens/health?window=7d" | jq '.tokens
     | map(select(.status != "active"))
     | .[] | {debugLabel, credentialId, status, consecutiveFailures, lastFailedAt, maxedAt, rateLimitedUntil}'
@@ -122,7 +122,7 @@ Tokens not in `active` status are the likely problem. States to watch:
 ### Step 4 — Check anomalies
 
 ```bash
-curl -s -H "Authorization: Bearer $ADMIN_KEY" \
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   "$BASE_URL/v1/admin/analytics/anomalies?window=5h" | jq .
 ```
 
@@ -134,7 +134,7 @@ If `ok` is `false`, look at `checks`:
 ### Step 5 — Recent error events
 
 ```bash
-curl -s -H "Authorization: Bearer $ADMIN_KEY" \
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   "$BASE_URL/v1/admin/analytics/events?window=5h&limit=50" | jq '.events[]
     | select(.severity == "error" or .severity == "warn")
     | {type, severity, credentialLabel, summary, statusCode, reason, createdAt}'
@@ -151,7 +151,7 @@ Goal: find and remove a problematic token.
 ### Step 1 — Check anomalies for obvious issues
 
 ```bash
-curl -s -H "Authorization: Bearer $ADMIN_KEY" \
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   "$BASE_URL/v1/admin/analytics/anomalies?window=24h" | jq .
 ```
 
@@ -160,7 +160,7 @@ curl -s -H "Authorization: Bearer $ADMIN_KEY" \
 ### Step 2 — Find tokens with high error rates
 
 ```bash
-curl -s -H "Authorization: Bearer $ADMIN_KEY" \
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   "$BASE_URL/v1/admin/analytics/tokens/routing?window=24h" | jq '.tokens
     | map(select(.totalAttempts > 0))
     | map(. + {errorRate: (.errorCount / .totalAttempts)})
@@ -175,7 +175,7 @@ A token with `errorRate` near 1.0 and `authFailures24h > 0` is likely a bad key.
 
 ```bash
 # Replace CREDENTIAL_ID with the suspect token's credentialId
-curl -s -H "Authorization: Bearer $ADMIN_KEY" \
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   "$BASE_URL/v1/admin/analytics/tokens/health?window=7d" | jq --arg id "CREDENTIAL_ID" '.tokens[]
     | select(.credentialId == $id)
     | {debugLabel, credentialId, status, consecutiveFailures, lastFailedStatus, lastFailedAt, authDiagnosis, maxedEvents7d}'
@@ -190,7 +190,7 @@ Key signals:
 
 ```bash
 # Replace CREDENTIAL_ID with the bad token's credentialId
-curl -s -X POST -H "Authorization: Bearer $ADMIN_KEY" \
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   "$BASE_URL/v1/admin/token-credentials/CREDENTIAL_ID/pause"
 ```
@@ -206,7 +206,7 @@ scripts/innies-token-pause.sh pause
 Wait 2-3 minutes, then re-check:
 
 ```bash
-curl -s -H "Authorization: Bearer $ADMIN_KEY" \
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   "$BASE_URL/v1/admin/analytics/system?window=5h" | jq '{errorRate, fallbackRate}'
 ```
 
@@ -215,7 +215,7 @@ If `errorRate` drops, the paused token was the problem. If not, repeat from Step
 ### Step 6 — Check events to confirm
 
 ```bash
-curl -s -H "Authorization: Bearer $ADMIN_KEY" \
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   "$BASE_URL/v1/admin/analytics/events?window=5h&limit=20" | jq '.events[]
     | select(.type == "paused" or .type == "probe_failed")
     | {type, credentialLabel, summary, createdAt}'
