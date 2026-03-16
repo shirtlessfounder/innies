@@ -36,7 +36,7 @@ Product invariant:
 - Token utilization rate
 - Per-token capacity estimation from maxing cycle history
 
-4. Internal dashboard (v1)
+4. ✅ Internal dashboard (v1)
 - Latency and success rates
 - Routing/fallback visibility
 - Token health state (`active/maxed/probe`) and rotation visibility
@@ -69,7 +69,7 @@ Product invariant:
 2. ✅ Easy per-buyer-key provider preference.
 3. ✅ Per-token analytics (7 read endpoints, request log, TTFB, source classification, anomaly checks).
 4. ✅ CLI support (`innies claude`, `innies codex`). Published as `innies@0.1.3`.
-5. Internal usage dashboard.
+5. ✅ Internal usage dashboard.
 6. ✅ Easy token onboarding.
 7. ✅ Developer docs baseline.
 
@@ -80,17 +80,17 @@ Product invariant:
 - Durable runtime behavior belongs in `docs/API_CONTRACT.md`.
 - Temporary agent coordination docs, patch queues, audit scratch docs, and one-off validation notes should be folded back into this file or durable docs, then deleted.
 
-## Current Execution Focus (2026-03-09)
-Active implementation focus:
-5. Internal usage dashboard (final Phase 1 item).
+## Current Execution Focus (2026-03-16)
+All Phase 1 features are complete.
 
 Completed:
 - ✅ Codex support (translation layer deployed to production)
 - ✅ Per-buyer-key provider preference (deterministic fallback with translation)
+- ✅ Per-token analytics — 7 read endpoints, request log with prompt/response previews, TTFB persistence, source classification, anomaly checks, token capacity estimation
+- ✅ CLI support (`innies claude`, `innies codex`) — published as `innies@0.1.3`, with local auth bridge for OAuth conflict resolution
+- ✅ Internal usage dashboard — read-only dashboard with per-token, per-provider, and aggregate team stats; latency, success/error, fallback, and token health panels
 - ✅ Token onboarding (admin endpoints + shell scripts)
 - ✅ Developer docs baseline (API contract + onboarding guides)
-- ✅ CLI support (`innies claude`, `innies codex`) — published as `innies@0.1.3`, with local auth bridge for OAuth conflict resolution
-- ✅ Per-token analytics — 7 read endpoints, request log with prompt/response previews, TTFB persistence, source classification, anomaly checks, token capacity estimation
 
 Current gate status:
 - `cd api && npx vitest run` → all tests green

@@ -22,7 +22,9 @@
   - `docs/API_CONTRACT.md` — auth + endpoints + request/response examples.
   - `docs/onboarding/OPENCLAW_ONBOARDING.md` — OpenClaw integration guide.
   - `docs/onboarding/CLAUDE_CODEX_OAUTH_TOKENS.md` — OAuth credential setup.
-- Internal performance + usage dashboard.
+- ✅ Internal performance + usage dashboard.
+  - Read-only internal dashboard with per-token, per-provider, and aggregate team stats.
+  - Latency p50/p95, success/error rates, fallback visibility, token health state panels.
   - Util 24h and Maxed 7d columns removed from token table per admin decision — operator-only health fields deferred to future iteration.
 - ✅ Per-token analytics:
   - Aggregation jobs (daily incremental + nightly compaction).
