@@ -2288,6 +2288,105 @@ describe('anthropic compat route', () => {
     upstreamSpy.mockRestore();
   });
 
+  it('logs one routing event for a failed non-streaming compat 5xx attempt before succeeding on the next credential', async () => {
+    const anthropicCreds = [
+      {
+        id: 'cred-a',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-first',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 2,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any,
+      {
+        id: 'cred-b',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-second',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any
+    ];
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(
+      async (_orgId: string, provider: string) => provider === 'anthropic' ? anthropicCreds : []
+    );
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'api_error', message: 'upstream outage' }
+      }), {
+        status: 500,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_non_stream_ok',
+        type: 'message',
+        usage: { input_tokens: 5, output_tokens: 5 },
+        content: [{ type: 'text', text: 'hello' }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('msg_non_stream_ok');
+
+    const routingEvents = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls
+      .map(([event]: [Record<string, unknown>]) => event);
+    expect(routingEvents).toHaveLength(2);
+    expect(routingEvents[0]).toMatchObject({
+      attemptNo: 1,
+      upstreamStatus: 500,
+      errorCode: 'upstream_5xx_passthrough'
+    });
+    expect(routingEvents.filter((event: Record<string, unknown>) => event.attemptNo === 1)).toHaveLength(1);
+    expect(routingEvents.filter((event: Record<string, unknown>) => event.errorCode === 'server_error')).toHaveLength(0);
+    expect(routingEvents[1]).toMatchObject({
+      attemptNo: 2,
+      upstreamStatus: 200
+    });
+
+    upstreamSpy.mockRestore();
+  });
+
   it('returns terminal 5xx passthrough when all compat credentials fail (non-streaming)', async () => {
     const anthropicCreds = [
       {

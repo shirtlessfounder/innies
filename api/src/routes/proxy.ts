@@ -2238,7 +2238,7 @@ async function executeTokenModeNonStreaming(input: {
           terminalStrictPassthroughData = data;
           terminalStrictPassthroughCredentialId = credential.id;
           terminalStrictPassthroughAttemptNo = attemptNo;
-          await logAttemptFailure({ kind: 'server_error', statusCode: status, message: 'upstream server error' }, ttfbMs);
+          // The explicit passthrough insert above is the only routing event we want for this failed attempt.
           break;
         }
 
