@@ -1,5 +1,7 @@
 'use client';
 
+import { useState } from 'react';
+
 import type {
   BuyerSortKey,
   SortDirection,
@@ -79,19 +81,22 @@ function DeltaCell(input: {
   );
 }
 
-function tokenStatusTone(status: string): string {
-  const normalized = status.trim().toLowerCase();
-  switch (normalized) {
+function tokenStatusTone(row: AnalyticsTokenRow): string {
+  const compactStatus = row.compactStatus.trim().toLowerCase();
+  const rawStatus = row.rawStatus.trim().toLowerCase();
+  if (compactStatus === 'active*' || row.exclusionReason !== null) {
+    return styles.statusPillRateLimited;
+  }
+  if (compactStatus === 'maxed') {
+    return styles.statusPillMaxed;
+  }
+  switch (rawStatus) {
     case 'active':
       return styles.statusPillActive;
     case 'paused':
       return styles.statusPillPaused;
     case 'rotating':
       return styles.statusPillRotating;
-    case 'rate_limited':
-      return styles.statusPillRateLimited;
-    case 'maxed':
-      return styles.statusPillMaxed;
     case 'expired':
       return styles.statusPillExpired;
     case 'revoked':
@@ -101,12 +106,40 @@ function tokenStatusTone(status: string): string {
   }
 }
 
-function TokenStatusCell({ status }: { status: string }) {
+function TokenStatusCell(input: {
+  row: AnalyticsTokenRow;
+  expanded: boolean;
+}) {
+  const label = input.expanded ? input.row.expandedStatus : input.row.compactStatus;
   return (
-    <span className={[styles.statusPill, tokenStatusTone(status)].join(' ')}>
-      {status.replaceAll('_', ' ')}
+    <span
+      className={[
+        styles.statusPill,
+        tokenStatusTone(input.row),
+        input.expanded ? styles.statusPillExpanded : '',
+      ].filter(Boolean).join(' ')}
+    >
+      {label}
     </span>
   );
+}
+
+function statusHeaderGlyph(input: {
+  expanded: boolean;
+  pinned: boolean;
+}): string {
+  if (input.pinned) return '[]';
+  if (input.expanded) return '<>';
+  return '..';
+}
+
+function statusColumnClassName(input: {
+  expanded: boolean;
+}): string {
+  return [
+    styles.statusColumn,
+    input.expanded ? styles.statusColumnExpanded : styles.statusColumnCompact,
+  ].join(' ');
 }
 
 function contributionCapTone(input: {
@@ -233,10 +266,14 @@ export function TokenTable({
   onSort: (key: TokenSortKey, defaultDirection: SortDirection) => void;
 }) {
   const metricConfig = tokenMetricConfig(metric);
+  const [statusHovered, setStatusHovered] = useState(false);
+  const [statusPinned, setStatusPinned] = useState(false);
+  const statusExpanded = statusPinned || statusHovered;
+  const statusColumnClass = statusColumnClassName({ expanded: statusExpanded });
 
   return (
     <div className={styles.tableWrap}>
-      <table className={styles.table}>
+      <table className={[styles.table, statusExpanded ? styles.tableStatusExpanded : ''].filter(Boolean).join(' ')}>
         <thead>
           <tr>
             <th aria-sort={sortAria(sort.key === 'displayKey', sort.direction)}>
@@ -263,13 +300,27 @@ export function TokenTable({
                 onClick={() => onSort('provider', 'asc')}
               />
             </th>
-            <th aria-sort={sortAria(sort.key === 'status', sort.direction)}>
-              <SortHeaderButton
-                active={sort.key === 'status'}
-                direction={sort.direction}
-                label="Status"
-                onClick={() => onSort('status', 'asc')}
-              />
+            <th
+              aria-sort="none"
+              className={statusColumnClass}
+              onMouseEnter={() => setStatusHovered(true)}
+              onMouseLeave={() => setStatusHovered(false)}
+            >
+              <button
+                className={[
+                  styles.sortButton,
+                  styles.statusHeaderButton,
+                  statusPinned ? styles.statusHeaderButtonPinned : '',
+                ].filter(Boolean).join(' ')}
+                type="button"
+                aria-pressed={statusPinned}
+                onClick={() => setStatusPinned((current) => !current)}
+              >
+                <span>Status</span>
+                <span className={statusPinned || statusExpanded ? styles.sortGlyphActive : styles.sortGlyph}>
+                  {statusHeaderGlyph({ expanded: statusExpanded, pinned: statusPinned })}
+                </span>
+              </button>
             </th>
             {metricConfig.showShare ? (
               <th className={styles.numeric} aria-sort={sortAria(sort.key === 'percentOfWindow', sort.direction)}>
@@ -358,7 +409,16 @@ export function TokenTable({
                 <td>{tokenIdentityLabel(row)}</td>
                 <td>{tokenLabelLabel(row)}</td>
                 <td>{tokenProviderLabel(row.provider)}</td>
-                <td><TokenStatusCell status={row.status} /></td>
+                <td
+                  className={statusColumnClass}
+                  onMouseEnter={() => setStatusHovered(true)}
+                  onMouseLeave={() => setStatusHovered(false)}
+                >
+                  <TokenStatusCell
+                    row={row}
+                    expanded={statusExpanded}
+                  />
+                </td>
                 {metricConfig.showShare ? <td className={styles.numeric}>{formatPercent(row.percentOfWindow)}</td> : null}
                 <td className={styles.numeric}>{metricConfig.value(row)}</td>
                 {metricConfig.showDelta ? (

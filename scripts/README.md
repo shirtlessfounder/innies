@@ -66,6 +66,7 @@ Behavior:
 - `innies-requeue-token-probe` prints only unexpired `active` / `maxed` credentials first so you can pick a live `debugLabel` or UUID
 - `innies-requeue-token-probe` also needs `INNIES_ADMIN_API_KEY` (or prompts for it) because it calls the admin API probe endpoint directly
 - `innies-requeue-token-probe` now prints a plain-English result summary (`REACTIVATED`, `PROBE OK, NO STATUS CHANGE`, or `PROBE FAILED, NO STATUS CHANGE`) before the raw JSON response
+- `innies-requeue-token-probe` also prints auth diagnosis details when the backend can derive them, including local OpenAI OAuth expiry and missing-refresh-token state
 - `innies-refresh-token-usage` accepts a credential number, UUID, or exact Claude `debugLabel`; it needs `DATABASE_URL`
 - `innies-refresh-token-usage` lists unexpired Claude credentials in `active|paused|maxed`, plus expired Claude OAuth credentials that still have a stored refresh token (shown as `expired`) so you can recover them manually
 - `innies-refresh-token-usage` also needs `INNIES_ADMIN_API_KEY` (or prompts for it) because it calls the admin API provider-usage refresh endpoint directly

@@ -26,6 +26,14 @@ export type AnalyticsTokenRow = {
   debugLabel: string | null;
   provider: string;
   status: string;
+  rawStatus: string;
+  compactStatus: string;
+  expandedStatus: string;
+  statusSource: string | null;
+  exclusionReason: string | null;
+  authDiagnosis: string | null;
+  accessTokenExpiresAt: string | null;
+  refreshTokenState: string | null;
   attempts: number;
   requests: number;
   usageUnits: number;

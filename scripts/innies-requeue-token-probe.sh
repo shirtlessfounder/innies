@@ -113,6 +113,9 @@ result_label="$(jq -r '.debugLabel // ""' "$body_file")"
 result_reason="$(jq -r '.reason // "unknown"' "$body_file")"
 result_upstream_status="$(jq -r '.upstreamStatus // "null"' "$body_file")"
 result_next_probe_at="$(jq -r '.nextProbeAt // "null"' "$body_file")"
+result_auth_diagnosis="$(jq -r '.authDiagnosis // "null"' "$body_file")"
+result_access_token_expires_at="$(jq -r '.accessTokenExpiresAt // "null"' "$body_file")"
+result_refresh_token_state="$(jq -r '.refreshTokenState // "null"' "$body_file")"
 
 if [[ "$reactivated" == "true" ]]; then
   echo
@@ -124,6 +127,15 @@ if [[ "$reactivated" == "true" ]]; then
   fi
   echo "upstream: ${result_upstream_status} (${result_reason})"
   echo "status: $result_status"
+  if [[ "$result_auth_diagnosis" != "null" ]]; then
+    echo "auth: $result_auth_diagnosis"
+  fi
+  if [[ "$result_refresh_token_state" != "null" ]]; then
+    echo "refresh: $result_refresh_token_state"
+  fi
+  if [[ "$result_access_token_expires_at" != "null" ]]; then
+    echo "accessTokenExpiresAt: $result_access_token_expires_at"
+  fi
   echo 'summary: live probe succeeded; Innies flipped this credential back to active immediately.'
 elif [[ "$probe_ok" == "true" ]]; then
   echo
@@ -135,6 +147,15 @@ elif [[ "$probe_ok" == "true" ]]; then
   fi
   echo "upstream: ${result_upstream_status} (${result_reason})"
   echo "status: $result_status"
+  if [[ "$result_auth_diagnosis" != "null" ]]; then
+    echo "auth: $result_auth_diagnosis"
+  fi
+  if [[ "$result_refresh_token_state" != "null" ]]; then
+    echo "refresh: $result_refresh_token_state"
+  fi
+  if [[ "$result_access_token_expires_at" != "null" ]]; then
+    echo "accessTokenExpiresAt: $result_access_token_expires_at"
+  fi
   echo 'summary: upstream probe succeeded, but Innies did not mark the credential active.'
 elif [[ "$selected_status" == "active" ]]; then
   echo
@@ -146,6 +167,15 @@ elif [[ "$selected_status" == "active" ]]; then
   fi
   echo "upstream: ${result_upstream_status} (${result_reason})"
   echo "status: $result_status"
+  if [[ "$result_auth_diagnosis" != "null" ]]; then
+    echo "auth: $result_auth_diagnosis"
+  fi
+  if [[ "$result_refresh_token_state" != "null" ]]; then
+    echo "refresh: $result_refresh_token_state"
+  fi
+  if [[ "$result_access_token_expires_at" != "null" ]]; then
+    echo "accessTokenExpiresAt: $result_access_token_expires_at"
+  fi
   echo 'summary: upstream probe failed; Innies left this credential active and did not schedule a recovery probe.'
 else
   echo
@@ -157,6 +187,15 @@ else
   fi
   echo "upstream: ${result_upstream_status} (${result_reason})"
   echo "status: $result_status"
+  if [[ "$result_auth_diagnosis" != "null" ]]; then
+    echo "auth: $result_auth_diagnosis"
+  fi
+  if [[ "$result_refresh_token_state" != "null" ]]; then
+    echo "refresh: $result_refresh_token_state"
+  fi
+  if [[ "$result_access_token_expires_at" != "null" ]]; then
+    echo "accessTokenExpiresAt: $result_access_token_expires_at"
+  fi
   echo "nextProbeAt: $result_next_probe_at"
   echo 'summary: live probe failed; Innies kept this credential maxed.'
 fi

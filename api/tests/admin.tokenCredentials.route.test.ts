@@ -8,6 +8,28 @@ type ProbeModule = typeof import('../src/services/tokenCredentialProbe.js');
 type ProviderUsageModule = typeof import('../src/services/tokenCredentialProviderUsage.js');
 type OauthRefreshModule = typeof import('../src/services/tokenCredentialOauthRefresh.js');
 
+function encodeBase64Url(input: string): string {
+  return Buffer.from(input, 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function makeOpenAiOauthToken(exp: string): string {
+  const header = encodeBase64Url(JSON.stringify({ alg: 'none', typ: 'JWT' }));
+  const payload = encodeBase64Url(JSON.stringify({
+    iss: 'https://auth.openai.com',
+    aud: ['https://api.openai.com/v1'],
+    client_id: 'app_test_client',
+    exp: Math.floor(new Date(exp).getTime() / 1000),
+    'https://api.openai.com/auth': {
+      chatgpt_account_id: 'acct_test'
+    }
+  }));
+  return `${header}.${payload}.sig`;
+}
+
 type MockReq = {
   method: string;
   path: string;
@@ -1039,6 +1061,8 @@ describe('admin token credential routes idempotent replay', () => {
       id: '11111111-1111-4111-8111-111111111111',
       orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
       provider: 'openai',
+      accessToken: makeOpenAiOauthToken('2026-03-14T15:49:35.000Z'),
+      refreshToken: null,
       debugLabel: 'niyant-codex',
       status: 'maxed',
       expiresAt: new Date('2026-03-20T00:00:00.000Z')
@@ -1140,6 +1164,71 @@ describe('admin token credential routes idempotent replay', () => {
       upstreamStatus: 200,
       reason: 'ok',
       nextProbeAt: null
+    });
+    expect(probeSpy).toHaveBeenCalledTimes(1);
+    expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns auth diagnosis details when a maxed credential still fails an auth probe', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_probe_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123459z',
+        requestHash: 'probe_h_2_failed'
+      }
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      accessToken: makeOpenAiOauthToken('2026-03-14T15:49:35.000Z'),
+      refreshToken: null,
+      debugLabel: 'niyant-codex',
+      status: 'maxed',
+      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+    } as any);
+    const probeSpy = vi.spyOn(probeModule, 'probeAndUpdateTokenCredential').mockResolvedValue({
+      ok: false,
+      statusCode: 401,
+      reason: 'status_401',
+      reactivated: false,
+      status: 'maxed',
+      nextProbeAt: new Date('2026-03-16T15:34:15.679Z')
+    });
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/probe',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123459z'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const res = createMockRes();
+
+    await invoke(probeHandlers[0], req, res);
+    await invoke(probeHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any)).toEqual({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      provider: 'openai',
+      debugLabel: 'niyant-codex',
+      probeOk: false,
+      reactivated: false,
+      status: 'maxed',
+      upstreamStatus: 401,
+      reason: 'status_401',
+      nextProbeAt: '2026-03-16T15:34:15.679Z',
+      authDiagnosis: 'access_token_expired_local',
+      accessTokenExpiresAt: '2026-03-14T15:49:35.000Z',
+      refreshTokenState: 'missing'
     });
     expect(probeSpy).toHaveBeenCalledTimes(1);
     expect(commitSpy).toHaveBeenCalledTimes(1);

@@ -1,6 +1,8 @@
 import type { SqlClient, SqlValue } from './sqlClient.js';
 import { TABLES } from './tableNames.js';
 import type { AnalyticsRouteRepository } from '../routes/analytics.js';
+import { decryptSecret } from '../utils/crypto.js';
+import { deriveTokenCredentialAuthDiagnosis } from '../services/tokenCredentialAuthDiagnosis.js';
 import { resolveDefaultBuyerProvider } from '../utils/providerPreference.js';
 
 type AnalyticsWindow = '5h' | '24h' | '7d' | '1m' | 'all';
@@ -303,6 +305,8 @@ function buildTokenHealthSql(input: {
           tc.id,
           tc.debug_label,
           tc.provider,
+          tc.encrypted_access_token,
+          (tc.encrypted_refresh_token is not null) as has_refresh_token,
           ${effectiveStatus} AS status,
           coalesce(tc.consecutive_failure_count, 0) AS consecutive_failure_count,
           coalesce(tc.consecutive_rate_limit_count, 0) AS consecutive_rate_limit_count,
@@ -529,6 +533,8 @@ function buildTokenHealthSql(input: {
         cb.debug_label,
         cb.provider,
         cb.status,
+        cb.encrypted_access_token,
+        cb.has_refresh_token,
         cb.consecutive_failure_count,
         cb.consecutive_rate_limit_count,
         cb.last_failed_status,
@@ -812,7 +818,33 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
           capExhaustionWindowFilter,
           options
         }), params);
-        return result.rows;
+        return result.rows.map((row) => {
+          const record = row as Record<string, unknown>;
+          const encryptedAccessToken = record.encrypted_access_token;
+          const accessToken = typeof encryptedAccessToken === 'string' || Buffer.isBuffer(encryptedAccessToken)
+            ? decryptSecret(encryptedAccessToken)
+            : null;
+          const diagnosis = deriveTokenCredentialAuthDiagnosis({
+            provider: String(record.provider ?? ''),
+            accessToken,
+            hasRefreshToken: record.has_refresh_token === true,
+            lastFailedStatus: typeof record.last_failed_status === 'number' ? record.last_failed_status : null,
+            lastRefreshError: typeof record.last_refresh_error === 'string' ? record.last_refresh_error : null
+          });
+
+          const {
+            encrypted_access_token: _encryptedAccessToken,
+            has_refresh_token: _hasRefreshToken,
+            ...publicRow
+          } = record;
+
+          return {
+            ...publicRow,
+            ...(diagnosis.authDiagnosis !== null ? { auth_diagnosis: diagnosis.authDiagnosis } : {}),
+            ...(diagnosis.accessTokenExpiresAt !== null ? { access_token_expires_at: diagnosis.accessTokenExpiresAt } : {}),
+            ...(diagnosis.refreshTokenState !== null ? { refresh_token_state: diagnosis.refreshTokenState } : {})
+          };
+        });
       } catch (error) {
         const nextOptions: TokenHealthSqlOptions = {
           includeReserveColumns: options.includeReserveColumns && !isMissingReserveColumn(error),

@@ -103,6 +103,7 @@ Current expectation:
   - empirical maxing / recovery / capacity / utilization metrics when enough history exists
   - live Claude provider-usage / reserve fields for contribution-cap routing
   - Claude 5h / 7d usage-units-before-cap-exhaustion metrics when those cap cycles have been observed
+  - best-effort auth diagnosis fields when Innies can derive them (`authDiagnosis`, `accessTokenExpiresAt`, `refreshTokenState`)
 
 - `/tokens/routing`
   - per-token routing quality, fallbacks, latency, TTFB

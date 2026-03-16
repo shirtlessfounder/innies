@@ -17,6 +17,7 @@ import {
   readTokenCredentialProbeIntervalMinutes,
   readTokenCredentialProbeTimeoutMs
 } from '../services/tokenCredentialProbe.js';
+import { deriveTokenCredentialAuthDiagnosis } from '../services/tokenCredentialAuthDiagnosis.js';
 import { AppError } from '../utils/errors.js';
 import { sha256Hex, stableJson } from '../utils/hash.js';
 import { readAndValidateIdempotencyKey } from '../utils/idempotencyKey.js';
@@ -856,6 +857,19 @@ router.post('/v1/admin/token-credentials/:id/probe', requireApiKey(runtime.repos
       timeoutMs: readTokenCredentialProbeTimeoutMs(),
       probeIntervalMinutes: readTokenCredentialProbeIntervalMinutes()
     });
+    const authDiagnosis = probeOutcome.ok
+      ? {
+          authDiagnosis: null,
+          accessTokenExpiresAt: null,
+          refreshTokenState: null
+        }
+      : deriveTokenCredentialAuthDiagnosis({
+          provider: existing.provider,
+          accessToken: existing.accessToken,
+          hasRefreshToken: existing.refreshToken !== null,
+          statusCode: probeOutcome.statusCode,
+          reason: probeOutcome.reason
+        });
 
     const responseBody = {
       ok: true,
@@ -867,7 +881,10 @@ router.post('/v1/admin/token-credentials/:id/probe', requireApiKey(runtime.repos
       status: probeOutcome.status,
       upstreamStatus: probeOutcome.statusCode,
       reason: probeOutcome.reason,
-      nextProbeAt: probeOutcome.nextProbeAt ? probeOutcome.nextProbeAt.toISOString() : null
+      nextProbeAt: probeOutcome.nextProbeAt ? probeOutcome.nextProbeAt.toISOString() : null,
+      ...(authDiagnosis.authDiagnosis !== null ? { authDiagnosis: authDiagnosis.authDiagnosis } : {}),
+      ...(authDiagnosis.accessTokenExpiresAt !== null ? { accessTokenExpiresAt: authDiagnosis.accessTokenExpiresAt } : {}),
+      ...(authDiagnosis.refreshTokenState !== null ? { refreshTokenState: authDiagnosis.refreshTokenState } : {})
     } as const;
 
     await logSensitiveAction(runtime.repos.auditLogs, req.auth, {
@@ -883,7 +900,10 @@ router.post('/v1/admin/token-credentials/:id/probe', requireApiKey(runtime.repos
         status: probeOutcome.status,
         upstreamStatus: probeOutcome.statusCode,
         reason: probeOutcome.reason,
-        nextProbeAt: responseBody.nextProbeAt
+        nextProbeAt: responseBody.nextProbeAt,
+        authDiagnosis: authDiagnosis.authDiagnosis,
+        accessTokenExpiresAt: authDiagnosis.accessTokenExpiresAt,
+        refreshTokenState: authDiagnosis.refreshTokenState
       }
     });
 

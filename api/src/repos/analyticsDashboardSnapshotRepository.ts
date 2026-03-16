@@ -50,7 +50,7 @@ type SnapshotRow = {
 const LOCK_NAMESPACE = 19772191;
 // Version the shared snapshot row so mixed-version API instances do not clobber
 // newer dashboard payload shapes during rollouts or local/prod DB sharing.
-const DASHBOARD_SNAPSHOT_CACHE_SCHEMA_VERSION = 3;
+const DASHBOARD_SNAPSHOT_CACHE_SCHEMA_VERSION = 4;
 
 function buildCacheKey(filters: DashboardSnapshotFilters): string {
   return [

@@ -70,6 +70,9 @@ type CurrentTokenHealthRow = {
   debugLabel?: string | null;
   provider?: string;
   status?: string;
+  authDiagnosis?: string | null;
+  accessTokenExpiresAt?: string | null;
+  refreshTokenState?: string | null;
   consecutiveRateLimitCount?: number;
   lastRateLimitedAt?: string | null;
   rateLimitedUntil?: string | null;
@@ -168,6 +171,14 @@ type CurrentDashboardTokenRow = {
   debugLabel?: string | null;
   provider?: string;
   status?: string;
+  rawStatus?: string;
+  compactStatus?: string;
+  expandedStatus?: string;
+  statusSource?: string | null;
+  exclusionReason?: string | null;
+  authDiagnosis?: string | null;
+  accessTokenExpiresAt?: string | null;
+  refreshTokenState?: string | null;
   consecutiveRateLimitCount?: number;
   lastRateLimitedAt?: string | null;
   rateLimitedUntil?: string | null;
@@ -300,30 +311,160 @@ function deriveContributionCapUsedRatio(input: {
   return Math.min(1, Math.max(0, input.utilizationRatio));
 }
 
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function readOptionalDate(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed) : null;
+}
+
+function fallbackProviderUsageSoftStaleMs(): number {
+  return readPositiveIntEnv('TOKEN_CREDENTIAL_PROVIDER_USAGE_SOFT_STALE_MS', 2 * 60 * 1000);
+}
+
+function fallbackProviderUsageHardStaleMs(): number {
+  return readPositiveIntEnv('TOKEN_CREDENTIAL_PROVIDER_USAGE_HARD_STALE_MS', 10 * 60 * 1000);
+}
+
+function fallbackRepeated429Threshold(): number {
+  return readPositiveIntEnv('TOKEN_CREDENTIAL_RATE_LIMIT_CONSECUTIVE_FAILURES', 10);
+}
+
 function deriveFallbackTokenStatus(input: {
   provider: string | null;
   status: string | null;
+  authDiagnosis?: string | null;
+  accessTokenExpiresAt?: string | null;
+  refreshTokenState?: string | null;
   rateLimitedUntil: string | null;
+  consecutiveRateLimitCount?: number | null;
+  fiveHourReservePercent?: number | null;
+  sevenDayReservePercent?: number | null;
+  providerUsageFetchedAt?: string | null;
   fiveHourContributionCapExhausted?: boolean | null;
   sevenDayContributionCapExhausted?: boolean | null;
-}): string {
-  const normalized = input.status ?? 'unknown';
+}): Pick<AnalyticsTokenRow, 'rawStatus' | 'compactStatus' | 'expandedStatus' | 'statusSource' | 'exclusionReason'> {
+  const rawStatus = (input.status ?? 'unknown').trim().toLowerCase();
+  const provider = (input.provider ?? '').trim().toLowerCase();
+  const authSuffix = [
+    input.authDiagnosis ? `auth: ${input.authDiagnosis}` : null,
+    input.refreshTokenState === 'missing' ? 'refresh: missing' : null,
+  ].filter((segment): segment is string => Boolean(segment)).join(', ');
+
+  if (rawStatus === 'maxed') {
+    return {
+      rawStatus,
+      compactStatus: 'maxed',
+      expandedStatus: authSuffix.length > 0
+        ? `maxed, source: backend_maxed, ${authSuffix}`
+        : 'maxed, source: backend_maxed',
+      statusSource: 'backend_maxed',
+      exclusionReason: null,
+    };
+  }
+
   if (
-    normalized === 'active'
+    rawStatus === 'active'
     && (input.fiveHourContributionCapExhausted === true || input.sevenDayContributionCapExhausted === true)
   ) {
-    return 'maxed';
+    return {
+      rawStatus,
+      compactStatus: 'maxed',
+      expandedStatus: 'maxed, source: cap_exhausted',
+      statusSource: 'cap_exhausted',
+      exclusionReason: null,
+    };
   }
-  if ((input.provider ?? '').trim().toLowerCase() === 'anthropic' && normalized === 'maxed') {
-    return 'rate_limited';
+
+  if (rawStatus !== 'active') {
+    return {
+      rawStatus,
+      compactStatus: rawStatus,
+      expandedStatus: rawStatus,
+      statusSource: null,
+      exclusionReason: null,
+    };
   }
-  if (normalized === 'active' && input.rateLimitedUntil) {
-    const expiresAt = Date.parse(input.rateLimitedUntil);
-    if (Number.isFinite(expiresAt) && expiresAt > Date.now()) {
-      return 'rate_limited';
+
+  const nowMs = Date.now();
+  const rateLimitedUntil = readOptionalDate(input.rateLimitedUntil);
+  const cooldownActive = rateLimitedUntil !== null && rateLimitedUntil.getTime() > nowMs;
+
+  if (provider === 'anthropic') {
+    const reserveConfigured = (input.fiveHourReservePercent ?? 0) > 0 || (input.sevenDayReservePercent ?? 0) > 0;
+    const fetchedAt = readOptionalDate(input.providerUsageFetchedAt);
+    const ageMs = fetchedAt ? Math.max(0, nowMs - fetchedAt.getTime()) : null;
+    const snapshotMissing = reserveConfigured && fetchedAt === null;
+    const snapshotSoftStale = ageMs !== null && ageMs > fallbackProviderUsageSoftStaleMs();
+    const snapshotHardStale = ageMs !== null && ageMs > fallbackProviderUsageHardStaleMs();
+    const repeated429Escalated = Number(input.consecutiveRateLimitCount ?? 0) >= fallbackRepeated429Threshold()
+      && cooldownActive
+      && (snapshotMissing || snapshotSoftStale || snapshotHardStale);
+
+    if (repeated429Escalated) {
+      return {
+        rawStatus,
+        compactStatus: 'active*',
+        expandedStatus: 'active, excluded: rate_limited (escalated)',
+        statusSource: null,
+        exclusionReason: 'rate_limited_escalated',
+      };
+    }
+
+    if (cooldownActive) {
+      return {
+        rawStatus,
+        compactStatus: 'active*',
+        expandedStatus: 'active, excluded: rate_limited',
+        statusSource: null,
+        exclusionReason: 'rate_limited',
+      };
+    }
+
+    if (snapshotMissing) {
+      return {
+        rawStatus,
+        compactStatus: 'active*',
+        expandedStatus: 'active, excluded: snapshot_missing',
+        statusSource: null,
+        exclusionReason: 'snapshot_missing',
+      };
+    }
+
+    if (snapshotHardStale) {
+      return {
+        rawStatus,
+        compactStatus: 'active*',
+        expandedStatus: 'active, excluded: snapshot_stale',
+        statusSource: null,
+        exclusionReason: 'snapshot_stale',
+      };
     }
   }
-  return normalized;
+
+  if (cooldownActive) {
+    return {
+      rawStatus,
+      compactStatus: 'active*',
+      expandedStatus: 'active, excluded: rate_limited',
+      statusSource: null,
+      exclusionReason: 'rate_limited',
+    };
+  }
+
+  return {
+    rawStatus,
+    compactStatus: 'active',
+    expandedStatus: 'active',
+    statusSource: null,
+    exclusionReason: null,
+  };
 }
 
 function mapSeverity(value: unknown): AnalyticsEventRow['severity'] {
@@ -537,6 +678,9 @@ function normalizeDashboardTokenRows(
     .map((row) => {
       const usageUnits = toNumber(row.usageUnits);
       const provider = toStringOrNull(row.provider) ?? 'unknown';
+      const rawStatus = toStringOrNull(row.rawStatus) ?? toStringOrNull(row.status) ?? 'unknown';
+      const compactStatus = toStringOrNull(row.compactStatus) ?? toStringOrNull(row.status) ?? 'unknown';
+      const expandedStatus = toStringOrNull(row.expandedStatus) ?? compactStatus;
       const fiveHourReservePercent = toNullableNumber(row.fiveHourReservePercent);
       const fiveHourUtilizationRatio = toNullableNumber(row.fiveHourUtilizationRatio);
       const fiveHourContributionCapExhausted = toNullableBoolean(row.fiveHourContributionCapExhausted);
@@ -548,7 +692,15 @@ function normalizeDashboardTokenRows(
         displayKey: row.displayKey ?? formatDisplayKey('cred', row.credentialId),
         debugLabel: toStringOrNull(row.debugLabel),
         provider,
-        status: toStringOrNull(row.status) ?? 'unknown',
+        status: compactStatus,
+        rawStatus,
+        compactStatus,
+        expandedStatus,
+        statusSource: toStringOrNull(row.statusSource),
+        exclusionReason: toStringOrNull(row.exclusionReason),
+        authDiagnosis: toStringOrNull(row.authDiagnosis),
+        accessTokenExpiresAt: toStringOrNull(row.accessTokenExpiresAt),
+        refreshTokenState: toStringOrNull(row.refreshTokenState),
         attempts: toNumber(row.attempts, toNumber(row.requests)),
         requests: toNumber(row.requests),
         usageUnits,
@@ -651,19 +803,35 @@ function buildTokenRows(
     const sevenDayReservePercent = toNullableNumber(health?.sevenDayReservePercent);
     const sevenDayUtilizationRatio = toNullableNumber(health?.sevenDayUtilizationRatio);
     const sevenDayContributionCapExhausted = toNullableBoolean(health?.sevenDayContributionCapExhausted);
+    const fallbackStatus = deriveFallbackTokenStatus({
+      provider,
+      status: rawStatus,
+      authDiagnosis: toStringOrNull(health?.authDiagnosis),
+      accessTokenExpiresAt: toStringOrNull(health?.accessTokenExpiresAt),
+      refreshTokenState: toStringOrNull(health?.refreshTokenState),
+      rateLimitedUntil,
+      consecutiveRateLimitCount: toNullableNumber(health?.consecutiveRateLimitCount),
+      fiveHourReservePercent,
+      sevenDayReservePercent,
+      providerUsageFetchedAt: toStringOrNull(health?.providerUsageFetchedAt),
+      fiveHourContributionCapExhausted,
+      sevenDayContributionCapExhausted,
+    });
 
     return {
       credentialId,
       displayKey: formatDisplayKey('cred', credentialId),
       debugLabel: toStringOrNull(health?.debugLabel ?? usage?.debugLabel ?? routing?.debugLabel),
       provider,
-      status: deriveFallbackTokenStatus({
-        provider,
-        status: rawStatus,
-        rateLimitedUntil,
-        fiveHourContributionCapExhausted,
-        sevenDayContributionCapExhausted,
-      }),
+      status: fallbackStatus.compactStatus,
+      rawStatus: fallbackStatus.rawStatus,
+      compactStatus: fallbackStatus.compactStatus,
+      expandedStatus: fallbackStatus.expandedStatus,
+      statusSource: fallbackStatus.statusSource,
+      exclusionReason: fallbackStatus.exclusionReason,
+      authDiagnosis: toStringOrNull(health?.authDiagnosis),
+      accessTokenExpiresAt: toStringOrNull(health?.accessTokenExpiresAt),
+      refreshTokenState: toStringOrNull(health?.refreshTokenState),
       attempts,
       requests,
       usageUnits,

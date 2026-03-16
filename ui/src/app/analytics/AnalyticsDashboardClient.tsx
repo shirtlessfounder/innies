@@ -532,7 +532,7 @@ export function AnalyticsDashboardClient() {
               <div className={styles.summaryValue}>{formatCount(snapshot.summary.activeTokens)}</div>
             </div>
             <div className={styles.summaryItem}>
-              <div className={styles.summaryLabel}>MAXED TOKENS</div>
+              <div className={styles.summaryLabel}>BENCHED TOKENS</div>
               <div className={styles.summaryValue}>{formatCount(snapshot.summary.maxedTokens)}</div>
             </div>
             <div className={styles.summaryItem}>
