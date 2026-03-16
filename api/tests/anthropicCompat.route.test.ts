@@ -1590,7 +1590,18 @@ describe('anthropic compat route', () => {
     await invoke(handlers[1], req, res);
     await invoke(handlers[2], req, res);
 
+    const routingEventCalls = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls
+      .map(([event]: [any]) => event);
+    const firstAttemptEvents = routingEventCalls.filter((event: any) => event.attemptNo === 1);
+
     expect(upstreamSpy).toHaveBeenCalledTimes(2);
+    expect(routingEventCalls).toHaveLength(2);
+    expect(firstAttemptEvents).toHaveLength(1);
+    expect(firstAttemptEvents[0]).toMatchObject({
+      attemptNo: 1,
+      upstreamStatus: 503,
+      errorCode: 'upstream_5xx_passthrough'
+    });
     expect(res.statusCode).toBe(200);
 
     upstreamSpy.mockRestore();
