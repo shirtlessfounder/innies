@@ -34,7 +34,7 @@
   - Anomaly/quality checks.
 - ✅ Easy new token onboarding into the shared pool.
   - Admin endpoints: add, rotate, revoke.
-  - Shell scripts: `innies-add-token.sh`, `innies-rotate-token.sh`.
+  - Shell scripts: `innies-token-add.sh`, `innies-token-rotate.sh`.
   - Debug labels + maxed/probe/reactivation lifecycle.
 - ✅ Easy per-buyer-key provider preference:
   - Preference stored per buyer key with explicit/default distinction.

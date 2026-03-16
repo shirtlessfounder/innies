@@ -65,12 +65,12 @@ cd api && npm install && npm run dev
 
 ### Add a token
 ```bash
-./scripts/innies-add-token.sh
+./scripts/innies-token-add.sh
 ```
 
 ### Set buyer preference
 ```bash
-./scripts/innies-set-preference.sh
+./scripts/innies-buyer-preference-set.sh
 ```
 
 ## API
