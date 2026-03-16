@@ -49,14 +49,14 @@ Product invariant:
 - Token revocation (`POST /v1/admin/token-credentials/:id/revoke`)
 - Debug labels for attribution
 - Basic health checks + quarantine lifecycle operationalized (maxed/probe/reactivation)
-- Shell scripts: `innies-add-token.sh`, `innies-rotate-token.sh`
+- Shell scripts: `innies-token-add.sh`, `innies-token-rotate.sh`
 
 5. ✅ Buyer preference routing
 - Buyer-key policy: preferred provider + deterministic fallback
 - `preferredProviderSource` distinguishes explicit vs default preference
 - Fallback plan: `[preferred, alternate]` with translation when crossing provider boundary
 - Admin endpoints: `GET/PUT /v1/admin/buyer-keys/:id/provider-preference`
-- Shell scripts: `innies-set-preference.sh`, `innies-get-preference.sh`, `innies-check-preference.sh`
+- Shell scripts: `innies-buyer-preference-set.sh`, `innies-buyer-preference-get.sh`, `innies-buyer-preference-check.sh`
 - No mid-session provider switching for CLI coding sessions
 
 6. ✅ Developer docs baseline
