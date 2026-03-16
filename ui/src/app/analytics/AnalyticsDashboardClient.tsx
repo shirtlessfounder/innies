@@ -23,6 +23,7 @@ import {
   buyerSeriesLabel,
   formatCount,
   formatLocalTimeZoneAbbreviation,
+  formatNullableNumber,
   formatPercent,
   formatTimestamp,
   metricLabel,
@@ -542,6 +543,10 @@ export function AnalyticsDashboardClient() {
             <div className={styles.summaryItem}>
               <div className={styles.summaryLabel}>FALLBACK</div>
               <div className={styles.summaryValue}>{formatPercent(snapshot.summary.fallbackRate)}</div>
+            </div>
+            <div className={styles.summaryItem}>
+              <div className={styles.summaryLabel}>TTFB P50</div>
+              <div className={styles.summaryValue}>{formatNullableNumber(snapshot.summary.ttfbP50Ms, ' ms')}</div>
             </div>
           </section>
 
