@@ -50,7 +50,6 @@ fi
 # --- extract metrics ---
 ttfb_p95="$(printf '%s' "$system_body" | jq -r '.ttfbP95Ms // empty')"
 error_rate="$(printf '%s' "$system_body" | jq -r '.errorRate // 0')"
-system_fallback_rate="$(printf '%s' "$system_body" | jq -r '.fallbackRate // 0')"
 total_requests="$(printf '%s' "$system_body" | jq -r '.totalRequests // 0')"
 
 # Compute fallback rate from routing tokens as cross-check
@@ -61,8 +60,8 @@ routing_fallback_rate="$(printf '%s' "$routing_body" | jq -r '
     else (.total_fallbacks / .total_attempts)
     end')"
 
-# Use system-level fallback rate as primary
-fallback_rate="$system_fallback_rate"
+# Use the routing aggregate as the fallback source of truth for Phase 1.
+fallback_rate="$routing_fallback_rate"
 
 # Derive timeout rate and success rate from errorRate
 # errorRate encompasses timeouts + errors; the API does not separate them
@@ -131,14 +130,12 @@ printf '%-28s %-12s %-12s %s\n' "Fallback rate" "flag > 20%" "$fallback_display"
 echo "================================================================"
 echo "* timeout_rate and success_rate are derived from the same errorRate metric."
 echo "  The API does not yet separate timeouts from other errors."
+echo "* Fallback source: /v1/admin/analytics/tokens/routing per-token aggregate."
 
 if [[ "$exit_code" -eq 0 ]]; then
   echo "All SLOs passed."
 else
   echo "One or more SLOs failed."
 fi
-
-echo ""
-echo "(routing cross-check: per-token aggregate fallback rate = $(jq -n --argjson v "$routing_fallback_rate" '($v * 100 * 100 | round) / 100 | tostring + "%"'))"
 
 exit "$exit_code"
