@@ -1883,6 +1883,11 @@ async function executeTokenModeNonStreaming(input: {
   let terminalCompatError: ReturnType<typeof mapOpenAiErrorToAnthropic> | null = null;
   let terminalCompatCredentialId: string | null = null;
   let terminalCompatAttemptNo = 0;
+  let terminalStrictPassthroughStatus: number | null = null;
+  let terminalStrictPassthroughContentType: string | null = null;
+  let terminalStrictPassthroughData: unknown = null;
+  let terminalStrictPassthroughCredentialId: string | null = null;
+  let terminalStrictPassthroughAttemptNo = 0;
   for (const initialCredential of credentials) {
     attemptNo += 1;
     let credential = initialCredential;
@@ -2228,17 +2233,13 @@ async function executeTokenModeNonStreaming(input: {
             ttfbMs
           });
 
-          return {
-            requestId,
-            keyId: credential.id,
-            attemptNo,
-            upstreamStatus: status,
-            usageUnits: 0,
-            contentType,
-            data,
-            routeKind: 'token_credential',
-            alreadyRecorded: true
-          };
+          terminalStrictPassthroughStatus = status;
+          terminalStrictPassthroughContentType = contentType;
+          terminalStrictPassthroughData = data;
+          terminalStrictPassthroughCredentialId = credential.id;
+          terminalStrictPassthroughAttemptNo = attemptNo;
+          await logAttemptFailure({ kind: 'server_error', statusCode: status, message: 'upstream server error' }, ttfbMs);
+          break;
         }
 
         if (compatTranslation) {
@@ -2421,6 +2422,24 @@ async function executeTokenModeNonStreaming(input: {
     return compatTerminalResult;
   }
 
+  const strictPassthroughResult = terminalStrictPassthroughStatus != null
+    ? {
+      requestId,
+      keyId: terminalStrictPassthroughCredentialId,
+      attemptNo: terminalStrictPassthroughAttemptNo,
+      upstreamStatus: terminalStrictPassthroughStatus,
+      usageUnits: 0,
+      contentType: terminalStrictPassthroughContentType!,
+      data: terminalStrictPassthroughData,
+      routeKind: 'token_credential' as const,
+      alreadyRecorded: true
+    }
+    : null;
+
+  if (allowCompatTerminalErrorResponse && strictPassthroughResult) {
+    return strictPassthroughResult;
+  }
+
   if (sawAuthFailure) {
     if (lastAuthFailure) {
       logAuthFailureAudit({
@@ -2442,14 +2461,16 @@ async function executeTokenModeNonStreaming(input: {
         provider,
         model,
         lastAuthStatus,
-        ...(compatTerminalResult ? { compatTerminalResult } : {})
+        ...(compatTerminalResult ? { compatTerminalResult } : {}),
+        ...(strictPassthroughResult ? { compatTerminalResult: strictPassthroughResult } : {})
       });
   }
 
   throw new AppError('capacity_unavailable', 429, 'All token credential attempts exhausted', {
     provider,
     model,
-    ...(compatTerminalResult ? { compatTerminalResult } : {})
+    ...(compatTerminalResult ? { compatTerminalResult } : {}),
+    ...(strictPassthroughResult ? { compatTerminalResult: strictPassthroughResult } : {})
   });
 }
 
@@ -2523,6 +2544,11 @@ async function executeTokenModeStreaming(input: {
   let terminalCompatError: ReturnType<typeof mapOpenAiErrorToAnthropic> | null = null;
   let terminalCompatCredentialId: string | null = null;
   let terminalCompatAttemptNo = 0;
+  let terminalStrictPassthroughStatus: number | null = null;
+  let terminalStrictPassthroughContentType: string | null = null;
+  let terminalStrictPassthroughData: unknown = null;
+  let terminalStrictPassthroughCredentialId: string | null = null;
+  let terminalStrictPassthroughAttemptNo = 0;
 
   for (const initialCredential of credentials) {
     attemptNo += 1;
@@ -2851,6 +2877,20 @@ async function executeTokenModeStreaming(input: {
           terminalCompatCredentialId = credential.id;
           terminalCompatAttemptNo = attemptNo;
         }
+        await logAttemptFailure({ kind: 'server_error', statusCode: status, message: 'upstream server error' }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
+        break;
+      }
+
+      if (status >= 500 && strictUpstreamPassthrough) {
+        const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+        const data = contentType.includes('application/json')
+          ? await upstreamResponse.json().catch(() => ({}))
+          : await upstreamResponse.text();
+        terminalStrictPassthroughStatus = status;
+        terminalStrictPassthroughContentType = contentType;
+        terminalStrictPassthroughData = data;
+        terminalStrictPassthroughCredentialId = credential.id;
+        terminalStrictPassthroughAttemptNo = attemptNo;
         await logAttemptFailure({ kind: 'server_error', statusCode: status, message: 'upstream server error' }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
         break;
       }
@@ -3583,6 +3623,24 @@ async function executeTokenModeStreaming(input: {
     return compatTerminalResult;
   }
 
+  const strictPassthroughResult = terminalStrictPassthroughStatus != null
+    ? {
+      requestId,
+      keyId: terminalStrictPassthroughCredentialId,
+      attemptNo: terminalStrictPassthroughAttemptNo,
+      upstreamStatus: terminalStrictPassthroughStatus,
+      usageUnits: 0,
+      contentType: terminalStrictPassthroughContentType!,
+      data: terminalStrictPassthroughData,
+      routeKind: 'token_credential' as const,
+      alreadyRecorded: true
+    }
+    : null;
+
+  if (allowCompatTerminalErrorResponse && strictPassthroughResult) {
+    return strictPassthroughResult;
+  }
+
   if (sawAuthFailure) {
     if (lastAuthFailure) {
       logAuthFailureAudit({
@@ -3604,14 +3662,16 @@ async function executeTokenModeStreaming(input: {
         provider,
         model,
         lastAuthStatus,
-        ...(compatTerminalResult ? { compatTerminalResult } : {})
+        ...(compatTerminalResult ? { compatTerminalResult } : {}),
+        ...(strictPassthroughResult ? { compatTerminalResult: strictPassthroughResult } : {})
       });
   }
 
   throw new AppError('capacity_unavailable', 429, 'All token credential attempts exhausted', {
     provider,
     model,
-    ...(compatTerminalResult ? { compatTerminalResult } : {})
+    ...(compatTerminalResult ? { compatTerminalResult } : {}),
+    ...(strictPassthroughResult ? { compatTerminalResult: strictPassthroughResult } : {})
   });
 }
 
