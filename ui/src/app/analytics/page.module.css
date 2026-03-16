@@ -386,7 +386,7 @@
 
 .summaryStrip {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   border-top: 1px solid var(--console-line-strong);
   border-right: 1px solid var(--console-line-strong);
   border-bottom: 1px solid var(--console-line-strong);
