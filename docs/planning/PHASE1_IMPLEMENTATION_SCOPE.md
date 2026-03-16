@@ -41,7 +41,7 @@ Product invariant:
 - Routing/fallback visibility
 - Token health state (`active/maxed/probe`) and rotation visibility
 - Per-token usage and yield analytics
-- Temporary UI note: the analytics token table is currently hiding `Util 24h` and `Maxed 7d` for layout clarity; bring both columns back after the dashboard gets a cleaner slot for those operator-only health fields.
+- Util 24h and Maxed 7d columns removed from token table per admin decision — operator-only health fields deferred to future iteration.
 
 4. ✅ Token onboarding
 - Internal admin flow for adding tokens (`POST /v1/admin/token-credentials`)
