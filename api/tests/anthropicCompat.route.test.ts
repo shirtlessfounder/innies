@@ -1513,16 +1513,63 @@ describe('anthropic compat route', () => {
     upstreamSpy.mockRestore();
   });
 
-  it('passes through upstream 5xx status/body for compat route', async () => {
-    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({
+  it('fails over to second credential on upstream 5xx for compat route (non-streaming)', async () => {
+    const anthropicCreds = [
+      {
+        id: 'cred-a',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-first',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 2,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any,
+      {
+        id: 'cred-b',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-second',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any
+    ];
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(
+      async (_orgId: string, provider: string) => provider === 'anthropic' ? anthropicCreds : []
+    );
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
         type: 'error',
         error: { type: 'api_error', message: 'upstream outage' }
       }), {
         status: 503,
         headers: { 'content-type': 'application/json' }
-      })
-    );
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_ok',
+        type: 'message',
+        usage: { input_tokens: 5, output_tokens: 5 },
+        content: [{ type: 'text', text: 'hello' }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }));
 
     const req = createMockReq({
       method: 'POST',
@@ -1543,9 +1590,19 @@ describe('anthropic compat route', () => {
     await invoke(handlers[1], req, res);
     await invoke(handlers[2], req, res);
 
-    expect(upstreamSpy).toHaveBeenCalledTimes(1);
-    expect(res.statusCode).toBe(503);
-    expect((res.body as any).error?.type).toBe('api_error');
+    const routingEventCalls = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls
+      .map(([event]: [any]) => event);
+    const firstAttemptEvents = routingEventCalls.filter((event: any) => event.attemptNo === 1);
+
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+    expect(routingEventCalls).toHaveLength(2);
+    expect(firstAttemptEvents).toHaveLength(1);
+    expect(firstAttemptEvents[0]).toMatchObject({
+      attemptNo: 1,
+      upstreamStatus: 503,
+      errorCode: 'upstream_5xx_passthrough'
+    });
+    expect(res.statusCode).toBe(200);
 
     upstreamSpy.mockRestore();
   });
@@ -2155,6 +2212,279 @@ describe('anthropic compat route', () => {
     expect(body?.type).toBe('error');
     expect(typeof body?.error?.type).toBe('string');
     expect(typeof body?.error?.message).toBe('string');
+    upstreamSpy.mockRestore();
+  });
+
+  it('fails over to second credential on upstream 5xx for compat route (streaming)', async () => {
+    const anthropicCreds = [
+      {
+        id: 'cred-a',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-first',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 2,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any,
+      {
+        id: 'cred-b',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-second',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any
+    ];
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(
+      async (_orgId: string, provider: string) => provider === 'anthropic' ? anthropicCreds : []
+    );
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'api_error', message: 'upstream outage' }
+      }), {
+        status: 500,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_stream_ok',
+        type: 'message',
+        usage: { input_tokens: 5, output_tokens: 5 },
+        content: [{ type: 'text', text: 'hello' }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        stream: true,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+    expect(res.statusCode).toBe(200);
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('returns terminal 5xx passthrough when all compat credentials fail (non-streaming)', async () => {
+    const anthropicCreds = [
+      {
+        id: 'cred-a',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-first',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 2,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any,
+      {
+        id: 'cred-b',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-second',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any
+    ];
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(
+      async (_orgId: string, provider: string) => provider === 'anthropic' ? anthropicCreds : []
+    );
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'api_error', message: 'upstream outage' }
+      }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+    expect(res.statusCode).toBe(503);
+    expect((res.body as any).error?.type).toBe('api_error');
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('returns terminal 5xx passthrough when all compat credentials fail (streaming)', async () => {
+    const anthropicCreds = [
+      {
+        id: 'cred-a',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-first',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 2,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any,
+      {
+        id: 'cred-b',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-second',
+        refreshToken: null,
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any
+    ];
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(
+      async (_orgId: string, provider: string) => provider === 'anthropic' ? anthropicCreds : []
+    );
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'api_error', message: 'upstream outage' }
+      }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        stream: true,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+    expect(res.statusCode).toBe(503);
+    expect((res.body as any)?.error?.type).toBe('api_error');
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('does not change auth 401/403 retry behavior on compat route', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'authentication_error', message: 'invalid x-api-key' }
+      }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    // 401 should still be handled as auth failure, not as a 5xx failover
+    expect(res.statusCode).toBe(401);
+
     upstreamSpy.mockRestore();
   });
 });
