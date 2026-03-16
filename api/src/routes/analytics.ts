@@ -14,6 +14,7 @@ import {
   readTokenCredentialProviderUsageSoftStaleMs
 } from '../services/tokenCredentialProviderUsage.js';
 import { evaluateClaudeCredentialAvailability } from '../services/claudeCredentialAvailability.js';
+import { deriveDashboardTokenStatusRow } from '../services/dashboardTokenStatus.js';
 import { formatDisplayKey, type AnalyticsWindow } from '../utils/analytics.js';
 import { AppError } from '../utils/errors.js';
 
@@ -418,82 +419,25 @@ function coerceExpiredTokenStatus(
     : status;
 }
 
-function deriveDashboardTokenStatus(input: {
-  provider: string;
-  status: string;
-  consecutiveFailures?: number | null;
-  consecutiveRateLimitCount?: number | null;
-  lastFailedStatus?: number | null;
-  rateLimitedUntil: string | null;
-  nextProbeAt?: string | null;
-  fiveHourReservePercent?: number | null;
-  fiveHourUtilizationRatio?: number | null;
-  fiveHourResetsAt?: string | null;
-  fiveHourContributionCapExhausted?: boolean | null;
-  sevenDayReservePercent?: number | null;
-  sevenDayUtilizationRatio?: number | null;
-  sevenDayResetsAt?: string | null;
-  sevenDayContributionCapExhausted?: boolean | null;
-  providerUsageFetchedAt?: string | null;
-}): string {
-  if (input.provider === 'anthropic') {
-    return evaluateClaudeCredentialAvailability({
-      credential: {
-        provider: input.provider,
-        status: input.status,
-        fiveHourReservePercent: input.fiveHourReservePercent,
-        sevenDayReservePercent: input.sevenDayReservePercent,
-        consecutiveFailureCount: input.consecutiveFailures,
-        consecutiveRateLimitCount: input.consecutiveRateLimitCount,
-        lastFailedStatus: input.lastFailedStatus,
-        rateLimitedUntil: input.rateLimitedUntil,
-        nextProbeAt: input.nextProbeAt
-      },
-      snapshot: {
-        fetchedAt: input.providerUsageFetchedAt,
-        fiveHourUtilizationRatio: input.fiveHourUtilizationRatio,
-        fiveHourResetsAt: input.fiveHourResetsAt,
-        sevenDayUtilizationRatio: input.sevenDayUtilizationRatio,
-        sevenDayResetsAt: input.sevenDayResetsAt
-      }
-    }).displayStatus;
-  }
-
-  if (input.status === 'active' && input.rateLimitedUntil) {
-    const expiresAt = Date.parse(input.rateLimitedUntil);
-    if (Number.isFinite(expiresAt) && expiresAt > Date.now()) {
-      return 'rate_limited';
-    }
-  }
-
-  return input.status;
-}
-
-function isVisibleDashboardTokenStatus(status: string): boolean {
-  const normalized = status.trim().toLowerCase();
-  return normalized !== 'expired' && normalized !== 'revoked';
-}
-
 function deriveDashboardSummaryFromTokens(
   summary: ReturnType<typeof normalizeSystemSummary>,
-  tokens: Array<Record<string, unknown>>
+  tokens: Array<Record<string, unknown>>,
+  hadTokenRows: boolean
 ) {
-  if (tokens.length === 0) return summary;
+  if (!hadTokenRows && tokens.length === 0) {
+    return summary;
+  }
 
-  const visibleTokens = tokens.filter((row) => {
-    const status = readTrimmedString((row as { status?: unknown }).status) ?? 'unknown';
-    return isVisibleDashboardTokenStatus(status);
-  });
-  const maxedTokens = visibleTokens.filter((row) => {
+  const maxedTokens = tokens.filter((row) => {
     const status = readTrimmedString((row as { status?: unknown }).status) ?? 'unknown';
     return status.toLowerCase() === 'maxed';
   }).length;
 
   return {
     ...summary,
-    activeTokens: visibleTokens.length - maxedTokens,
+    activeTokens: tokens.length - maxedTokens,
     maxedTokens,
-    totalTokens: visibleTokens.length
+    totalTokens: tokens.length
   };
 }
 
@@ -651,6 +595,15 @@ function normalizeTokenHealthRows(value: unknown) {
       debugLabel: readOptionalString(record, ['debugLabel', 'debug_label']),
       provider: normalizeProvider(pick(record, ['provider']), 'provider'),
       status,
+      ...(readOptionalString(record, ['authDiagnosis', 'auth_diagnosis']) !== null
+        ? { authDiagnosis: readOptionalString(record, ['authDiagnosis', 'auth_diagnosis']) }
+        : {}),
+      ...(readOptionalIsoDate(record, ['accessTokenExpiresAt', 'access_token_expires_at']) !== null
+        ? { accessTokenExpiresAt: readOptionalIsoDate(record, ['accessTokenExpiresAt', 'access_token_expires_at']) }
+        : {}),
+      ...(readOptionalString(record, ['refreshTokenState', 'refresh_token_state']) !== null
+        ? { refreshTokenState: readOptionalString(record, ['refreshTokenState', 'refresh_token_state']) }
+        : {}),
       consecutiveFailures: readOptionalNumber(record, ['consecutiveFailures', 'consecutive_failure_count'], 0) ?? 0,
       consecutiveRateLimitCount: readOptionalNumber(record, ['consecutiveRateLimitCount', 'consecutive_rate_limit_count'], 0) ?? 0,
       lastFailedStatus: readOptionalNumber(record, ['lastFailedStatus', 'last_failed_status']),
@@ -1075,12 +1028,61 @@ function mergeDashboardTokens(input: {
   usage: ReturnType<typeof normalizeTokenUsageRows>;
   health: ReturnType<typeof normalizeTokenHealthRows>;
   routing: ReturnType<typeof normalizeTokenRoutingRows>;
-}) {
+}): Array<Record<string, unknown>> {
   const byId = new Map<string, Record<string, unknown>>();
   const totalUsageUnits = input.usage.reduce((sum, row) => sum + row.usageUnits, 0);
 
+  const createBaseRow = (seed: {
+    credentialId: string;
+    displayKey: string | null;
+    debugLabel: string | null;
+    provider: string;
+    status: string;
+    attempts: number;
+    requests: number;
+    usageUnits: number;
+    percentOfWindow: number;
+  }): Record<string, unknown> => ({
+    credentialId: seed.credentialId,
+    displayKey: seed.displayKey,
+    debugLabel: seed.debugLabel,
+    provider: seed.provider,
+    status: seed.status,
+    attempts: seed.attempts,
+    requests: seed.requests,
+    usageUnits: seed.usageUnits,
+    percentOfWindow: seed.percentOfWindow,
+    utilizationRate24h: null,
+    maxedEvents7d: 0,
+    monthlyContributionUsedUnits: 0,
+    monthlyContributionLimitUnits: null,
+    fiveHourReservePercent: null,
+    fiveHourUtilizationRatio: null,
+    fiveHourResetsAt: null,
+    fiveHourContributionCapExhausted: null,
+    sevenDayReservePercent: null,
+    sevenDayUtilizationRatio: null,
+    sevenDayResetsAt: null,
+    sevenDayContributionCapExhausted: null,
+    providerUsageFetchedAt: null,
+    claudeFiveHourCapExhaustionCyclesObserved: null,
+    claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow: null,
+    claudeFiveHourAvgUsageUnitsBeforeCapExhaustion: null,
+    claudeSevenDayCapExhaustionCyclesObserved: null,
+    claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow: null,
+    claudeSevenDayAvgUsageUnitsBeforeCapExhaustion: null,
+    consecutiveFailures: null,
+    consecutiveRateLimitCount: null,
+    lastFailedStatus: null,
+    authDiagnosis: null,
+    accessTokenExpiresAt: null,
+    refreshTokenState: null,
+    rateLimitedUntil: null,
+    nextProbeAt: null
+  });
+
   for (const row of input.usage) {
-    byId.set(row.credentialId, {
+    byId.set(row.credentialId, createBaseRow({
       credentialId: row.credentialId,
       displayKey: row.displayKey,
       debugLabel: row.debugLabel,
@@ -1089,27 +1091,12 @@ function mergeDashboardTokens(input: {
       attempts: row.attempts,
       requests: row.requests,
       usageUnits: row.usageUnits,
-      percentOfWindow: totalUsageUnits > 0 ? Number((row.usageUnits / totalUsageUnits).toFixed(4)) : 0,
-      fiveHourReservePercent: null,
-      fiveHourUtilizationRatio: null,
-      fiveHourResetsAt: null,
-      fiveHourContributionCapExhausted: null,
-      sevenDayReservePercent: null,
-      sevenDayUtilizationRatio: null,
-      sevenDayResetsAt: null,
-      sevenDayContributionCapExhausted: null,
-      providerUsageFetchedAt: null,
-      claudeFiveHourCapExhaustionCyclesObserved: null,
-      claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow: null,
-      claudeFiveHourAvgUsageUnitsBeforeCapExhaustion: null,
-      claudeSevenDayCapExhaustionCyclesObserved: null,
-      claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow: null,
-      claudeSevenDayAvgUsageUnitsBeforeCapExhaustion: null
-    });
+      percentOfWindow: totalUsageUnits > 0 ? Number((row.usageUnits / totalUsageUnits).toFixed(4)) : 0
+    }));
   }
 
   for (const row of input.health) {
-    const existing = byId.get(row.credentialId) ?? {
+    const existing = byId.get(row.credentialId) ?? createBaseRow({
       credentialId: row.credentialId,
       displayKey: row.displayKey,
       debugLabel: row.debugLabel,
@@ -1118,23 +1105,12 @@ function mergeDashboardTokens(input: {
       attempts: 0,
       requests: 0,
       usageUnits: 0,
-      percentOfWindow: 0,
-      fiveHourReservePercent: null,
-      fiveHourUtilizationRatio: null,
-      fiveHourResetsAt: null,
-      fiveHourContributionCapExhausted: null,
-      sevenDayReservePercent: null,
-      sevenDayUtilizationRatio: null,
-      sevenDayResetsAt: null,
-      sevenDayContributionCapExhausted: null,
-      providerUsageFetchedAt: null,
-      claudeFiveHourCapExhaustionCyclesObserved: null,
-      claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow: null,
-      claudeFiveHourAvgUsageUnitsBeforeCapExhaustion: null,
-      claudeSevenDayCapExhaustionCyclesObserved: null,
-      claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow: null,
-      claudeSevenDayAvgUsageUnitsBeforeCapExhaustion: null
-    };
+      percentOfWindow: 0
+    });
+    existing.displayKey = existing.displayKey ?? row.displayKey;
+    existing.debugLabel = existing.debugLabel ?? row.debugLabel;
+    existing.provider = existing.provider ?? row.provider;
+    existing.status = row.status;
     existing.utilizationRate24h = row.utilizationRate24h;
     existing.maxedEvents7d = row.maxedEvents7d;
     existing.monthlyContributionUsedUnits = row.monthlyContributionUsedUnits;
@@ -1156,29 +1132,19 @@ function mergeDashboardTokens(input: {
     existing.claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow =
       row.claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow;
     existing.claudeSevenDayAvgUsageUnitsBeforeCapExhaustion = row.claudeSevenDayAvgUsageUnitsBeforeCapExhaustion;
-    existing.status = deriveDashboardTokenStatus({
-      provider: row.provider,
-      status: row.status,
-      consecutiveFailures: row.consecutiveFailures,
-      consecutiveRateLimitCount: row.consecutiveRateLimitCount,
-      lastFailedStatus: row.lastFailedStatus,
-      rateLimitedUntil: row.rateLimitedUntil,
-      nextProbeAt: row.nextProbeAt,
-      fiveHourReservePercent: row.fiveHourReservePercent,
-      fiveHourUtilizationRatio: row.fiveHourUtilizationRatio,
-      fiveHourResetsAt: row.fiveHourResetsAt,
-      fiveHourContributionCapExhausted: row.fiveHourContributionCapExhausted,
-      sevenDayReservePercent: row.sevenDayReservePercent,
-      sevenDayUtilizationRatio: row.sevenDayUtilizationRatio,
-      sevenDayResetsAt: row.sevenDayResetsAt,
-      sevenDayContributionCapExhausted: row.sevenDayContributionCapExhausted,
-      providerUsageFetchedAt: row.providerUsageFetchedAt
-    });
+    existing.consecutiveFailures = row.consecutiveFailures;
+    existing.consecutiveRateLimitCount = row.consecutiveRateLimitCount;
+    existing.lastFailedStatus = row.lastFailedStatus;
+    existing.authDiagnosis = row.authDiagnosis;
+    existing.accessTokenExpiresAt = row.accessTokenExpiresAt;
+    existing.refreshTokenState = row.refreshTokenState;
+    existing.rateLimitedUntil = row.rateLimitedUntil;
+    existing.nextProbeAt = row.nextProbeAt;
     byId.set(row.credentialId, existing);
   }
 
   for (const row of input.routing) {
-    const existing = byId.get(row.credentialId) ?? {
+    const existing = byId.get(row.credentialId) ?? createBaseRow({
       credentialId: row.credentialId,
       displayKey: row.displayKey,
       debugLabel: row.debugLabel,
@@ -1187,23 +1153,8 @@ function mergeDashboardTokens(input: {
       attempts: 0,
       requests: 0,
       usageUnits: 0,
-      percentOfWindow: 0,
-      fiveHourReservePercent: null,
-      fiveHourUtilizationRatio: null,
-      fiveHourResetsAt: null,
-      fiveHourContributionCapExhausted: null,
-      sevenDayReservePercent: null,
-      sevenDayUtilizationRatio: null,
-      sevenDayResetsAt: null,
-      sevenDayContributionCapExhausted: null,
-      providerUsageFetchedAt: null,
-      claudeFiveHourCapExhaustionCyclesObserved: null,
-      claudeFiveHourUsageUnitsBeforeCapExhaustionLastWindow: null,
-      claudeFiveHourAvgUsageUnitsBeforeCapExhaustion: null,
-      claudeSevenDayCapExhaustionCyclesObserved: null,
-      claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow: null,
-      claudeSevenDayAvgUsageUnitsBeforeCapExhaustion: null
-    };
+      percentOfWindow: 0
+    });
     existing.displayKey = existing.displayKey ?? row.displayKey;
     existing.debugLabel = existing.debugLabel ?? row.debugLabel;
     existing.provider = existing.provider ?? row.provider;
@@ -1215,11 +1166,72 @@ function mergeDashboardTokens(input: {
     byId.set(row.credentialId, existing);
   }
 
-  return Array.from(byId.values()).sort((left, right) => {
-    const usageDelta = Number(right.usageUnits ?? 0) - Number(left.usageUnits ?? 0);
-    if (usageDelta !== 0) return usageDelta;
-    return String(left.credentialId).localeCompare(String(right.credentialId), 'en');
-  });
+  return Array.from(byId.values())
+    .map((row) => {
+      const derivedStatus = deriveDashboardTokenStatusRow({
+        provider: String(row.provider ?? ''),
+        rawStatus: String(row.status ?? 'active'),
+        authDiagnosis: readTrimmedString(row.authDiagnosis) ?? null,
+        accessTokenExpiresAt: readTrimmedString(row.accessTokenExpiresAt) ?? null,
+        refreshTokenState: readTrimmedString(row.refreshTokenState) as 'missing' | 'present' | null,
+        consecutiveFailures: readNumberLike(row.consecutiveFailures),
+        consecutiveRateLimitCount: readNumberLike(row.consecutiveRateLimitCount),
+        lastFailedStatus: readNumberLike(row.lastFailedStatus),
+        rateLimitedUntil: readTrimmedString(row.rateLimitedUntil) ?? null,
+        nextProbeAt: readTrimmedString(row.nextProbeAt) ?? null,
+        fiveHourReservePercent: readNumberLike(row.fiveHourReservePercent),
+        fiveHourUtilizationRatio: readNumberLike(row.fiveHourUtilizationRatio),
+        fiveHourResetsAt: readTrimmedString(row.fiveHourResetsAt) ?? null,
+        fiveHourContributionCapExhausted: readBooleanLike(row.fiveHourContributionCapExhausted),
+        sevenDayReservePercent: readNumberLike(row.sevenDayReservePercent),
+        sevenDayUtilizationRatio: readNumberLike(row.sevenDayUtilizationRatio),
+        sevenDayResetsAt: readTrimmedString(row.sevenDayResetsAt) ?? null,
+        sevenDayContributionCapExhausted: readBooleanLike(row.sevenDayContributionCapExhausted),
+        providerUsageFetchedAt: readTrimmedString(row.providerUsageFetchedAt) ?? null
+      });
+      if (derivedStatus.hidden) return null;
+
+      const {
+        consecutiveFailures: _consecutiveFailures,
+        consecutiveRateLimitCount: _consecutiveRateLimitCount,
+        lastFailedStatus: _lastFailedStatus,
+        authDiagnosis: _authDiagnosis,
+        accessTokenExpiresAt: _accessTokenExpiresAt,
+        refreshTokenState: _refreshTokenState,
+        rateLimitedUntil: _rateLimitedUntil,
+        nextProbeAt: _nextProbeAt,
+        ...publicRow
+      } = row;
+
+      return {
+        ...publicRow,
+        rawStatus: derivedStatus.rawStatus,
+        status: derivedStatus.compactStatus,
+        compactStatus: derivedStatus.compactStatus,
+        expandedStatus: derivedStatus.expandedStatus,
+        statusSource: derivedStatus.statusSource,
+        exclusionReason: derivedStatus.exclusionReason,
+        ...(readTrimmedString(row.authDiagnosis) !== null
+          ? { authDiagnosis: readTrimmedString(row.authDiagnosis) }
+          : {}),
+        ...(readTrimmedString(row.accessTokenExpiresAt) !== null
+          ? { accessTokenExpiresAt: readTrimmedString(row.accessTokenExpiresAt) }
+          : {}),
+        ...(readTrimmedString(row.refreshTokenState) !== null
+          ? { refreshTokenState: readTrimmedString(row.refreshTokenState) }
+          : {})
+      };
+    })
+    .filter((row): row is NonNullable<typeof row> => row !== null)
+    .sort((left, right) => {
+      const usageDelta = Number((right as { usageUnits?: unknown }).usageUnits ?? 0)
+        - Number((left as { usageUnits?: unknown }).usageUnits ?? 0);
+      if (usageDelta !== 0) return usageDelta;
+      return String((left as { credentialId?: unknown }).credentialId).localeCompare(
+        String((right as { credentialId?: unknown }).credentialId),
+        'en'
+      );
+    }) as Array<Record<string, unknown>>;
 }
 
 function normalizeAnomalies(value: unknown) {
@@ -1287,7 +1299,11 @@ async function buildDashboardSnapshotPayload(
   return {
     window: query.window,
     snapshotAt,
-    summary: deriveDashboardSummaryFromTokens(summary, tokens),
+    summary: deriveDashboardSummaryFromTokens(
+      summary,
+      tokens,
+      tokenUsage.length > 0 || tokenHealth.length > 0 || tokenRouting.length > 0
+    ),
     tokens,
     buyers,
     anomalies,

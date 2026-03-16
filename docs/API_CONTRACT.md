@@ -269,6 +269,9 @@ Response shape:
 - `upstreamStatus`: HTTP status from upstream probe when available
 - `reason`: probe result reason (`ok|status_<code>|network:<message>|unsupported_provider:<provider>`)
 - `nextProbeAt`: next scheduled automatic probe time when a `maxed` manual probe failed; `null` for active-credential diagnostic probes
+- `authDiagnosis`: optional operator-facing auth diagnosis when Innies can derive one (`access_token_expired_local`, `upstream_status_401`, etc.)
+- `accessTokenExpiresAt`: optional derived local access-token expiry timestamp when available
+- `refreshTokenState`: optional refresh-token state (`missing|present`) when Innies can determine it
 
 Notes:
 - intended operator use: immediately test whether a quarantined credential has recovered, or run a live diagnostic against an active credential, without waiting for the background healthcheck
@@ -277,6 +280,7 @@ Notes:
 - successful `active` probe is diagnostic-only and leaves the credential state unchanged
 - failed `maxed` probe keeps the credential `maxed` and pushes `nextProbeAt` forward by the normal probe interval
 - failed `active` probe is diagnostic-only and leaves the credential state unchanged
+- auth-diagnosis fields are best-effort operator hints; they are omitted when Innies cannot derive anything more specific than the raw probe result
 
 ### `POST /v1/admin/token-credentials/:id/provider-usage-refresh`
 Refresh Claude provider usage for a token immediately (admin only).
@@ -421,6 +425,10 @@ Notes:
 - those fields are Claude-only and stay `null` on non-Claude rows
 - Claude rows may also keep them `null` when a fresh provider-usage snapshot has not been fetched yet or analytics is reading against a pre-migration environment
 - analytics should treat rows with `expiresAt <= now` as `expired` for operator-facing status/counting even if the stored DB `status` has not been swept yet
+- rows may also include best-effort auth-diagnosis fields for operator visibility:
+  - `authDiagnosis`
+  - `accessTokenExpiresAt`
+  - `refreshTokenState`
 - maxed-cycle metrics (`requestsBeforeMaxedLastWindow`, `avgRequestsBeforeMaxed`, `avgUsageUnitsBeforeMaxed`, `estimatedDailyCapacityUnits`, `maxingCyclesObserved`) anchor on `maxedAt`
 - Claude cap-cycle metrics anchor on durable `contribution_cap_exhausted` / `contribution_cap_cleared` lifecycle events, not auth-style `maxed`
 - recovery metrics (`avgRecoveryTimeMs`) anchor on `reactivated` timestamps and stay `null` unless at least one completed maxed→reactivated pair lands in-window
@@ -810,6 +818,7 @@ Notes:
 - `tokens[*]` merges usage, health, and routing metrics by `credentialId`
 - `tokens[*].attempts` is attempt-level volume; `tokens[*].requests` is distinct `request_id` count for the same window
 - `tokens[*]` also carries the same nullable Claude-only contribution-cap/provider-usage fields as `/v1/admin/analytics/tokens/health`
+- `tokens[*]` may also include best-effort auth-diagnosis fields from `/v1/admin/analytics/tokens/health`; the dashboard status text can fold those into backend-`maxed` visibility
 - `summary.maxedTokens` counts tokens currently at usage capacity; for Claude that means provider usage has hit the provider ceiling or the configured reserve threshold
 - the dashboard UI shows raw Claude provider utilization in `5H` / `7D`; reserve/exhausted fields only control whether those cells are highlighted as effectively exhausted
 - non-Claude rows keep those raw API fields `null` and the UI renders `--` in the CAP cells

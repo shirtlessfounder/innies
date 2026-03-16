@@ -520,9 +520,15 @@
 }
 
 .table {
+  --status-column-width: 88px;
   width: 100%;
   min-width: 720px;
   border-collapse: collapse;
+}
+
+.tableStatusExpanded {
+  --status-column-width: 340px;
+  min-width: 996px;
 }
 
 .table th,
@@ -567,6 +573,14 @@
   justify-content: flex-end;
 }
 
+.statusHeaderButton {
+  justify-content: space-between;
+}
+
+.statusHeaderButtonPinned {
+  color: var(--console-ink);
+}
+
 .sortGlyph,
 .sortGlyphActive {
   min-width: 12px;
@@ -608,6 +622,25 @@
   background: rgba(22, 51, 62, 0.08) !important;
 }
 
+.statusColumn {
+  width: var(--status-column-width);
+  min-width: var(--status-column-width);
+  max-width: var(--status-column-width);
+  transition:
+    width 140ms ease,
+    min-width 140ms ease,
+    max-width 140ms ease;
+}
+
+.statusColumnCompact {
+  width: var(--status-column-width);
+}
+
+.statusColumnExpanded {
+  width: var(--status-column-width);
+  white-space: normal !important;
+}
+
 .identityCell {
   display: flex;
   flex-direction: column;
@@ -630,8 +663,22 @@
 }
 
 .statusPill {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 12px;
   letter-spacing: 0.02em;
+}
+
+.statusPillExpanded {
+  display: block;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
+  letter-spacing: 0;
 }
 
 .statusPillActive {

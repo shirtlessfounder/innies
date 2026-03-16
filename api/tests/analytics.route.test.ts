@@ -318,6 +318,48 @@ describe('analytics routes', () => {
     });
   });
 
+  it('preserves auth diagnosis fields on token health responses', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    analytics.getTokenHealth.mockResolvedValue([
+      {
+        credential_id: '11111111-1111-4111-8111-111111111111',
+        debug_label: 'niyant-codex',
+        provider: 'openai',
+        status: 'maxed',
+        auth_diagnosis: 'access_token_expired_local',
+        access_token_expires_at: '2026-03-14T15:49:35.000Z',
+        refresh_token_state: 'missing'
+      }
+    ]);
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/tokens/health', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/tokens/health',
+      headers: {
+        authorization: 'Bearer admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect((res.body as any)).toEqual({
+      window: '7d',
+      tokens: [
+        expect.objectContaining({
+          credentialId: '11111111-1111-4111-8111-111111111111',
+          status: 'maxed',
+          authDiagnosis: 'access_token_expired_local',
+          accessTokenExpiresAt: '2026-03-14T15:49:35.000Z',
+          refreshTokenState: 'missing'
+        })
+      ]
+    });
+  });
+
   it('defaults 24h timeseries requests to 15m granularity', async () => {
     const apiKeys = createApiKeysRepo();
     const analytics = createAnalyticsRepo();
@@ -1229,7 +1271,12 @@ describe('analytics routes', () => {
         displayKey: 'cred_1111...1111',
         debugLabel: 'alpha',
         provider: 'openai',
-        status: 'rate_limited',
+        rawStatus: 'active',
+        status: 'active*',
+        compactStatus: 'active*',
+        expandedStatus: 'active, excluded: rate_limited',
+        statusSource: null,
+        exclusionReason: 'rate_limited',
         attempts: 12,
         requests: 10,
         usageUnits: 100,
@@ -1339,13 +1386,18 @@ describe('analytics routes', () => {
       expect.objectContaining({
         credentialId: '22222222-2222-4222-8222-222222222222',
         provider: 'anthropic',
+        rawStatus: 'active',
         status: 'maxed',
+        compactStatus: 'maxed',
+        expandedStatus: 'maxed, source: cap_exhausted',
+        statusSource: 'cap_exhausted',
+        exclusionReason: null,
         fiveHourContributionCapExhausted: true
       })
     ]);
   });
 
-  it('derives dashboard summary token counts from visible token rows, excluding expired maxed credentials', async () => {
+  it('derives dashboard summary token counts from visible token rows and hides expired credentials', async () => {
     const apiKeys = createApiKeysRepo();
     const analytics = createAnalyticsRepo();
     analytics.getSystemSummary.mockResolvedValue({
@@ -1440,15 +1492,18 @@ describe('analytics routes', () => {
       maxedTokens: 0,
       totalTokens: 1
     }));
-    expect((res.body as any).tokens).toEqual(expect.arrayContaining([
+    expect((res.body as any).tokens).toEqual([
       expect.objectContaining({
-        credentialId: '22222222-2222-4222-8222-222222222222',
-        status: 'expired'
+        credentialId: '11111111-1111-4111-8111-111111111111',
+        rawStatus: 'active',
+        status: 'active',
+        compactStatus: 'active',
+        expandedStatus: 'active'
       })
-    ]));
+    ]);
   });
 
-  it('maps legacy Claude maxed status without cap exhaustion to rate_limited in dashboard rows', async () => {
+  it('keeps legacy Claude maxed status visible as backend maxed in dashboard rows', async () => {
     const apiKeys = createApiKeysRepo();
     const analytics = createAnalyticsRepo();
     analytics.getSystemSummary.mockResolvedValue({
@@ -1518,15 +1573,20 @@ describe('analytics routes', () => {
     await invokeHandlers(handlers, req, res);
 
     expect((res.body as any).summary).toEqual(expect.objectContaining({
-      activeTokens: 1,
-      maxedTokens: 0,
+      activeTokens: 0,
+      maxedTokens: 1,
       totalTokens: 1
     }));
     expect((res.body as any).tokens).toEqual([
       expect.objectContaining({
         credentialId: '33333333-3333-4333-8333-333333333333',
         provider: 'anthropic',
-        status: 'rate_limited',
+        rawStatus: 'maxed',
+        status: 'maxed',
+        compactStatus: 'maxed',
+        expandedStatus: 'maxed, source: backend_maxed',
+        statusSource: 'backend_maxed',
+        exclusionReason: null,
         fiveHourContributionCapExhausted: false,
         sevenDayContributionCapExhausted: false
       })
@@ -1610,15 +1670,20 @@ describe('analytics routes', () => {
     await invokeHandlers(handlers, req, res);
 
     expect((res.body as any).summary).toEqual(expect.objectContaining({
-      activeTokens: 1,
-      maxedTokens: 0,
+      activeTokens: 0,
+      maxedTokens: 1,
       totalTokens: 1
     }));
     expect((res.body as any).tokens).toEqual([
       expect.objectContaining({
         credentialId: '44444444-4444-4444-8444-444444444444',
         provider: 'anthropic',
-        status: 'rate_limited'
+        rawStatus: 'maxed',
+        status: 'maxed',
+        compactStatus: 'maxed',
+        expandedStatus: 'maxed, source: backend_maxed',
+        statusSource: 'backend_maxed',
+        exclusionReason: null
       })
     ]);
     expect((res.body as any).warnings).toEqual([
@@ -1711,7 +1776,7 @@ describe('analytics routes', () => {
     ]);
   });
 
-  it('treats expired Claude rows as expired in dashboard output and suppresses stale provider-usage warnings', async () => {
+  it('hides expired Claude rows from dashboard output and suppresses stale provider-usage warnings', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-14T13:45:00.000Z'));
 
@@ -1776,14 +1841,7 @@ describe('analytics routes', () => {
       maxedTokens: 0,
       totalTokens: 0
     }));
-    expect((res.body as any).tokens).toEqual([
-      expect.objectContaining({
-        credentialId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-        debugLabel: 'shirtless',
-        provider: 'anthropic',
-        status: 'expired'
-      })
-    ]);
+    expect((res.body as any).tokens).toEqual([]);
     expect((res.body as any).warnings).toEqual([]);
   });
 
@@ -2328,11 +2386,20 @@ describe('analytics routes', () => {
         displayKey: 'cred_2222...2222',
         debugLabel: 'beta',
         provider: 'anthropic',
+        rawStatus: 'active',
         status: 'active',
+        compactStatus: 'active',
+        expandedStatus: 'active',
+        statusSource: null,
+        exclusionReason: null,
         attempts: 7,
         requests: 0,
         usageUnits: 0,
         percentOfWindow: 0,
+        utilizationRate24h: null,
+        maxedEvents7d: 0,
+        monthlyContributionUsedUnits: 0,
+        monthlyContributionLimitUnits: null,
         fiveHourReservePercent: null,
         fiveHourUtilizationRatio: null,
         fiveHourResetsAt: null,
