@@ -4,6 +4,7 @@ dist/
 .env
 .env.local
 .env.*.local
+.worktrees/
 ui/.next/
 ui/.next-dev/
 ui/out/
