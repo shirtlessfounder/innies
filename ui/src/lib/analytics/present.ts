@@ -55,6 +55,20 @@ export function formatCount(value: number | null | undefined): string {
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(value);
 }
 
+export function formatSummaryUnitsCompact(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '--';
+
+  const absolute = Math.abs(value);
+  if (absolute >= 1_000_000_000) {
+    return `${(value / 1_000_000_000).toFixed(4)}B`;
+  }
+  if (absolute >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(4)}M`;
+  }
+
+  return formatCount(value);
+}
+
 export function formatCompactCount(value: number | null | undefined): string {
   if (value === null || value === undefined) return '--';
 

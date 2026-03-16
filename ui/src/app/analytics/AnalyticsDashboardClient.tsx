@@ -25,6 +25,7 @@ import {
   formatLocalTimeZoneAbbreviation,
   formatNullableNumber,
   formatPercent,
+  formatSummaryUnitsCompact,
   formatTimestamp,
   metricLabel,
   seriesValueLabel,
@@ -526,7 +527,7 @@ export function AnalyticsDashboardClient() {
             </div>
             <div className={styles.summaryItem}>
               <div className={styles.summaryLabel}>TOTAL UNITS</div>
-              <div className={styles.summaryValue}>{formatCount(snapshot.summary.totalUsageUnits)}</div>
+              <div className={styles.summaryValue}>{formatSummaryUnitsCompact(snapshot.summary.totalUsageUnits)}</div>
             </div>
             <div className={styles.summaryItem}>
               <div className={styles.summaryLabel}>ACTIVE TOKENS</div>
