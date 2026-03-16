@@ -70,6 +70,11 @@ timeout_rate="$error_rate"
 success_rate="$(printf '%s' "$error_rate" | jq -n --arg er "$error_rate" '(1 - ($er | tonumber))')"
 
 # --- SLO targets ---
+# NOTE: timeout_rate and success_rate are both derived from the single errorRate
+# metric returned by the API (errorRate encompasses timeouts + errors). The API
+# does not yet expose separate tracking, so success_rate = 1 - errorRate and
+# timeout_rate = errorRate. With thresholds ≤2% and ≥95%, the success check can
+# never fail independently of the timeout check.
 SLO_TTFB_P95=8000
 SLO_TIMEOUT_RATE=0.02
 SLO_SUCCESS_RATE=0.95
@@ -124,6 +129,8 @@ printf '%-28s %-12s %-12s %s\n' "Timeout rate" "<= 2.0%" "$timeout_display" "$ti
 printf '%-28s %-12s %-12s %s\n' "Tool-loop success rate" ">= 95.0%" "$success_display" "$success_pass"
 printf '%-28s %-12s %-12s %s\n' "Fallback rate" "flag > 20%" "$fallback_display" "$fallback_flag"
 echo "================================================================"
+echo "* timeout_rate and success_rate are derived from the same errorRate metric."
+echo "  The API does not yet separate timeouts from other errors."
 
 if [[ "$exit_code" -eq 0 ]]; then
   echo "All SLOs passed."
