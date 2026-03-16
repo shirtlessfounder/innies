@@ -50,10 +50,9 @@ fi
 # --- extract metrics ---
 ttfb_p95="$(printf '%s' "$system_body" | jq -r '.ttfbP95Ms // empty')"
 error_rate="$(printf '%s' "$system_body" | jq -r '.errorRate // 0')"
-system_fallback_rate="$(printf '%s' "$system_body" | jq -r '.fallbackRate // 0')"
 total_requests="$(printf '%s' "$system_body" | jq -r '.totalRequests // 0')"
 
-# Compute fallback rate from routing tokens as cross-check
+# Compute fallback rate from routing tokens for the main SLO table.
 routing_fallback_rate="$(printf '%s' "$routing_body" | jq -r '
   [.tokens[] | {f: (.fallbackCount // 0), t: (.totalAttempts // 0)}]
   | {total_fallbacks: (map(.f) | add // 0), total_attempts: (map(.t) | add // 0)}
@@ -61,8 +60,7 @@ routing_fallback_rate="$(printf '%s' "$routing_body" | jq -r '
     else (.total_fallbacks / .total_attempts)
     end')"
 
-# Use system-level fallback rate as primary
-fallback_rate="$system_fallback_rate"
+fallback_rate="$routing_fallback_rate"
 
 # Derive timeout rate and success rate from errorRate
 # errorRate encompasses timeouts + errors; the API does not separate them
