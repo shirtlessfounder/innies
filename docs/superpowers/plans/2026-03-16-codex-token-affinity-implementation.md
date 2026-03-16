@@ -82,6 +82,8 @@ describe('tokenAffinityRepository', () => {
   it('claims one preferred credential per (org_id, provider, session_id)', async () => {});
   it('rejects competing claims for the same credential', async () => {});
   it('lists busy credential ids from active-stream rows', async () => {});
+  it('refreshes last_touched_at for a live stream heartbeat', async () => {});
+  it('returns cleared stream context by request id', async () => {});
   it('clears stale active streams and orphaned preferred ownership together', async () => {});
 });
 ```
@@ -161,7 +163,13 @@ export class TokenAffinityRepository {
   async touchPreferredAssignment(input: { orgId: string; provider: string; sessionId: string; credentialId: string; graceExpiresAt: Date | null }) {}
   async upsertActiveStream(input: { requestId: string; orgId: string; provider: string; credentialId: string; sessionId: string }) {}
   async touchActiveStream(input: { requestId: string; touchedAt: Date }): Promise<boolean> {}
-  async clearActiveStream(input: { requestId: string }) {}
+  async clearActiveStream(input: { requestId: string }): Promise<null | {
+    requestId: string;
+    orgId: string;
+    provider: string;
+    credentialId: string;
+    sessionId: string;
+  }> {}
   async listBusyCredentialIds(input: { orgId: string; provider: string; staleBefore: Date }) {}
   async clearStaleActiveStreams(input: { staleBefore: Date }): Promise<Array<{
     requestId: string;
@@ -245,7 +253,27 @@ export function resolveSessionIdentity(req: { header(name: string): string | und
 }
 ```
 
-- [ ] **Step 4: Modify the Codex wrapper to generate and forward one session id per process**
+- [ ] **Step 4: Make ingress normalization use the helper as the single session source of truth**
+
+```ts
+const sessionIdentity = resolveSessionIdentity(req);
+const correlation = resolveOpenClawCorrelation(req, requestId);
+
+const normalizedCorrelation = {
+  ...correlation,
+  openclawSessionId: sessionIdentity.source === 'x-innies-session-id'
+    ? correlation.openclawSessionId
+    : sessionIdentity.sessionId
+};
+```
+
+The goal here is:
+
+- `sessionIdentity.ts` owns affinity/session resolution
+- OpenClaw correlation keeps run/session audit fields for existing logs
+- later `routeDecision.affinity` reads the canonical session helper, not duplicated header parsing
+
+- [ ] **Step 5: Modify the Codex wrapper to generate and forward one session id per process**
 
 ```js
 const sessionId = `sess_${crypto.randomUUID()}`;
@@ -261,7 +289,7 @@ const env = {
 };
 ```
 
-- [ ] **Step 5: Thread session identity into proxy route metadata**
+- [ ] **Step 6: Thread canonical session identity into current proxy metadata**
 
 ```ts
 const sessionIdentity = resolveSessionIdentity(req);
@@ -278,7 +306,7 @@ const routeDecision = buildTokenRouteDecision(
 );
 ```
 
-- [ ] **Step 6: Re-run the targeted tests**
+- [ ] **Step 7: Re-run the targeted tests**
 
 Run: `cd /Users/dylanvu/innies/cli && node --test tests/codexArgs.test.js`
 Expected: PASS.
@@ -289,12 +317,12 @@ Expected: PASS.
 Run: `cd /Users/dylanvu/innies/api && npx vitest run tests/proxy.tokenMode.route.test.ts`
 Expected: PASS for the direct token-mode session-id cases.
 
-- [ ] **Step 7: Re-run the CLI smoke script**
+- [ ] **Step 8: Re-run the CLI smoke script**
 
 Run: `cd /Users/dylanvu/innies/cli && npm run test:smoke`
 Expected: PASS and the fake Codex log contains both `x-innies-provider-pin` and `x-innies-session-id`.
 
-- [ ] **Step 8: Commit the session-identity slice**
+- [ ] **Step 9: Commit the session-identity slice**
 
 ```bash
 cd /Users/dylanvu/innies
