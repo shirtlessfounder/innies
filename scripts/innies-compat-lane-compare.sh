@@ -77,6 +77,150 @@ redact_bearer_value() {
   printf 'Bearer <redacted:%s>' "${#token}"
 }
 
+load_captured_innies_lane() {
+  local captured_html="$1"
+  local request_id="$2"
+  node - "$captured_html" "$request_id" <<'NODE'
+const fs = require('fs');
+
+const capturedHtmlPath = process.argv[2];
+const requestId = process.argv[3];
+
+function stripLogPrefix(line) {
+  return line.replace(/^.*?\]:\s*/, '');
+}
+
+function parseJsLiteral(literal) {
+  return Function('"use strict"; return (' + literal + ');')();
+}
+
+function parseSerializedValue(text) {
+  try {
+    return JSON.parse(text);
+  } catch {}
+  return parseJsLiteral(text);
+}
+
+function parseChunkSeries(lines, startIndex, label) {
+  const parts = [];
+  let expectedChunkCount = null;
+  let index = startIndex;
+  while (index < lines.length) {
+    const header = stripLogPrefix(lines[index]);
+    if (header !== `${label} {`) break;
+    const chunkIndexLine = stripLogPrefix(lines[index + 1] ?? '');
+    const chunkCountLine = stripLogPrefix(lines[index + 2] ?? '');
+    const jsonLine = stripLogPrefix(lines[index + 3] ?? '');
+    const closeLine = stripLogPrefix(lines[index + 4] ?? '');
+    const chunkIndexMatch = chunkIndexLine.match(/^chunk_index:\s*(\d+),?$/);
+    const chunkCountMatch = chunkCountLine.match(/^chunk_count:\s*(\d+),?$/);
+    const jsonMatch = jsonLine.match(/^json:\s*(.+)$/);
+    if (!chunkIndexMatch || !chunkCountMatch || !jsonMatch || closeLine !== '}') {
+      throw new Error(`Malformed ${label} chunk near line ${index + 1}`);
+    }
+    const chunkIndex = Number(chunkIndexMatch[1]);
+    const chunkCount = Number(chunkCountMatch[1]);
+    if (expectedChunkCount === null) expectedChunkCount = chunkCount;
+    else if (expectedChunkCount !== chunkCount) throw new Error(`Mismatched ${label} chunk_count near line ${index + 1}`);
+    if (chunkIndex !== parts.length) throw new Error(`Out-of-order ${label} chunk_index near line ${index + 1}`);
+    parts.push(parseJsLiteral(jsonMatch[1]));
+    index += 5;
+    if (parts.length === expectedChunkCount) {
+      return { text: parts.join(''), nextIndex: index - 1 };
+    }
+  }
+  throw new Error(`Incomplete ${label} chunk series near line ${startIndex + 1}`);
+}
+
+function readRequestId(value) {
+  const raw = value?.request_id ?? value?.requestId;
+  return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
+}
+
+function normalizeCsv(values) {
+  return [...new Set(values.filter(Boolean).map((value) => String(value).trim()).filter(Boolean))]
+    .sort()
+    .join(',');
+}
+
+function inferTokenKind(provider, authorization) {
+  if (typeof authorization !== 'string' || !authorization.startsWith('Bearer ')) {
+    return 'api_key';
+  }
+  if (provider === 'anthropic') return 'anthropic_oauth';
+  if (provider === 'openai') return 'openai_oauth';
+  return 'bearer';
+}
+
+const lines = fs.readFileSync(capturedHtmlPath, 'utf8').split(/\r?\n/);
+const upstreamRequests = [];
+const upstreamResponses = [];
+for (let index = 0; index < lines.length; index += 1) {
+  const body = stripLogPrefix(lines[index]);
+  if (body === '[compat-upstream-request-json-chunk] {') {
+    const { text, nextIndex } = parseChunkSeries(lines, index, '[compat-upstream-request-json-chunk]');
+    upstreamRequests.push(parseSerializedValue(text));
+    index = nextIndex;
+    continue;
+  }
+  if (body === '[compat-upstream-response-json-chunk] {') {
+    const { text, nextIndex } = parseChunkSeries(lines, index, '[compat-upstream-response-json-chunk]');
+    upstreamResponses.push(parseSerializedValue(text));
+    index = nextIndex;
+  }
+}
+
+const upstreamRequest = upstreamRequests.find((value) => readRequestId(value) === requestId);
+if (!upstreamRequest) {
+  console.error(`error: no captured compat upstream request found for ${requestId}`);
+  process.exit(1);
+}
+const upstreamResponse = upstreamResponses.find((value) => readRequestId(value) === requestId);
+if (!upstreamResponse) {
+  console.error(`error: no captured compat upstream response found for ${requestId}`);
+  process.exit(1);
+}
+
+const headers = upstreamRequest.headers && typeof upstreamRequest.headers === 'object' ? upstreamRequest.headers : {};
+const responseHeaders = upstreamResponse.response_headers && typeof upstreamResponse.response_headers === 'object'
+  ? upstreamResponse.response_headers
+  : {};
+const parsedBody = upstreamResponse.parsed_body && typeof upstreamResponse.parsed_body === 'object'
+  ? upstreamResponse.parsed_body
+  : {};
+const providerRequestId = responseHeaders['request-id']
+  ?? responseHeaders['x-request-id']
+  ?? parsedBody.request_id
+  ?? '';
+
+const values = {
+  status: String(upstreamResponse.upstream_status ?? ''),
+  request_id: String(requestId),
+  response_request_id: String(upstreamResponse.request_id ?? requestId),
+  forwarded_request_id: String(upstreamRequest.request_id ?? requestId),
+  provider_request_id: String(providerRequestId),
+  token_credential_id: String(upstreamRequest.credential_id ?? upstreamResponse.credential_id ?? ''),
+  attempt_no: String(upstreamRequest.attempt_no ?? upstreamResponse.attempt_no ?? ''),
+  upstream_target_url: String(upstreamRequest.target_url ?? ''),
+  upstream_proxied_path: String(upstreamRequest.proxied_path ?? ''),
+  upstream_provider: String(upstreamRequest.provider ?? ''),
+  upstream_stream: String(Boolean(upstreamRequest.stream)),
+  upstream_credential_id: String(upstreamRequest.credential_id ?? upstreamResponse.credential_id ?? ''),
+  upstream_token_kind: inferTokenKind(String(upstreamRequest.provider ?? ''), String(headers.authorization ?? '')),
+  upstream_authorization: String(headers.authorization ?? ''),
+  upstream_accept: String(headers.accept ?? ''),
+  upstream_anthropic_version: String(headers['anthropic-version'] ?? ''),
+  upstream_anthropic_beta: String(headers['anthropic-beta'] ?? ''),
+  upstream_user_agent: String(headers['user-agent'] ?? ''),
+  upstream_header_names: normalizeCsv(Object.keys(headers))
+};
+
+for (const [key, value] of Object.entries(values)) {
+  process.stdout.write(`${key}=${value}\n`);
+}
+NODE
+}
+
 resolve_direct_base_url() {
   if [[ -n "${ANTHROPIC_DIRECT_BASE_URL:-}" ]]; then
     printf '%s' "${ANTHROPIC_DIRECT_BASE_URL%/}"
@@ -97,14 +241,28 @@ if [[ ! -f "$PAYLOAD_PATH" ]]; then
   exit 1
 fi
 
-API_URL="$(resolve_api_url)"
-BUYER_TOKEN="${INNIES_BUYER_API_KEY:-${INNIES_TOKEN:-${BUYER_TOKEN:-}}}"
-if [[ -z "$BUYER_TOKEN" ]]; then
-  if ! BUYER_TOKEN="$(prompt_secret 'buyer API key (press Enter to cancel)')"; then
+CAPTURED_RESPONSE_HTML="${INNIES_CAPTURED_RESPONSE_HTML:-${INNIES_CAPTURED_LOG_PATH:-}}"
+CAPTURED_REQUEST_ID="${INNIES_CAPTURED_REQUEST_ID:-${INNIES_REQUEST_ID:-}}"
+USE_CAPTURED_RESPONSE='false'
+if [[ -n "$CAPTURED_RESPONSE_HTML" ]]; then
+  if [[ ! -f "$CAPTURED_RESPONSE_HTML" ]]; then
+    echo "error: captured response HTML not found: $CAPTURED_RESPONSE_HTML" >&2
     exit 1
   fi
+  require_nonempty 'captured Innies request id' "$CAPTURED_REQUEST_ID"
+  USE_CAPTURED_RESPONSE='true'
 fi
-require_nonempty 'buyer API key' "$BUYER_TOKEN"
+
+if [[ "$USE_CAPTURED_RESPONSE" != 'true' ]]; then
+  API_URL="$(resolve_api_url)"
+  BUYER_TOKEN="${INNIES_BUYER_API_KEY:-${INNIES_TOKEN:-${BUYER_TOKEN:-}}}"
+  if [[ -z "$BUYER_TOKEN" ]]; then
+    if ! BUYER_TOKEN="$(prompt_secret 'buyer API key (press Enter to cancel)')"; then
+      exit 1
+    fi
+  fi
+  require_nonempty 'buyer API key' "$BUYER_TOKEN"
+fi
 
 DIRECT_TOKEN="${ANTHROPIC_OAUTH_ACCESS_TOKEN:-${CLAUDE_OAUTH_ACCESS_TOKEN:-}}"
 if [[ -z "$DIRECT_TOKEN" ]]; then
@@ -116,7 +274,7 @@ require_nonempty 'Anthropic OAuth access token' "$DIRECT_TOKEN"
 
 ANTHROPIC_VERSION="${INNIES_ANTHROPIC_VERSION:-2023-06-01}"
 ANTHROPIC_BETA="${INNIES_ANTHROPIC_BETA:-fine-grained-tool-streaming-2025-05-14}"
-INNIES_REQUEST_ID="${INNIES_REQUEST_ID:-req_issue80_innies_$(date -u +%Y%m%dT%H%M%SZ)}"
+INNIES_REQUEST_ID="${INNIES_REQUEST_ID:-${CAPTURED_REQUEST_ID:-req_issue80_innies_$(date -u +%Y%m%dT%H%M%SZ)}}"
 DIRECT_REQUEST_ID="${ANTHROPIC_DIRECT_REQUEST_ID:-req_issue80_direct_$(date -u +%Y%m%dT%H%M%SZ)}"
 DIRECT_BASE_URL="$(resolve_direct_base_url)"
 DIRECT_VERSION="${ANTHROPIC_DIRECT_VERSION:-$ANTHROPIC_VERSION}"
@@ -135,46 +293,96 @@ DIRECT_BODY_FILE="$OUT_DIR/direct-body.txt"
 DIRECT_META_FILE="$OUT_DIR/direct-meta.txt"
 COMPARISON_FILE="$OUT_DIR/comparison.txt"
 
-INNIES_STATUS="$(curl -sS -D "$INNIES_HEADERS_FILE" -o "$INNIES_BODY_FILE" -w '%{http_code}' \
-  -X POST "${API_URL}/v1/messages" \
-  -H "Authorization: Bearer $BUYER_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: text/event-stream' \
-  -H "anthropic-version: $ANTHROPIC_VERSION" \
-  -H "anthropic-beta: $ANTHROPIC_BETA" \
-  -H "x-request-id: $INNIES_REQUEST_ID" \
-  -H 'x-innies-debug-upstream-lane: 1' \
-  --data-binary @"$PAYLOAD_PATH")"
+INNIES_STATUS=''
+INNIES_RESPONSE_REQUEST_ID=''
+INNIES_TOKEN_CREDENTIAL_ID=''
+INNIES_ATTEMPT_NO=''
+INNIES_UPSTREAM_TARGET_URL=''
+INNIES_UPSTREAM_PROXIED_PATH=''
+INNIES_UPSTREAM_PROVIDER=''
+INNIES_UPSTREAM_STREAM=''
+INNIES_UPSTREAM_CREDENTIAL_ID=''
+INNIES_UPSTREAM_TOKEN_KIND=''
+INNIES_UPSTREAM_AUTHORIZATION=''
+INNIES_UPSTREAM_ACCEPT=''
+INNIES_UPSTREAM_ANTHROPIC_VERSION=''
+INNIES_UPSTREAM_ANTHROPIC_BETA=''
+INNIES_UPSTREAM_USER_AGENT=''
+INNIES_FORWARDED_REQUEST_ID=''
+INNIES_UPSTREAM_HEADER_NAMES=''
+INNIES_PROVIDER_REQUEST_ID=''
 
-INNIES_RESPONSE_REQUEST_ID="$(extract_header 'x-request-id' "$INNIES_HEADERS_FILE")"
-INNIES_TOKEN_CREDENTIAL_ID="$(extract_header 'x-innies-token-credential-id' "$INNIES_HEADERS_FILE")"
-INNIES_ATTEMPT_NO="$(extract_header 'x-innies-attempt-no' "$INNIES_HEADERS_FILE")"
-INNIES_UPSTREAM_TARGET_URL="$(extract_header 'x-innies-debug-upstream-target-url' "$INNIES_HEADERS_FILE")"
-INNIES_UPSTREAM_PROXIED_PATH="$(extract_header 'x-innies-debug-upstream-proxied-path' "$INNIES_HEADERS_FILE")"
-INNIES_UPSTREAM_PROVIDER="$(extract_header 'x-innies-debug-upstream-provider' "$INNIES_HEADERS_FILE")"
-INNIES_UPSTREAM_STREAM="$(extract_header 'x-innies-debug-upstream-stream' "$INNIES_HEADERS_FILE")"
-INNIES_UPSTREAM_CREDENTIAL_ID="$(extract_header 'x-innies-debug-upstream-credential-id' "$INNIES_HEADERS_FILE")"
-INNIES_UPSTREAM_TOKEN_KIND="$(extract_header 'x-innies-debug-upstream-token-kind' "$INNIES_HEADERS_FILE")"
-INNIES_UPSTREAM_AUTHORIZATION="$(extract_header 'x-innies-debug-upstream-authorization' "$INNIES_HEADERS_FILE")"
-INNIES_UPSTREAM_ACCEPT="$(extract_header 'x-innies-debug-upstream-accept' "$INNIES_HEADERS_FILE")"
-INNIES_UPSTREAM_ANTHROPIC_VERSION="$(extract_header 'x-innies-debug-upstream-anthropic-version' "$INNIES_HEADERS_FILE")"
-INNIES_UPSTREAM_ANTHROPIC_BETA="$(extract_header 'x-innies-debug-upstream-anthropic-beta' "$INNIES_HEADERS_FILE")"
-INNIES_UPSTREAM_USER_AGENT="$(extract_header 'x-innies-debug-upstream-user-agent' "$INNIES_HEADERS_FILE")"
-INNIES_FORWARDED_REQUEST_ID="$(extract_header 'x-innies-debug-upstream-request-id' "$INNIES_HEADERS_FILE")"
-INNIES_UPSTREAM_HEADER_NAMES="$(normalize_csv "$(extract_header 'x-innies-debug-upstream-header-names' "$INNIES_HEADERS_FILE")")"
-INNIES_PROVIDER_REQUEST_ID="$(extract_header 'request-id' "$INNIES_HEADERS_FILE")"
-if [[ -z "$INNIES_PROVIDER_REQUEST_ID" ]]; then
-  INNIES_PROVIDER_REQUEST_ID="$(extract_body_request_id "$INNIES_BODY_FILE")"
+if [[ "$USE_CAPTURED_RESPONSE" == 'true' ]]; then
+  while IFS='=' read -r key value; do
+    case "$key" in
+      status) INNIES_STATUS="$value" ;;
+      request_id) INNIES_REQUEST_ID="$value" ;;
+      response_request_id) INNIES_RESPONSE_REQUEST_ID="$value" ;;
+      forwarded_request_id) INNIES_FORWARDED_REQUEST_ID="$value" ;;
+      provider_request_id) INNIES_PROVIDER_REQUEST_ID="$value" ;;
+      token_credential_id) INNIES_TOKEN_CREDENTIAL_ID="$value" ;;
+      attempt_no) INNIES_ATTEMPT_NO="$value" ;;
+      upstream_target_url) INNIES_UPSTREAM_TARGET_URL="$value" ;;
+      upstream_proxied_path) INNIES_UPSTREAM_PROXIED_PATH="$value" ;;
+      upstream_provider) INNIES_UPSTREAM_PROVIDER="$value" ;;
+      upstream_stream) INNIES_UPSTREAM_STREAM="$value" ;;
+      upstream_credential_id) INNIES_UPSTREAM_CREDENTIAL_ID="$value" ;;
+      upstream_token_kind) INNIES_UPSTREAM_TOKEN_KIND="$value" ;;
+      upstream_authorization) INNIES_UPSTREAM_AUTHORIZATION="$value" ;;
+      upstream_accept) INNIES_UPSTREAM_ACCEPT="$value" ;;
+      upstream_anthropic_version) INNIES_UPSTREAM_ANTHROPIC_VERSION="$value" ;;
+      upstream_anthropic_beta) INNIES_UPSTREAM_ANTHROPIC_BETA="$value" ;;
+      upstream_user_agent) INNIES_UPSTREAM_USER_AGENT="$value" ;;
+      upstream_header_names) INNIES_UPSTREAM_HEADER_NAMES="$value" ;;
+    esac
+  done < <(load_captured_innies_lane "$CAPTURED_RESPONSE_HTML" "$CAPTURED_REQUEST_ID")
+else
+  INNIES_STATUS="$(curl -sS -D "$INNIES_HEADERS_FILE" -o "$INNIES_BODY_FILE" -w '%{http_code}' \
+    -X POST "${API_URL}/v1/messages" \
+    -H "Authorization: Bearer $BUYER_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: text/event-stream' \
+    -H "anthropic-version: $ANTHROPIC_VERSION" \
+    -H "anthropic-beta: $ANTHROPIC_BETA" \
+    -H "x-request-id: $INNIES_REQUEST_ID" \
+    -H 'x-innies-debug-upstream-lane: 1' \
+    --data-binary @"$PAYLOAD_PATH")"
+
+  INNIES_RESPONSE_REQUEST_ID="$(extract_header 'x-request-id' "$INNIES_HEADERS_FILE")"
+  INNIES_TOKEN_CREDENTIAL_ID="$(extract_header 'x-innies-token-credential-id' "$INNIES_HEADERS_FILE")"
+  INNIES_ATTEMPT_NO="$(extract_header 'x-innies-attempt-no' "$INNIES_HEADERS_FILE")"
+  INNIES_UPSTREAM_TARGET_URL="$(extract_header 'x-innies-debug-upstream-target-url' "$INNIES_HEADERS_FILE")"
+  INNIES_UPSTREAM_PROXIED_PATH="$(extract_header 'x-innies-debug-upstream-proxied-path' "$INNIES_HEADERS_FILE")"
+  INNIES_UPSTREAM_PROVIDER="$(extract_header 'x-innies-debug-upstream-provider' "$INNIES_HEADERS_FILE")"
+  INNIES_UPSTREAM_STREAM="$(extract_header 'x-innies-debug-upstream-stream' "$INNIES_HEADERS_FILE")"
+  INNIES_UPSTREAM_CREDENTIAL_ID="$(extract_header 'x-innies-debug-upstream-credential-id' "$INNIES_HEADERS_FILE")"
+  INNIES_UPSTREAM_TOKEN_KIND="$(extract_header 'x-innies-debug-upstream-token-kind' "$INNIES_HEADERS_FILE")"
+  INNIES_UPSTREAM_AUTHORIZATION="$(extract_header 'x-innies-debug-upstream-authorization' "$INNIES_HEADERS_FILE")"
+  INNIES_UPSTREAM_ACCEPT="$(extract_header 'x-innies-debug-upstream-accept' "$INNIES_HEADERS_FILE")"
+  INNIES_UPSTREAM_ANTHROPIC_VERSION="$(extract_header 'x-innies-debug-upstream-anthropic-version' "$INNIES_HEADERS_FILE")"
+  INNIES_UPSTREAM_ANTHROPIC_BETA="$(extract_header 'x-innies-debug-upstream-anthropic-beta' "$INNIES_HEADERS_FILE")"
+  INNIES_UPSTREAM_USER_AGENT="$(extract_header 'x-innies-debug-upstream-user-agent' "$INNIES_HEADERS_FILE")"
+  INNIES_FORWARDED_REQUEST_ID="$(extract_header 'x-innies-debug-upstream-request-id' "$INNIES_HEADERS_FILE")"
+  INNIES_UPSTREAM_HEADER_NAMES="$(normalize_csv "$(extract_header 'x-innies-debug-upstream-header-names' "$INNIES_HEADERS_FILE")")"
+  INNIES_PROVIDER_REQUEST_ID="$(extract_header 'request-id' "$INNIES_HEADERS_FILE")"
+  if [[ -z "$INNIES_PROVIDER_REQUEST_ID" ]]; then
+    INNIES_PROVIDER_REQUEST_ID="$(extract_body_request_id "$INNIES_BODY_FILE")"
+  fi
 fi
 
 if [[ -z "$INNIES_UPSTREAM_TARGET_URL" ]]; then
-  echo 'error: missing x-innies-debug-upstream-target-url response header; enable INNIES_ENABLE_UPSTREAM_DEBUG_HEADERS=true on the API server' >&2
+  if [[ "$USE_CAPTURED_RESPONSE" == 'true' ]]; then
+    echo "error: captured response did not contain an Innies upstream lane for request $CAPTURED_REQUEST_ID" >&2
+  else
+    echo 'error: missing x-innies-debug-upstream-target-url response header; enable INNIES_ENABLE_UPSTREAM_DEBUG_HEADERS=true on the API server' >&2
+  fi
   exit 1
 fi
 
 write_lines "$INNIES_META_FILE" \
   "timestamp=$TIMESTAMP" \
   "payload_path=$PAYLOAD_PATH" \
+  "captured_response_html=${CAPTURED_RESPONSE_HTML:-}" \
   "payload_bytes=$PAYLOAD_BYTES" \
   "status=$INNIES_STATUS" \
   "request_id=$INNIES_REQUEST_ID" \

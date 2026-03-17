@@ -10,9 +10,12 @@ INNIES_REQUEST_BODY="$TMP_DIR/innies-request-body.json"
 DIRECT_REQUEST_HEADERS="$TMP_DIR/direct-request-headers.json"
 DIRECT_REQUEST_BODY="$TMP_DIR/direct-request-body.json"
 OUTPUT_PATH="$TMP_DIR/output.txt"
+OUTPUT_FROM_LOG_PATH="$TMP_DIR/output-from-log.txt"
 INNIES_SERVER_LOG="$TMP_DIR/innies-server.log"
 DIRECT_SERVER_LOG="$TMP_DIR/direct-server.log"
 OUT_DIR="$TMP_DIR/out"
+OUT_DIR_FROM_LOG="$TMP_DIR/out-from-log"
+CAPTURED_RESPONSE_HTML="$TMP_DIR/response.html"
 
 cleanup() {
   if [[ -n "${INNIES_SERVER_PID:-}" ]]; then
@@ -144,3 +147,40 @@ cmp -s "$PAYLOAD_PATH" "$DIRECT_REQUEST_BODY"
 
 grep -q '^direct_only_header_names=user-agent$' "$OUT_DIR/comparison.txt"
 grep -q '^innies_only_header_names=$' "$OUT_DIR/comparison.txt"
+
+cat >"$CAPTURED_RESPONSE_HTML" <<'LOG'
+Mar 17 11:10:39 sf-prod bash[263845]: [compat-upstream-request-json-chunk] {
+Mar 17 11:10:39 sf-prod bash[263845]:   chunk_index: 0,
+Mar 17 11:10:39 sf-prod bash[263845]:   chunk_count: 1,
+Mar 17 11:10:39 sf-prod bash[263845]:   json: '{"attempt_no":1,"credential_id":"cred_issue80_from_log","credential_label":"aelix","headers":{"accept":"text/event-stream","anthropic-beta":"fine-grained-tool-streaming-2025-05-14,oauth-2025-04-20","anthropic-version":"2023-06-01","authorization":"Bearer <redacted:108>","content-type":"application/json","x-request-id":"req_issue80_from_log"},"method":"POST","model":"claude-opus-4-6","payload":{"model":"claude-opus-4-6","stream":true,"max_tokens":16,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]},"provider":"anthropic","proxied_path":"/v1/messages","request_id":"req_issue80_from_log","stream":true,"target_url":"https://api.anthropic.com/v1/messages"}'
+Mar 17 11:10:39 sf-prod bash[263845]: }
+Mar 17 11:10:39 sf-prod bash[263845]: [compat-upstream-response-json-chunk] {
+Mar 17 11:10:39 sf-prod bash[263845]:   chunk_index: 0,
+Mar 17 11:10:39 sf-prod bash[263845]:   chunk_count: 1,
+Mar 17 11:10:39 sf-prod bash[263845]:   json: '{"attempt_no":1,"credential_id":"cred_issue80_from_log","credential_label":"aelix","parsed_body":{"error":{"message":"Error","type":"invalid_request_error"},"request_id":"req_upstream_from_log","type":"error"},"provider":"anthropic","proxied_path":"/v1/messages","request_id":"req_issue80_from_log","response_headers":{"content-type":"application/json","request-id":"req_upstream_from_log"},"stream":true,"target_url":"https://api.anthropic.com/v1/messages","upstream_content_type":"application/json","upstream_status":400}'
+Mar 17 11:10:39 sf-prod bash[263845]: }
+LOG
+
+INNIES_CAPTURED_RESPONSE_HTML="$CAPTURED_RESPONSE_HTML" \
+INNIES_CAPTURED_REQUEST_ID="req_issue80_from_log" \
+INNIES_LANE_OUT_DIR="$OUT_DIR_FROM_LOG" \
+ANTHROPIC_OAUTH_ACCESS_TOKEN="sk-ant-oat-direct-token" \
+ANTHROPIC_DIRECT_BASE_URL="http://127.0.0.1:$DIRECT_PORT" \
+ANTHROPIC_DIRECT_REQUEST_ID="req_issue80_direct_from_log" \
+ANTHROPIC_DIRECT_USER_AGENT="OpenClawGateway/1.0" \
+"$SCRIPT_PATH" "$PAYLOAD_PATH" >"$OUTPUT_FROM_LOG_PATH"
+
+grep -q 'innies_status=400' "$OUTPUT_FROM_LOG_PATH"
+grep -q 'innies_request_id=req_issue80_from_log' "$OUTPUT_FROM_LOG_PATH"
+grep -q 'innies_forwarded_request_id=req_issue80_from_log' "$OUTPUT_FROM_LOG_PATH"
+grep -q 'innies_provider_request_id=req_upstream_from_log' "$OUTPUT_FROM_LOG_PATH"
+grep -q 'innies_upstream_token_kind=anthropic_oauth' "$OUTPUT_FROM_LOG_PATH"
+grep -q 'innies_upstream_header_names=accept,anthropic-beta,anthropic-version,authorization,content-type,x-request-id' "$OUTPUT_FROM_LOG_PATH"
+grep -q 'direct_status=200' "$OUTPUT_FROM_LOG_PATH"
+grep -q 'comparison_file=' "$OUTPUT_FROM_LOG_PATH"
+
+grep -q '"authorization": "Bearer sk-ant-oat-direct-token"' "$DIRECT_REQUEST_HEADERS"
+cmp -s "$PAYLOAD_PATH" "$DIRECT_REQUEST_BODY"
+
+grep -q '^innies_upstream_token_kind=anthropic_oauth$' "$OUT_DIR_FROM_LOG/comparison.txt"
+grep -q '^direct_only_header_names=user-agent$' "$OUT_DIR_FROM_LOG/comparison.txt"
