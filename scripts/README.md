@@ -24,6 +24,7 @@ innies-buyer-key-create
 innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
+innies-compat-replay
 innies-slo-check
 ```
 
@@ -39,6 +40,7 @@ What they do:
 - `innies-buyer-preference-set`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
+- `innies-compat-replay`: replay a preserved Anthropic compat request body through `/v1/messages`, preserve the caller beta lane, and print Innies plus upstream request ids for incident evidence
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
 
 Behavior:
@@ -79,6 +81,7 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
+- `innies-compat-replay` accepts a payload file path arg (or `INNIES_REPLAY_PAYLOAD_PATH`), uses `INNIES_BASE_URL`, `INNIES_API_BASE_URL`, or `INNIES_API_URL`, accepts `INNIES_BUYER_API_KEY` or `INNIES_TOKEN`, preserves `anthropic-beta` via `INNIES_ANTHROPIC_BETA` (default `fine-grained-tool-streaming-2025-05-14`), and writes `meta.txt`, `headers.txt`, and `body.txt` into `INNIES_REPLAY_OUT_DIR`
 
 ## Env
 
