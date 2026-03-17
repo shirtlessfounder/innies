@@ -98,6 +98,7 @@ export FAKE_CODEX_LOG
 export TMP_DIR
 export INNIES_CAPTURE_CLAUDE_OUTPUT=1
 export INNIES_CAPTURE_CODEX_OUTPUT=1
+export OPENAI_BASE_URL="https://deprecated-env-should-not-reach-codex.invalid"
 
 node "$ROOT_DIR/src/index.js" login --token in_live_test --base-url "$MOCK_BASE_URL"
 node "$ROOT_DIR/src/index.js" doctor > "$TMP_DIR/doctor.out"
@@ -238,8 +239,8 @@ if ! grep -q "INNIES_PROXY_URL:$MOCK_BASE_URL/v1/proxy/v1" "$FAKE_CODEX_LOG"; th
   exit 1
 fi
 
-if ! grep -q "OPENAI_BASE_URL:$MOCK_BASE_URL/v1/proxy/v1" "$FAKE_CODEX_LOG"; then
-  echo "smoke: missing codex OPENAI_BASE_URL wiring"
+if grep -Eq '^OPENAI_BASE_URL:.+$' "$FAKE_CODEX_LOG"; then
+  echo "smoke: deprecated codex OPENAI_BASE_URL wiring still present"
   exit 1
 fi
 

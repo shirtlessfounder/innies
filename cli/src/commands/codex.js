@@ -82,8 +82,13 @@ export async function runCodex(args) {
 
   printConnectionStatus({ model, proxyUrl, correlationId });
 
+  const {
+    OPENAI_BASE_URL: _deprecatedOpenAiBaseUrl,
+    ...inheritedEnv
+  } = process.env;
+
   const env = {
-    ...process.env,
+    ...inheritedEnv,
     MallocStackLogging: '',
     INNIES_CODEX_WRAPPED: '1',
     INNIES_TOKEN: config.token,
@@ -93,8 +98,7 @@ export async function runCodex(args) {
     INNIES_ROUTE_MODE: 'token',
     INNIES_CORRELATION_ID: correlationId,
     INNIES_PROVIDER_PIN: 'true',
-    OPENAI_API_KEY: config.token,
-    OPENAI_BASE_URL: proxyUrl
+    OPENAI_API_KEY: config.token
   };
 
   const captureOutput = shouldCaptureCommandOutput('INNIES_CAPTURE_CODEX_OUTPUT');
