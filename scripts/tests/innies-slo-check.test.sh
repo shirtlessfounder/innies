@@ -557,3 +557,57 @@ if [[ "$negative_attempts_output" != *"(routing cross-check: unavailable - /v1/a
 fi
 
 echo "PASS: innies-slo-check keeps the main SLO report usable when routing totalAttempts is negative"
+
+cat > "${tmp_dir}/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+url="${*: -1}"
+
+case "$url" in
+  *"/v1/admin/analytics/system?window=24h")
+    cat <<'JSON'
+{"ttfbP95Ms":1000,"errorRate":0.01,"fallbackRate":0.25,"totalRequests":4}
+200
+JSON
+    ;;
+  *"/v1/admin/analytics/tokens/routing?window=24h")
+    echo "notice: reused connection" >&2
+    cat <<'JSON'
+{"tokens":[{"fallbackCount":0,"totalAttempts":3}]}
+200
+JSON
+    ;;
+  *)
+    echo "unexpected curl url: $url" >&2
+    exit 1
+    ;;
+esac
+EOF
+chmod +x "${tmp_dir}/curl"
+
+if ! stderr_noise_output="$(
+  PATH="${tmp_dir}:$PATH" \
+  INNIES_ADMIN_API_KEY="admin-token" \
+  INNIES_ENV_FILE="${tmp_dir}/missing.env" \
+  bash "${ROOT_DIR}/scripts/innies-slo-check.sh"
+)"; then
+  echo "expected script to keep the main SLO report running when routing succeeds with harmless stderr noise" >&2
+  exit 1
+fi
+
+stderr_noise_fallback_line="$(printf '%s\n' "$stderr_noise_output" | awk '$1 == "Fallback" && $2 == "rate" { print; exit }')"
+
+if [[ "$stderr_noise_fallback_line" != *"25%"* || "$stderr_noise_fallback_line" != *"FLAG"* ]]; then
+  echo "expected fallback line to stay on the system summary when routing succeeds with harmless stderr noise" >&2
+  echo "$stderr_noise_output" >&2
+  exit 1
+fi
+
+if [[ "$stderr_noise_output" != *"(routing cross-check: attributed per-token aggregate fallback rate = 0%)"* ]]; then
+  echo "expected successful routing JSON plus harmless stderr noise to preserve the truthful routing cross-check" >&2
+  echo "$stderr_noise_output" >&2
+  exit 1
+fi
+
+echo "PASS: innies-slo-check keeps the routing cross-check truthful when successful routing responses emit harmless stderr noise"

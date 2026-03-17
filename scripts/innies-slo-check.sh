@@ -38,7 +38,7 @@ routing_available=0
 routing_unavailable_reason=""
 if routing_response="$(curl -sS -w '\n%{http_code}' \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "${BASE_URL%/}/v1/admin/analytics/tokens/routing?window=${WINDOW}" 2>&1)"; then
+  "${BASE_URL%/}/v1/admin/analytics/tokens/routing?window=${WINDOW}" 2>/dev/null)"; then
   routing_status="$(printf '%s' "$routing_response" | tail -n1)"
   routing_body="$(printf '%s' "$routing_response" | sed '$d')"
 
