@@ -725,6 +725,95 @@ function logCompatAudit(input: {
   console.info('[compat-audit] attempt', input);
 }
 
+function summarizeAnthropicCompatRequestShape(payload: unknown, stream: boolean): Record<string, unknown> {
+  const record = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : {};
+  const messages = Array.isArray(record.messages) ? record.messages : [];
+  const tools = Array.isArray(record.tools) ? record.tools : [];
+  const toolChoice = record.tool_choice;
+  const thinking = record.thinking && typeof record.thinking === 'object' && !Array.isArray(record.thinking)
+    ? record.thinking as Record<string, unknown>
+    : null;
+  const toolChoiceType = typeof toolChoice === 'string'
+    ? toolChoice
+    : (toolChoice && typeof toolChoice === 'object' && typeof (toolChoice as Record<string, unknown>).type === 'string'
+        ? String((toolChoice as Record<string, unknown>).type)
+        : null);
+  const thinkingType = typeof thinking?.type === 'string' ? String(thinking.type) : null;
+  const thinkingBudgetTokens = typeof thinking?.budget_tokens === 'number' && Number.isFinite(thinking.budget_tokens)
+    ? thinking.budget_tokens
+    : null;
+  const maxTokens = typeof record.max_tokens === 'number' && Number.isFinite(record.max_tokens)
+    ? record.max_tokens
+    : null;
+  const maxOutputTokens = typeof record.max_output_tokens === 'number' && Number.isFinite(record.max_output_tokens)
+    ? record.max_output_tokens
+    : null;
+
+  return {
+    stream,
+    message_count: messages.length,
+    system_present: record.system != null,
+    tool_count: tools.length,
+    tool_choice_present: toolChoice != null,
+    tool_choice_type: toolChoiceType,
+    thinking_present: thinking != null,
+    thinking_type: thinkingType,
+    thinking_budget_tokens: thinkingBudgetTokens,
+    max_tokens: maxTokens,
+    max_output_tokens: maxOutputTokens,
+    metadata_present: record.metadata != null
+  };
+}
+
+function shouldLogCompatInvalidRequestDebug(input: {
+  strictUpstreamPassthrough?: boolean;
+  provider: string;
+  proxiedPath: string;
+  upstreamStatus: number;
+  errorType?: string;
+}): boolean {
+  return Boolean(
+    input.strictUpstreamPassthrough
+    && canonicalizeProvider(input.provider) === 'anthropic'
+    && input.proxiedPath.startsWith('/v1/messages')
+    && input.upstreamStatus === 400
+    && input.errorType === 'invalid_request_error'
+  );
+}
+
+function logCompatInvalidRequestDebug(input: {
+  requestId: string;
+  credentialId: string;
+  credentialLabel?: string | null;
+  provider: string;
+  model: string;
+  proxiedPath: string;
+  anthropicVersion: string;
+  anthropicBeta?: string;
+  upstreamStatus: number;
+  upstreamErrorType?: string;
+  upstreamErrorMessage?: string;
+  payload: unknown;
+  stream: boolean;
+}): void {
+  console.warn('[compat-invalid-request-debug]', {
+    request_id: input.requestId,
+    credential_id: input.credentialId,
+    credential_label: input.credentialLabel ?? null,
+    provider: input.provider,
+    model: input.model,
+    proxied_path: input.proxiedPath,
+    anthropic_version: input.anthropicVersion,
+    anthropic_beta: input.anthropicBeta ?? null,
+    upstream_status: input.upstreamStatus,
+    upstream_error_type: input.upstreamErrorType ?? null,
+    upstream_error_message: input.upstreamErrorMessage ?? null,
+    request_shape: summarizeAnthropicCompatRequestShape(input.payload, input.stream)
+  });
+}
+
 function logCompatTranslatedUpstreamError(input: {
   requestId: string;
   credentialId: string;
@@ -2310,6 +2399,29 @@ async function executeTokenModeNonStreaming(input: {
       const downstreamContentType = compatTranslation || extractedSseResponse ? 'application/json' : contentType;
       if (strictUpstreamPassthrough && status >= 400) {
         const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
+        if (shouldLogCompatInvalidRequestDebug({
+          strictUpstreamPassthrough,
+          provider,
+          proxiedPath,
+          upstreamStatus: status,
+          errorType
+        })) {
+          logCompatInvalidRequestDebug({
+            requestId,
+            credentialId: credential.id,
+            credentialLabel: credential.debugLabel,
+            provider,
+            model,
+            proxiedPath,
+            anthropicVersion,
+            anthropicBeta: compat.anthropicBeta,
+            upstreamStatus: status,
+            upstreamErrorType: errorType,
+            upstreamErrorMessage: errorMessage,
+            payload: compat.payload,
+            stream: false
+          });
+        }
         logCompatAudit({
           orgId,
           provider,
@@ -2950,6 +3062,29 @@ async function executeTokenModeStreaming(input: {
           : (downstreamMappedError?.body ?? data);
         if (strictUpstreamPassthrough && status >= 400) {
           const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
+          if (shouldLogCompatInvalidRequestDebug({
+            strictUpstreamPassthrough,
+            provider,
+            proxiedPath,
+            upstreamStatus: status,
+            errorType
+          })) {
+            logCompatInvalidRequestDebug({
+              requestId,
+              credentialId: credential.id,
+              credentialLabel: credential.debugLabel,
+              provider,
+              model,
+              proxiedPath,
+              anthropicVersion,
+              anthropicBeta: compat.anthropicBeta,
+              upstreamStatus: status,
+              upstreamErrorType: errorType,
+              upstreamErrorMessage: errorMessage,
+              payload: compat.payload,
+              stream: true
+            });
+          }
           logCompatAudit({
             orgId,
             provider,

@@ -1474,6 +1474,111 @@ describe('anthropic compat route', () => {
     upstreamSpy.mockRestore();
   });
 
+  it('logs redacted compat debug context for anthropic upstream invalid_request_error passthroughs', async () => {
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'debug-cred',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'sk-ant-oat01-debug-token',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z'),
+      debugLabel: 'shirtless'
+    } as any]);
+
+    const compatDebugSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'invalid_request_error', message: 'Error' }
+      }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'x-request-id': 'req_test_invalid_400',
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        stream: true,
+        max_tokens: 4096,
+        system: 'top-secret-system',
+        messages: [
+          { role: 'assistant', content: 'prior assistant content' },
+          { role: 'user', content: [{ type: 'text', text: 'secret prompt' }] }
+        ],
+        tools: [{ name: 'lookup', description: 'sensitive tool config', input_schema: { type: 'object' } }],
+        tool_choice: 'auto',
+        thinking: { type: 'enabled', budget_tokens: 2048 },
+        metadata: { secret: 'value' }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(400);
+    const compatDebugCalls = compatDebugSpy.mock.calls.filter((call) => call[0] === '[compat-invalid-request-debug]');
+    expect(compatDebugCalls).toHaveLength(1);
+
+    const compatDebugPayload = compatDebugCalls[0]?.[1] as any;
+    expect(compatDebugPayload).toMatchObject({
+      request_id: 'req_test_invalid_400',
+      credential_id: 'debug-cred',
+      credential_label: 'shirtless',
+      provider: 'anthropic',
+      model: 'claude-opus-4-6',
+      proxied_path: '/v1/messages',
+      anthropic_version: '2023-06-01',
+      anthropic_beta: 'fine-grained-tool-streaming-2025-05-14',
+      upstream_status: 400,
+      upstream_error_type: 'invalid_request_error',
+      upstream_error_message: 'Error',
+      request_shape: {
+        stream: true,
+        message_count: 2,
+        system_present: true,
+        tool_count: 1,
+        tool_choice_present: true,
+        tool_choice_type: 'auto',
+        thinking_present: true,
+        thinking_type: 'enabled',
+        thinking_budget_tokens: 2048,
+        max_tokens: 4096,
+        max_output_tokens: null,
+        metadata_present: true
+      }
+    });
+
+    const serializedPayload = JSON.stringify(compatDebugPayload);
+    expect(serializedPayload).not.toContain('top-secret-system');
+    expect(serializedPayload).not.toContain('secret prompt');
+    expect(serializedPayload).not.toContain('prior assistant content');
+    expect(serializedPayload).not.toContain('sensitive tool config');
+
+    upstreamSpy.mockRestore();
+    compatDebugSpy.mockRestore();
+  });
+
   it('preserves inbound anthropic-version and anthropic-beta headers to upstream', async () => {
     const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ id: 'msg_headers_1', usage: { input_tokens: 5, output_tokens: 5 } }), {
