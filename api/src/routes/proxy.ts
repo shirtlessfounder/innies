@@ -500,13 +500,15 @@ function isAnthropicOauthToken(credential: TokenCredential, provider: string): b
   return isAnthropicOauthAccessToken(provider, credential.accessToken);
 }
 
+type AnthropicBetaMode = 'default_oauth' | 'preserve_inbound' | 'omit';
+
 function buildTokenModeUpstreamHeaders(input: {
   requestId: string;
   anthropicVersion: string;
   anthropicBeta?: string;
   provider: string;
   credential: TokenCredential;
-  skipOauthDefaultBetas?: boolean;
+  anthropicBetaMode?: AnthropicBetaMode;
   streaming?: boolean;
 }): Record<string, string> {
   const {
@@ -515,7 +517,7 @@ function buildTokenModeUpstreamHeaders(input: {
     anthropicBeta,
     provider,
     credential,
-    skipOauthDefaultBetas,
+    anthropicBetaMode = 'default_oauth',
     streaming
   } = input;
   const authHeaders = isAnthropicOauthAccessToken(provider, credential.accessToken) || isOpenAiProvider(provider)
@@ -539,10 +541,11 @@ function buildTokenModeUpstreamHeaders(input: {
     headers.accept = 'text/event-stream';
   }
 
-  const shouldIncludeOauthBetas = !skipOauthDefaultBetas && isAnthropicOauthToken(credential, provider);
   const inboundBetas = parseAnthropicBetaHeader(anthropicBeta ?? '');
-  if (inboundBetas.length > 0 || shouldIncludeOauthBetas) {
-    const mergedBetas = new Set<string>(inboundBetas);
+  const shouldForwardInboundBetas = anthropicBetaMode !== 'omit' && inboundBetas.length > 0;
+  const shouldIncludeOauthBetas = anthropicBetaMode === 'default_oauth' && isAnthropicOauthToken(credential, provider);
+  if (shouldForwardInboundBetas || shouldIncludeOauthBetas) {
+    const mergedBetas = new Set<string>(shouldForwardInboundBetas ? inboundBetas : []);
     if (shouldIncludeOauthBetas) {
       for (const beta of ANTHROPIC_OAUTH_BETAS) mergedBetas.add(beta);
     }
@@ -586,6 +589,19 @@ function createCompatNormalizationState(payload: unknown, anthropicBeta?: string
     blockedRetryApplied: false,
     oauthRetryApplied: false
   };
+}
+
+function resolveCompatAnthropicBetaMode(input: {
+  anthropicBeta?: string;
+  blockedRetryApplied: boolean;
+  strictUpstreamPassthrough?: boolean;
+}): AnthropicBetaMode {
+  const { anthropicBeta, blockedRetryApplied, strictUpstreamPassthrough } = input;
+  if (blockedRetryApplied) return 'omit';
+  if (strictUpstreamPassthrough && parseAnthropicBetaHeader(anthropicBeta ?? '').length > 0) {
+    return 'preserve_inbound';
+  }
+  return 'default_oauth';
 }
 
 function applyCompatNormalization(input: {
@@ -2415,8 +2431,11 @@ async function executeTokenModeNonStreaming(input: {
         anthropicBeta: compat.anthropicBeta,
         provider,
         credential,
-        // Keep the caller's beta lane intact on the initial compat passthrough.
-        skipOauthDefaultBetas: strictUpstreamPassthrough || compat.blockedRetryApplied
+        anthropicBetaMode: resolveCompatAnthropicBetaMode({
+          anthropicBeta: compat.anthropicBeta,
+          blockedRetryApplied: compat.blockedRetryApplied,
+          strictUpstreamPassthrough
+        })
       });
       const upstreamBody = JSON.stringify(upstreamPayload);
 
@@ -3199,8 +3218,11 @@ async function executeTokenModeStreaming(input: {
         anthropicBeta: compat.anthropicBeta,
         provider,
         credential,
-        // Keep the caller's beta lane intact on the initial compat passthrough.
-        skipOauthDefaultBetas: strictUpstreamPassthrough || compat.blockedRetryApplied,
+        anthropicBetaMode: resolveCompatAnthropicBetaMode({
+          anthropicBeta: compat.anthropicBeta,
+          blockedRetryApplied: compat.blockedRetryApplied,
+          strictUpstreamPassthrough
+        }),
         streaming: true
       });
       const upstreamPayload = normalizeTokenModeUpstreamPayload({
