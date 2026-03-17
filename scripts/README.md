@@ -24,6 +24,7 @@ innies-buyer-key-create
 innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
+innies-compat-header-matrix
 innies-slo-check
 ```
 
@@ -39,6 +40,7 @@ What they do:
 - `innies-buyer-preference-set`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
+- `innies-compat-header-matrix`: reconstruct a captured Anthropic compat payload from a response artifact, replay a focused direct Anthropic header matrix, and write per-case request/response artifacts plus a summary
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
 
 Behavior:
@@ -79,6 +81,8 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
+- `innies-compat-header-matrix` takes a captured response HTML path plus the Innies request id, rebuilds the logged payload with the same stable JSON shape, replays five first-pass header variants against direct Anthropic, and writes `payload.json`, `summary.txt`, and per-case `*-meta.txt` / `*-headers.txt` / `*-body.txt` files under `INNIES_HEADER_MATRIX_OUT_DIR` (default `/tmp`)
+- `innies-compat-header-matrix` needs `ANTHROPIC_OAUTH_ACCESS_TOKEN` (or `CLAUDE_OAUTH_ACCESS_TOKEN`) and uses `INNIES_CALLER_ANTHROPIC_BETA` to override the default caller-beta-only case when the captured first beta is not the caller lane you want to isolate
 
 ## Env
 
