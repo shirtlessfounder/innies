@@ -2415,7 +2415,8 @@ async function executeTokenModeNonStreaming(input: {
         anthropicBeta: compat.anthropicBeta,
         provider,
         credential,
-        skipOauthDefaultBetas: compat.blockedRetryApplied
+        // Keep the caller's beta lane intact on the initial compat passthrough.
+        skipOauthDefaultBetas: strictUpstreamPassthrough || compat.blockedRetryApplied
       });
       const upstreamBody = JSON.stringify(upstreamPayload);
 
@@ -3198,7 +3199,8 @@ async function executeTokenModeStreaming(input: {
         anthropicBeta: compat.anthropicBeta,
         provider,
         credential,
-        skipOauthDefaultBetas: compat.blockedRetryApplied,
+        // Keep the caller's beta lane intact on the initial compat passthrough.
+        skipOauthDefaultBetas: strictUpstreamPassthrough || compat.blockedRetryApplied,
         streaming: true
       });
       const upstreamPayload = normalizeTokenModeUpstreamPayload({
