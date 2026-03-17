@@ -51,6 +51,15 @@ function sha256(text) {
   return createHash('sha256').update(text).digest('hex');
 }
 
+function firstPresent(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== '') {
+      return value;
+    }
+  }
+  return '';
+}
+
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, 'utf8'));
 }
@@ -129,13 +138,13 @@ async function loadDirectoryBundle(directoryPath, selector) {
       label: `${labelBase}#ingress`,
       sourcePath: directoryPath,
       kind: 'ingress',
-      requestId: ingress.requestId ?? summary.request_id ?? '',
+      requestId: firstPresent(ingress.requestId, ingress.request_id, summary.request_id),
       method: '',
       targetUrl: summary.target_url ?? '',
       headers: normalizeHeaders({
-        'anthropic-beta': ingress.anthropicBeta ?? '',
-        'anthropic-version': ingress.anthropicVersion ?? '',
-        'x-request-id': ingress.requestIdHeader ?? ''
+        'anthropic-beta': firstPresent(ingress.anthropicBeta, ingress.anthropic_beta),
+        'anthropic-version': firstPresent(ingress.anthropicVersion, ingress.anthropic_version),
+        'x-request-id': firstPresent(ingress.requestIdHeader, ingress.request_id_header)
       }),
       bodyBytes: summary.body_bytes ?? '',
       bodySha256:
@@ -178,13 +187,13 @@ async function loadFileBundle(filePath, selector) {
       label: `${basename(parentDirectory)}#ingress`,
       sourcePath: filePath,
       kind: 'ingress',
-      requestId: value.requestId ?? '',
+      requestId: firstPresent(value.requestId, value.request_id),
       method: '',
       targetUrl: '',
       headers: normalizeHeaders({
-        'anthropic-beta': value.anthropicBeta ?? '',
-        'anthropic-version': value.anthropicVersion ?? '',
-        'x-request-id': value.requestIdHeader ?? ''
+        'anthropic-beta': firstPresent(value.anthropicBeta, value.anthropic_beta),
+        'anthropic-version': firstPresent(value.anthropicVersion, value.anthropic_version),
+        'x-request-id': firstPresent(value.requestIdHeader, value.request_id_header)
       }),
       bodyBytes: '',
       bodySha256: payload === null ? '' : sha256(stableStringify(payload)),
