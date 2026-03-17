@@ -60,8 +60,11 @@ routing_fallback_rate="$(printf '%s' "$routing_body" | jq -r '
   | if .total_attempts == 0 then 0
     else (.total_fallbacks / .total_attempts)
     end')"
+routing_fallback_display="$(jq -n -r --argjson v "$routing_fallback_rate" '($v * 100 * 100 | round) / 100 | tostring + "%"')"
 
-# Use system-level fallback rate as primary
+# Keep the main fallback row on the whole-population system summary.
+# The routing aggregate is still useful operator context, but it excludes
+# events without a resolved tokenCredentialId.
 fallback_rate="$system_fallback_rate"
 
 # Derive timeout rate and success rate from errorRate
@@ -131,6 +134,8 @@ printf '%-28s %-12s %-12s %s\n' "Fallback rate" "flag > 20%" "$fallback_display"
 echo "================================================================"
 echo "* timeout_rate and success_rate are derived from the same errorRate metric."
 echo "  The API does not yet separate timeouts from other errors."
+echo "* Fallback source: /v1/admin/analytics/system whole-population fallback rate."
+echo "* Routing cross-check below is per-token-only and may exclude unattributed events."
 
 if [[ "$exit_code" -eq 0 ]]; then
   echo "All SLOs passed."
@@ -139,6 +144,6 @@ else
 fi
 
 echo ""
-echo "(routing cross-check: per-token aggregate fallback rate = $(jq -n --argjson v "$routing_fallback_rate" '($v * 100 * 100 | round) / 100 | tostring + "%"'))"
+echo "(routing cross-check: attributed per-token aggregate fallback rate = ${routing_fallback_display})"
 
 exit "$exit_code"
