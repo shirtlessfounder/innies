@@ -22,10 +22,10 @@ mkdir -p "$BUNDLE_DIR" "$DIRECT_DIR"
 
 cat >"$BUNDLE_DIR/ingress.json" <<'JSON'
 {
-  "requestId": "req_issue80_ingress",
-  "anthropicBeta": "fine-grained-tool-streaming-2025-05-14",
-  "anthropicVersion": "2023-06-01",
-  "requestIdHeader": null,
+  "request_id": "req_issue80_ingress",
+  "anthropic_beta": "fine-grained-tool-streaming-2025-05-14",
+  "anthropic_version": "2023-06-01",
+  "request_id_header": null,
   "payloadAvailable": true
 }
 JSON
