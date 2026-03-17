@@ -1796,7 +1796,7 @@ describe('anthropic compat route', () => {
     localValidationSpy.mockRestore();
   });
 
-  it('preserves inbound anthropic-version and anthropic-beta headers to upstream', async () => {
+  it('preserves inbound anthropic-version and anthropic-beta headers while adding oauth beta upstream', async () => {
     const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ id: 'msg_headers_1', usage: { input_tokens: 5, output_tokens: 5 } }), {
         status: 200,
@@ -1830,7 +1830,7 @@ describe('anthropic compat route', () => {
     expect(headers['anthropic-version']).toBe('2024-10-22');
     expect(headers['anthropic-beta']).toContain('foo-2026-01-01');
     expect(headers['anthropic-beta']).toContain('bar-2026-02-02');
-    expect(headers['anthropic-beta']).not.toContain('oauth-2025-04-20');
+    expect(headers['anthropic-beta']).toContain('oauth-2025-04-20');
     expect(headers['anthropic-beta']).not.toContain('claude-code-20250219');
     expect(headers['anthropic-beta']).not.toContain('interleaved-thinking-2025-05-14');
     expect(res.statusCode).toBe(200);
@@ -2654,10 +2654,11 @@ describe('anthropic compat route', () => {
       body: {
         model: 'claude-opus-4-6',
         stream: true,
-        max_tokens: 256,
+        max_tokens: 4096,
         messages: [{ role: 'user', content: 'hi' }],
         tools: [{ name: 'x', description: 'x', input_schema: { type: 'object', properties: {} } }],
-        tool_choice: 'auto'
+        tool_choice: 'auto',
+        thinking: { type: 'enabled', budget_tokens: 1024 }
       }
     });
     const res = createMockRes();
@@ -2679,12 +2680,13 @@ describe('anthropic compat route', () => {
 
     expect(firstHeaders.authorization).toBe('Bearer sk-ant-oat01-test-token');
     expect(firstHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
-    expect(firstHeaders['anthropic-beta']).not.toContain('oauth-2025-04-20');
+    expect(firstHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
     expect(firstHeaders['anthropic-beta']).not.toContain('claude-code-20250219');
     expect(firstHeaders['anthropic-beta']).not.toContain('interleaved-thinking-2025-05-14');
     expect(firstBody.stream).toBe(true);
     expect(firstBody.tools).toBeDefined();
     expect(firstBody.tool_choice).toEqual({ type: 'auto' });
+    expect(firstBody.thinking).toEqual({ type: 'enabled', budget_tokens: 1024 });
 
     expect(secondHeaders.authorization).toBe('Bearer sk-ant-oat01-test-token');
     expect(secondHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
@@ -2694,6 +2696,7 @@ describe('anthropic compat route', () => {
     expect(secondBody.stream).toBe(true);
     expect(secondBody.tools).toBeDefined();
     expect(secondBody.tool_choice).toEqual({ type: 'auto' });
+    expect(secondBody.thinking).toEqual({ type: 'enabled', budget_tokens: 1024 });
     const retryCalls = retryAuditSpy.mock.calls.filter((c) => c[0] === '[retry-audit] attempt');
     expect(retryCalls.length).toBeGreaterThan(0);
     const retryAudit = retryCalls[0]?.[1] as any;

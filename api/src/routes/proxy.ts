@@ -471,9 +471,11 @@ const ANTHROPIC_DEFAULT_BETAS = [
   'interleaved-thinking-2025-05-14'
 ] as const;
 
+const ANTHROPIC_OAUTH_REQUIRED_BETA = 'oauth-2025-04-20' as const;
+
 const ANTHROPIC_OAUTH_BETAS = [
   'claude-code-20250219',
-  'oauth-2025-04-20',
+  ANTHROPIC_OAUTH_REQUIRED_BETA,
   ...ANTHROPIC_DEFAULT_BETAS
 ] as const;
 
@@ -500,7 +502,7 @@ function isAnthropicOauthToken(credential: TokenCredential, provider: string): b
   return isAnthropicOauthAccessToken(provider, credential.accessToken);
 }
 
-type AnthropicBetaMode = 'default_oauth' | 'preserve_inbound' | 'omit';
+type AnthropicBetaMode = 'default_oauth' | 'preserve_inbound_plus_oauth' | 'omit';
 
 function buildTokenModeUpstreamHeaders(input: {
   requestId: string;
@@ -543,9 +545,14 @@ function buildTokenModeUpstreamHeaders(input: {
 
   const inboundBetas = parseAnthropicBetaHeader(anthropicBeta ?? '');
   const shouldForwardInboundBetas = anthropicBetaMode !== 'omit' && inboundBetas.length > 0;
+  const shouldIncludeRequiredOauthBeta = anthropicBetaMode === 'preserve_inbound_plus_oauth'
+    && isAnthropicOauthToken(credential, provider);
   const shouldIncludeOauthBetas = anthropicBetaMode === 'default_oauth' && isAnthropicOauthToken(credential, provider);
-  if (shouldForwardInboundBetas || shouldIncludeOauthBetas) {
+  if (shouldForwardInboundBetas || shouldIncludeRequiredOauthBeta || shouldIncludeOauthBetas) {
     const mergedBetas = new Set<string>(shouldForwardInboundBetas ? inboundBetas : []);
+    if (shouldIncludeRequiredOauthBeta) {
+      mergedBetas.add(ANTHROPIC_OAUTH_REQUIRED_BETA);
+    }
     if (shouldIncludeOauthBetas) {
       for (const beta of ANTHROPIC_OAUTH_BETAS) mergedBetas.add(beta);
     }
@@ -599,7 +606,7 @@ function resolveCompatAnthropicBetaMode(input: {
   const { anthropicBeta, blockedRetryApplied, strictUpstreamPassthrough } = input;
   if (blockedRetryApplied) return 'omit';
   if (strictUpstreamPassthrough && parseAnthropicBetaHeader(anthropicBeta ?? '').length > 0) {
-    return 'preserve_inbound';
+    return 'preserve_inbound_plus_oauth';
   }
   return 'default_oauth';
 }

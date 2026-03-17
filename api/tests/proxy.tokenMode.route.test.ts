@@ -1196,6 +1196,7 @@ describe('proxy token-mode route behavior', () => {
           max_tokens: 16,
           tools: [{ name: 'x', description: 'x', input_schema: { type: 'object', properties: {} } }],
           tool_choice: { type: 'auto' },
+          thinking: { type: 'enabled', budget_tokens: 32 },
           messages: [{ role: 'user', content: 'hi' }]
         }
       }
@@ -1216,7 +1217,7 @@ describe('proxy token-mode route behavior', () => {
     const secondBody = JSON.parse(String((upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.body ?? '{}'));
 
     expect(firstHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
-    expect(firstHeaders['anthropic-beta']).not.toContain('oauth-2025-04-20');
+    expect(firstHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
     expect(firstHeaders['anthropic-beta']).not.toContain('claude-code-20250219');
     expect(firstHeaders['anthropic-beta']).not.toContain('interleaved-thinking-2025-05-14');
     expect(secondHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
@@ -1226,9 +1227,11 @@ describe('proxy token-mode route behavior', () => {
     expect(firstBody.stream).toBe(true);
     expect(firstBody.tools).toBeDefined();
     expect(firstBody.tool_choice).toEqual({ type: 'auto' });
+    expect(firstBody.thinking).toEqual({ type: 'enabled', budget_tokens: 32 });
     expect(secondBody.stream).toBe(true);
     expect(secondBody.tools).toBeDefined();
     expect(secondBody.tool_choice).toEqual({ type: 'auto' });
+    expect(secondBody.thinking).toEqual({ type: 'enabled', budget_tokens: 32 });
 
     upstreamSpy.mockRestore();
   });
@@ -1384,8 +1387,12 @@ describe('proxy token-mode route behavior', () => {
     expect(firstHeaders.authorization).toBe('Bearer sk-ant-oat01-openclaw-shaped');
     expect(firstHeaders['x-api-key']).toBeUndefined();
     expect(firstHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
+    expect(firstHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
+    expect(firstHeaders['anthropic-beta']).not.toContain('claude-code-20250219');
+    expect(firstHeaders['anthropic-beta']).not.toContain('interleaved-thinking-2025-05-14');
     expect(firstBody.stream).toBe(true);
     expect(firstBody.tools).toBeDefined();
+    expect(firstBody.tool_choice).toEqual({ type: 'auto' });
 
     expect(secondHeaders.authorization).toBe('Bearer sk-ant-oat01-openclaw-shaped');
     expect(secondHeaders['x-api-key']).toBeUndefined();
