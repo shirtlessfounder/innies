@@ -270,14 +270,24 @@ describe('tokenAffinityRepository', () => {
     });
 
     expect(stream.requestId).toBe('req_123');
-    expect(db.queries[0]?.sql).toContain('insert into in_token_affinity_active_streams');
-    expect(db.queries[0]?.sql).toContain('on conflict (request_id)');
-    expect(db.queries[0]?.sql).toContain('last_touched_at = excluded.last_touched_at');
-    expect(db.queries[0]?.sql).toContain('ended_at = null');
-    expect(db.queries[0]?.sql).not.toContain('org_id = excluded.org_id');
-    expect(db.queries[0]?.sql).not.toContain('provider = excluded.provider');
-    expect(db.queries[0]?.sql).not.toContain('credential_id = excluded.credential_id');
-    expect(db.queries[0]?.sql).not.toContain('session_id = excluded.session_id');
+    const upsertSql = db.queries[0]?.sql ?? '';
+
+    expect(upsertSql).toContain('insert into in_token_affinity_active_streams');
+    expect(upsertSql).toContain('on conflict (request_id)');
+
+    const updateClause = upsertSql.split('do update set')[1]?.split('returning')[0] ?? '';
+
+    expect(updateClause).toContain('last_touched_at = excluded.last_touched_at');
+    expect(updateClause).toContain('ended_at = null');
+    expect(updateClause).toContain('where');
+    expect(updateClause).not.toContain('org_id = excluded.org_id,');
+    expect(updateClause).not.toContain('provider = excluded.provider,');
+    expect(updateClause).not.toContain('credential_id = excluded.credential_id,');
+    expect(updateClause).not.toContain('session_id = excluded.session_id,');
+    expect(updateClause).toContain('in_token_affinity_active_streams.org_id = excluded.org_id');
+    expect(updateClause).toContain('in_token_affinity_active_streams.provider = excluded.provider');
+    expect(updateClause).toContain('in_token_affinity_active_streams.credential_id = excluded.credential_id');
+    expect(updateClause).toContain('in_token_affinity_active_streams.session_id = excluded.session_id');
   });
 
   it('refreshes last_touched_at for a live stream heartbeat', async () => {
