@@ -158,6 +158,8 @@ Notes:
   - Deterministic local Anthropic compat validation failures also emit `[compat-local-validation-failed]` with the same redacted request-shape trace before returning a local `400`.
 - Optional operational debug tracing:
   - `INNIES_COMPAT_TRACE=true` enables redacted request/response logs for `/v1/messages` only.
+  - `INNIES_ENABLE_UPSTREAM_DEBUG_HEADERS=true` allows opt-in first-pass upstream lane headers on compat responses when the caller sends `x-innies-debug-upstream-lane: 1`.
+  - exposed debug headers are redacted and include target URL, forwarded request-id, token kind, header names, plus key Anthropic header values (`accept`, `anthropic-version`, `anthropic-beta`, optional `user-agent`).
   - Keep disabled in normal production operation due to log volume.
 
 ### `POST /v1/seller-keys`

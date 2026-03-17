@@ -333,6 +333,7 @@ describe('anthropic compat route', () => {
     delete process.env.ANTHROPIC_COMPAT_MAX_REQUEST_BYTES;
     delete process.env.OPENAI_UPSTREAM_BASE_URL;
     delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
+    delete process.env.INNIES_ENABLE_UPSTREAM_DEBUG_HEADERS;
     resetAnthropicUsageRetryStateForTests();
     vi.restoreAllMocks();
   });
@@ -1854,6 +1855,67 @@ describe('anthropic compat route', () => {
     expect(headers['anthropic-beta']).toContain('claude-code-20250219');
     expect(headers['anthropic-beta']).toContain('interleaved-thinking-2025-05-14');
     expect(res.statusCode).toBe(200);
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('returns first-pass upstream lane debug headers on compat SSE responses when explicitly enabled', async () => {
+    process.env.ANTHROPIC_UPSTREAM_BASE_URL = 'https://anthropic.internal.test';
+    process.env.INNIES_ENABLE_UPSTREAM_DEBUG_HEADERS = 'true';
+
+    const encoder = new TextEncoder();
+    const sseBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: message_start\ndata: {"type":"message_start"}\n\n'));
+        controller.enqueue(encoder.encode('event: message_stop\ndata: {"type":"message_stop"}\n\n'));
+        controller.close();
+      }
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(sseBody, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14',
+        'x-innies-debug-upstream-lane': '1'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        stream: true,
+        max_tokens: 8,
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    expect(res.headers['x-innies-debug-upstream-target-url']).toBe('https://anthropic.internal.test/v1/messages');
+    expect(res.headers['x-innies-debug-upstream-proxied-path']).toBe('/v1/messages');
+    expect(res.headers['x-innies-debug-upstream-provider']).toBe('anthropic');
+    expect(res.headers['x-innies-debug-upstream-stream']).toBe('true');
+    expect(res.headers['x-innies-debug-upstream-token-kind']).toBe('anthropic_oauth');
+    expect(res.headers['x-innies-debug-upstream-authorization']).toBe('Bearer <redacted:23>');
+    expect(res.headers['x-innies-debug-upstream-anthropic-version']).toBe('2023-06-01');
+    expect(res.headers['x-innies-debug-upstream-anthropic-beta']).toBe('fine-grained-tool-streaming-2025-05-14,oauth-2025-04-20');
+    expect(res.headers['x-innies-debug-upstream-accept']).toBe('text/event-stream');
+    expect(res.headers['x-innies-debug-upstream-request-id']).toMatch(/^req_/);
+    expect(res.headers['x-innies-debug-upstream-header-names']).toBe(
+      'accept,anthropic-beta,anthropic-version,authorization,content-type,x-request-id'
+    );
+    expect(String(res.body)).toContain('event: message_start');
 
     upstreamSpy.mockRestore();
   });
