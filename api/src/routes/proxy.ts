@@ -78,6 +78,17 @@ type ProxyRouteResult = {
   alreadyRecorded: boolean;
   routeDecision?: Record<string, unknown>;
   ttfbMs?: number | null;
+  debugUpstreamLane?: UpstreamLaneDebug;
+};
+
+type UpstreamLaneDebug = {
+  targetUrl: string;
+  proxiedPath: string;
+  provider: string;
+  stream: boolean;
+  credentialId: string;
+  tokenKind: 'anthropic_oauth' | 'openai_oauth' | 'bearer' | 'api_key';
+  headers: Record<string, string>;
 };
 
 type MeteringSource = 'payload_usage' | 'stream_usage' | 'stream_estimate';
@@ -171,6 +182,14 @@ function readHeader(req: any, ...names: string[]): string | undefined {
     if (trimmed.length > 0) return trimmed;
   }
   return undefined;
+}
+
+function shouldEnableUpstreamLaneDebug(req: any): boolean {
+  if (process.env.INNIES_ENABLE_UPSTREAM_DEBUG_HEADERS !== 'true') return false;
+  const raw = readHeader(req, 'x-innies-debug-upstream-lane');
+  if (!raw) return false;
+  const normalized = raw.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes';
 }
 
 function resolveOpenClawCorrelation(req: any, requestId: string): OpenClawCorrelation {
@@ -796,6 +815,73 @@ function redactTraceHeaders(headers: Record<string, string>): Record<string, str
   return Object.fromEntries(
     Object.entries(headers).map(([name, value]) => [name, redactTraceHeaderValue(name, value)])
   );
+}
+
+function resolveUpstreamTokenKind(credential: TokenCredential, provider: string): UpstreamLaneDebug['tokenKind'] {
+  if (isAnthropicOauthToken(credential, provider)) return 'anthropic_oauth';
+  if (isOpenAiOauthToken(credential, provider)) return 'openai_oauth';
+  return credential.authScheme === 'bearer' ? 'bearer' : 'api_key';
+}
+
+function captureUpstreamLaneDebug(input: {
+  targetUrl: string;
+  proxiedPath: string;
+  provider: string;
+  stream: boolean;
+  credential: TokenCredential;
+  headers: Record<string, string>;
+}): UpstreamLaneDebug {
+  return {
+    targetUrl: input.targetUrl,
+    proxiedPath: input.proxiedPath,
+    provider: input.provider,
+    stream: input.stream,
+    credentialId: input.credential.id,
+    tokenKind: resolveUpstreamTokenKind(input.credential, input.provider),
+    headers: redactTraceHeaders(input.headers)
+  };
+}
+
+function withDebugUpstreamLane(result: ProxyRouteResult, debugUpstreamLane?: UpstreamLaneDebug | null): ProxyRouteResult {
+  if (!debugUpstreamLane) return result;
+  return {
+    ...result,
+    debugUpstreamLane
+  };
+}
+
+function applyUpstreamLaneDebugHeaders(res: Response, debugUpstreamLane?: UpstreamLaneDebug | null): void {
+  if (!debugUpstreamLane) return;
+  res.setHeader('x-innies-debug-upstream-target-url', debugUpstreamLane.targetUrl);
+  res.setHeader('x-innies-debug-upstream-proxied-path', debugUpstreamLane.proxiedPath);
+  res.setHeader('x-innies-debug-upstream-provider', debugUpstreamLane.provider);
+  res.setHeader('x-innies-debug-upstream-stream', String(debugUpstreamLane.stream));
+  res.setHeader('x-innies-debug-upstream-credential-id', debugUpstreamLane.credentialId);
+  res.setHeader('x-innies-debug-upstream-token-kind', debugUpstreamLane.tokenKind);
+  res.setHeader(
+    'x-innies-debug-upstream-header-names',
+    Object.keys(debugUpstreamLane.headers).sort().join(',')
+  );
+
+  const headers = debugUpstreamLane.headers;
+  if (headers.authorization) {
+    res.setHeader('x-innies-debug-upstream-authorization', headers.authorization);
+  }
+  if (headers.accept) {
+    res.setHeader('x-innies-debug-upstream-accept', headers.accept);
+  }
+  if (headers['anthropic-version']) {
+    res.setHeader('x-innies-debug-upstream-anthropic-version', headers['anthropic-version']);
+  }
+  if (headers['anthropic-beta']) {
+    res.setHeader('x-innies-debug-upstream-anthropic-beta', headers['anthropic-beta']);
+  }
+  if (headers['user-agent']) {
+    res.setHeader('x-innies-debug-upstream-user-agent', headers['user-agent']);
+  }
+  if (headers['x-request-id']) {
+    res.setHeader('x-innies-debug-upstream-request-id', headers['x-request-id']);
+  }
 }
 
 function responseHeadersToObject(response: globalThis.Response): Record<string, string> {
@@ -2358,6 +2444,7 @@ async function executeTokenModeNonStreaming(input: {
   providerPreference?: ProviderPreferenceMeta;
   compatTranslation?: CompatTranslationMeta;
   allowCompatTerminalErrorResponse?: boolean;
+  upstreamLaneDebugEnabled?: boolean;
 }): Promise<ProxyRouteResult> {
   const {
     requestId,
@@ -2375,7 +2462,8 @@ async function executeTokenModeNonStreaming(input: {
     strictUpstreamPassthrough,
     providerPreference,
     compatTranslation,
-    allowCompatTerminalErrorResponse
+    allowCompatTerminalErrorResponse,
+    upstreamLaneDebugEnabled
   } = input;
   const {
     credentials,
@@ -2409,6 +2497,7 @@ async function executeTokenModeNonStreaming(input: {
   let terminalStrictPassthroughData: unknown = null;
   let terminalStrictPassthroughCredentialId: string | null = null;
   let terminalStrictPassthroughAttemptNo = 0;
+  let firstUpstreamLane: UpstreamLaneDebug | null = null;
   for (const initialCredential of credentials) {
     attemptNo += 1;
     let credential = initialCredential;
@@ -2445,6 +2534,17 @@ async function executeTokenModeNonStreaming(input: {
         })
       });
       const upstreamBody = JSON.stringify(upstreamPayload);
+
+      if (!firstUpstreamLane && upstreamLaneDebugEnabled) {
+        firstUpstreamLane = captureUpstreamLaneDebug({
+          targetUrl: String(targetUrl),
+          proxiedPath,
+          provider,
+          stream: false,
+          credential,
+          headers: upstreamHeaders
+        });
+      }
 
       logCompatUpstreamRequestTrace({
         requestId,
@@ -2604,7 +2704,7 @@ async function executeTokenModeNonStreaming(input: {
             errorMessage
           });
 
-          return {
+          return withDebugUpstreamLane({
             requestId,
             keyId: credential.id,
             attemptNo,
@@ -2614,7 +2714,7 @@ async function executeTokenModeNonStreaming(input: {
             data,
             routeKind: 'token_credential',
             alreadyRecorded: true
-          };
+          }, firstUpstreamLane);
         }
       }
 
@@ -3048,7 +3148,7 @@ async function executeTokenModeNonStreaming(input: {
         }).catch(() => {});
       }
 
-      return {
+      return withDebugUpstreamLane({
         requestId,
         keyId: credential.id,
         attemptNo,
@@ -3058,7 +3158,7 @@ async function executeTokenModeNonStreaming(input: {
         data: downstreamData,
         routeKind: 'token_credential',
         alreadyRecorded: true
-      };
+      }, firstUpstreamLane);
     }
   }
 
@@ -3072,7 +3172,7 @@ async function executeTokenModeNonStreaming(input: {
     : null;
 
   if (allowCompatTerminalErrorResponse && compatTerminalResult) {
-    return compatTerminalResult;
+    return withDebugUpstreamLane(compatTerminalResult, firstUpstreamLane);
   }
 
   const strictPassthroughResult = terminalStrictPassthroughStatus != null
@@ -3090,7 +3190,7 @@ async function executeTokenModeNonStreaming(input: {
     : null;
 
   if (allowCompatTerminalErrorResponse && strictPassthroughResult) {
-    return strictPassthroughResult;
+    return withDebugUpstreamLane(strictPassthroughResult, firstUpstreamLane);
   }
 
   if (sawAuthFailure) {
@@ -3147,6 +3247,7 @@ async function executeTokenModeStreaming(input: {
   compatTranslation?: CompatTranslationMeta;
   compatMode?: boolean;
   allowCompatTerminalErrorResponse?: boolean;
+  upstreamLaneDebugEnabled?: boolean;
 }): Promise<ProxyRouteResult | null> {
   const {
     requestId,
@@ -3167,7 +3268,8 @@ async function executeTokenModeStreaming(input: {
     providerPreference,
     compatTranslation,
     compatMode: compatModeFlag,
-    allowCompatTerminalErrorResponse
+    allowCompatTerminalErrorResponse,
+    upstreamLaneDebugEnabled
   } = input;
 
   const {
@@ -3202,6 +3304,7 @@ async function executeTokenModeStreaming(input: {
   let terminalStrictPassthroughData: unknown = null;
   let terminalStrictPassthroughCredentialId: string | null = null;
   let terminalStrictPassthroughAttemptNo = 0;
+  let firstUpstreamLane: UpstreamLaneDebug | null = null;
 
   for (const initialCredential of credentials) {
     attemptNo += 1;
@@ -3241,6 +3344,17 @@ async function executeTokenModeStreaming(input: {
       });
       const upstreamBody = JSON.stringify(upstreamPayload);
       const dispatchStartedAt = Date.now();
+
+      if (!firstUpstreamLane && upstreamLaneDebugEnabled) {
+        firstUpstreamLane = captureUpstreamLaneDebug({
+          targetUrl: String(targetUrl),
+          proxiedPath,
+          provider,
+          stream: true,
+          credential,
+          headers: upstreamHeaders
+        });
+      }
 
       logCompatUpstreamRequestTrace({
         requestId,
@@ -3399,7 +3513,7 @@ async function executeTokenModeStreaming(input: {
             errorMessage
           });
 
-          return {
+          return withDebugUpstreamLane({
             requestId,
             keyId: credential.id,
             attemptNo,
@@ -3409,7 +3523,7 @@ async function executeTokenModeStreaming(input: {
             data,
             routeKind: 'token_credential',
             alreadyRecorded: true
-          };
+          }, firstUpstreamLane);
         }
       }
 
@@ -3795,6 +3909,7 @@ async function executeTokenModeStreaming(input: {
           res.setHeader('x-request-id', requestId);
           res.setHeader('x-innies-token-credential-id', credential.id);
           res.setHeader('x-innies-attempt-no', String(attemptNo));
+          applyUpstreamLaneDebugHeaders(res, firstUpstreamLane);
           res.setHeader('content-type', 'text/event-stream; charset=utf-8');
           res.setHeader('cache-control', 'no-cache, no-transform');
           res.setHeader('connection', 'keep-alive');
@@ -3924,7 +4039,7 @@ async function executeTokenModeStreaming(input: {
                 responsePreview: extractResponsePreview(rawText)
               }).catch(() => {});
             }
-            return {
+            return withDebugUpstreamLane({
               requestId,
               keyId: credential.id,
               attemptNo,
@@ -3934,7 +4049,7 @@ async function executeTokenModeStreaming(input: {
               data: null,
               routeKind: 'token_credential',
               alreadyRecorded: true
-            };
+            }, firstUpstreamLane);
           }
 
           const syntheticMessage = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
@@ -4055,7 +4170,7 @@ async function executeTokenModeStreaming(input: {
               responsePreview: extractResponsePreview(data)
             }).catch(() => {});
           }
-          return {
+          return withDebugUpstreamLane({
             requestId,
             keyId: credential.id,
             attemptNo,
@@ -4065,10 +4180,10 @@ async function executeTokenModeStreaming(input: {
             data: null,
             routeKind: 'token_credential',
             alreadyRecorded: true
-          };
+          }, firstUpstreamLane);
         }
 
-        return {
+        return withDebugUpstreamLane({
           requestId,
           keyId: credential.id,
           attemptNo,
@@ -4078,12 +4193,13 @@ async function executeTokenModeStreaming(input: {
           data: downstreamData,
           routeKind: 'token_credential',
           alreadyRecorded: true
-        };
+        }, firstUpstreamLane);
       }
 
       res.setHeader('x-request-id', requestId);
       res.setHeader('x-innies-token-credential-id', credential.id);
       res.setHeader('x-innies-attempt-no', String(attemptNo));
+      applyUpstreamLaneDebugHeaders(res, firstUpstreamLane);
       res.setHeader('content-type', compatTranslation ? 'text/event-stream; charset=utf-8' : contentType);
       // Force pass-through semantics for SSE across reverse proxies.
       res.setHeader('cache-control', 'no-cache, no-transform');
@@ -4404,7 +4520,7 @@ async function executeTokenModeStreaming(input: {
     : null;
 
   if (allowCompatTerminalErrorResponse && compatTerminalResult) {
-    return compatTerminalResult;
+    return withDebugUpstreamLane(compatTerminalResult, firstUpstreamLane);
   }
 
   const strictPassthroughResult = terminalStrictPassthroughStatus != null
@@ -4422,7 +4538,7 @@ async function executeTokenModeStreaming(input: {
     : null;
 
   if (allowCompatTerminalErrorResponse && strictPassthroughResult) {
-    return strictPassthroughResult;
+    return withDebugUpstreamLane(strictPassthroughResult, firstUpstreamLane);
   }
 
   if (sawAuthFailure) {
@@ -4527,6 +4643,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
 
     const anthropicVersion = req.header('anthropic-version') ?? '2023-06-01';
     const anthropicBeta = req.header('anthropic-beta') ?? undefined;
+    const upstreamLaneDebugEnabled = shouldEnableUpstreamLaneDebug(req);
     let result: ProxyRouteResult | null = null;
     const requestPinSelectionReason = (readProviderPinSignal(req) || isClaudeCliPinnedRequest(req, proxiedPath))
       ? 'cli_provider_pinned'
@@ -4632,7 +4749,8 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               providerPreference,
               compatTranslation: upstreamRequest.compatTranslation,
               compatMode,
-              allowCompatTerminalErrorResponse: provider === providerPlan[providerPlan.length - 1]
+              allowCompatTerminalErrorResponse: provider === providerPlan[providerPlan.length - 1],
+              upstreamLaneDebugEnabled
             });
             if (streamedResult === null || res.headersSent || res.writableEnded) return;
             result = streamedResult;
@@ -4653,7 +4771,8 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               strictUpstreamPassthrough: upstreamRequest.strictUpstreamPassthrough,
               providerPreference,
               compatTranslation: upstreamRequest.compatTranslation,
-              allowCompatTerminalErrorResponse: provider === providerPlan[providerPlan.length - 1]
+              allowCompatTerminalErrorResponse: provider === providerPlan[providerPlan.length - 1],
+              upstreamLaneDebugEnabled
             });
           }
           terminalError = null;
@@ -4965,6 +5084,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
       res.setHeader('x-innies-token-credential-id', result.keyId);
     }
     res.setHeader('x-innies-attempt-no', String(result.attemptNo));
+    applyUpstreamLaneDebugHeaders(res, result.debugUpstreamLane);
     if (result.contentType) {
       res.setHeader('content-type', result.contentType);
     }

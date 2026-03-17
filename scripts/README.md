@@ -24,6 +24,7 @@ innies-buyer-key-create
 innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
+innies-compat-lane-compare
 innies-slo-check
 ```
 
@@ -39,6 +40,7 @@ What they do:
 - `innies-buyer-preference-set`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
+- `innies-compat-lane-compare`: replay a preserved Anthropic compat payload through Innies with first-pass upstream lane debug enabled, send the same payload directly to Anthropic OAuth, and write a side-by-side lane diff bundle
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
 
 Behavior:
@@ -79,6 +81,12 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
+- `innies-compat-lane-compare` requires `INNIES_ENABLE_UPSTREAM_DEBUG_HEADERS=true` on the API server and accepts:
+  - a payload file path arg (or `INNIES_REPLAY_PAYLOAD_PATH`)
+  - Innies buyer auth via `INNIES_BUYER_API_KEY` / `INNIES_TOKEN`
+  - direct Anthropic OAuth auth via `ANTHROPIC_OAUTH_ACCESS_TOKEN`
+  - optional `ANTHROPIC_DIRECT_USER_AGENT` / `ANTHROPIC_DIRECT_BETA` / `ANTHROPIC_DIRECT_VERSION`
+  - optional output dir override via `INNIES_LANE_OUT_DIR`
 
 ## Env
 
