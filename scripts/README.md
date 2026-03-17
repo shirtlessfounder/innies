@@ -25,6 +25,7 @@ innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
 innies-slo-check
+innies-compat-exact-header-cases
 ```
 
 What they do:
@@ -40,6 +41,7 @@ What they do:
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
+- `innies-compat-exact-header-cases`: derive replay-ready TSV case files from a failing compat first pass plus a known-good direct first pass so issue-80 replays can use exact observed deltas instead of hand-built matrices
 
 Behavior:
 - org id auto-uses `INNIES_ORG_ID`
