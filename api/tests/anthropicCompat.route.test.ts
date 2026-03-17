@@ -2703,6 +2703,9 @@ describe('anthropic compat route', () => {
     expect(firstHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
     expect(firstHeaders['anthropic-beta']).toContain('claude-code-20250219');
     expect(firstHeaders['anthropic-beta']).toContain('interleaved-thinking-2025-05-14');
+    expect(firstHeaders['anthropic-dangerous-direct-browser-access']).toBe('true');
+    expect(firstHeaders['x-app']).toBe('cli');
+    expect(firstHeaders['user-agent']).toBe('claude-cli/2.1.62');
     expect(firstBody.stream).toBe(true);
     expect(firstBody.tools).toBeDefined();
     expect(firstBody.tool_choice).toEqual({ type: 'auto' });
