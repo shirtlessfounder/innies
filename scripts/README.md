@@ -24,6 +24,7 @@ innies-buyer-key-create
 innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
+innies-compat-header-matrix
 innies-slo-check
 ```
 
@@ -39,6 +40,7 @@ What they do:
 - `innies-buyer-preference-set`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
+- `innies-compat-header-matrix`: replay one preserved Anthropic `/v1/messages` body directly against Anthropic across the four first-pass header lanes discussed in issue `#80`, then write per-case artifacts plus a summary so you can see whether the remaining `400 invalid_request_error` still tracks a specific first-pass header set
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
 
 Behavior:
@@ -79,6 +81,12 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
+- `innies-compat-header-matrix` needs `ANTHROPIC_OAUTH_ACCESS_TOKEN` plus a preserved payload JSON path; it replays four direct Anthropic cases:
+- `current_main_first_pass`: merged OAuth betas plus Claude/OpenClaw identity headers
+- `merged_beta_without_identity`: merged OAuth betas without the identity headers
+- `caller_beta_only`: caller beta only, no identity headers
+- `caller_beta_with_identity`: caller beta only plus the identity headers
+- `innies-compat-header-matrix` writes `summary.txt` plus per-case `headers.txt`, `body.txt`, and `meta.txt` under `INNIES_MATRIX_OUT_DIR` (or a temp dir by default)
 
 ## Env
 
