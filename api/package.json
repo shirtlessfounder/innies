@@ -21,6 +21,7 @@
     "@types/express": "^4.17.23",
     "@types/node": "^20.19.13",
     "@types/pg": "^8.11.11",
+    "pg-mem": "^3.0.14",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
