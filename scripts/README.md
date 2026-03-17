@@ -25,6 +25,7 @@ innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
 innies-slo-check
+innies-compat-exact-case-matrix
 ```
 
 What they do:
@@ -40,6 +41,7 @@ What they do:
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
+- `innies-compat-exact-case-matrix`: replay a preserved Anthropic `/v1/messages` payload through a directory of exact header-case TSVs and write one direct request/response bundle plus summary per case
 
 Behavior:
 - org id auto-uses `INNIES_ORG_ID`
@@ -79,6 +81,7 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
+- `innies-compat-exact-case-matrix` accepts a payload path plus a directory of replay-ready `*.tsv` header cases and uses `ANTHROPIC_OAUTH_ACCESS_TOKEN`, `ANTHROPIC_ACCESS_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN` for the direct Anthropic replay
 
 ## Env
 
