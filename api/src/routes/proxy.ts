@@ -39,6 +39,7 @@ import {
   attemptTokenCredentialRefresh,
   refreshAnthropicOauthUsageWithCredentialRefresh
 } from '../services/tokenCredentialOauthRefresh.js';
+import { logJsonChunks } from '../utils/jsonChunkLog.js';
 
 const router = Router();
 
@@ -742,6 +743,117 @@ function shouldLogCompatInvalidRequestDebug(input: {
   );
 }
 
+function shouldLogCompatUpstreamTrace(input: {
+  strictUpstreamPassthrough?: boolean;
+  provider: string;
+  proxiedPath: string;
+}): boolean {
+  return Boolean(
+    input.strictUpstreamPassthrough
+    && canonicalizeProvider(input.provider) === 'anthropic'
+    && input.proxiedPath.startsWith('/v1/messages')
+  );
+}
+
+function redactTraceHeaderValue(name: string, value: string): string {
+  const normalized = name.trim().toLowerCase();
+  if (normalized === 'authorization') {
+    const [scheme, ...rest] = value.split(' ');
+    const token = rest.join(' ').trim();
+    if (!token) return '<redacted>';
+    return `${scheme || 'Bearer'} <redacted:${token.length}>`;
+  }
+  if (normalized === 'x-api-key' || normalized === 'api-key' || normalized === 'proxy-authorization') {
+    return `<redacted:${value.length}>`;
+  }
+  return value;
+}
+
+function redactTraceHeaders(headers: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [name, redactTraceHeaderValue(name, value)])
+  );
+}
+
+function responseHeadersToObject(response: globalThis.Response): Record<string, string> {
+  return Object.fromEntries(response.headers.entries());
+}
+
+function logCompatUpstreamRequestTrace(input: {
+  requestId: string;
+  attemptNo: number;
+  credentialId: string;
+  credentialLabel?: string | null;
+  provider: string;
+  model: string;
+  proxiedPath: string;
+  targetUrl: string;
+  headers: Record<string, string>;
+  payload: unknown;
+  bodyText: string;
+  stream: boolean;
+  strictUpstreamPassthrough?: boolean;
+}): void {
+  if (!shouldLogCompatUpstreamTrace(input)) return;
+  logJsonChunks({
+    label: '[compat-upstream-request-json-chunk]',
+    value: {
+      request_id: input.requestId,
+      attempt_no: input.attemptNo,
+      credential_id: input.credentialId,
+      credential_label: input.credentialLabel ?? null,
+      provider: input.provider,
+      model: input.model,
+      proxied_path: input.proxiedPath,
+      target_url: input.targetUrl,
+      method: 'POST',
+      stream: input.stream,
+      headers: redactTraceHeaders(input.headers),
+      payload: input.payload,
+      body_text: input.bodyText
+    }
+  });
+}
+
+function logCompatUpstreamResponseTrace(input: {
+  requestId: string;
+  attemptNo: number;
+  credentialId: string;
+  credentialLabel?: string | null;
+  provider: string;
+  model: string;
+  proxiedPath: string;
+  targetUrl: string;
+  upstreamStatus: number;
+  upstreamContentType: string;
+  responseHeaders?: Record<string, string>;
+  parsedBody: unknown;
+  rawBodyText: string;
+  stream: boolean;
+  strictUpstreamPassthrough?: boolean;
+}): void {
+  if (!shouldLogCompatUpstreamTrace(input)) return;
+  logJsonChunks({
+    label: '[compat-upstream-response-json-chunk]',
+    value: {
+      request_id: input.requestId,
+      attempt_no: input.attemptNo,
+      credential_id: input.credentialId,
+      credential_label: input.credentialLabel ?? null,
+      provider: input.provider,
+      model: input.model,
+      proxied_path: input.proxiedPath,
+      target_url: input.targetUrl,
+      upstream_status: input.upstreamStatus,
+      upstream_content_type: input.upstreamContentType,
+      stream: input.stream,
+      response_headers: input.responseHeaders ?? null,
+      parsed_body: input.parsedBody,
+      raw_body_text: input.rawBodyText
+    }
+  });
+}
+
 function logCompatInvalidRequestDebug(input: {
   requestId: string;
   credentialId: string;
@@ -757,7 +869,7 @@ function logCompatInvalidRequestDebug(input: {
   payload: unknown;
   stream: boolean;
 }): void {
-  console.warn('[compat-invalid-request-debug]', {
+  const summary = {
     request_id: input.requestId,
     credential_id: input.credentialId,
     credential_label: input.credentialLabel ?? null,
@@ -773,6 +885,28 @@ function logCompatInvalidRequestDebug(input: {
       includeMessageTrace: true,
       tailMessages: 12
     })
+  };
+  console.warn('[compat-invalid-request-debug]', summary);
+  logJsonChunks({
+    label: '[compat-invalid-request-debug-json-chunk]',
+    value: summary
+  });
+  console.warn('[compat-invalid-request-payload-json]', stableJson({
+    request_id: input.requestId,
+    provider: input.provider,
+    model: input.model,
+    proxied_path: input.proxiedPath,
+    payload: input.payload
+  }));
+  logJsonChunks({
+    label: '[compat-invalid-request-payload-json-chunk]',
+    value: {
+      request_id: input.requestId,
+      provider: input.provider,
+      model: input.model,
+      proxied_path: input.proxiedPath,
+      payload: input.payload
+    }
   });
 }
 
@@ -788,7 +922,7 @@ function logCompatLocalValidationFailure(input: {
   payload: unknown;
   stream: boolean;
 }): void {
-  console.warn('[compat-local-validation-failed]', {
+  const summary = {
     request_id: input.requestId,
     provider: input.provider,
     model: input.model,
@@ -801,6 +935,28 @@ function logCompatLocalValidationFailure(input: {
       includeMessageTrace: true,
       tailMessages: 12
     })
+  };
+  console.warn('[compat-local-validation-failed]', summary);
+  logJsonChunks({
+    label: '[compat-local-validation-failed-json-chunk]',
+    value: summary
+  });
+  console.warn('[compat-local-validation-payload-json]', stableJson({
+    request_id: input.requestId,
+    provider: input.provider,
+    model: input.model,
+    proxied_path: input.proxiedPath,
+    payload: input.payload
+  }));
+  logJsonChunks({
+    label: '[compat-local-validation-payload-json-chunk]',
+    value: {
+      request_id: input.requestId,
+      provider: input.provider,
+      model: input.model,
+      proxied_path: input.proxiedPath,
+      payload: input.payload
+    }
   });
 }
 
@@ -1073,11 +1229,40 @@ function buildCompatTerminalErrorResult(input: {
 }
 
 async function readUpstreamErrorPayload(response: globalThis.Response): Promise<unknown> {
+  const detail = await readUpstreamErrorPayloadDetail(response);
+  return detail.data;
+}
+
+async function readUpstreamErrorPayloadDetail(response: globalThis.Response): Promise<{
+  contentType: string;
+  data: unknown;
+  rawBodyText: string;
+}> {
   const contentType = response.headers.get('content-type') ?? '';
+  const rawBodyText = await response.text().catch(() => '');
   if (contentType.includes('application/json')) {
-    return response.json().catch(() => ({}));
+    if (rawBodyText.length === 0) {
+      return { contentType, data: {}, rawBodyText };
+    }
+    try {
+      return {
+        contentType,
+        data: JSON.parse(rawBodyText),
+        rawBodyText
+      };
+    } catch {
+      return {
+        contentType,
+        data: {},
+        rawBodyText
+      };
+    }
   }
-  return response.text().catch(() => '');
+  return {
+    contentType,
+    data: rawBodyText,
+    rawBodyText
+  };
 }
 
 async function recordTokenCredentialOutcome(input: {
@@ -2224,6 +2409,31 @@ async function executeTokenModeNonStreaming(input: {
         payload: compat.payload ?? {},
         streaming: false
       });
+      const upstreamHeaders = buildTokenModeUpstreamHeaders({
+        requestId,
+        anthropicVersion,
+        anthropicBeta: compat.anthropicBeta,
+        provider,
+        credential,
+        skipOauthDefaultBetas: compat.blockedRetryApplied
+      });
+      const upstreamBody = JSON.stringify(upstreamPayload);
+
+      logCompatUpstreamRequestTrace({
+        requestId,
+        attemptNo,
+        credentialId: credential.id,
+        credentialLabel: credential.debugLabel,
+        provider,
+        model,
+        proxiedPath,
+        targetUrl: String(targetUrl),
+        headers: upstreamHeaders,
+        payload: upstreamPayload,
+        bodyText: upstreamBody,
+        stream: false,
+        strictUpstreamPassthrough
+      });
 
       const logAttemptFailure = async (failure: AttemptFailure, ttfb?: number | null) => {
         await runtime.repos.routingEvents.insert({
@@ -2251,15 +2461,8 @@ async function executeTokenModeNonStreaming(input: {
 
       const upstreamResponse = await fetch(targetUrl, {
         method: 'POST',
-        headers: buildTokenModeUpstreamHeaders({
-          requestId,
-          anthropicVersion,
-          anthropicBeta: compat.anthropicBeta,
-          provider,
-          credential,
-          skipOauthDefaultBetas: compat.blockedRetryApplied
-        }),
-        body: JSON.stringify(upstreamPayload),
+        headers: upstreamHeaders,
+        body: upstreamBody,
         signal: controller.signal
       })
         .catch(async (error: unknown) => {
@@ -2275,10 +2478,26 @@ async function executeTokenModeNonStreaming(input: {
       const upstreamHeadersAt = Date.now();
       const ttfbMs = Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt));
       if (status === 403 && strictUpstreamPassthrough) {
-        const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
-        const data = contentType.includes('application/json')
-          ? await upstreamResponse.json().catch(() => ({}))
-          : await upstreamResponse.text();
+        const responseDetail = await readUpstreamErrorPayloadDetail(upstreamResponse);
+        const contentType = responseDetail.contentType || 'application/json';
+        const data = responseDetail.data;
+        logCompatUpstreamResponseTrace({
+          requestId,
+          attemptNo,
+          credentialId: credential.id,
+          credentialLabel: credential.debugLabel,
+          provider,
+          model,
+          proxiedPath,
+          targetUrl: String(targetUrl),
+          upstreamStatus: status,
+          upstreamContentType: contentType,
+          responseHeaders: responseHeadersToObject(upstreamResponse),
+          parsedBody: data,
+          rawBodyText: responseDetail.rawBodyText,
+          stream: false,
+          strictUpstreamPassthrough
+        });
         const blocked = isUpstreamBlockedResponse(status, data);
         if (blocked && !compat.blockedRetryApplied) {
           await recordTokenCredentialOutcome({
@@ -2385,10 +2604,28 @@ async function executeTokenModeNonStreaming(input: {
         let statusErrorMessage: string | undefined;
         let statusData: unknown = null;
         if (strictUpstreamPassthrough || compatTranslation) {
-          const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
-          statusData = contentType.includes('application/json')
-            ? await upstreamResponse.json().catch(() => ({}))
-            : await upstreamResponse.text();
+          const responseDetail = await readUpstreamErrorPayloadDetail(upstreamResponse);
+          const contentType = responseDetail.contentType || 'application/json';
+          statusData = responseDetail.data;
+          if (strictUpstreamPassthrough) {
+            logCompatUpstreamResponseTrace({
+              requestId,
+              attemptNo,
+              credentialId: credential.id,
+              credentialLabel: credential.debugLabel,
+              provider,
+              model,
+              proxiedPath,
+              targetUrl: String(targetUrl),
+              upstreamStatus: status,
+              upstreamContentType: contentType,
+              responseHeaders: responseHeadersToObject(upstreamResponse),
+              parsedBody: statusData,
+              rawBodyText: responseDetail.rawBodyText,
+              stream: false,
+              strictUpstreamPassthrough
+            });
+          }
           const details = extractUpstreamErrorDetails(statusData);
           statusErrorType = details.errorType;
           statusErrorMessage = details.errorMessage;
@@ -2484,7 +2721,27 @@ async function executeTokenModeNonStreaming(input: {
       }
 
       if (status === 429) {
-        const rateLimitData = await readUpstreamErrorPayload(upstreamResponse);
+        const rateLimitDetail = await readUpstreamErrorPayloadDetail(upstreamResponse);
+        const rateLimitData = rateLimitDetail.data;
+        if (strictUpstreamPassthrough) {
+          logCompatUpstreamResponseTrace({
+            requestId,
+            attemptNo,
+            credentialId: credential.id,
+            credentialLabel: credential.debugLabel,
+            provider,
+            model,
+            proxiedPath,
+            targetUrl: String(targetUrl),
+            upstreamStatus: status,
+            upstreamContentType: rateLimitDetail.contentType || 'application/json',
+            responseHeaders: responseHeadersToObject(upstreamResponse),
+            parsedBody: rateLimitData,
+            rawBodyText: rateLimitDetail.rawBodyText,
+            stream: false,
+            strictUpstreamPassthrough
+          });
+        }
         if (compatTranslation) {
           terminalCompatError = mapOpenAiErrorToAnthropic(status, rateLimitData);
           terminalCompatCredentialId = credential.id;
@@ -2519,10 +2776,26 @@ async function executeTokenModeNonStreaming(input: {
 
       if (status >= 500) {
         if (strictUpstreamPassthrough) {
-          const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
-          const data = contentType.includes('application/json')
-            ? await upstreamResponse.json().catch(() => ({}))
-            : await upstreamResponse.text();
+          const responseDetail = await readUpstreamErrorPayloadDetail(upstreamResponse);
+          const contentType = responseDetail.contentType || 'application/json';
+          const data = responseDetail.data;
+          logCompatUpstreamResponseTrace({
+            requestId,
+            attemptNo,
+            credentialId: credential.id,
+            credentialLabel: credential.debugLabel,
+            provider,
+            model,
+            proxiedPath,
+            targetUrl: String(targetUrl),
+            upstreamStatus: status,
+            upstreamContentType: contentType,
+            responseHeaders: responseHeadersToObject(upstreamResponse),
+            parsedBody: data,
+            rawBodyText: responseDetail.rawBodyText,
+            stream: false,
+            strictUpstreamPassthrough
+          });
 
           await runtime.repos.routingEvents.insert({
             requestId,
@@ -2622,6 +2895,23 @@ async function executeTokenModeNonStreaming(input: {
         : (downstreamMappedError?.body ?? data);
       const downstreamContentType = compatTranslation || extractedSseResponse ? 'application/json' : contentType;
       if (strictUpstreamPassthrough && status >= 400) {
+        logCompatUpstreamResponseTrace({
+          requestId,
+          attemptNo,
+          credentialId: credential.id,
+          credentialLabel: credential.debugLabel,
+          provider,
+          model,
+          proxiedPath,
+          targetUrl: String(targetUrl),
+          upstreamStatus: status,
+          upstreamContentType: contentType,
+          responseHeaders: responseHeadersToObject(upstreamResponse),
+          parsedBody: data,
+          rawBodyText: rawText,
+          stream: false,
+          strictUpstreamPassthrough
+        });
         const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
         if (shouldLogCompatInvalidRequestDebug({
           strictUpstreamPassthrough,
@@ -2907,18 +3197,35 @@ async function executeTokenModeStreaming(input: {
         anthropicVersion,
         anthropicBeta: compat.anthropicBeta,
         provider,
-          credential,
-          skipOauthDefaultBetas: compat.blockedRetryApplied,
-          streaming: true
+        credential,
+        skipOauthDefaultBetas: compat.blockedRetryApplied,
+        streaming: true
       });
-      const upstreamBody = JSON.stringify(normalizeTokenModeUpstreamPayload({
+      const upstreamPayload = normalizeTokenModeUpstreamPayload({
         provider,
         credential,
         proxiedPath,
         payload: compat.payload ?? {},
         streaming: true
-      }));
+      });
+      const upstreamBody = JSON.stringify(upstreamPayload);
       const dispatchStartedAt = Date.now();
+
+      logCompatUpstreamRequestTrace({
+        requestId,
+        attemptNo,
+        credentialId: credential.id,
+        credentialLabel: credential.debugLabel,
+        provider,
+        model,
+        proxiedPath,
+        targetUrl: String(targetUrl),
+        headers: upstreamHeaders,
+        payload: upstreamPayload,
+        bodyText: upstreamBody,
+        stream: true,
+        strictUpstreamPassthrough
+      });
 
       const logAttemptFailure = async (failure: AttemptFailure, ttfb?: number | null) => {
         await runtime.repos.routingEvents.insert({
@@ -2962,10 +3269,26 @@ async function executeTokenModeStreaming(input: {
       const status = upstreamResponse.status;
       const upstreamHeadersAt = Date.now();
       if (status === 403 && strictUpstreamPassthrough) {
-        const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
-        const data = contentType.includes('application/json')
-          ? await upstreamResponse.json().catch(() => ({}))
-          : await upstreamResponse.text();
+        const responseDetail = await readUpstreamErrorPayloadDetail(upstreamResponse);
+        const contentType = responseDetail.contentType || 'application/json';
+        const data = responseDetail.data;
+        logCompatUpstreamResponseTrace({
+          requestId,
+          attemptNo,
+          credentialId: credential.id,
+          credentialLabel: credential.debugLabel,
+          provider,
+          model,
+          proxiedPath,
+          targetUrl: String(targetUrl),
+          upstreamStatus: status,
+          upstreamContentType: contentType,
+          responseHeaders: responseHeadersToObject(upstreamResponse),
+          parsedBody: data,
+          rawBodyText: responseDetail.rawBodyText,
+          stream: true,
+          strictUpstreamPassthrough
+        });
         const blocked = isUpstreamBlockedResponse(status, data);
         if (blocked && !compat.blockedRetryApplied) {
           await recordTokenCredentialOutcome({
@@ -3071,10 +3394,28 @@ async function executeTokenModeStreaming(input: {
         let statusErrorType: string | undefined;
         let statusErrorMessage: string | undefined;
         if (strictUpstreamPassthrough || compatTranslation) {
-          const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
-          const statusData = contentType.includes('application/json')
-            ? await upstreamResponse.json().catch(() => ({}))
-            : await upstreamResponse.text();
+          const responseDetail = await readUpstreamErrorPayloadDetail(upstreamResponse);
+          const contentType = responseDetail.contentType || 'application/json';
+          const statusData = responseDetail.data;
+          if (strictUpstreamPassthrough) {
+            logCompatUpstreamResponseTrace({
+              requestId,
+              attemptNo,
+              credentialId: credential.id,
+              credentialLabel: credential.debugLabel,
+              provider,
+              model,
+              proxiedPath,
+              targetUrl: String(targetUrl),
+              upstreamStatus: status,
+              upstreamContentType: contentType,
+              responseHeaders: responseHeadersToObject(upstreamResponse),
+              parsedBody: statusData,
+              rawBodyText: responseDetail.rawBodyText,
+              stream: true,
+              strictUpstreamPassthrough
+            });
+          }
           const details = extractUpstreamErrorDetails(statusData);
           statusErrorType = details.errorType;
           statusErrorMessage = details.errorMessage;
@@ -3170,7 +3511,27 @@ async function executeTokenModeStreaming(input: {
       }
 
       if (status === 429) {
-        const rateLimitData = await readUpstreamErrorPayload(upstreamResponse);
+        const rateLimitDetail = await readUpstreamErrorPayloadDetail(upstreamResponse);
+        const rateLimitData = rateLimitDetail.data;
+        if (strictUpstreamPassthrough) {
+          logCompatUpstreamResponseTrace({
+            requestId,
+            attemptNo,
+            credentialId: credential.id,
+            credentialLabel: credential.debugLabel,
+            provider,
+            model,
+            proxiedPath,
+            targetUrl: String(targetUrl),
+            upstreamStatus: status,
+            upstreamContentType: rateLimitDetail.contentType || 'application/json',
+            responseHeaders: responseHeadersToObject(upstreamResponse),
+            parsedBody: rateLimitData,
+            rawBodyText: rateLimitDetail.rawBodyText,
+            stream: true,
+            strictUpstreamPassthrough
+          });
+        }
         if (compatTranslation) {
           terminalCompatError = mapOpenAiErrorToAnthropic(status, rateLimitData);
           terminalCompatCredentialId = credential.id;
@@ -3218,10 +3579,26 @@ async function executeTokenModeStreaming(input: {
       }
 
       if (status >= 500 && strictUpstreamPassthrough) {
-        const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
-        const data = contentType.includes('application/json')
-          ? await upstreamResponse.json().catch(() => ({}))
-          : await upstreamResponse.text();
+        const responseDetail = await readUpstreamErrorPayloadDetail(upstreamResponse);
+        const contentType = responseDetail.contentType || 'application/json';
+        const data = responseDetail.data;
+        logCompatUpstreamResponseTrace({
+          requestId,
+          attemptNo,
+          credentialId: credential.id,
+          credentialLabel: credential.debugLabel,
+          provider,
+          model,
+          proxiedPath,
+          targetUrl: String(targetUrl),
+          upstreamStatus: status,
+          upstreamContentType: contentType,
+          responseHeaders: responseHeadersToObject(upstreamResponse),
+          parsedBody: data,
+          rawBodyText: responseDetail.rawBodyText,
+          stream: true,
+          strictUpstreamPassthrough
+        });
         terminalStrictPassthroughStatus = status;
         terminalStrictPassthroughContentType = contentType;
         terminalStrictPassthroughData = data;
@@ -3285,6 +3662,23 @@ async function executeTokenModeStreaming(input: {
           })
           : (downstreamMappedError?.body ?? data);
         if (strictUpstreamPassthrough && status >= 400) {
+          logCompatUpstreamResponseTrace({
+            requestId,
+            attemptNo,
+            credentialId: credential.id,
+            credentialLabel: credential.debugLabel,
+            provider,
+            model,
+            proxiedPath,
+            targetUrl: String(targetUrl),
+            upstreamStatus: status,
+            upstreamContentType: contentType,
+            responseHeaders: responseHeadersToObject(upstreamResponse),
+            parsedBody: data,
+            rawBodyText: rawText,
+            stream: true,
+            strictUpstreamPassthrough
+          });
           const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
           if (shouldLogCompatInvalidRequestDebug({
             strictUpstreamPassthrough,
