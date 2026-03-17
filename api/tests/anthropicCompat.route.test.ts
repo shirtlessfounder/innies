@@ -2574,6 +2574,57 @@ describe('anthropic compat route', () => {
     upstreamSpy.mockRestore();
   });
 
+  it('keeps default oauth betas on the first blocked-403 attempt when no inbound anthropic-beta header is present', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'invalid_request_error', message: 'Your request was blocked.' }
+      }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_blocked_default_beta_retry_ok',
+        usage: { input_tokens: 4, output_tokens: 5 }
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+
+    const firstHeaders = (upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.headers as Record<string, string>;
+    const secondHeaders = (upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.headers as Record<string, string>;
+
+    expect(firstHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
+    expect(firstHeaders['anthropic-beta']).toContain('interleaved-thinking-2025-05-14');
+    expect(firstHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
+    expect(firstHeaders['anthropic-beta']).toContain('claude-code-20250219');
+    expect(secondHeaders['anthropic-beta']).toBeUndefined();
+
+    upstreamSpy.mockRestore();
+  });
+
   it('retries once on oauth-incompatible 401 with oauth-safe payload on /v1/messages', async () => {
     const retryAuditSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const upstreamSpy = vi.spyOn(globalThis, 'fetch')
