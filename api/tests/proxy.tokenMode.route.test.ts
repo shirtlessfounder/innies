@@ -1034,6 +1034,9 @@ describe('proxy token-mode route behavior', () => {
     expect(headers.authorization).toBe('Bearer sk-ant-oat01-test-token');
     expect(headers['anthropic-beta']).toContain('oauth-2025-04-20');
     expect(headers['anthropic-beta']).toContain('claude-code-20250219');
+    expect(headers['anthropic-dangerous-direct-browser-access']).toBe('true');
+    expect(headers['x-app']).toBe('cli');
+    expect(headers['user-agent']).toBe('claude-cli/2.1.62');
     expect(markExpiredSpy).not.toHaveBeenCalled();
     const authFailureCalls = authFailureSpy.mock.calls.filter((c) => c[0] === '[auth-failure-audit] attempt');
     expect(authFailureCalls.length).toBeGreaterThan(0);
@@ -2245,6 +2248,9 @@ describe('proxy token-mode route behavior', () => {
     expect(String(targetUrl)).toBe('https://anthropic.internal.test/v1/messages');
     expect(headers.authorization).toBe('Bearer sk-ant-oat01-native-token');
     expect(headers['anthropic-version']).toBe('2023-06-01');
+    expect(headers['anthropic-dangerous-direct-browser-access']).toBe('true');
+    expect(headers['x-app']).toBe('cli');
+    expect(headers['user-agent']).toBe('claude-cli/1.0.0');
     expect(JSON.parse(String(init.body))).toMatchObject({
       model: 'claude-opus-4-6',
       max_tokens: 32,
