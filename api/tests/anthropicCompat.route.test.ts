@@ -1988,6 +1988,197 @@ describe('anthropic compat route', () => {
     upstreamSpy.mockRestore();
   });
 
+  it('returns deterministic 400 when tool_result blocks are not first in a user message', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_history_order_1', usage: { input_tokens: 5, output_tokens: 7 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 4096,
+        messages: [
+          { role: 'user', content: 'start' },
+          {
+            role: 'assistant',
+            content: [{ type: 'tool_use', id: 'toolu_order_1', name: 'lookup', input: {} }]
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'result follows' },
+              { type: 'tool_result', tool_use_id: 'toolu_order_1', content: 'done' }
+            ]
+          }
+        ]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any).type).toBe('error');
+    expect((res.body as any).error?.type).toBe('invalid_request_error');
+    expect(String((res.body as any).error?.message)).toContain('tool_result');
+    expect(String((res.body as any).error?.message)).toContain('first');
+    expect(upstreamSpy).not.toHaveBeenCalled();
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('returns deterministic 400 when assistant tool_use is not immediately followed by user tool_result blocks', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_history_gap_1', usage: { input_tokens: 5, output_tokens: 7 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 4096,
+        messages: [
+          { role: 'user', content: 'start' },
+          {
+            role: 'assistant',
+            content: [{ type: 'tool_use', id: 'toolu_gap_1', name: 'lookup', input: {} }]
+          },
+          { role: 'user', content: 'waiting on tool output' }
+        ]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any).type).toBe('error');
+    expect((res.body as any).error?.type).toBe('invalid_request_error');
+    expect(String((res.body as any).error?.message)).toContain('immediately follow');
+    expect(String((res.body as any).error?.message)).toContain('tool_result');
+    expect(upstreamSpy).not.toHaveBeenCalled();
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('returns deterministic 400 when extended thinking history includes unsigned assistant thinking blocks', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_history_thinking_1', usage: { input_tokens: 5, output_tokens: 7 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 4096,
+        thinking: { type: 'adaptive' },
+        messages: [
+          { role: 'user', content: 'start' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: 'private reasoning without signature' },
+              { type: 'tool_use', id: 'toolu_think_1', name: 'lookup', input: {} }
+            ]
+          },
+          {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'toolu_think_1', content: 'done' }]
+          }
+        ]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any).type).toBe('error');
+    expect((res.body as any).error?.type).toBe('invalid_request_error');
+    expect(String((res.body as any).error?.message)).toContain('thinking');
+    expect(String((res.body as any).error?.message)).toContain('signature');
+    expect(upstreamSpy).not.toHaveBeenCalled();
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('allows valid extended thinking tool history when signed thinking is preserved and tool_result comes first', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_history_valid_1', usage: { input_tokens: 5, output_tokens: 7 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 4096,
+        thinking: { type: 'adaptive' },
+        messages: [
+          { role: 'user', content: 'start' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: 'private reasoning', signature: 'sig_history_valid_1' },
+              { type: 'tool_use', id: 'toolu_valid_1', name: 'lookup', input: {} }
+            ]
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: 'toolu_valid_1', content: 'done' },
+              { type: 'text', text: 'please continue' }
+            ]
+          }
+        ]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+
+    upstreamSpy.mockRestore();
+  });
+
   it('normalizes tool_choice string to object for compat requests', async () => {
     const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ id: 'msg_tool_choice_1', usage: { input_tokens: 3, output_tokens: 4 } }), {
