@@ -24,6 +24,7 @@ innies-buyer-key-create
 innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
+innies-compat-direct-request-bundle
 innies-slo-check
 ```
 
@@ -39,6 +40,7 @@ What they do:
 - `innies-buyer-preference-set`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
+- `innies-compat-direct-request-bundle`: replay a payload directly against Anthropic with an exact first-pass header TSV and write a reusable request/response bundle for issue-80 wire diffs
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
 
 Behavior:
@@ -79,6 +81,7 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
+- `innies-compat-direct-request-bundle` accepts a payload JSON path plus a TSV file of exact direct headers (`name<TAB>value`), replays that body to Anthropic, redacts auth on disk, and writes `payload.json`, `direct-request.json`, `upstream-request.json`, `direct-response.json`, `upstream-response.json`, `response-headers.txt`, `response-body.txt`, and `summary.txt`
 
 ## Env
 
