@@ -64,8 +64,14 @@ if [[ "$routing_available" -eq 1 ]]; then
   if routing_fallback_rate="$(printf '%s' "$routing_body" | jq -er '
     if (.tokens | type) != "array" then
       error("tokens must be an array")
+    elif any(.tokens[]?; (
+      (type != "object")
+      or (.fallbackCount | type) != "number"
+      or (.totalAttempts | type) != "number"
+    )) then
+      error("tokens must contain numeric fallbackCount and totalAttempts")
     else
-      [.tokens[] | {f: (.fallbackCount // 0), t: (.totalAttempts // 0)}]
+      [.tokens[] | {f: .fallbackCount, t: .totalAttempts}]
       | {total_fallbacks: (map(.f) | add // 0), total_attempts: (map(.t) | add // 0)}
       | if .total_attempts == 0 then 0
         else (.total_fallbacks / .total_attempts)
