@@ -721,10 +721,10 @@ function logCompatAudit(input: {
   provider: string;
   model: string;
   requestId: string;
+  correlation: OpenClawCorrelation;
   credentialId: string;
   attemptNo: number;
   upstreamStatus: number;
-  correlation: OpenClawCorrelation;
   errorType?: string;
   errorMessage?: string;
 }): void {
@@ -738,7 +738,7 @@ function logCompatAudit(input: {
     attemptNo: input.attemptNo,
     upstreamStatus: input.upstreamStatus,
     openclawRunId: input.correlation.openclawRunId,
-    openclawSessionId: input.correlation.openclawSessionId,
+    openclawSessionId: input.correlation.openclawSessionId ?? null,
     ...buildCorrelationAuditFields(input.correlation),
     errorType: input.errorType,
     errorMessage: input.errorMessage
@@ -2066,10 +2066,10 @@ async function executeTokenModeNonStreaming(input: {
             provider,
             model,
             requestId,
+            correlation,
             credentialId: credential.id,
             attemptNo,
             upstreamStatus: status,
-            correlation,
             errorType,
             errorMessage
           });
@@ -2185,10 +2185,10 @@ async function executeTokenModeNonStreaming(input: {
             provider,
             model,
             requestId,
+            correlation,
             credentialId: credential.id,
             attemptNo,
             upstreamStatus: status,
-            correlation,
             errorType: statusErrorType,
             errorMessage: statusErrorMessage
           });
@@ -2340,10 +2340,10 @@ async function executeTokenModeNonStreaming(input: {
           provider,
           model,
           requestId,
+          correlation,
           credentialId: credential.id,
           attemptNo,
           upstreamStatus: status,
-          correlation,
           errorType,
           errorMessage
         });
@@ -2722,10 +2722,10 @@ async function executeTokenModeStreaming(input: {
             provider,
             model,
             requestId,
+            correlation,
             credentialId: credential.id,
             attemptNo,
             upstreamStatus: status,
-            correlation,
             errorType,
             errorMessage
           });
@@ -2840,10 +2840,10 @@ async function executeTokenModeStreaming(input: {
             provider,
             model,
             requestId,
+            correlation,
             credentialId: credential.id,
             attemptNo,
             upstreamStatus: status,
-            correlation,
             errorType: statusErrorType,
             errorMessage: statusErrorMessage
           });
@@ -2972,10 +2972,10 @@ async function executeTokenModeStreaming(input: {
             provider,
             model,
             requestId,
+            correlation,
             credentialId: credential.id,
             attemptNo,
             upstreamStatus: status,
-            correlation,
             errorType,
             errorMessage
           });

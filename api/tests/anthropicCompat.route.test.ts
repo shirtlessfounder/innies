@@ -1708,6 +1708,7 @@ describe('anthropic compat route', () => {
   });
 
   it('passes through upstream 4xx status/body for compat route', async () => {
+    const compatAuditSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({
         type: 'error',
@@ -1723,7 +1724,10 @@ describe('anthropic compat route', () => {
       path: '/v1/messages',
       headers: {
         authorization: 'Bearer in_test_token',
-        'content-type': 'application/json'
+        'content-type': 'application/json',
+        'x-openclaw-run-id': 'oc_run_passthrough_1',
+        'x-openclaw-session-id': 'oc_passthrough_session_1',
+        'x-innies-session-id': 'sess_passthrough_canonical_1'
       },
       body: {
         model: 'claude-opus-4-6',
@@ -1740,7 +1744,21 @@ describe('anthropic compat route', () => {
     expect(upstreamSpy).toHaveBeenCalledTimes(1);
     expect(res.statusCode).toBe(400);
     expect((res.body as any).error?.type).toBe('invalid_request_error');
+    const compatCalls = compatAuditSpy.mock.calls.filter((call) => call[0] === '[compat-audit] attempt');
+    expect(compatCalls.length).toBeGreaterThan(0);
+    const compatAudit = compatCalls[0]?.[1] as any;
+    expect(compatAudit?.upstreamStatus).toBe(400);
+    expect(compatAudit?.provider).toBe('anthropic');
+    expect(compatAudit?.model).toBe('claude-opus-4-6');
+    expect(compatAudit?.openclawRunId).toBe('oc_run_passthrough_1');
+    expect(compatAudit?.openclaw_run_id).toBe('oc_run_passthrough_1');
+    expect(compatAudit?.openclaw_session_id).toBe('oc_passthrough_session_1');
+    expect(compatAudit?.session_id).toBe('sess_passthrough_canonical_1');
+    expect(compatAudit?.session_source).toBe('x-innies-session-id');
+    expect(compatAudit?.errorType).toBe('invalid_request_error');
+    expect(compatAudit?.errorMessage).toContain('bad model');
 
+    compatAuditSpy.mockRestore();
     upstreamSpy.mockRestore();
   });
 
@@ -2155,6 +2173,7 @@ describe('anthropic compat route', () => {
         authorization: 'Bearer in_test_token',
         'content-type': 'application/json',
         'anthropic-beta': 'oauth-2025-04-20,claude-code-20250219',
+        'x-openclaw-run-id': 'oc_run_blocked_1',
         'x-openclaw-session-id': 'oc_blocked_session_1',
         'x-innies-session-id': 'sess_blocked_canonical_1'
       },
@@ -2173,13 +2192,19 @@ describe('anthropic compat route', () => {
     expect(upstreamSpy).toHaveBeenCalledTimes(2);
     expect(res.statusCode).toBe(403);
     expect((res.body as any).error?.message).toContain('blocked');
-    const compatAuditCalls = compatAuditSpy.mock.calls.filter((call) => call[0] === '[compat-audit] attempt');
-    expect(compatAuditCalls.length).toBeGreaterThan(0);
-    const compatAudit = compatAuditCalls[compatAuditCalls.length - 1]?.[1] as any;
-    expect(String(compatAudit?.openclaw_run_id ?? '')).toMatch(/^run_req_/);
+    const compatCalls = compatAuditSpy.mock.calls.filter((call) => call[0] === '[compat-audit] attempt');
+    expect(compatCalls.length).toBeGreaterThan(0);
+    const compatAudit = compatCalls.at(-1)?.[1] as any;
+    expect(compatAudit?.upstreamStatus).toBe(403);
+    expect(compatAudit?.provider).toBe('anthropic');
+    expect(compatAudit?.model).toBe('claude-opus-4-6');
+    expect(compatAudit?.openclawRunId).toBe('oc_run_blocked_1');
+    expect(compatAudit?.openclaw_run_id).toBe('oc_run_blocked_1');
     expect(compatAudit?.openclaw_session_id).toBe('oc_blocked_session_1');
     expect(compatAudit?.session_id).toBe('sess_blocked_canonical_1');
     expect(compatAudit?.session_source).toBe('x-innies-session-id');
+    expect(compatAudit?.errorType).toBe('invalid_request_error');
+    expect(compatAudit?.errorMessage).toContain('blocked');
 
     compatAuditSpy.mockRestore();
     upstreamSpy.mockRestore();
@@ -2756,6 +2781,7 @@ describe('anthropic compat route', () => {
       headers: {
         authorization: 'Bearer in_test_token',
         'content-type': 'application/json',
+        'x-openclaw-run-id': 'oc_run_auth_1',
         'x-openclaw-session-id': 'oc_auth_session_1',
         'x-innies-session-id': 'sess_auth_canonical_compat_1'
       },
@@ -2773,13 +2799,82 @@ describe('anthropic compat route', () => {
 
     // 401 should still be handled as auth failure, not as a 5xx failover
     expect(res.statusCode).toBe(401);
-    const compatAuditCalls = compatAuditSpy.mock.calls.filter((call) => call[0] === '[compat-audit] attempt');
-    expect(compatAuditCalls.length).toBeGreaterThan(0);
-    const compatAudit = compatAuditCalls[compatAuditCalls.length - 1]?.[1] as any;
-    expect(String(compatAudit?.openclaw_run_id ?? '')).toMatch(/^run_req_/);
+    const compatCalls = compatAuditSpy.mock.calls.filter((call) => call[0] === '[compat-audit] attempt');
+    expect(compatCalls.length).toBeGreaterThan(0);
+    const compatAudit = compatCalls[0]?.[1] as any;
+    expect(compatAudit?.upstreamStatus).toBe(401);
+    expect(compatAudit?.provider).toBe('anthropic');
+    expect(compatAudit?.model).toBe('claude-opus-4-6');
+    expect(compatAudit?.openclawRunId).toBe('oc_run_auth_1');
+    expect(compatAudit?.openclaw_run_id).toBe('oc_run_auth_1');
     expect(compatAudit?.openclaw_session_id).toBe('oc_auth_session_1');
     expect(compatAudit?.session_id).toBe('sess_auth_canonical_compat_1');
     expect(compatAudit?.session_source).toBe('x-innies-session-id');
+    expect(compatAudit?.errorType).toBe('authentication_error');
+    expect(compatAudit?.errorMessage).toContain('invalid x-api-key');
+
+    compatAuditSpy.mockRestore();
+    upstreamSpy.mockRestore();
+  });
+
+  it('passes through blocked 403 in compat stream mode with canonical session audit fields', async () => {
+    const compatAuditSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'invalid_request_error', message: 'Your request was blocked.' }
+      }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'invalid_request_error', message: 'Your request was blocked.' }
+      }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'anthropic-beta': 'oauth-2025-04-20,claude-code-20250219',
+        'x-openclaw-run-id': 'oc_run_stream_blocked_1',
+        'x-openclaw-session-id': 'oc_stream_blocked_session_1',
+        'x-innies-session-id': 'sess_stream_blocked_canonical_1'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        stream: true,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+    expect(res.statusCode).toBe(403);
+    expect((res.body as any).error?.message).toContain('blocked');
+    const compatCalls = compatAuditSpy.mock.calls.filter((call) => call[0] === '[compat-audit] attempt');
+    expect(compatCalls.length).toBeGreaterThan(0);
+    const compatAudit = compatCalls.at(-1)?.[1] as any;
+    expect(compatAudit?.upstreamStatus).toBe(403);
+    expect(compatAudit?.provider).toBe('anthropic');
+    expect(compatAudit?.model).toBe('claude-opus-4-6');
+    expect(compatAudit?.openclawRunId).toBe('oc_run_stream_blocked_1');
+    expect(compatAudit?.openclaw_run_id).toBe('oc_run_stream_blocked_1');
+    expect(compatAudit?.openclaw_session_id).toBe('oc_stream_blocked_session_1');
+    expect(compatAudit?.session_id).toBe('sess_stream_blocked_canonical_1');
+    expect(compatAudit?.session_source).toBe('x-innies-session-id');
+    expect(compatAudit?.errorType).toBe('invalid_request_error');
+    expect(compatAudit?.errorMessage).toContain('blocked');
 
     compatAuditSpy.mockRestore();
     upstreamSpy.mockRestore();
