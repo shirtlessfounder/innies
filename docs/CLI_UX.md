@@ -70,7 +70,6 @@ Injected environment:
 - `INNIES_CORRELATION_ID`
 - `INNIES_PROVIDER_PIN`
 - `OPENAI_API_KEY`
-- `OPENAI_BASE_URL`
 
 Behavior:
 - forwards all args to `codex`
@@ -86,6 +85,7 @@ Behavior:
   - `responses_websockets_v2=false`
   - `model_providers.innies.env_http_headers."x-request-id"="INNIES_CORRELATION_ID"`
   - `model_providers.innies.env_http_headers."x-innies-provider-pin"="INNIES_PROVIDER_PIN"`
+- strips inherited `OPENAI_BASE_URL` so Codex uses the injected provider config without deprecated-env warnings
 - injects the provider default OpenAI/Codex model when no explicit `-m`, `--model <id>`, or `--model=<id>` override is supplied
 - loop-safe binary resolution:
   - prefers non-wrapper Codex binary from `which -a codex`
