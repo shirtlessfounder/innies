@@ -40,7 +40,7 @@ What they do:
 - `innies-token-probe-run`: directly probe an active or maxed token credential now; successful maxed probes immediately reactivate it
 - `innies-token-usage-refresh`: fetch Claude provider usage for a token now and print raw plus parsed 5h / 7d values
 - `innies-compat-artifact-extract`: extract one issue-80 style Anthropic compat request bundle from a saved prod HTML/log artifact
-- `innies-compat-first-pass-evidence`: run the safe artifact extractor plus exact ingress-vs-upstream diff and write one merged issue-80 evidence summary
+- `innies-compat-first-pass-evidence`: run the safe artifact extractor plus exact ingress-vs-upstream diff, and optionally replay the extracted payload directly so one merged summary captures compat-vs-direct first-pass evidence
 - `innies-buyer-key-create`: create a new buyer key in `in_api_keys` and prompt for provider preference up front
 - `innies-buyer-preference-set`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
 - `innies-buyer-preference-get`: read the current buyer key preference
@@ -87,6 +87,8 @@ Behavior:
 - `innies-compat-first-pass-evidence` writes `extract/`, `diff/`, and a merged top-level `summary.txt` for one saved artifact request id
 - `innies-compat-first-pass-evidence` usage:
   - `INNIES_EVIDENCE_OUT_DIR=/tmp/issue80-evidence scripts/innies-compat-first-pass-evidence.sh /path/to/response.html req_123`
+  - `INNIES_EVIDENCE_OUT_DIR=/tmp/issue80-direct-evidence scripts/innies-compat-first-pass-evidence.sh /path/to/response.html req_123 /path/to/direct-headers.tsv`
+- `innies-compat-first-pass-evidence` direct mode reuses the extracted `payload.json` as the replay body, writes `direct/` plus `direct-diff/`, and prefixes the merged summary with `direct_` and `compat_upstream_vs_direct_` keys for the exact compat-vs-direct delta
 - `innies-compat-first-pass-bundle-diff` accepts either:
   - one extracted bundle directory to compare `ingress.json` vs `upstream-request.json`
   - or two bundle specs, where directories default to `#upstream` and explicit `#ingress` / `#upstream` selectors override that
