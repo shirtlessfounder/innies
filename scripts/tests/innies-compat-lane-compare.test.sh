@@ -7,20 +7,30 @@ TMP_DIR="$(mktemp -d)"
 PAYLOAD_PATH="$TMP_DIR/payload.json"
 INNIES_REQUEST_HEADERS="$TMP_DIR/innies-request-headers.json"
 INNIES_REQUEST_BODY="$TMP_DIR/innies-request-body.json"
+INNIES_OPENAI_REQUEST_HEADERS="$TMP_DIR/innies-openai-request-headers.json"
+INNIES_OPENAI_REQUEST_BODY="$TMP_DIR/innies-openai-request-body.json"
 DIRECT_REQUEST_HEADERS="$TMP_DIR/direct-request-headers.json"
 DIRECT_REQUEST_BODY="$TMP_DIR/direct-request-body.json"
 OUTPUT_PATH="$TMP_DIR/output.txt"
 OUTPUT_FROM_LOG_PATH="$TMP_DIR/output-from-log.txt"
+OUTPUT_BAD_PROVIDER_PATH="$TMP_DIR/output-bad-provider.txt"
+OUTPUT_BAD_CAPTURED_PATH="$TMP_DIR/output-bad-captured.txt"
 INNIES_SERVER_LOG="$TMP_DIR/innies-server.log"
+INNIES_OPENAI_SERVER_LOG="$TMP_DIR/innies-openai-server.log"
 DIRECT_SERVER_LOG="$TMP_DIR/direct-server.log"
 OUT_DIR="$TMP_DIR/out"
 OUT_DIR_FROM_LOG="$TMP_DIR/out-from-log"
 CAPTURED_RESPONSE_HTML="$TMP_DIR/response.html"
+CAPTURED_OPENAI_RESPONSE_HTML="$TMP_DIR/response-openai.html"
 
 cleanup() {
   if [[ -n "${INNIES_SERVER_PID:-}" ]]; then
     kill "$INNIES_SERVER_PID" >/dev/null 2>&1 || true
     wait "$INNIES_SERVER_PID" 2>/dev/null || true
+  fi
+  if [[ -n "${INNIES_OPENAI_SERVER_PID:-}" ]]; then
+    kill "$INNIES_OPENAI_SERVER_PID" >/dev/null 2>&1 || true
+    wait "$INNIES_OPENAI_SERVER_PID" 2>/dev/null || true
   fi
   if [[ -n "${DIRECT_SERVER_PID:-}" ]]; then
     kill "$DIRECT_SERVER_PID" >/dev/null 2>&1 || true
@@ -42,6 +52,17 @@ const port = Number(process.env.PORT);
 const mode = process.env.MODE;
 const headersPath = process.env.HEADERS_PATH;
 const bodyPath = process.env.BODY_PATH;
+const upstreamProvider = process.env.UPSTREAM_PROVIDER ?? 'anthropic';
+const upstreamTargetUrl = process.env.UPSTREAM_TARGET_URL ?? 'https://api.anthropic.com/v1/messages';
+const upstreamProxiedPath = process.env.UPSTREAM_PROXIED_PATH ?? '/v1/messages';
+const upstreamTokenKind = process.env.UPSTREAM_TOKEN_KIND ?? 'anthropic_oauth';
+const upstreamAuthorization = process.env.UPSTREAM_AUTHORIZATION ?? 'Bearer <redacted:23>';
+const upstreamAnthropicVersion = process.env.UPSTREAM_ANTHROPIC_VERSION ?? '2023-06-01';
+const upstreamAnthropicBeta = process.env.UPSTREAM_ANTHROPIC_BETA ?? 'fine-grained-tool-streaming-2025-05-14,oauth-2025-04-20';
+const upstreamAccept = process.env.UPSTREAM_ACCEPT ?? 'text/event-stream';
+const upstreamHeaderNames = process.env.UPSTREAM_HEADER_NAMES ?? 'accept,anthropic-beta,anthropic-version,authorization,content-type,x-request-id';
+const upstreamRequestId = process.env.UPSTREAM_REQUEST_ID ?? 'req_issue80_innies_test';
+const upstreamProviderRequestId = process.env.UPSTREAM_PROVIDER_REQUEST_ID ?? 'req_upstream_innies_test';
 
 const server = createServer((req, res) => {
   const chunks = [];
@@ -57,24 +78,24 @@ const server = createServer((req, res) => {
     if (mode === 'innies') {
       res.statusCode = 400;
       res.setHeader('content-type', 'application/json');
-      res.setHeader('x-request-id', 'req_issue80_innies_test');
+      res.setHeader('x-request-id', upstreamRequestId);
       res.setHeader('x-innies-token-credential-id', 'cred_issue80_test');
       res.setHeader('x-innies-attempt-no', '1');
-      res.setHeader('x-innies-debug-upstream-target-url', 'https://api.anthropic.com/v1/messages');
-      res.setHeader('x-innies-debug-upstream-proxied-path', '/v1/messages');
-      res.setHeader('x-innies-debug-upstream-provider', 'anthropic');
+      res.setHeader('x-innies-debug-upstream-target-url', upstreamTargetUrl);
+      res.setHeader('x-innies-debug-upstream-proxied-path', upstreamProxiedPath);
+      res.setHeader('x-innies-debug-upstream-provider', upstreamProvider);
       res.setHeader('x-innies-debug-upstream-stream', 'true');
-      res.setHeader('x-innies-debug-upstream-token-kind', 'anthropic_oauth');
-      res.setHeader('x-innies-debug-upstream-authorization', 'Bearer <redacted:23>');
-      res.setHeader('x-innies-debug-upstream-anthropic-version', '2023-06-01');
-      res.setHeader('x-innies-debug-upstream-anthropic-beta', 'fine-grained-tool-streaming-2025-05-14,oauth-2025-04-20');
-      res.setHeader('x-innies-debug-upstream-accept', 'text/event-stream');
-      res.setHeader('x-innies-debug-upstream-request-id', 'req_issue80_innies_test');
-      res.setHeader('x-innies-debug-upstream-header-names', 'accept,anthropic-beta,anthropic-version,authorization,content-type,x-request-id');
+      res.setHeader('x-innies-debug-upstream-token-kind', upstreamTokenKind);
+      res.setHeader('x-innies-debug-upstream-authorization', upstreamAuthorization);
+      res.setHeader('x-innies-debug-upstream-anthropic-version', upstreamAnthropicVersion);
+      res.setHeader('x-innies-debug-upstream-anthropic-beta', upstreamAnthropicBeta);
+      res.setHeader('x-innies-debug-upstream-accept', upstreamAccept);
+      res.setHeader('x-innies-debug-upstream-request-id', upstreamRequestId);
+      res.setHeader('x-innies-debug-upstream-header-names', upstreamHeaderNames);
       res.end(JSON.stringify({
         type: 'error',
         error: { type: 'invalid_request_error', message: 'Error' },
-        request_id: 'req_upstream_innies_test'
+        request_id: upstreamProviderRequestId
       }));
       return;
     }
@@ -98,10 +119,17 @@ start_server() {
   local headers_path="$4"
   local body_path="$5"
   local pid_var="$6"
+  shift 6
+  local env_args=("$@")
   local port
   port="$(node -e "const net=require('node:net');const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const {port}=s.address();console.log(port);s.close();});")"
-  MODE="$mode" HEADERS_PATH="$headers_path" BODY_PATH="$body_path" PORT="$port" \
-    node "$TMP_DIR/mock-server.mjs" >"$log_path" 2>&1 &
+  if (( ${#env_args[@]} > 0 )); then
+    env MODE="$mode" HEADERS_PATH="$headers_path" BODY_PATH="$body_path" PORT="$port" "${env_args[@]}" \
+      node "$TMP_DIR/mock-server.mjs" >"$log_path" 2>&1 &
+  else
+    env MODE="$mode" HEADERS_PATH="$headers_path" BODY_PATH="$body_path" PORT="$port" \
+      node "$TMP_DIR/mock-server.mjs" >"$log_path" 2>&1 &
+  fi
   local pid=$!
   for _ in $(seq 1 50); do
     if grep -q '^ready:' "$log_path" 2>/dev/null; then
@@ -117,6 +145,15 @@ start_server() {
 }
 
 start_server innies INNIES_PORT "$INNIES_SERVER_LOG" "$INNIES_REQUEST_HEADERS" "$INNIES_REQUEST_BODY" INNIES_SERVER_PID
+start_server innies INNIES_OPENAI_PORT "$INNIES_OPENAI_SERVER_LOG" "$INNIES_OPENAI_REQUEST_HEADERS" "$INNIES_OPENAI_REQUEST_BODY" INNIES_OPENAI_SERVER_PID \
+  "UPSTREAM_PROVIDER=openai" \
+  "UPSTREAM_TARGET_URL=https://chatgpt.com/backend-api/codex/responses" \
+  "UPSTREAM_PROXIED_PATH=/v1/responses" \
+  "UPSTREAM_TOKEN_KIND=openai_oauth" \
+  "UPSTREAM_AUTHORIZATION=Bearer <redacted:31>" \
+  "UPSTREAM_HEADER_NAMES=authorization,content-type,x-request-id" \
+  "UPSTREAM_REQUEST_ID=req_issue80_openai_test" \
+  "UPSTREAM_PROVIDER_REQUEST_ID=req_upstream_openai_test"
 start_server direct DIRECT_PORT "$DIRECT_SERVER_LOG" "$DIRECT_REQUEST_HEADERS" "$DIRECT_REQUEST_BODY" DIRECT_SERVER_PID
 
 INNIES_BASE_URL="http://127.0.0.1:$INNIES_PORT" \
@@ -138,6 +175,7 @@ grep -q 'innies_provider_request_id=req_upstream_innies_test' "$OUTPUT_PATH"
 grep -q 'direct_provider_request_id=req_upstream_direct_test' "$OUTPUT_PATH"
 
 grep -q '"x-innies-debug-upstream-lane": "1"' "$INNIES_REQUEST_HEADERS"
+grep -q '"x-innies-provider-pin": "true"' "$INNIES_REQUEST_HEADERS"
 grep -q '"authorization": "Bearer buyer_test_token"' "$INNIES_REQUEST_HEADERS"
 grep -q '"authorization": "Bearer sk-ant-oat-direct-token"' "$DIRECT_REQUEST_HEADERS"
 grep -q '"user-agent": "OpenClawGateway/1.0"' "$DIRECT_REQUEST_HEADERS"
@@ -147,6 +185,22 @@ cmp -s "$PAYLOAD_PATH" "$DIRECT_REQUEST_BODY"
 
 grep -q '^direct_only_header_names=user-agent$' "$OUT_DIR/comparison.txt"
 grep -q '^innies_only_header_names=$' "$OUT_DIR/comparison.txt"
+
+if INNIES_BASE_URL="http://127.0.0.1:$INNIES_OPENAI_PORT" \
+  INNIES_BUYER_API_KEY="buyer_test_token" \
+  INNIES_REQUEST_ID="req_issue80_openai_test" \
+  INNIES_LANE_OUT_DIR="$TMP_DIR/out-openai" \
+  ANTHROPIC_OAUTH_ACCESS_TOKEN="sk-ant-oat-direct-token" \
+  ANTHROPIC_DIRECT_BASE_URL="http://127.0.0.1:$DIRECT_PORT" \
+  ANTHROPIC_DIRECT_REQUEST_ID="req_issue80_direct_openai_test" \
+  ANTHROPIC_DIRECT_USER_AGENT="OpenClawGateway/1.0" \
+  "$SCRIPT_PATH" "$PAYLOAD_PATH" >"$OUTPUT_BAD_PROVIDER_PATH" 2>&1; then
+  echo 'expected live compare to fail when Innies routed to openai' >&2
+  exit 1
+fi
+
+grep -q 'error: live Innies lane resolved to openai; expected anthropic' "$OUTPUT_BAD_PROVIDER_PATH"
+grep -q '"x-innies-provider-pin": "true"' "$INNIES_OPENAI_REQUEST_HEADERS"
 
 cat >"$CAPTURED_RESPONSE_HTML" <<'LOG'
 Mar 17 11:10:39 sf-prod bash[263845]: [compat-upstream-request-json-chunk] {
@@ -184,3 +238,30 @@ cmp -s "$PAYLOAD_PATH" "$DIRECT_REQUEST_BODY"
 
 grep -q '^innies_upstream_token_kind=anthropic_oauth$' "$OUT_DIR_FROM_LOG/comparison.txt"
 grep -q '^direct_only_header_names=user-agent$' "$OUT_DIR_FROM_LOG/comparison.txt"
+
+cat >"$CAPTURED_OPENAI_RESPONSE_HTML" <<'LOG'
+Mar 17 11:10:39 sf-prod bash[263845]: [compat-upstream-request-json-chunk] {
+Mar 17 11:10:39 sf-prod bash[263845]:   chunk_index: 0,
+Mar 17 11:10:39 sf-prod bash[263845]:   chunk_count: 1,
+Mar 17 11:10:39 sf-prod bash[263845]:   json: '{"attempt_no":1,"credential_id":"cred_issue80_openai_from_log","credential_label":"codex","headers":{"authorization":"Bearer <redacted:96>","content-type":"application/json","x-request-id":"req_issue80_openai_from_log"},"method":"POST","model":"gpt-5.4","payload":{"model":"claude-opus-4-6","stream":true,"max_tokens":16,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]},"provider":"openai","proxied_path":"/v1/responses","request_id":"req_issue80_openai_from_log","stream":true,"target_url":"https://chatgpt.com/backend-api/codex/responses"}'
+Mar 17 11:10:39 sf-prod bash[263845]: }
+Mar 17 11:10:39 sf-prod bash[263845]: [compat-upstream-response-json-chunk] {
+Mar 17 11:10:39 sf-prod bash[263845]:   chunk_index: 0,
+Mar 17 11:10:39 sf-prod bash[263845]:   chunk_count: 1,
+Mar 17 11:10:39 sf-prod bash[263845]:   json: '{"attempt_no":1,"credential_id":"cred_issue80_openai_from_log","credential_label":"codex","parsed_body":{"error":{"message":"Error","type":"invalid_request_error"},"request_id":"req_upstream_openai_from_log","type":"error"},"provider":"openai","proxied_path":"/v1/responses","request_id":"req_issue80_openai_from_log","response_headers":{"content-type":"application/json","request-id":"req_upstream_openai_from_log"},"stream":true,"target_url":"https://chatgpt.com/backend-api/codex/responses","upstream_content_type":"application/json","upstream_status":400}'
+Mar 17 11:10:39 sf-prod bash[263845]: }
+LOG
+
+if INNIES_CAPTURED_RESPONSE_HTML="$CAPTURED_OPENAI_RESPONSE_HTML" \
+  INNIES_CAPTURED_REQUEST_ID="req_issue80_openai_from_log" \
+  INNIES_LANE_OUT_DIR="$TMP_DIR/out-openai-from-log" \
+  ANTHROPIC_OAUTH_ACCESS_TOKEN="sk-ant-oat-direct-token" \
+  ANTHROPIC_DIRECT_BASE_URL="http://127.0.0.1:$DIRECT_PORT" \
+  ANTHROPIC_DIRECT_REQUEST_ID="req_issue80_direct_openai_from_log" \
+  ANTHROPIC_DIRECT_USER_AGENT="OpenClawGateway/1.0" \
+  "$SCRIPT_PATH" "$PAYLOAD_PATH" >"$OUTPUT_BAD_CAPTURED_PATH" 2>&1; then
+  echo 'expected captured compare to fail when captured lane is openai' >&2
+  exit 1
+fi
+
+grep -q 'error: captured Innies lane resolved to openai; expected anthropic' "$OUTPUT_BAD_CAPTURED_PATH"

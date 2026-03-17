@@ -77,6 +77,23 @@ redact_bearer_value() {
   printf 'Bearer <redacted:%s>' "${#token}"
 }
 
+require_anthropic_lane() {
+  local mode="$1"
+  local provider="${2:-}"
+  local prefix=''
+  provider="$(printf '%s' "$provider" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$provider" != 'anthropic' ]]; then
+    if [[ -z "$provider" ]]; then
+      provider='unknown'
+    fi
+    if [[ -n "$mode" ]]; then
+      prefix="${mode} "
+    fi
+    echo "error: ${prefix}Innies lane resolved to ${provider}; expected anthropic" >&2
+    exit 1
+  fi
+}
+
 load_captured_innies_lane() {
   local captured_html="$1"
   local request_id="$2"
@@ -345,6 +362,7 @@ else
     -H "anthropic-version: $ANTHROPIC_VERSION" \
     -H "anthropic-beta: $ANTHROPIC_BETA" \
     -H "x-request-id: $INNIES_REQUEST_ID" \
+    -H 'x-innies-provider-pin: true' \
     -H 'x-innies-debug-upstream-lane: 1' \
     --data-binary @"$PAYLOAD_PATH")"
 
@@ -377,6 +395,12 @@ if [[ -z "$INNIES_UPSTREAM_TARGET_URL" ]]; then
     echo 'error: missing x-innies-debug-upstream-target-url response header; enable INNIES_ENABLE_UPSTREAM_DEBUG_HEADERS=true on the API server' >&2
   fi
   exit 1
+fi
+
+if [[ "$USE_CAPTURED_RESPONSE" == 'true' ]]; then
+  require_anthropic_lane 'captured' "$INNIES_UPSTREAM_PROVIDER"
+else
+  require_anthropic_lane 'live' "$INNIES_UPSTREAM_PROVIDER"
 fi
 
 write_lines "$INNIES_META_FILE" \

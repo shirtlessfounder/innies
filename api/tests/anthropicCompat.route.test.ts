@@ -1909,11 +1909,14 @@ describe('anthropic compat route', () => {
     expect(res.headers['x-innies-debug-upstream-token-kind']).toBe('anthropic_oauth');
     expect(res.headers['x-innies-debug-upstream-authorization']).toBe('Bearer <redacted:23>');
     expect(res.headers['x-innies-debug-upstream-anthropic-version']).toBe('2023-06-01');
-    expect(res.headers['x-innies-debug-upstream-anthropic-beta']).toBe('fine-grained-tool-streaming-2025-05-14,oauth-2025-04-20');
+    expect(res.headers['x-innies-debug-upstream-anthropic-beta']).toBe(
+      'fine-grained-tool-streaming-2025-05-14,claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14'
+    );
     expect(res.headers['x-innies-debug-upstream-accept']).toBe('text/event-stream');
+    expect(res.headers['x-innies-debug-upstream-user-agent']).toBe('claude-cli/2.1.62');
     expect(res.headers['x-innies-debug-upstream-request-id']).toMatch(/^req_/);
     expect(res.headers['x-innies-debug-upstream-header-names']).toBe(
-      'accept,anthropic-beta,anthropic-version,authorization,content-type,x-request-id'
+      'accept,anthropic-beta,anthropic-dangerous-direct-browser-access,anthropic-version,authorization,content-type,user-agent,x-app,x-request-id'
     );
     expect(String(res.body)).toContain('event: message_start');
 

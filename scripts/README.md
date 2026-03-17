@@ -89,10 +89,13 @@ Behavior:
   - live Innies mode:
     - requires `INNIES_ENABLE_UPSTREAM_DEBUG_HEADERS=true` on the API server
     - uses Innies buyer auth via `INNIES_BUYER_API_KEY` / `INNIES_TOKEN`
+    - sends `x-innies-provider-pin: true` so the compat request stays on the Anthropic lane while collecting the first-pass debug headers
+    - aborts if the observed `x-innies-debug-upstream-provider` is not `anthropic`
   - captured-artifact mode:
     - set `INNIES_CAPTURED_RESPONSE_HTML=/path/to/response.html` (or `INNIES_CAPTURED_LOG_PATH`)
     - set `INNIES_CAPTURED_REQUEST_ID=req_...` for the failing Innies request id to extract
     - skips the live Innies request and reuses the exact captured first-pass upstream lane from the artifact instead
+    - aborts if the captured upstream provider for that request id is not `anthropic`
 
 ## Env
 
