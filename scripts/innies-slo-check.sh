@@ -60,6 +60,7 @@ routing_fallback_rate="$(printf '%s' "$routing_body" | jq -r '
   | if .total_attempts == 0 then 0
     else (.total_fallbacks / .total_attempts)
     end')"
+routing_fallback_display="$(jq -n --argjson v "$routing_fallback_rate" '($v * 100 * 100 | round) / 100 | tostring + "%"')"
 
 # Use system-level fallback rate as primary
 fallback_rate="$system_fallback_rate"
@@ -131,14 +132,14 @@ printf '%-28s %-12s %-12s %s\n' "Fallback rate" "flag > 20%" "$fallback_display"
 echo "================================================================"
 echo "* timeout_rate and success_rate are derived from the same errorRate metric."
 echo "  The API does not yet separate timeouts from other errors."
+echo "* Fallback rate source: /v1/admin/analytics/system whole-population metric."
+echo "* Routing fallback context: ${routing_fallback_display} from attributed token events only."
+echo "  Unattributed routing events are excluded from /v1/admin/analytics/tokens/routing."
 
 if [[ "$exit_code" -eq 0 ]]; then
   echo "All SLOs passed."
 else
   echo "One or more SLOs failed."
 fi
-
-echo ""
-echo "(routing cross-check: per-token aggregate fallback rate = $(jq -n --argjson v "$routing_fallback_rate" '($v * 100 * 100 | round) / 100 | tostring + "%"'))"
 
 exit "$exit_code"
