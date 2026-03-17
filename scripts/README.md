@@ -25,6 +25,7 @@ innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
 innies-slo-check
+innies-compat-direct-header-tsv
 ```
 
 What they do:
@@ -40,6 +41,7 @@ What they do:
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
+- `innies-compat-direct-header-tsv`: turn a known-good direct Anthropic request JSON or bundle directory into a reusable `direct-headers.tsv` for exact first-pass replay tooling
 
 Behavior:
 - org id auto-uses `INNIES_ORG_ID`
@@ -79,6 +81,7 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
+- `innies-compat-direct-header-tsv` accepts either a request JSON file or a bundle directory containing `direct-request.json`, filters out non-replayable headers like `authorization`, `content-length`, `host`, and HTTP/2 pseudo-headers, then writes `direct-headers.tsv` plus a small summary file next to it by default
 
 ## Env
 
