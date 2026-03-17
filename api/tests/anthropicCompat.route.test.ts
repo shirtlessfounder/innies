@@ -1572,9 +1572,52 @@ describe('anthropic compat route', () => {
         assistant_tool_use_block_count: 0,
         max_tokens: 4096,
         max_output_tokens: null,
-        metadata_present: true
+        metadata_present: true,
+        history_analysis: {
+          missing_tool_use_id_message_indexes: [],
+          missing_tool_result_id_message_indexes: [],
+          tool_result_after_non_tool_result_message_indexes: [],
+          orphan_tool_result_message_indexes: [],
+          tool_result_adjacency_violations: [],
+          tool_result_id_mismatch_violations: [],
+          unsigned_thinking_with_tool_use_message_indexes: [],
+          pending_tool_use_message_index: null,
+          pending_tool_use_ids: null
+        }
       }
     });
+    expect(compatDebugPayload.request_shape.message_trace_tail).toMatchObject([
+      {
+        index: 0,
+        role: 'assistant',
+        content_kind: 'string',
+        string_chars: 23,
+        block_count: 0,
+        block_types: [],
+        text_block_count: 0,
+        text_chars: 23,
+        tool_use_ids: [],
+        tool_result_ids: [],
+        thinking_block_count: 0,
+        thinking_signature_count: 0,
+        thinking_signature_missing_count: 0
+      },
+      {
+        index: 1,
+        role: 'user',
+        content_kind: 'array',
+        string_chars: null,
+        block_count: 1,
+        block_types: ['text'],
+        text_block_count: 1,
+        text_chars: 13,
+        tool_use_ids: [],
+        tool_result_ids: [],
+        thinking_block_count: 0,
+        thinking_signature_count: 0,
+        thinking_signature_missing_count: 0
+      }
+    ]);
 
     const serializedPayload = JSON.stringify(compatDebugPayload);
     expect(serializedPayload).not.toContain('top-secret-system');
@@ -1584,6 +1627,86 @@ describe('anthropic compat route', () => {
 
     upstreamSpy.mockRestore();
     compatDebugSpy.mockRestore();
+  });
+
+  it('logs redacted local validation context when compat request is rejected before upstream', async () => {
+    const localValidationSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_unused', usage: { input_tokens: 1, output_tokens: 1 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'x-request-id': 'req_test_local_validation_400',
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        stream: true,
+        max_tokens: 4096,
+        thinking: { type: 'adaptive' },
+        messages: [
+          { role: 'user', content: 'start' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: 'private reasoning without signature' },
+              { type: 'tool_use', id: 'toolu_local_validation_1', name: 'lookup', input: {} }
+            ]
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'not first' },
+              { type: 'tool_result', tool_use_id: 'toolu_local_validation_1', content: 'done' }
+            ]
+          }
+        ]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(upstreamSpy).not.toHaveBeenCalled();
+
+    const validationCalls = localValidationSpy.mock.calls.filter((call) => call[0] === '[compat-local-validation-failed]');
+    expect(validationCalls).toHaveLength(1);
+    const validationPayload = validationCalls[0]?.[1] as any;
+    expect(validationPayload).toMatchObject({
+      request_id: 'req_test_local_validation_400',
+      provider: 'anthropic',
+      model: 'claude-opus-4-6',
+      proxied_path: '/v1/messages',
+      anthropic_version: '2023-06-01',
+      anthropic_beta: 'fine-grained-tool-streaming-2025-05-14',
+      validation_message: 'assistant thinking blocks preserved with thinking.type="adaptive" must include signature',
+      request_shape: {
+        message_count: 3,
+        history_analysis: {
+          tool_result_after_non_tool_result_message_indexes: [2],
+          unsigned_thinking_with_tool_use_message_indexes: [1]
+        }
+      }
+    });
+
+    const serializedPayload = JSON.stringify(validationPayload);
+    expect(serializedPayload).not.toContain('private reasoning without signature');
+    expect(serializedPayload).not.toContain('not first');
+
+    upstreamSpy.mockRestore();
+    localValidationSpy.mockRestore();
   });
 
   it('preserves inbound anthropic-version and anthropic-beta headers to upstream', async () => {

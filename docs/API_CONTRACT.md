@@ -152,7 +152,8 @@ Notes:
   - On upstream `401` auth error indicating OAuth-incompatible request mode, API retries once on the same credential while preserving original payload shape (`stream`/`tools`/`tool_choice`), and merges required OAuth betas.
 - Compat audit logging:
   - `/v1/messages` upstream 4xx/403 outcomes emit structured `[compat-audit]` log line with `requestId`, `credentialId`, `attemptNo`, `upstreamStatus`, and upstream error type/message (if available).
-  - Anthropic upstream `400 invalid_request_error` passthroughs also emit `[compat-invalid-request-debug]` with a redacted request-shape summary (counts/roles/types only; no prompt or tool payload text).
+  - Anthropic upstream `400 invalid_request_error` passthroughs also emit `[compat-invalid-request-debug]` with a deep redacted request-shape trace: full message topology, block ordering, `tool_use`/`tool_result` ids, thinking-signature presence, and analyzer-detected history anomalies; no raw prompt or tool payload text is logged.
+  - Deterministic local Anthropic compat validation failures also emit `[compat-local-validation-failed]` with the same redacted request-shape trace before returning a local `400`.
 - Optional operational debug tracing:
   - `INNIES_COMPAT_TRACE=true` enables redacted request/response logs for `/v1/messages` only.
   - Keep disabled in normal production operation due to log volume.
