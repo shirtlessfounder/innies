@@ -1216,8 +1216,13 @@ describe('proxy token-mode route behavior', () => {
     const secondBody = JSON.parse(String((upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.body ?? '{}'));
 
     expect(firstHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
+    expect(firstHeaders['anthropic-beta']).not.toContain('oauth-2025-04-20');
+    expect(firstHeaders['anthropic-beta']).not.toContain('claude-code-20250219');
+    expect(firstHeaders['anthropic-beta']).not.toContain('interleaved-thinking-2025-05-14');
+    expect(secondHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
     expect(secondHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
     expect(secondHeaders['anthropic-beta']).toContain('claude-code-20250219');
+    expect(secondHeaders['anthropic-beta']).toContain('interleaved-thinking-2025-05-14');
     expect(firstBody.stream).toBe(true);
     expect(firstBody.tools).toBeDefined();
     expect(firstBody.tool_choice).toEqual({ type: 'auto' });
@@ -1461,6 +1466,8 @@ describe('proxy token-mode route behavior', () => {
 
     const firstHeaders = (upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.headers as Record<string, string>;
     const secondHeaders = (upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.headers as Record<string, string>;
+    expect(firstHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
+    expect(firstHeaders['anthropic-beta']).toContain('interleaved-thinking-2025-05-14');
     expect(firstHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
     expect(firstHeaders['anthropic-beta']).toContain('claude-code-20250219');
     expect(secondHeaders['anthropic-beta']).toBeUndefined();
