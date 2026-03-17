@@ -292,3 +292,56 @@ if [[ "$malformed_array_output" != *"(routing cross-check: unavailable - /v1/adm
 fi
 
 echo "PASS: innies-slo-check keeps the main SLO report usable when routing tokens contain malformed entries"
+
+cat > "${tmp_dir}/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+url="${*: -1}"
+
+case "$url" in
+  *"/v1/admin/analytics/system?window=24h")
+    cat <<'JSON'
+{"ttfbP95Ms":1000,"errorRate":0.01,"fallbackRate":0.25,"totalRequests":4}
+200
+JSON
+    ;;
+  *"/v1/admin/analytics/tokens/routing?window=24h")
+    cat <<'JSON'
+{"tokens":[{"fallbackCount":1}]}
+200
+JSON
+    ;;
+  *)
+    echo "unexpected curl url: $url" >&2
+    exit 1
+    ;;
+esac
+EOF
+chmod +x "${tmp_dir}/curl"
+
+if ! partially_malformed_output="$(
+  PATH="${tmp_dir}:$PATH" \
+  INNIES_ADMIN_API_KEY="admin-token" \
+  INNIES_ENV_FILE="${tmp_dir}/missing.env" \
+  bash "${ROOT_DIR}/scripts/innies-slo-check.sh"
+)"; then
+  echo "expected script to keep the main SLO report running when routing tokens are missing required numeric fields" >&2
+  exit 1
+fi
+
+partially_malformed_fallback_line="$(printf '%s\n' "$partially_malformed_output" | awk '$1 == "Fallback" && $2 == "rate" { print; exit }')"
+
+if [[ "$partially_malformed_fallback_line" != *"25%"* || "$partially_malformed_fallback_line" != *"FLAG"* ]]; then
+  echo "expected fallback line to stay on the system summary when routing token entries are partially malformed" >&2
+  echo "$partially_malformed_output" >&2
+  exit 1
+fi
+
+if [[ "$partially_malformed_output" != *"(routing cross-check: unavailable - /v1/admin/analytics/tokens/routing returned malformed data)"* ]]; then
+  echo "expected partially malformed token entries to be treated as an unavailable routing cross-check" >&2
+  echo "$partially_malformed_output" >&2
+  exit 1
+fi
+
+echo "PASS: innies-slo-check keeps the main SLO report usable when routing token entries are missing required numeric fields"
