@@ -89,6 +89,7 @@ type OpenClawCorrelation = {
 };
 type RetryReason =
   | 'blocked_403_compat_retry'
+  | 'opaque_400_header_retry'
   | 'oauth_401_compat_retry'
   | 'credential_refresh_retry'
   | 'rate_limited_backoff';
@@ -506,7 +507,7 @@ function buildTokenModeUpstreamHeaders(input: {
   anthropicBeta?: string;
   provider: string;
   credential: TokenCredential;
-  skipOauthDefaultBetas?: boolean;
+  skipInjectedOauthBetas?: boolean;
   streaming?: boolean;
 }): Record<string, string> {
   const {
@@ -515,7 +516,7 @@ function buildTokenModeUpstreamHeaders(input: {
     anthropicBeta,
     provider,
     credential,
-    skipOauthDefaultBetas,
+    skipInjectedOauthBetas,
     streaming
   } = input;
   const authHeaders = isAnthropicOauthAccessToken(provider, credential.accessToken) || isOpenAiProvider(provider)
@@ -539,7 +540,7 @@ function buildTokenModeUpstreamHeaders(input: {
     headers.accept = 'text/event-stream';
   }
 
-  const shouldIncludeOauthBetas = !skipOauthDefaultBetas && isAnthropicOauthToken(credential, provider);
+  const shouldIncludeOauthBetas = !skipInjectedOauthBetas && isAnthropicOauthToken(credential, provider);
   const inboundBetas = parseAnthropicBetaHeader(anthropicBeta ?? '');
   if (inboundBetas.length > 0 || shouldIncludeOauthBetas) {
     const mergedBetas = new Set<string>(inboundBetas);
@@ -570,13 +571,16 @@ function sanitizeCompatPayloadForBlockedRetry(payload: unknown): unknown {
 
 type CompatNormalizationReason =
   | 'retry_blocked_403'
+  | 'retry_opaque_400_strip_oauth_betas'
   | 'retry_oauth_401';
 
 type CompatNormalizationState = {
   payload: unknown;
   anthropicBeta?: string;
   blockedRetryApplied: boolean;
+  opaque400HeaderRetryApplied: boolean;
   oauthRetryApplied: boolean;
+  skipInjectedOauthBetas: boolean;
 };
 
 function createCompatNormalizationState(payload: unknown, anthropicBeta?: string): CompatNormalizationState {
@@ -584,7 +588,9 @@ function createCompatNormalizationState(payload: unknown, anthropicBeta?: string
     payload,
     anthropicBeta,
     blockedRetryApplied: false,
-    oauthRetryApplied: false
+    opaque400HeaderRetryApplied: false,
+    oauthRetryApplied: false,
+    skipInjectedOauthBetas: false
   };
 }
 
@@ -601,14 +607,20 @@ function applyCompatNormalization(input: {
   const nextState: CompatNormalizationState = { ...state };
   const beforeShape = payloadLooksLikeToolStreaming(state.payload);
   const beforeBeta = state.anthropicBeta;
+  const beforeSkipInjectedBetas = state.skipInjectedOauthBetas;
 
   if (reason === 'retry_oauth_401') {
     nextState.payload = sanitizeCompatPayloadForOauthAuthRetry(nextState.payload);
     nextState.oauthRetryApplied = true;
+    nextState.skipInjectedOauthBetas = false;
   } else if (reason === 'retry_blocked_403') {
     nextState.payload = sanitizeCompatPayloadForBlockedRetry(nextState.payload);
     nextState.anthropicBeta = undefined;
     nextState.blockedRetryApplied = true;
+    nextState.skipInjectedOauthBetas = true;
+  } else if (reason === 'retry_opaque_400_strip_oauth_betas') {
+    nextState.opaque400HeaderRetryApplied = true;
+    nextState.skipInjectedOauthBetas = true;
   }
 
   if (reason === 'retry_oauth_401' && isAnthropicOauthToken(credential, provider)) {
@@ -627,15 +639,19 @@ function applyCompatNormalization(input: {
       reason,
       flags: {
         blockedRetryApplied: nextState.blockedRetryApplied,
-        oauthRetryApplied: nextState.oauthRetryApplied
+        opaque400HeaderRetryApplied: nextState.opaque400HeaderRetryApplied,
+        oauthRetryApplied: nextState.oauthRetryApplied,
+        skipInjectedOauthBetas: nextState.skipInjectedOauthBetas
       },
       before: {
         payloadLooksToolStreaming: beforeShape,
-        anthropicBeta: beforeBeta
+        anthropicBeta: beforeBeta,
+        skipInjectedOauthBetas: beforeSkipInjectedBetas
       },
       after: {
         payloadLooksToolStreaming: payloadLooksLikeToolStreaming(nextState.payload),
-        anthropicBeta: nextState.anthropicBeta
+        anthropicBeta: nextState.anthropicBeta,
+        skipInjectedOauthBetas: nextState.skipInjectedOauthBetas
       }
     });
   }
@@ -652,6 +668,12 @@ function isOauthUnsupportedAuthError(status: number, errorMessage?: string): boo
   if (status !== 401) return false;
   if (!errorMessage) return false;
   return errorMessage.toLowerCase().includes('oauth authentication is currently not supported');
+}
+
+function isOpaqueInvalidRequestError(status: number, errorType?: string, errorMessage?: string): boolean {
+  if (status !== 400) return false;
+  if ((errorType ?? '').trim().toLowerCase() !== 'invalid_request_error') return false;
+  return (errorMessage ?? '').trim().toLowerCase() === 'error';
 }
 
 function payloadLooksLikeToolStreaming(payload: unknown): boolean {
@@ -699,6 +721,30 @@ function shouldRetryWithOauthSafeCompatPayload(input: {
     .includes('fine-grained-tool-streaming');
 
   return isAuthErrorType && (payloadLooksLikeToolStreaming(payload) || betaIncludesToolStreaming);
+}
+
+function shouldRetryCompatOpaqueInvalidRequestWithInboundBetas(input: {
+  status: number;
+  strictUpstreamPassthrough?: boolean;
+  provider: string;
+  credential: TokenCredential;
+  alreadyRetried: boolean;
+  errorType?: string;
+  errorMessage?: string;
+}): boolean {
+  const {
+    status,
+    strictUpstreamPassthrough,
+    provider,
+    credential,
+    alreadyRetried,
+    errorType,
+    errorMessage
+  } = input;
+  if (!strictUpstreamPassthrough) return false;
+  if (alreadyRetried) return false;
+  if (!isAnthropicOauthToken(credential, provider)) return false;
+  return isOpaqueInvalidRequestError(status, errorType, errorMessage);
 }
 
 function extractUpstreamErrorDetails(data: unknown): { errorType?: string; errorMessage?: string } {
@@ -2415,7 +2461,7 @@ async function executeTokenModeNonStreaming(input: {
         anthropicBeta: compat.anthropicBeta,
         provider,
         credential,
-        skipOauthDefaultBetas: compat.blockedRetryApplied
+        skipInjectedOauthBetas: compat.skipInjectedOauthBetas
       });
       const upstreamBody = JSON.stringify(upstreamPayload);
 
@@ -2913,6 +2959,39 @@ async function executeTokenModeNonStreaming(input: {
           strictUpstreamPassthrough
         });
         const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
+        if (shouldRetryCompatOpaqueInvalidRequestWithInboundBetas({
+          status,
+          strictUpstreamPassthrough,
+          provider,
+          credential,
+          alreadyRetried: compat.opaque400HeaderRetryApplied,
+          errorType,
+          errorMessage
+        })) {
+          logRetryAudit({
+            orgId,
+            provider,
+            model,
+            requestId,
+            openclawRunId: correlation.openclawRunId,
+            openclawSessionId: correlation.openclawSessionId,
+            attemptNo,
+            credentialId: credential.id,
+            credentialLabel: credential.debugLabel,
+            upstreamStatus: status,
+            retryReason: 'opaque_400_header_retry'
+          });
+          compat = applyCompatNormalization({
+            requestId,
+            attemptNo,
+            credentialId: credential.id,
+            provider,
+            credential,
+            state: compat,
+            reason: 'retry_opaque_400_strip_oauth_betas'
+          });
+          continue;
+        }
         if (shouldLogCompatInvalidRequestDebug({
           strictUpstreamPassthrough,
           provider,
@@ -3198,7 +3277,7 @@ async function executeTokenModeStreaming(input: {
         anthropicBeta: compat.anthropicBeta,
         provider,
         credential,
-        skipOauthDefaultBetas: compat.blockedRetryApplied,
+        skipInjectedOauthBetas: compat.skipInjectedOauthBetas,
         streaming: true
       });
       const upstreamPayload = normalizeTokenModeUpstreamPayload({
@@ -3680,6 +3759,39 @@ async function executeTokenModeStreaming(input: {
             strictUpstreamPassthrough
           });
           const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
+          if (shouldRetryCompatOpaqueInvalidRequestWithInboundBetas({
+            status,
+            strictUpstreamPassthrough,
+            provider,
+            credential,
+            alreadyRetried: compat.opaque400HeaderRetryApplied,
+            errorType,
+            errorMessage
+          })) {
+            logRetryAudit({
+              orgId,
+              provider,
+              model,
+              requestId,
+              openclawRunId: correlation.openclawRunId,
+              openclawSessionId: correlation.openclawSessionId,
+              attemptNo,
+              credentialId: credential.id,
+              credentialLabel: credential.debugLabel,
+              upstreamStatus: status,
+              retryReason: 'opaque_400_header_retry'
+            });
+            compat = applyCompatNormalization({
+              requestId,
+              attemptNo,
+              credentialId: credential.id,
+              provider,
+              credential,
+              state: compat,
+              reason: 'retry_opaque_400_strip_oauth_betas'
+            });
+            continue;
+          }
           if (shouldLogCompatInvalidRequestDebug({
             strictUpstreamPassthrough,
             provider,

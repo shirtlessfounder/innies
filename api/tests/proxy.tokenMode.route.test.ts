@@ -1228,6 +1228,96 @@ describe('proxy token-mode route behavior', () => {
     upstreamSpy.mockRestore();
   });
 
+  it('retries opaque 400 invalid_request_error with only inbound anthropic betas when compat mode is enabled', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const retryAuditSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'abab7777-7777-4777-8777-777777777777',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'sk-ant-oat01-compat-test-opaque-400',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'invalid_request_error', message: 'Error' }
+      }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_compat_opaque_400_ok',
+        usage: { input_tokens: 5, output_tokens: 8 },
+        content: [{ type: 'text', text: 'ok' }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-3-5-sonnet-latest',
+        streaming: true,
+        payload: {
+          model: 'claude-3-5-sonnet-latest',
+          stream: true,
+          max_tokens: 2048,
+          messages: [{ role: 'user', content: 'hold the request body constant' }],
+          thinking: { type: 'enabled', budget_tokens: 1024 }
+        }
+      }
+    });
+    (req as any).inniesCompatMode = true;
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect((res.body as any).id).toBe('msg_compat_opaque_400_ok');
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+
+    const firstHeaders = (upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.headers as Record<string, string>;
+    const secondHeaders = (upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.headers as Record<string, string>;
+    const firstBody = JSON.parse(String((upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.body ?? '{}'));
+    const secondBody = JSON.parse(String((upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.body ?? '{}'));
+
+    expect(firstHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
+    expect(firstHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
+    expect(firstHeaders['anthropic-beta']).toContain('claude-code-20250219');
+    expect(secondHeaders['anthropic-beta']).toBe('fine-grained-tool-streaming-2025-05-14');
+    expect(secondBody).toEqual(firstBody);
+
+    const retryCalls = retryAuditSpy.mock.calls.filter((call) => call[0] === '[retry-audit] attempt');
+    expect(retryCalls.length).toBeGreaterThan(0);
+    expect((retryCalls[0]?.[1] as any)?.retry_reason).toBe('opaque_400_header_retry');
+
+    retryAuditSpy.mockRestore();
+    upstreamSpy.mockRestore();
+  });
+
   it('retries once with oauth-safe payload when compat mode gets authentication_error 401 on tool-stream payload', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{

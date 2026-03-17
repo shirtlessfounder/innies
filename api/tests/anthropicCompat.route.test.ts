@@ -1509,7 +1509,7 @@ describe('anthropic compat route', () => {
     const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({
         type: 'error',
-        error: { type: 'invalid_request_error', message: 'Error' }
+        error: { type: 'invalid_request_error', message: 'tool_result ids do not line up' }
       }), {
         status: 400,
         headers: { 'content-type': 'application/json' }
@@ -1573,7 +1573,7 @@ describe('anthropic compat route', () => {
       anthropic_beta: 'fine-grained-tool-streaming-2025-05-14',
       upstream_status: 400,
       upstream_error_type: 'invalid_request_error',
-      upstream_error_message: 'Error',
+      upstream_error_message: 'tool_result ids do not line up',
       request_shape: {
         stream: true,
         message_count: 2,
@@ -1686,7 +1686,7 @@ describe('anthropic compat route', () => {
       type: 'error',
       error: {
         type: 'invalid_request_error',
-        message: 'Error'
+        message: 'tool_result ids do not line up'
       }
     });
 
@@ -2642,6 +2642,73 @@ describe('anthropic compat route', () => {
     expect(retryAudit?.org_id).toBe('818d0cc7-7ed2-469f-b690-a977e72a921d');
     expect(retryAudit?.model).toBe('claude-opus-4-6');
     expect(String(retryAudit?.openclaw_run_id ?? '')).toMatch(/^run_req_/);
+
+    retryAuditSpy.mockRestore();
+    upstreamSpy.mockRestore();
+  });
+
+  it('retries opaque 400 invalid_request_error once with only inbound anthropic betas on /v1/messages', async () => {
+    const retryAuditSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'invalid_request_error', message: 'Error' }
+      }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_opaque_400_retry_ok',
+        usage: { input_tokens: 11, output_tokens: 13 }
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        stream: true,
+        max_tokens: 2048,
+        messages: [{ role: 'user', content: 'hold the request body constant' }],
+        thinking: { type: 'enabled', budget_tokens: 1024 }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/event-stream');
+    expect(String(res.body)).toContain('event: message_start');
+    expect(String(res.body)).toContain('event: message_stop');
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+
+    const firstHeaders = (upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.headers as Record<string, string>;
+    const secondHeaders = (upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.headers as Record<string, string>;
+    const firstBody = JSON.parse(String((upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.body ?? '{}'));
+    const secondBody = JSON.parse(String((upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.body ?? '{}'));
+
+    expect(firstHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
+    expect(firstHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
+    expect(firstHeaders['anthropic-beta']).toContain('claude-code-20250219');
+    expect(secondHeaders['anthropic-beta']).toBe('fine-grained-tool-streaming-2025-05-14');
+    expect(secondBody).toEqual(firstBody);
+
+    const retryCalls = retryAuditSpy.mock.calls.filter((c) => c[0] === '[retry-audit] attempt');
+    expect(retryCalls.length).toBeGreaterThan(0);
+    const retryAudit = retryCalls[0]?.[1] as any;
+    expect(retryAudit?.retry_reason).toBe('opaque_400_header_retry');
+    expect(retryAudit?.org_id).toBe('818d0cc7-7ed2-469f-b690-a977e72a921d');
 
     retryAuditSpy.mockRestore();
     upstreamSpy.mockRestore();
