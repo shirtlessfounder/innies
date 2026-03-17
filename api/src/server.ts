@@ -8,9 +8,7 @@ import proxyRoutes from './routes/proxy.js';
 import sellerKeysRoutes from './routes/sellerKeys.js';
 import usageRoutes from './routes/usage.js';
 import { startBackgroundJobs } from './services/runtime.js';
-import { summarizeAnthropicCompatRequestShape } from './utils/anthropicCompatTrace.js';
 import { AppError } from './utils/errors.js';
-import { logJsonChunks } from './utils/jsonChunkLog.js';
 
 export function createApp(): express.Express {
   const app = express();
@@ -27,10 +25,7 @@ export function createApp(): express.Express {
     const headers = req.headers;
     const body = req.body as Record<string, unknown> | undefined;
     const messages = body?.messages;
-    const requestShape = summarizeAnthropicCompatRequestShape(body ?? {}, body?.stream === true, {
-      includeMessageTrace: false,
-      tailMessages: 8
-    });
+    const messageCount = Array.isArray(messages) ? messages.length : 0;
 
     // Redacted trace for compat debugging: no auth values, no raw prompts/tool payloads.
     // eslint-disable-next-line no-console
@@ -45,24 +40,15 @@ export function createApp(): express.Express {
       hasApiKey: Boolean(headers['x-api-key']),
       bodyShape: {
         model: body?.model,
-        ...requestShape
+        stream: body?.stream,
+        hasMessages: Array.isArray(messages),
+        messageCount,
+        hasSystem: body?.system != null,
+        hasTools: Array.isArray(body?.tools),
+        hasToolChoice: body?.tool_choice != null,
+        hasThinking: body?.thinking != null,
+        hasMetadata: body?.metadata != null
       }
-    });
-    console.log('[/v1/messages] request-payload-json', JSON.stringify({
-      method: req.method,
-      path: req.path,
-      requestIdHeader: headers['x-request-id'],
-      body: req.body ?? null
-    }));
-    logJsonChunks({
-      label: '[/v1/messages] request-payload-json-chunk',
-      value: {
-        method: req.method,
-        path: req.path,
-        requestIdHeader: headers['x-request-id'],
-        body: req.body ?? null
-      },
-      level: 'log'
     });
 
     res.on('finish', () => {

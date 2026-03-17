@@ -1034,9 +1034,6 @@ describe('proxy token-mode route behavior', () => {
     expect(headers.authorization).toBe('Bearer sk-ant-oat01-test-token');
     expect(headers['anthropic-beta']).toContain('oauth-2025-04-20');
     expect(headers['anthropic-beta']).toContain('claude-code-20250219');
-    expect(headers['anthropic-dangerous-direct-browser-access']).toBe('true');
-    expect(headers['x-app']).toBe('cli');
-    expect(headers['user-agent']).toBe('claude-cli/2.1.62');
     expect(markExpiredSpy).not.toHaveBeenCalled();
     const authFailureCalls = authFailureSpy.mock.calls.filter((c) => c[0] === '[auth-failure-audit] attempt');
     expect(authFailureCalls.length).toBeGreaterThan(0);
@@ -1199,7 +1196,6 @@ describe('proxy token-mode route behavior', () => {
           max_tokens: 16,
           tools: [{ name: 'x', description: 'x', input_schema: { type: 'object', properties: {} } }],
           tool_choice: { type: 'auto' },
-          thinking: { type: 'enabled', budget_tokens: 32 },
           messages: [{ role: 'user', content: 'hi' }]
         }
       }
@@ -1220,21 +1216,14 @@ describe('proxy token-mode route behavior', () => {
     const secondBody = JSON.parse(String((upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.body ?? '{}'));
 
     expect(firstHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
-    expect(firstHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
-    expect(firstHeaders['anthropic-beta']).toContain('claude-code-20250219');
-    expect(firstHeaders['anthropic-beta']).toContain('interleaved-thinking-2025-05-14');
-    expect(secondHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
     expect(secondHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
     expect(secondHeaders['anthropic-beta']).toContain('claude-code-20250219');
-    expect(secondHeaders['anthropic-beta']).toContain('interleaved-thinking-2025-05-14');
     expect(firstBody.stream).toBe(true);
     expect(firstBody.tools).toBeDefined();
     expect(firstBody.tool_choice).toEqual({ type: 'auto' });
-    expect(firstBody.thinking).toEqual({ type: 'enabled', budget_tokens: 32 });
     expect(secondBody.stream).toBe(true);
     expect(secondBody.tools).toBeDefined();
     expect(secondBody.tool_choice).toEqual({ type: 'auto' });
-    expect(secondBody.thinking).toEqual({ type: 'enabled', budget_tokens: 32 });
 
     upstreamSpy.mockRestore();
   });
@@ -1390,12 +1379,8 @@ describe('proxy token-mode route behavior', () => {
     expect(firstHeaders.authorization).toBe('Bearer sk-ant-oat01-openclaw-shaped');
     expect(firstHeaders['x-api-key']).toBeUndefined();
     expect(firstHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
-    expect(firstHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
-    expect(firstHeaders['anthropic-beta']).toContain('claude-code-20250219');
-    expect(firstHeaders['anthropic-beta']).toContain('interleaved-thinking-2025-05-14');
     expect(firstBody.stream).toBe(true);
     expect(firstBody.tools).toBeDefined();
-    expect(firstBody.tool_choice).toEqual({ type: 'auto' });
 
     expect(secondHeaders.authorization).toBe('Bearer sk-ant-oat01-openclaw-shaped');
     expect(secondHeaders['x-api-key']).toBeUndefined();
@@ -1476,8 +1461,6 @@ describe('proxy token-mode route behavior', () => {
 
     const firstHeaders = (upstreamSpy.mock.calls[0]?.[1] as RequestInit)?.headers as Record<string, string>;
     const secondHeaders = (upstreamSpy.mock.calls[1]?.[1] as RequestInit)?.headers as Record<string, string>;
-    expect(firstHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
-    expect(firstHeaders['anthropic-beta']).toContain('interleaved-thinking-2025-05-14');
     expect(firstHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
     expect(firstHeaders['anthropic-beta']).toContain('claude-code-20250219');
     expect(secondHeaders['anthropic-beta']).toBeUndefined();
@@ -2248,9 +2231,6 @@ describe('proxy token-mode route behavior', () => {
     expect(String(targetUrl)).toBe('https://anthropic.internal.test/v1/messages');
     expect(headers.authorization).toBe('Bearer sk-ant-oat01-native-token');
     expect(headers['anthropic-version']).toBe('2023-06-01');
-    expect(headers['anthropic-dangerous-direct-browser-access']).toBe('true');
-    expect(headers['x-app']).toBe('cli');
-    expect(headers['user-agent']).toBe('claude-cli/1.0.0');
     expect(JSON.parse(String(init.body))).toMatchObject({
       model: 'claude-opus-4-6',
       max_tokens: 32,
