@@ -471,11 +471,16 @@ const ANTHROPIC_DEFAULT_BETAS = [
   'interleaved-thinking-2025-05-14'
 ] as const;
 
+const DEFAULT_ANTHROPIC_OAUTH_PROXY_USER_AGENT = 'claude-cli/2.1.62';
+const DEFAULT_ANTHROPIC_OAUTH_PROXY_X_APP = 'cli';
 const ANTHROPIC_OAUTH_REQUIRED_BETA = 'oauth-2025-04-20' as const;
+const ANTHROPIC_OAUTH_IDENTITY_BETAS = [
+  'claude-code-20250219',
+  ANTHROPIC_OAUTH_REQUIRED_BETA
+] as const;
 
 const ANTHROPIC_OAUTH_BETAS = [
-  'claude-code-20250219',
-  ANTHROPIC_OAUTH_REQUIRED_BETA,
+  ...ANTHROPIC_OAUTH_IDENTITY_BETAS,
   ...ANTHROPIC_DEFAULT_BETAS
 ] as const;
 
@@ -488,6 +493,13 @@ function parseAnthropicBetaHeader(value: string): string[] {
 
 function isAnthropicOauthAccessToken(provider: string, accessToken: string): boolean {
   return provider === 'anthropic' && accessToken.includes('sk-ant-oat');
+}
+
+function readAnthropicOauthProxyUserAgent(): string {
+  const configured = process.env.ANTHROPIC_OAUTH_PROXY_USER_AGENT?.trim();
+  return configured && configured.length > 0
+    ? configured
+    : DEFAULT_ANTHROPIC_OAUTH_PROXY_USER_AGENT;
 }
 
 function isOpenAiProvider(provider: string): boolean {
@@ -512,6 +524,8 @@ function buildTokenModeUpstreamHeaders(input: {
   credential: TokenCredential;
   anthropicBetaMode?: AnthropicBetaMode;
   streaming?: boolean;
+  forwardedClientApp?: string;
+  forwardedUserAgent?: string;
 }): Record<string, string> {
   const {
     requestId,
@@ -520,7 +534,9 @@ function buildTokenModeUpstreamHeaders(input: {
     provider,
     credential,
     anthropicBetaMode = 'default_oauth',
-    streaming
+    streaming,
+    forwardedClientApp,
+    forwardedUserAgent
   } = input;
   const authHeaders = isAnthropicOauthAccessToken(provider, credential.accessToken) || isOpenAiProvider(provider)
     ? { authorization: `Bearer ${credential.accessToken}` }
@@ -541,6 +557,11 @@ function buildTokenModeUpstreamHeaders(input: {
   }
   if (streaming) {
     headers.accept = 'text/event-stream';
+  }
+  if (isAnthropicOauthToken(credential, provider)) {
+    headers['anthropic-dangerous-direct-browser-access'] = 'true';
+    headers['x-app'] = forwardedClientApp?.trim() || DEFAULT_ANTHROPIC_OAUTH_PROXY_X_APP;
+    headers['user-agent'] = forwardedUserAgent?.trim() || readAnthropicOauthProxyUserAgent();
   }
 
   const inboundBetas = parseAnthropicBetaHeader(anthropicBeta ?? '');
@@ -2350,6 +2371,8 @@ async function executeTokenModeNonStreaming(input: {
   proxiedPath: string;
   anthropicVersion: string;
   anthropicBeta?: string;
+  forwardedClientApp?: string;
+  forwardedUserAgent?: string;
   startedAt: number;
   strictUpstreamPassthrough?: boolean;
   providerPreference?: ProviderPreferenceMeta;
@@ -2368,6 +2391,8 @@ async function executeTokenModeNonStreaming(input: {
     proxiedPath,
     anthropicVersion,
     anthropicBeta,
+    forwardedClientApp,
+    forwardedUserAgent,
     startedAt,
     strictUpstreamPassthrough,
     providerPreference,
@@ -2439,7 +2464,9 @@ async function executeTokenModeNonStreaming(input: {
           anthropicBeta: compat.anthropicBeta,
           blockedRetryApplied: compat.blockedRetryApplied,
           strictUpstreamPassthrough
-        })
+        }),
+        forwardedClientApp,
+        forwardedUserAgent
       });
       const upstreamBody = JSON.stringify(upstreamPayload);
 
@@ -3136,6 +3163,8 @@ async function executeTokenModeStreaming(input: {
   proxiedPath: string;
   anthropicVersion: string;
   anthropicBeta?: string;
+  forwardedClientApp?: string;
+  forwardedUserAgent?: string;
   startedAt: number;
   res: Response;
   idempotencySession: IdempotencySession | null;
@@ -3157,6 +3186,8 @@ async function executeTokenModeStreaming(input: {
     proxiedPath,
     anthropicVersion,
     anthropicBeta,
+    forwardedClientApp,
+    forwardedUserAgent,
     startedAt,
     res,
     idempotencySession,
@@ -3227,7 +3258,9 @@ async function executeTokenModeStreaming(input: {
           blockedRetryApplied: compat.blockedRetryApplied,
           strictUpstreamPassthrough
         }),
-        streaming: true
+        streaming: true,
+        forwardedClientApp,
+        forwardedUserAgent
       });
       const upstreamPayload = normalizeTokenModeUpstreamPayload({
         provider,
@@ -4524,6 +4557,8 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
 
     const anthropicVersion = req.header('anthropic-version') ?? '2023-06-01';
     const anthropicBeta = req.header('anthropic-beta') ?? undefined;
+    const forwardedClientApp = readHeader(req, 'x-app');
+    const forwardedUserAgent = readHeader(req, 'user-agent');
     let result: ProxyRouteResult | null = null;
     const requestPinSelectionReason = (readProviderPinSignal(req) || isClaudeCliPinnedRequest(req, proxiedPath))
       ? 'cli_provider_pinned'
@@ -4622,6 +4657,8 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               proxiedPath: upstreamRequest.proxiedPath,
               anthropicVersion,
               anthropicBeta,
+              forwardedClientApp,
+              forwardedUserAgent,
               startedAt,
               res,
               idempotencySession: idemStart,
@@ -4646,6 +4683,8 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               proxiedPath: upstreamRequest.proxiedPath,
               anthropicVersion,
               anthropicBeta,
+              forwardedClientApp,
+              forwardedUserAgent,
               startedAt,
               strictUpstreamPassthrough: upstreamRequest.strictUpstreamPassthrough,
               providerPreference,
