@@ -24,6 +24,7 @@ innies-buyer-key-create
 innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
+innies-compat-captured-lane-replay
 innies-slo-check
 ```
 
@@ -39,6 +40,7 @@ What they do:
 - `innies-buyer-preference-set`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
+- `innies-compat-captured-lane-replay`: replay a preserved `/v1/messages` payload directly against Anthropic using the exact first-pass headers captured from an Innies compat upstream request
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
 
 Behavior:
@@ -79,6 +81,9 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
+- `innies-compat-captured-lane-replay` needs a captured compat response HTML plus the matching request id so it can extract the exact first-pass Anthropic headers from `[compat-upstream-request-json-chunk]`
+- `innies-compat-captured-lane-replay` needs `ANTHROPIC_OAUTH_ACCESS_TOKEN` (or `ANTHROPIC_ACCESS_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN`) because it replays the captured header lane directly against Anthropic
+- `innies-compat-captured-lane-replay` refuses non-Anthropic captured lanes and payload-byte mismatches so the replay stays on the intended provider and body-held-constant path
 
 ## Env
 
