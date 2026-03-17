@@ -19,6 +19,7 @@ ln -sf "${ROOT_DIR}/scripts/innies-buyer-key-create.sh" "${BIN_DIR}/innies-buyer
 ln -sf "${ROOT_DIR}/scripts/innies-buyer-preference-set.sh" "${BIN_DIR}/innies-buyer-preference-set"
 ln -sf "${ROOT_DIR}/scripts/innies-buyer-preference-get.sh" "${BIN_DIR}/innies-buyer-preference-get"
 ln -sf "${ROOT_DIR}/scripts/innies-buyer-preference-check.sh" "${BIN_DIR}/innies-buyer-preference-check"
+ln -sf "${ROOT_DIR}/scripts/innies-compat-direct-request-bundle.sh" "${BIN_DIR}/innies-compat-direct-request-bundle"
 ln -sf "${ROOT_DIR}/scripts/innies-slo-check.sh" "${BIN_DIR}/innies-slo-check"
 ln -sf "${ROOT_DIR}/scripts/innies-compat-first-pass-bundle-diff.sh" "${BIN_DIR}/innies-compat-first-pass-bundle-diff"
 
@@ -53,6 +54,7 @@ echo "  ${BIN_DIR}/innies-buyer-key-create -> ${ROOT_DIR}/scripts/innies-buyer-k
 echo "  ${BIN_DIR}/innies-buyer-preference-set -> ${ROOT_DIR}/scripts/innies-buyer-preference-set.sh"
 echo "  ${BIN_DIR}/innies-buyer-preference-get -> ${ROOT_DIR}/scripts/innies-buyer-preference-get.sh"
 echo "  ${BIN_DIR}/innies-buyer-preference-check -> ${ROOT_DIR}/scripts/innies-buyer-preference-check.sh"
+echo "  ${BIN_DIR}/innies-compat-direct-request-bundle -> ${ROOT_DIR}/scripts/innies-compat-direct-request-bundle.sh"
 echo "  ${BIN_DIR}/innies-slo-check -> ${ROOT_DIR}/scripts/innies-slo-check.sh"
 echo "  ${BIN_DIR}/innies-compat-first-pass-bundle-diff -> ${ROOT_DIR}/scripts/innies-compat-first-pass-bundle-diff.sh"
 echo
