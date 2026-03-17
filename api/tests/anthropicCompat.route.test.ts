@@ -2,6 +2,7 @@ import { describe, expect, it, beforeAll, beforeEach, afterEach, vi } from 'vite
 import { PassThrough } from 'node:stream';
 import { z } from 'zod';
 import { AppError } from '../src/utils/errors.js';
+import { sha256Hex } from '../src/utils/hash.js';
 import { resetAnthropicUsageRetryStateForTests } from '../src/services/tokenCredentialProviderUsageRetryState.js';
 
 type RuntimeModule = typeof import('../src/services/runtime.js');
@@ -1653,6 +1654,7 @@ describe('anthropic compat route', () => {
       }
     ]);
     const upstreamRequestChunked = parseChunkedJsonLog(compatDebugSpy.mock.calls, '[compat-upstream-request-json-chunk]');
+    const upstreamBodyText = String(upstreamSpy.mock.calls[0]?.[1]?.body ?? '');
     expect(upstreamRequestChunked).toMatchObject({
       request_id: 'req_test_invalid_400',
       attempt_no: 1,
@@ -1662,12 +1664,30 @@ describe('anthropic compat route', () => {
       model: 'claude-opus-4-6',
       proxied_path: '/v1/messages',
       method: 'POST',
-      target_url: 'https://api.anthropic.com/v1/messages'
+      target_url: 'https://api.anthropic.com/v1/messages',
+      body_bytes: expect.any(Number),
+      body_sha256: expect.any(String)
     });
-    expect(JSON.stringify(upstreamRequestChunked.payload)).toContain('secret prompt');
-    expect(JSON.stringify(upstreamRequestChunked.payload)).toContain('top-secret-system');
+    expect(upstreamRequestChunked.body_bytes).toBeGreaterThan(0);
+    expect(upstreamRequestChunked.body_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(upstreamRequestChunked.body_bytes).toBe(Buffer.byteLength(upstreamBodyText, 'utf8'));
+    expect(upstreamRequestChunked.request_shape).toMatchObject({
+      stream: true,
+      message_count: 2,
+      assistant_message_count: 1,
+      last_message_role: 'user',
+      system_present: true,
+      tool_count: 1,
+      tool_choice_present: true,
+      thinking_present: true
+    });
     expect(String(upstreamRequestChunked.headers.authorization)).toContain('redacted');
     expect(String(upstreamRequestChunked.headers.authorization)).not.toContain('sk-ant-oat01-debug-token');
+    expect(JSON.stringify(upstreamRequestChunked)).not.toContain('secret prompt');
+    expect(JSON.stringify(upstreamRequestChunked)).not.toContain('top-secret-system');
+    expect('payload' in upstreamRequestChunked).toBe(false);
+    expect('body_text' in upstreamRequestChunked).toBe(false);
+    expect(upstreamRequestChunked.body_sha256).toBe(sha256Hex(upstreamBodyText));
 
     const upstreamResponseChunked = parseChunkedJsonLog(compatDebugSpy.mock.calls, '[compat-upstream-response-json-chunk]');
     expect(upstreamResponseChunked).toMatchObject({

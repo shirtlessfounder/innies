@@ -829,8 +829,11 @@ function logCompatUpstreamRequestTrace(input: {
       method: 'POST',
       stream: input.stream,
       headers: redactTraceHeaders(input.headers),
-      payload: input.payload,
-      body_text: input.bodyText
+      body_bytes: Buffer.byteLength(input.bodyText, 'utf8'),
+      body_sha256: sha256Hex(input.bodyText),
+      request_shape: summarizeAnthropicCompatRequestShape(input.payload, input.stream, {
+        tailMessages: 8
+      })
     }
   });
 }
