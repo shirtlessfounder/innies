@@ -153,6 +153,7 @@ router.post(
 
       (req as any).inniesCompatMode = true;
       (req as any).inniesProxiedPath = '/v1/messages';
+      (req as any).inniesSessionIdentityBody = normalizedPayload;
       req.body = {
         // Compat requests stay Anthropic-shaped at ingress; buyer preference is
         // applied later in proxy routing so fallback can still include Anthropic.

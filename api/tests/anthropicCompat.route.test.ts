@@ -788,7 +788,8 @@ describe('anthropic compat route', () => {
         authorization: 'Bearer in_test_token',
         'content-type': 'application/json',
         'x-openclaw-run-id': 'oc_run_123',
-        'x-openclaw-session-id': 'oc_sess_456'
+        'x-openclaw-session-id': 'oc_sess_456',
+        'x-innies-session-id': 'sess_canonical_123'
       },
       body: { model: 'claude-opus-4-6', stream: true, max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
     });
@@ -819,6 +820,8 @@ describe('anthropic compat route', () => {
     const routingArgs = routingSpy.mock.calls[0]?.[0] as any;
     expect(routingArgs?.routeDecision?.openclaw_run_id).toBe('oc_run_123');
     expect(routingArgs?.routeDecision?.openclaw_session_id).toBe('oc_sess_456');
+    expect(routingArgs?.routeDecision?.session_id).toBe('sess_canonical_123');
+    expect(routingArgs?.routeDecision?.session_source).toBe('x-innies-session-id');
     upstreamSpy.mockRestore();
     streamLatencySpy.mockRestore();
   });
@@ -1162,6 +1165,271 @@ describe('anthropic compat route', () => {
     const routingArgs = routingSpy.mock.calls[0]?.[0] as any;
     expect(routingArgs?.routeDecision?.openclaw_run_id).toBe('meta_run_1');
     expect(routingArgs?.routeDecision?.openclaw_session_id).toBe('meta_sess_1');
+    expect(routingArgs?.routeDecision?.session_id).toBe('meta_sess_1');
+    expect(routingArgs?.routeDecision?.session_source).toBe('metadata.openclaw_session_id');
+    upstreamSpy.mockRestore();
+  });
+
+  it('falls back through documented session identity sources and ignores unusable values', async () => {
+    const routingSpy = vi.spyOn(runtimeModule.runtime.repos.routingEvents, 'insert');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_session_identity', usage: { input_tokens: 5, output_tokens: 2 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const cases = [
+      {
+        name: 'x-openclaw-session-id',
+        headers: { 'x-openclaw-session-id': ' oc_hdr_1 ' },
+        body: { model: 'claude-opus-4-6', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
+        expectedSessionId: 'oc_hdr_1',
+        expectedSource: 'x-openclaw-session-id',
+        expectedOpenClawSessionId: 'oc_hdr_1'
+      },
+      {
+        name: 'openclaw-session-id',
+        headers: { 'openclaw-session-id': ' oc_hdr_2 ' },
+        body: { model: 'claude-opus-4-6', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
+        expectedSessionId: 'oc_hdr_2',
+        expectedSource: 'openclaw-session-id',
+        expectedOpenClawSessionId: 'oc_hdr_2'
+      },
+      {
+        name: 'x-session-id',
+        headers: { 'x-session-id': ' legacy_sess_3 ' },
+        body: { model: 'claude-opus-4-6', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
+        expectedSessionId: 'legacy_sess_3',
+        expectedSource: 'x-session-id',
+        expectedOpenClawSessionId: 'legacy_sess_3'
+      },
+      {
+        name: 'ignores blank and oversized values before later fallback',
+        headers: {
+          'x-openclaw-session-id': '   ',
+          'openclaw-session-id': 'x'.repeat(257),
+          'x-session-id': ' trimmed_sess_5 '
+        },
+        body: { model: 'claude-opus-4-6', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
+        expectedSessionId: 'trimmed_sess_5',
+        expectedSource: 'x-session-id',
+        expectedOpenClawSessionId: 'trimmed_sess_5'
+      }
+    ] as const;
+
+    for (const testCase of cases) {
+      routingSpy.mockClear();
+      const req = createMockReq({
+        method: 'POST',
+        path: '/v1/messages',
+        headers: {
+          authorization: 'Bearer in_test_token',
+          'content-type': 'application/json',
+          ...testCase.headers
+        },
+        body: testCase.body
+      });
+      const res = createMockRes();
+
+      await invoke(handlers[0], req, res);
+      await invoke(handlers[1], req, res);
+      await invoke(handlers[2], req, res);
+
+      expect(res.statusCode, testCase.name).toBe(200);
+      const routingArgs = routingSpy.mock.calls.at(-1)?.[0] as any;
+      expect(routingArgs?.routeDecision?.session_id, testCase.name).toBe(testCase.expectedSessionId);
+      expect(routingArgs?.routeDecision?.session_source, testCase.name).toBe(testCase.expectedSource);
+      expect(routingArgs?.routeDecision?.openclaw_session_id, testCase.name).toBe(testCase.expectedOpenClawSessionId);
+    }
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('prefers x-innies-session-id over OpenClaw session fallbacks', async () => {
+    const routingSpy = vi.spyOn(runtimeModule.runtime.repos.routingEvents, 'insert');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_canonical_session', usage: { input_tokens: 5, output_tokens: 2 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'x-innies-session-id': 'sess_canonical_1',
+        'x-openclaw-session-id': 'oc_sess_preserved'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 8,
+        messages: [{ role: 'user', content: 'hi' }],
+        metadata: {
+          openclaw_session_id: 'meta_sess_ignored'
+        }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    const routingArgs = routingSpy.mock.calls[0]?.[0] as any;
+    expect(routingArgs?.routeDecision?.session_id).toBe('sess_canonical_1');
+    expect(routingArgs?.routeDecision?.session_source).toBe('x-innies-session-id');
+    expect(routingArgs?.routeDecision?.openclaw_session_id).toBe('oc_sess_preserved');
+    upstreamSpy.mockRestore();
+  });
+
+  it('falls back through OpenClaw session fields in documented order', async () => {
+    const routingSpy = vi.spyOn(runtimeModule.runtime.repos.routingEvents, 'insert');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_session_fallback', usage: { input_tokens: 5, output_tokens: 2 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const cases = [
+      {
+        headers: { 'x-openclaw-session-id': 'oc_header_session' },
+        body: {
+          model: 'claude-opus-4-6',
+          max_tokens: 8,
+          messages: [{ role: 'user', content: 'hi' }]
+        },
+        expectedSessionId: 'oc_header_session',
+        expectedSource: 'x-openclaw-session-id'
+      },
+      {
+        headers: { 'openclaw-session-id': 'oc_legacy_header_session' },
+        body: {
+          model: 'claude-opus-4-6',
+          max_tokens: 8,
+          messages: [{ role: 'user', content: 'hi' }]
+        },
+        expectedSessionId: 'oc_legacy_header_session',
+        expectedSource: 'openclaw-session-id'
+      },
+      {
+        headers: { 'x-session-id': 'oc_generic_header_session' },
+        body: {
+          model: 'claude-opus-4-6',
+          max_tokens: 8,
+          messages: [{ role: 'user', content: 'hi' }]
+        },
+        expectedSessionId: 'oc_generic_header_session',
+        expectedSource: 'x-session-id'
+      },
+      {
+        headers: {},
+        body: {
+          model: 'claude-opus-4-6',
+          max_tokens: 8,
+          messages: [{ role: 'user', content: 'hi' }],
+          metadata: {
+            openclaw_session_id: 'meta_session_fallback'
+          }
+        },
+        expectedSessionId: 'meta_session_fallback',
+        expectedSource: 'metadata.openclaw_session_id'
+      },
+      {
+        headers: {},
+        body: {
+          model: 'claude-opus-4-6',
+          max_tokens: 8,
+          messages: [{ role: 'user', content: 'hi' }],
+          payload: {
+            metadata: {
+              openclaw_session_id: 'payload_meta_session_fallback'
+            }
+          }
+        },
+        expectedSessionId: 'payload_meta_session_fallback',
+        expectedSource: 'payload.metadata.openclaw_session_id'
+      }
+    ] as const;
+
+    for (const testCase of cases) {
+      routingSpy.mockClear();
+      const req = createMockReq({
+        method: 'POST',
+        path: '/v1/messages',
+        headers: {
+          authorization: 'Bearer in_test_token',
+          'content-type': 'application/json',
+          ...testCase.headers
+        },
+        body: testCase.body
+      });
+      const res = createMockRes();
+
+      await invoke(handlers[0], req, res);
+      await invoke(handlers[1], req, res);
+      await invoke(handlers[2], req, res);
+
+      expect(res.statusCode).toBe(200);
+      const routingArgs = routingSpy.mock.calls[0]?.[0] as any;
+      expect(routingArgs?.routeDecision?.session_id).toBe(testCase.expectedSessionId);
+      expect(routingArgs?.routeDecision?.session_source).toBe(testCase.expectedSource);
+      expect(routingArgs?.routeDecision?.openclaw_session_id).toBe(testCase.expectedSessionId);
+    }
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('ignores blank or oversized session ids and stays request-by-request when none are usable', async () => {
+    const routingSpy = vi.spyOn(runtimeModule.runtime.repos.routingEvents, 'insert');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_invalid_session', usage: { input_tokens: 5, output_tokens: 2 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const oversizedSessionId = 'x'.repeat(257);
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'x-innies-session-id': '   ',
+        'x-openclaw-session-id': oversizedSessionId,
+        'x-session-id': ' \n\t '
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 8,
+        messages: [{ role: 'user', content: 'hi' }],
+        metadata: {
+          openclaw_session_id: ' '
+        },
+        payload: {
+          metadata: {
+            openclaw_session_id: oversizedSessionId
+          }
+        }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    const routingArgs = routingSpy.mock.calls[0]?.[0] as any;
+    expect(routingArgs?.routeDecision?.session_id).toBeNull();
+    expect(routingArgs?.routeDecision?.session_source).toBeNull();
+    expect(routingArgs?.routeDecision?.openclaw_session_id).toBeNull();
     upstreamSpy.mockRestore();
   });
 

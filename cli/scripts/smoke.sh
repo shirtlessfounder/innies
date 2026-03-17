@@ -78,6 +78,7 @@ set -euo pipefail
   echo "INNIES_PROXY_URL:${INNIES_PROXY_URL:-}"
   echo "INNIES_TOKEN:${INNIES_TOKEN:-}"
   echo "INNIES_CORRELATION_ID:${INNIES_CORRELATION_ID:-}"
+  echo "INNIES_SESSION_ID:${INNIES_SESSION_ID:-}"
   echo "INNIES_PROVIDER_PIN:${INNIES_PROVIDER_PIN:-}"
   echo "OPENAI_API_KEY:${OPENAI_API_KEY:-}"
   echo "OPENAI_BASE_URL:${OPENAI_BASE_URL:-}"
@@ -218,6 +219,11 @@ if ! grep -q 'arg:model_providers.innies.env_http_headers."x-request-id"="INNIES
   exit 1
 fi
 
+if ! grep -q 'arg:model_providers.innies.env_http_headers."x-innies-session-id"="INNIES_SESSION_ID"' "$FAKE_CODEX_LOG"; then
+  echo "smoke: missing codex session header wiring"
+  exit 1
+fi
+
 if ! grep -q 'arg:model_providers.innies.env_http_headers."x-innies-provider-pin"="INNIES_PROVIDER_PIN"' "$FAKE_CODEX_LOG"; then
   echo "smoke: missing codex pin header wiring"
   exit 1
@@ -245,6 +251,11 @@ fi
 
 if ! grep -q 'INNIES_PROVIDER_PIN:true' "$FAKE_CODEX_LOG"; then
   echo "smoke: missing codex provider pin env wiring"
+  exit 1
+fi
+
+if ! grep -Eq 'INNIES_SESSION_ID:sess_[[:alnum:]-]+' "$FAKE_CODEX_LOG"; then
+  echo "smoke: missing codex session env wiring"
   exit 1
 fi
 

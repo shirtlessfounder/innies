@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { loadConfig, resolveProviderDefaultModel } from '../config.js';
 import { buildCorrelationId, fail } from '../utils.js';
@@ -37,6 +38,7 @@ export function buildCodexArgs(input) {
     '--config', `${providerPath}.supports_websockets=false`,
     '--config', 'responses_websockets_v2=false',
     '--config', `${providerPath}.env_http_headers."x-request-id"="INNIES_CORRELATION_ID"`,
+    '--config', `${providerPath}.env_http_headers."x-innies-session-id"="INNIES_SESSION_ID"`,
     '--config', `${providerPath}.env_http_headers."x-innies-provider-pin"="INNIES_PROVIDER_PIN"`
   ];
 
@@ -45,6 +47,24 @@ export function buildCodexArgs(input) {
   }
 
   return [...forcedArgs, ...args];
+}
+
+export function buildCodexEnv(input) {
+  return {
+    ...input.baseEnv,
+    MallocStackLogging: '',
+    INNIES_CODEX_WRAPPED: '1',
+    INNIES_TOKEN: input.token,
+    INNIES_API_BASE_URL: input.apiBaseUrl,
+    INNIES_PROXY_URL: input.proxyUrl,
+    INNIES_MODEL: input.model,
+    INNIES_ROUTE_MODE: 'token',
+    INNIES_CORRELATION_ID: input.correlationId,
+    INNIES_SESSION_ID: input.sessionId,
+    INNIES_PROVIDER_PIN: 'true',
+    OPENAI_API_KEY: input.token,
+    OPENAI_BASE_URL: input.proxyUrl
+  };
 }
 
 export async function runCodex(args) {
@@ -74,6 +94,7 @@ export async function runCodex(args) {
   const model = resolveProviderDefaultModel(config, 'openai');
   const proxyUrl = proxyBase(config.apiBaseUrl);
   const correlationId = buildCorrelationId();
+  const sessionId = `sess_${randomUUID()}`;
   const codexBinary = resolveWrappedBinary({
     binaryName: 'codex',
     displayName: 'Codex',
@@ -82,20 +103,15 @@ export async function runCodex(args) {
 
   printConnectionStatus({ model, proxyUrl, correlationId });
 
-  const env = {
-    ...process.env,
-    MallocStackLogging: '',
-    INNIES_CODEX_WRAPPED: '1',
-    INNIES_TOKEN: config.token,
-    INNIES_API_BASE_URL: config.apiBaseUrl,
-    INNIES_PROXY_URL: proxyUrl,
-    INNIES_MODEL: model,
-    INNIES_ROUTE_MODE: 'token',
-    INNIES_CORRELATION_ID: correlationId,
-    INNIES_PROVIDER_PIN: 'true',
-    OPENAI_API_KEY: config.token,
-    OPENAI_BASE_URL: proxyUrl
-  };
+  const env = buildCodexEnv({
+    baseEnv: process.env,
+    token: config.token,
+    apiBaseUrl: config.apiBaseUrl,
+    proxyUrl,
+    model,
+    correlationId,
+    sessionId
+  });
 
   const captureOutput = shouldCaptureCommandOutput('INNIES_CAPTURE_CODEX_OUTPUT');
   let combinedOutput = '';

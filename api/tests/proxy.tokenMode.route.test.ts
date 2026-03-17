@@ -2124,7 +2124,8 @@ describe('proxy token-mode route behavior', () => {
         'content-type': 'application/json',
         'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
         'x-request-id': 'req_native_codex',
-        'x-innies-provider-pin': 'true'
+        'x-innies-provider-pin': 'true',
+        'x-innies-session-id': 'sess_proxy_native_1'
       },
       body: {
         model: 'gpt-5.4',
@@ -2155,9 +2156,184 @@ describe('proxy token-mode route behavior', () => {
         reason: 'cli_provider_pinned',
         provider_selection_reason: 'cli_provider_pinned',
         provider_effective: 'openai',
-        provider_plan: ['openai']
+        provider_plan: ['openai'],
+        session_id: 'sess_proxy_native_1',
+        session_source: 'x-innies-session-id'
       })
     }));
+    upstreamSpy.mockRestore();
+  });
+
+  it('uses x-innies-session-id on the direct token-mode proxy path', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.OPENAI_UPSTREAM_BASE_URL = 'https://openai.internal.test';
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: null
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      supports_streaming: false
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'dddd0002-0000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      authScheme: 'x_api_key',
+      accessToken: 'openai-key-session',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'resp_native_session_ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/responses',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-request-id': 'req_native_codex_session',
+        'x-innies-provider-pin': 'true',
+        'x-innies-session-id': 'sess_cli_123'
+      },
+      body: {
+        model: 'gpt-5.4',
+        input: 'hello from stable session',
+        stream: false
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls[0]?.[0]?.routeDecision;
+    expect(routeDecision?.session_id).toBe('sess_cli_123');
+    expect(routeDecision?.session_source).toBe('x-innies-session-id');
+    expect(routeDecision?.openclaw_session_id).toBeNull();
+    upstreamSpy.mockRestore();
+  });
+
+  it('falls back to metadata session ids on direct proxy requests', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.ANTHROPIC_UPSTREAM_BASE_URL = 'https://anthropic.internal.test';
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: null
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'anthropic',
+      model: 'claude-opus-4-6',
+      supports_streaming: false
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'dddd0002-0000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'anthropic-key-native',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_direct_metadata_ok', usage: { input_tokens: 5, output_tokens: 2 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const cases = [
+      {
+        name: 'metadata.openclaw_session_id',
+        body: {
+          model: 'claude-opus-4-6',
+          max_tokens: 8,
+          messages: [{ role: 'user', content: 'hi' }],
+          stream: false,
+          metadata: {
+            openclaw_session_id: 'meta_direct_1'
+          }
+        },
+        expectedSessionId: 'meta_direct_1',
+        expectedSource: 'metadata.openclaw_session_id'
+      },
+      {
+        name: 'payload.metadata.openclaw_session_id',
+        body: {
+          provider: 'anthropic',
+          model: 'claude-opus-4-6',
+          streaming: false,
+          payload: {
+            model: 'claude-opus-4-6',
+            max_tokens: 8,
+            messages: [{ role: 'user', content: 'hi' }],
+            metadata: {
+              openclaw_session_id: 'payload_direct_2'
+            }
+          }
+        },
+        expectedSessionId: 'payload_direct_2',
+        expectedSource: 'payload.metadata.openclaw_session_id'
+      }
+    ] as const;
+
+    for (const testCase of cases) {
+      const req = createMockReq({
+        method: 'POST',
+        path: '/v1/proxy/v1/messages',
+        headers: {
+          authorization: 'Bearer in_test_token',
+          'content-type': 'application/json',
+          'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+          'x-request-id': `req_${testCase.name}`,
+          'x-innies-provider-pin': 'true'
+        },
+        body: testCase.body
+      });
+      const res = createMockRes();
+
+      await invoke(handlers[0], req, res);
+      await invoke(handlers[1], req, res);
+
+      expect(res.statusCode, testCase.name).toBe(200);
+      const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls.at(-1)?.[0]?.routeDecision;
+      expect(routeDecision?.session_id, testCase.name).toBe(testCase.expectedSessionId);
+      expect(routeDecision?.session_source, testCase.name).toBe(testCase.expectedSource);
+      expect(routeDecision?.openclaw_session_id, testCase.name).toBe(testCase.expectedSessionId);
+    }
+
     upstreamSpy.mockRestore();
   });
 

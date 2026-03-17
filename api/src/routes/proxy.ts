@@ -9,6 +9,12 @@ import type { IdempotencySession } from '../services/idempotencyService.js';
 import { AppError } from '../utils/errors.js';
 import { sha256Hex, stableJson } from '../utils/hash.js';
 import { readAndValidateIdempotencyKey } from '../utils/idempotencyKey.js';
+import {
+  resolveOpenClawSessionIdentity,
+  resolveSessionIdentity,
+  type SessionIdentity,
+  type SessionIdentitySource
+} from '../utils/sessionIdentity.js';
 import { anthropicToOpenAi } from '../utils/anthropicToOpenai.js';
 import { mapOpenAiErrorToAnthropic, translateOpenAiToAnthropic } from '../utils/openaiToAnthropic.js';
 import { OpenAiToAnthropicStreamTransform } from '../utils/openaiToAnthropicStream.js';
@@ -84,6 +90,8 @@ type OpenClawCorrelation = {
   openclawRunId: string;
   openclawSessionId?: string;
   sourceExplicit: boolean;
+  sessionId: string | null;
+  sessionSource: SessionIdentitySource | null;
 };
 type RetryReason =
   | 'blocked_403_compat_retry'
@@ -171,7 +179,7 @@ function readHeader(req: any, ...names: string[]): string | undefined {
   return undefined;
 }
 
-function resolveOpenClawCorrelation(req: any, requestId: string): OpenClawCorrelation {
+function resolveOpenClawCorrelation(req: any, requestId: string, sessionIdentity: SessionIdentity): OpenClawCorrelation {
   const bodyObject = req.body && typeof req.body === 'object'
     ? (req.body as any)
     : undefined;
@@ -179,17 +187,17 @@ function resolveOpenClawCorrelation(req: any, requestId: string): OpenClawCorrel
   const metadataRunId = typeof metadata?.openclaw_run_id === 'string'
     ? metadata.openclaw_run_id.trim()
     : undefined;
-  const metadataSessionId = typeof metadata?.openclaw_session_id === 'string'
-    ? metadata.openclaw_session_id.trim()
-    : undefined;
   const explicitRunId = readHeader(req, 'x-openclaw-run-id', 'openclaw-run-id', 'x-run-id')
     ?? (metadataRunId && metadataRunId.length > 0 ? metadataRunId : undefined);
-  const explicitSessionId = readHeader(req, 'x-openclaw-session-id', 'openclaw-session-id', 'x-session-id')
-    ?? (metadataSessionId && metadataSessionId.length > 0 ? metadataSessionId : undefined);
+  const openClawSessionIdentity = sessionIdentity.source === 'x-innies-session-id'
+    ? resolveOpenClawSessionIdentity(req)
+    : sessionIdentity;
   return {
     openclawRunId: explicitRunId ?? `run_${requestId}`,
-    openclawSessionId: explicitSessionId,
-    sourceExplicit: Boolean(explicitRunId || explicitSessionId)
+    openclawSessionId: openClawSessionIdentity.sessionId ?? undefined,
+    sourceExplicit: Boolean(explicitRunId || openClawSessionIdentity.sessionId),
+    sessionId: sessionIdentity.sessionId,
+    sessionSource: sessionIdentity.source
   };
 }
 
@@ -841,7 +849,9 @@ function buildTokenRouteDecision(
     tokenCredentialLabel: credential.debugLabel ?? null,
     tokenAuthScheme: credential.authScheme,
     openclaw_run_id: correlation.openclawRunId,
-    openclaw_session_id: correlation.openclawSessionId ?? null
+    openclaw_session_id: correlation.openclawSessionId ?? null,
+    session_id: correlation.sessionId,
+    session_source: correlation.sessionSource
   };
   if (providerPreference) {
     decision.provider_preferred = providerPreference.preferredProvider;
@@ -970,7 +980,9 @@ function buildSellerRouteDecision(input: {
       correlation: input.correlation
     }),
     openclaw_run_id: input.correlation.openclawRunId,
-    openclaw_session_id: input.correlation.openclawSessionId ?? null
+    openclaw_session_id: input.correlation.openclawSessionId ?? null,
+    session_id: input.correlation.sessionId,
+    session_source: input.correlation.sessionSource
   };
 }
 
@@ -3691,7 +3703,12 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
     const parsed = parseProxyRequestBody(req.body, proxiedPath);
     const requestProvider = canonicalizeProvider(parsed.provider);
     const requestId = buildRequestId(req.header('x-request-id') ?? undefined);
-    const correlation = resolveOpenClawCorrelation(req, requestId);
+    const sessionIdentityRequest = {
+      header: req.header.bind(req),
+      body: req.inniesSessionIdentityBody ?? req.body
+    };
+    const sessionIdentity = resolveSessionIdentity(sessionIdentityRequest);
+    const correlation = resolveOpenClawCorrelation(sessionIdentityRequest, requestId, sessionIdentity);
     const rawIdempotencyKey = req.header('idempotency-key') ?? undefined;
     const shouldPersistIdempotency = Boolean(rawIdempotencyKey);
     const idempotencyKey = shouldPersistIdempotency
