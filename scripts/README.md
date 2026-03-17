@@ -25,6 +25,7 @@ innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
 innies-slo-check
+innies-compat-evidence-report
 ```
 
 What they do:
@@ -40,6 +41,7 @@ What they do:
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
+- `innies-compat-evidence-report`: combine issue-80 exact-case, minimal-delta, payload, and token-lane summary artifacts into one report plus issue-comment draft
 
 Behavior:
 - org id auto-uses `INNIES_ORG_ID`
@@ -79,6 +81,8 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
+- `innies-compat-evidence-report` accepts `--exact-case-summary`, `--exact-case-minimal-delta`, `--payload-summary`, and `--token-lane-summary`; each input may be either a summary file or its parent output directory
+- `innies-compat-evidence-report` writes `summary.txt`, `summary.json`, and `issue-comment.md`; set `INNIES_COMPAT_EVIDENCE_REPORT_OUT_DIR` or pass `--out-dir` to control the destination
 
 ## Env
 
