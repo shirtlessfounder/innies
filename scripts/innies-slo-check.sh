@@ -70,6 +70,8 @@ if [[ "$routing_available" -eq 1 ]]; then
       else
         (.fallbackCount | type) != "number"
         or (.totalAttempts | type) != "number"
+        or (.fallbackCount != (.fallbackCount | floor))
+        or (.totalAttempts != (.totalAttempts | floor))
         or (.fallbackCount < 0)
         or (.totalAttempts < 0)
         or (.fallbackCount > .totalAttempts)
