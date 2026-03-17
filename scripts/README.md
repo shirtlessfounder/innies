@@ -25,6 +25,7 @@ innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
 innies-slo-check
+innies-compat-direct-request-bundle
 ```
 
 What they do:
@@ -40,6 +41,7 @@ What they do:
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
+- `innies-compat-direct-request-bundle`: replay one captured Anthropic first pass directly and emit normalized `captured-upstream-request.json`, `direct-request.json`, and `direct-response.json` bundles for issue `#80` wire diff work
 
 Behavior:
 - org id auto-uses `INNIES_ORG_ID`
@@ -73,6 +75,12 @@ Behavior:
 - `innies-token-usage-refresh` lists unexpired Claude credentials in `active|paused|maxed`, plus expired Claude OAuth credentials that still have a stored refresh token (shown as `expired`) so you can recover them manually
 - `innies-token-usage-refresh` also needs `INNIES_ADMIN_API_KEY` (or prompts for it) because it calls the admin API provider-usage refresh endpoint directly
 - `innies-token-usage-refresh` bypasses in-memory usage-fetch backoff and prints both parsed 5h / 7d usage plus the raw Anthropic payload
+- `innies-compat-direct-request-bundle` needs:
+  - a payload path argument (typically the preserved issue payload json)
+  - `INNIES_CAPTURED_RESPONSE_HTML` and `INNIES_CAPTURED_REQUEST_ID` so it can extract the failing Innies first-pass request bundle
+  - one of `ANTHROPIC_OAUTH_ACCESS_TOKEN`, `ANTHROPIC_ACCESS_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN` for the direct replay bearer
+  - optional `ANTHROPIC_DIRECT_BASE_URL` when you want to point the direct replay at a stub or alternate endpoint
+- `innies-compat-direct-request-bundle` writes a bundle directory containing the extracted failing request, the normalized direct replay request/response json, the raw response headers/body, and a `meta.txt` summary
 - `label` maps to API field `debugLabel`
 - set/get preference accept either the buyer-key UUID or the live buyer key value; live-key lookup uses `DATABASE_URL`
 - script-side default provider display for `null` preference follows `BUYER_PROVIDER_PREFERENCE_DEFAULT` (legacy alias `INNIES_BUYER_PROVIDER_PREFERENCE_DEFAULT` also works)
