@@ -25,6 +25,7 @@ innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
 innies-slo-check
+innies-compat-exact-case-summary
 ```
 
 What they do:
@@ -40,6 +41,7 @@ What they do:
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
+- `innies-compat-exact-case-summary`: summarize exact-case replay artifacts and classify whether the observed behavior looks header-case-specific, credential-lane-specific, mixed, or uniformly failing
 
 Behavior:
 - org id auto-uses `INNIES_ORG_ID`
@@ -79,6 +81,7 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
+- `innies-compat-exact-case-summary` accepts an exact-case matrix output directory from `innies-compat-exact-case-matrix` or `innies-compat-exact-case-token-lane-matrix`, writes `summary.txt` plus `summary.json`, and prints the classification to stdout
 
 ## Env
 
