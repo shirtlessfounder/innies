@@ -135,3 +135,54 @@ if [[ "$unavailable_output" != *"(routing cross-check: unavailable"* ]]; then
 fi
 
 echo "PASS: innies-slo-check keeps the main SLO report usable when routing cross-check is unavailable"
+
+cat > "${tmp_dir}/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+url="${*: -1}"
+
+case "$url" in
+  *"/v1/admin/analytics/system?window=24h")
+    cat <<'JSON'
+{"ttfbP95Ms":1000,"errorRate":0.01,"fallbackRate":0.25,"totalRequests":4}
+200
+JSON
+    ;;
+  *"/v1/admin/analytics/tokens/routing?window=24h")
+    echo "curl: (7) Failed to connect" >&2
+    exit 7
+    ;;
+  *)
+    echo "unexpected curl url: $url" >&2
+    exit 1
+    ;;
+esac
+EOF
+chmod +x "${tmp_dir}/curl"
+
+if ! transport_failure_output="$(
+  PATH="${tmp_dir}:$PATH" \
+  INNIES_ADMIN_API_KEY="admin-token" \
+  INNIES_ENV_FILE="${tmp_dir}/missing.env" \
+  bash "${ROOT_DIR}/scripts/innies-slo-check.sh"
+)"; then
+  echo "expected script to keep the main SLO report running when the routing request itself fails" >&2
+  exit 1
+fi
+
+transport_failure_fallback_line="$(printf '%s\n' "$transport_failure_output" | awk '$1 == "Fallback" && $2 == "rate" { print; exit }')"
+
+if [[ "$transport_failure_fallback_line" != *"25%"* || "$transport_failure_fallback_line" != *"FLAG"* ]]; then
+  echo "expected fallback line to stay on the system summary when the routing request fails" >&2
+  echo "$transport_failure_output" >&2
+  exit 1
+fi
+
+if [[ "$transport_failure_output" != *"(routing cross-check: unavailable - /v1/admin/analytics/tokens/routing request failed)"* ]]; then
+  echo "expected output to show a transport failure as an unavailable routing cross-check" >&2
+  echo "$transport_failure_output" >&2
+  exit 1
+fi
+
+echo "PASS: innies-slo-check keeps the main SLO report usable when the routing request fails"
