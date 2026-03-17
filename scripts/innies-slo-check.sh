@@ -61,14 +61,21 @@ total_requests="$(printf '%s' "$system_body" | jq -r '.totalRequests // 0')"
 
 # Compute fallback rate from routing tokens as cross-check when available.
 if [[ "$routing_available" -eq 1 ]]; then
-  routing_fallback_rate="$(printf '%s' "$routing_body" | jq -r '
-    [.tokens[] | {f: (.fallbackCount // 0), t: (.totalAttempts // 0)}]
-    | {total_fallbacks: (map(.f) | add // 0), total_attempts: (map(.t) | add // 0)}
-    | if .total_attempts == 0 then 0
-      else (.total_fallbacks / .total_attempts)
-      end')"
-  routing_fallback_display="$(jq -n -r --argjson v "$routing_fallback_rate" '($v * 100 * 100 | round) / 100 | tostring + "%"')"
-  routing_cross_check_line="(routing cross-check: attributed per-token aggregate fallback rate = ${routing_fallback_display})"
+  if routing_fallback_rate="$(printf '%s' "$routing_body" | jq -er '
+    if (.tokens | type) != "array" then
+      error("tokens must be an array")
+    else
+      [.tokens[] | {f: (.fallbackCount // 0), t: (.totalAttempts // 0)}]
+      | {total_fallbacks: (map(.f) | add // 0), total_attempts: (map(.t) | add // 0)}
+      | if .total_attempts == 0 then 0
+        else (.total_fallbacks / .total_attempts)
+        end
+    end' 2>/dev/null)"; then
+    routing_fallback_display="$(jq -n -r --argjson v "$routing_fallback_rate" '($v * 100 * 100 | round) / 100 | tostring + "%"')"
+    routing_cross_check_line="(routing cross-check: attributed per-token aggregate fallback rate = ${routing_fallback_display})"
+  else
+    routing_cross_check_line="(routing cross-check: unavailable - /v1/admin/analytics/tokens/routing returned malformed data)"
+  fi
 else
   routing_cross_check_line="(routing cross-check: unavailable - ${routing_unavailable_reason})"
 fi
