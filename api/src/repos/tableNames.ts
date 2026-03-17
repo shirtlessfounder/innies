@@ -5,6 +5,8 @@ export const TABLES = {
   orgs: 'in_orgs',
   requestLog: 'in_request_log',
   sellerKeys: 'in_seller_keys',
+  tokenAffinityAssignments: 'in_token_affinity_assignments',
+  tokenAffinityActiveStreams: 'in_token_affinity_active_streams',
   tokenCredentialProviderUsage: 'in_token_credential_provider_usage',
   tokenCredentials: 'in_token_credentials',
   tokenCredentialEvents: 'in_token_credential_events',
