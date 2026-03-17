@@ -1828,8 +1828,7 @@ describe('anthropic compat route', () => {
     const fetchArgs = upstreamSpy.mock.calls[0];
     const headers = (fetchArgs?.[1] as RequestInit)?.headers as Record<string, string>;
     expect(headers['anthropic-version']).toBe('2024-10-22');
-    expect(headers['anthropic-beta']).toContain('foo-2026-01-01');
-    expect(headers['anthropic-beta']).toContain('bar-2026-02-02');
+    expect(headers['anthropic-beta']).toBe('foo-2026-01-01,bar-2026-02-02');
     expect(res.statusCode).toBe(200);
 
     upstreamSpy.mockRestore();

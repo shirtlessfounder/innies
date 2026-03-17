@@ -507,6 +507,7 @@ function buildTokenModeUpstreamHeaders(input: {
   provider: string;
   credential: TokenCredential;
   skipOauthDefaultBetas?: boolean;
+  strictUpstreamPassthrough?: boolean;
   streaming?: boolean;
 }): Record<string, string> {
   const {
@@ -516,6 +517,7 @@ function buildTokenModeUpstreamHeaders(input: {
     provider,
     credential,
     skipOauthDefaultBetas,
+    strictUpstreamPassthrough,
     streaming
   } = input;
   const authHeaders = isAnthropicOauthAccessToken(provider, credential.accessToken) || isOpenAiProvider(provider)
@@ -539,7 +541,10 @@ function buildTokenModeUpstreamHeaders(input: {
     headers.accept = 'text/event-stream';
   }
 
-  const shouldIncludeOauthBetas = !skipOauthDefaultBetas && isAnthropicOauthToken(credential, provider);
+  const shouldIncludeOauthBetas =
+    !skipOauthDefaultBetas
+    && !strictUpstreamPassthrough
+    && isAnthropicOauthToken(credential, provider);
   const inboundBetas = parseAnthropicBetaHeader(anthropicBeta ?? '');
   if (inboundBetas.length > 0 || shouldIncludeOauthBetas) {
     const mergedBetas = new Set<string>(inboundBetas);
@@ -2415,7 +2420,8 @@ async function executeTokenModeNonStreaming(input: {
         anthropicBeta: compat.anthropicBeta,
         provider,
         credential,
-        skipOauthDefaultBetas: compat.blockedRetryApplied
+        skipOauthDefaultBetas: compat.blockedRetryApplied,
+        strictUpstreamPassthrough
       });
       const upstreamBody = JSON.stringify(upstreamPayload);
 
@@ -3199,6 +3205,7 @@ async function executeTokenModeStreaming(input: {
         provider,
         credential,
         skipOauthDefaultBetas: compat.blockedRetryApplied,
+        strictUpstreamPassthrough,
         streaming: true
       });
       const upstreamPayload = normalizeTokenModeUpstreamPayload({
