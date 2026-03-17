@@ -130,6 +130,10 @@ Notes:
   - If `thinking.type = "adaptive"`, API preserves it and does not inject `budget_tokens`.
   - For extended thinking requests (`thinking.type = "enabled" | "adaptive"`), API returns deterministic `400` when `tool_choice.type` is `any` or `tool`; only `auto` and `none` are allowed.
   - For extended thinking requests (`thinking.type = "enabled" | "adaptive"`), API returns deterministic `400` when the final message role is `assistant` (assistant prefill).
+  - For extended thinking requests (`thinking.type = "enabled" | "adaptive"`), API returns deterministic `400` when preserved assistant `thinking` blocks in tool-use history omit `signature`.
+- Anthropic message-history guardrails (deterministic `400 invalid_request`):
+  - `tool_result` blocks must come first in each user message content array.
+  - A user message containing `tool_result` blocks must immediately follow the prior assistant `tool_use` message and match its `tool_use` ids.
 - Tool-choice compatibility guardrail:
   - If `tool_choice` is a string (`auto|none|any`), API normalizes it to object form (`{"type":"..."}`).
 - Request-size guardrails (deterministic `400 invalid_request`):

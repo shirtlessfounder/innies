@@ -1437,6 +1437,192 @@ function resolveCompatUpstreamRequest(input: {
   };
 }
 
+function assertCompatAnthropicMessageHistorySupported(input: {
+  provider: string;
+  proxiedPath: string;
+  strictUpstreamPassthrough: boolean;
+  payload: unknown;
+}): void {
+  if (!input.strictUpstreamPassthrough) return;
+  if (canonicalizeProvider(input.provider) !== 'anthropic') return;
+  if (!input.proxiedPath.startsWith('/v1/messages')) return;
+  if (!input.payload || typeof input.payload !== 'object' || Array.isArray(input.payload)) return;
+
+  const payload = input.payload as Record<string, unknown>;
+  const thinking = payload.thinking && typeof payload.thinking === 'object' && !Array.isArray(payload.thinking)
+    ? payload.thinking as Record<string, unknown>
+    : null;
+  const thinkingType = typeof thinking?.type === 'string' ? String(thinking.type) : null;
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+
+  let pendingToolUseIds: string[] | null = null;
+  let pendingToolUseMessageIndex: number | null = null;
+
+  for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
+    const rawMessage = messages[messageIndex];
+    const message = rawMessage && typeof rawMessage === 'object' && !Array.isArray(rawMessage)
+      ? rawMessage as Record<string, unknown>
+      : null;
+    const role = typeof message?.role === 'string' ? message.role.trim().toLowerCase() : null;
+    const content = Array.isArray(message?.content) ? message.content : [];
+
+    let sawNonToolResultBlock = false;
+    let sawToolResultAfterNonToolResult = false;
+    let missingToolResultId = false;
+    const leadingToolResultIds: string[] = [];
+
+    let missingToolUseId = false;
+    let assistantHasThinkingBlock = false;
+    let assistantHasUnsignedThinkingBlock = false;
+    const assistantToolUseIds: string[] = [];
+
+    for (const rawBlock of content) {
+      if (!rawBlock || typeof rawBlock !== 'object' || Array.isArray(rawBlock)) {
+        if (role === 'user') sawNonToolResultBlock = true;
+        continue;
+      }
+      const block = rawBlock as Record<string, unknown>;
+      const blockType = typeof block.type === 'string' ? String(block.type) : null;
+
+      if (role === 'user') {
+        if (blockType === 'tool_result') {
+          if (sawNonToolResultBlock) {
+            sawToolResultAfterNonToolResult = true;
+          }
+          const toolUseId = typeof block.tool_use_id === 'string' && block.tool_use_id.trim().length > 0
+            ? block.tool_use_id.trim()
+            : null;
+          if (!toolUseId) {
+            missingToolResultId = true;
+          } else if (!sawNonToolResultBlock) {
+            leadingToolResultIds.push(toolUseId);
+          }
+          continue;
+        }
+        sawNonToolResultBlock = true;
+        continue;
+      }
+
+      if (role !== 'assistant' || !blockType) continue;
+      if (blockType === 'thinking') {
+        assistantHasThinkingBlock = true;
+        const signature = typeof block.signature === 'string' ? block.signature.trim() : '';
+        if (signature.length === 0) assistantHasUnsignedThinkingBlock = true;
+        continue;
+      }
+      if (blockType !== 'tool_use') continue;
+
+      const toolUseId = typeof block.id === 'string' && block.id.trim().length > 0
+        ? block.id.trim()
+        : null;
+      if (!toolUseId) {
+        missingToolUseId = true;
+        continue;
+      }
+      assistantToolUseIds.push(toolUseId);
+    }
+
+    if (missingToolResultId) {
+      throw new AppError(
+        'invalid_request',
+        400,
+        'tool_result blocks require a non-empty tool_use_id',
+        { messageIndex }
+      );
+    }
+    if (missingToolUseId) {
+      throw new AppError(
+        'invalid_request',
+        400,
+        'assistant tool_use blocks require a non-empty id',
+        { messageIndex }
+      );
+    }
+    if (sawToolResultAfterNonToolResult) {
+      throw new AppError(
+        'invalid_request',
+        400,
+        'tool_result blocks must come first in each user message content array',
+        { messageIndex }
+      );
+    }
+
+    if (pendingToolUseIds) {
+      const expectedToolUseIds = pendingToolUseIds;
+      if (role !== 'user') {
+        throw new AppError(
+          'invalid_request',
+          400,
+          'tool_result blocks must immediately follow the prior assistant tool_use message',
+          { messageIndex, pendingToolUseIds: expectedToolUseIds, pendingToolUseMessageIndex }
+        );
+      }
+      if (leadingToolResultIds.length === 0) {
+        throw new AppError(
+          'invalid_request',
+          400,
+          'tool_result blocks must immediately follow the prior assistant tool_use message',
+          { messageIndex, pendingToolUseIds: expectedToolUseIds, pendingToolUseMessageIndex }
+        );
+      }
+
+      const missingToolUseIds = expectedToolUseIds.filter((id) => !leadingToolResultIds.includes(id));
+      const unexpectedToolUseIds = leadingToolResultIds.filter((id) => !expectedToolUseIds.includes(id));
+      if (missingToolUseIds.length > 0 || unexpectedToolUseIds.length > 0) {
+        throw new AppError(
+          'invalid_request',
+          400,
+          'tool_result blocks must immediately follow the prior assistant tool_use message and match its tool_use ids',
+          {
+            messageIndex,
+            pendingToolUseIds: expectedToolUseIds,
+            pendingToolUseMessageIndex,
+            leadingToolResultIds,
+            missingToolUseIds,
+            unexpectedToolUseIds
+          }
+        );
+      }
+
+      pendingToolUseIds = null;
+      pendingToolUseMessageIndex = null;
+    } else if (role === 'user' && leadingToolResultIds.length > 0) {
+      throw new AppError(
+        'invalid_request',
+        400,
+        'tool_result blocks must immediately follow a prior assistant tool_use message',
+        { messageIndex, leadingToolResultIds }
+      );
+    }
+
+    if (assistantToolUseIds.length > 0) {
+      if (
+        (thinkingType === 'enabled' || thinkingType === 'adaptive')
+        && assistantHasThinkingBlock
+        && assistantHasUnsignedThinkingBlock
+      ) {
+        throw new AppError(
+          'invalid_request',
+          400,
+          `assistant thinking blocks preserved with thinking.type="${thinkingType}" must include signature`,
+          { messageIndex, thinkingType }
+        );
+      }
+      pendingToolUseIds = assistantToolUseIds;
+      pendingToolUseMessageIndex = messageIndex;
+    }
+  }
+
+  if (pendingToolUseIds) {
+    throw new AppError(
+      'invalid_request',
+      400,
+      'tool_result blocks must immediately follow the prior assistant tool_use message',
+      { pendingToolUseIds, pendingToolUseMessageIndex }
+    );
+  }
+}
+
 function assertCompatAnthropicThinkingPayloadSupported(input: {
   provider: string;
   proxiedPath: string;
@@ -4003,6 +4189,12 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
             proxiedPath,
             payload: parsed.payload ?? {},
             strictUpstreamPassthrough: compatMode
+          });
+          assertCompatAnthropicMessageHistorySupported({
+            provider: upstreamRequest.provider,
+            proxiedPath: upstreamRequest.proxiedPath,
+            strictUpstreamPassthrough: upstreamRequest.strictUpstreamPassthrough,
+            payload: upstreamRequest.payload
           });
           assertCompatAnthropicThinkingPayloadSupported({
             provider: upstreamRequest.provider,
