@@ -545,14 +545,11 @@ function buildTokenModeUpstreamHeaders(input: {
 
   const inboundBetas = parseAnthropicBetaHeader(anthropicBeta ?? '');
   const shouldForwardInboundBetas = anthropicBetaMode !== 'omit' && inboundBetas.length > 0;
-  const shouldIncludeRequiredOauthBeta = anthropicBetaMode === 'preserve_inbound_plus_oauth'
-    && isAnthropicOauthToken(credential, provider);
-  const shouldIncludeOauthBetas = anthropicBetaMode === 'default_oauth' && isAnthropicOauthToken(credential, provider);
-  if (shouldForwardInboundBetas || shouldIncludeRequiredOauthBeta || shouldIncludeOauthBetas) {
+  const shouldIncludeOauthBetas = anthropicBetaMode !== 'omit'
+    && isAnthropicOauthToken(credential, provider)
+    && (anthropicBetaMode === 'default_oauth' || anthropicBetaMode === 'preserve_inbound_plus_oauth');
+  if (shouldForwardInboundBetas || shouldIncludeOauthBetas) {
     const mergedBetas = new Set<string>(shouldForwardInboundBetas ? inboundBetas : []);
-    if (shouldIncludeRequiredOauthBeta) {
-      mergedBetas.add(ANTHROPIC_OAUTH_REQUIRED_BETA);
-    }
     if (shouldIncludeOauthBetas) {
       for (const beta of ANTHROPIC_OAUTH_BETAS) mergedBetas.add(beta);
     }

@@ -1831,8 +1831,8 @@ describe('anthropic compat route', () => {
     expect(headers['anthropic-beta']).toContain('foo-2026-01-01');
     expect(headers['anthropic-beta']).toContain('bar-2026-02-02');
     expect(headers['anthropic-beta']).toContain('oauth-2025-04-20');
-    expect(headers['anthropic-beta']).not.toContain('claude-code-20250219');
-    expect(headers['anthropic-beta']).not.toContain('interleaved-thinking-2025-05-14');
+    expect(headers['anthropic-beta']).toContain('claude-code-20250219');
+    expect(headers['anthropic-beta']).toContain('interleaved-thinking-2025-05-14');
     expect(res.statusCode).toBe(200);
 
     upstreamSpy.mockRestore();
@@ -2681,8 +2681,8 @@ describe('anthropic compat route', () => {
     expect(firstHeaders.authorization).toBe('Bearer sk-ant-oat01-test-token');
     expect(firstHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
     expect(firstHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
-    expect(firstHeaders['anthropic-beta']).not.toContain('claude-code-20250219');
-    expect(firstHeaders['anthropic-beta']).not.toContain('interleaved-thinking-2025-05-14');
+    expect(firstHeaders['anthropic-beta']).toContain('claude-code-20250219');
+    expect(firstHeaders['anthropic-beta']).toContain('interleaved-thinking-2025-05-14');
     expect(firstBody.stream).toBe(true);
     expect(firstBody.tools).toBeDefined();
     expect(firstBody.tool_choice).toEqual({ type: 'auto' });

@@ -1218,8 +1218,8 @@ describe('proxy token-mode route behavior', () => {
 
     expect(firstHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
     expect(firstHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
-    expect(firstHeaders['anthropic-beta']).not.toContain('claude-code-20250219');
-    expect(firstHeaders['anthropic-beta']).not.toContain('interleaved-thinking-2025-05-14');
+    expect(firstHeaders['anthropic-beta']).toContain('claude-code-20250219');
+    expect(firstHeaders['anthropic-beta']).toContain('interleaved-thinking-2025-05-14');
     expect(secondHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
     expect(secondHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
     expect(secondHeaders['anthropic-beta']).toContain('claude-code-20250219');
@@ -1388,8 +1388,8 @@ describe('proxy token-mode route behavior', () => {
     expect(firstHeaders['x-api-key']).toBeUndefined();
     expect(firstHeaders['anthropic-beta']).toContain('fine-grained-tool-streaming-2025-05-14');
     expect(firstHeaders['anthropic-beta']).toContain('oauth-2025-04-20');
-    expect(firstHeaders['anthropic-beta']).not.toContain('claude-code-20250219');
-    expect(firstHeaders['anthropic-beta']).not.toContain('interleaved-thinking-2025-05-14');
+    expect(firstHeaders['anthropic-beta']).toContain('claude-code-20250219');
+    expect(firstHeaders['anthropic-beta']).toContain('interleaved-thinking-2025-05-14');
     expect(firstBody.stream).toBe(true);
     expect(firstBody.tools).toBeDefined();
     expect(firstBody.tool_choice).toEqual({ type: 'auto' });
