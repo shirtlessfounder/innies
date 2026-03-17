@@ -81,7 +81,7 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
-- `innies-compat-header-matrix` needs `ANTHROPIC_OAUTH_ACCESS_TOKEN` plus a preserved payload JSON path; it replays four direct Anthropic cases:
+- `innies-compat-header-matrix` needs a direct Anthropic bearer token plus a preserved payload JSON path; it accepts `ANTHROPIC_OAUTH_ACCESS_TOKEN`, `ANTHROPIC_ACCESS_TOKEN`, or Claude's native `CLAUDE_CODE_OAUTH_TOKEN`, then replays four direct Anthropic cases:
 - `current_main_first_pass`: merged OAuth betas plus Claude/OpenClaw identity headers
 - `merged_beta_without_identity`: merged OAuth betas without the identity headers
 - `caller_beta_only`: caller beta only, no identity headers

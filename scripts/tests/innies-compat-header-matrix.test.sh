@@ -9,6 +9,9 @@ REQUESTS_DIR="$TMP_DIR/requests"
 OUT_DIR="$TMP_DIR/out"
 STDOUT_PATH="$TMP_DIR/stdout.txt"
 STDERR_PATH="$TMP_DIR/stderr.txt"
+STDOUT_CLAUDE_ENV_PATH="$TMP_DIR/stdout-claude-env.txt"
+STDERR_CLAUDE_ENV_PATH="$TMP_DIR/stderr-claude-env.txt"
+OUT_DIR_CLAUDE_ENV="$TMP_DIR/out-claude-env"
 mkdir -p "$REQUESTS_DIR"
 
 cleanup() {
@@ -149,3 +152,20 @@ grep -q '"anthropic-beta": "fine-grained-tool-streaming-2025-05-14"' "$REQUESTS_
 
 grep -q '"anthropic-dangerous-direct-browser-access": "true"' "$REQUESTS_DIR/req_issue80_matrix_caller_beta_with_identity.json"
 grep -q '"anthropic-beta": "fine-grained-tool-streaming-2025-05-14"' "$REQUESTS_DIR/req_issue80_matrix_caller_beta_with_identity.json"
+
+set +e
+CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat-claude-env-token" \
+ANTHROPIC_DIRECT_BASE_URL="http://127.0.0.1:$PORT" \
+INNIES_MATRIX_OUT_DIR="$OUT_DIR_CLAUDE_ENV" \
+INNIES_MATRIX_REQUEST_ID_PREFIX="req_issue80_matrix_claude_env" \
+"$SCRIPT_PATH" "$PAYLOAD_PATH" >"$STDOUT_CLAUDE_ENV_PATH" 2>"$STDERR_CLAUDE_ENV_PATH"
+STATUS=$?
+set -e
+
+if [[ "$STATUS" -ne 0 ]]; then
+  cat "$STDERR_CLAUDE_ENV_PATH"
+  exit 1
+fi
+
+grep -q '"authorization": "Bearer sk-ant-oat-claude-env-token"' "$REQUESTS_DIR/req_issue80_matrix_claude_env_current_main_first_pass.json"
+grep -q 'case=current_main_first_pass status=200 provider_request_id=req_upstream_matrix_current_main' "$OUT_DIR_CLAUDE_ENV/summary.txt"
