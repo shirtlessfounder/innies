@@ -40,14 +40,18 @@ function isCompatEndpointEnabled(): boolean {
   return process.env.ANTHROPIC_COMPAT_ENDPOINT_ENABLED === 'true';
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
 function normalizeThinkingForCompat(payload: Record<string, unknown>): Record<string, unknown> {
   const normalized = { ...payload };
   const thinkingRaw = normalized.thinking;
-  if (!thinkingRaw || typeof thinkingRaw !== 'object') {
+  if (!isRecord(thinkingRaw)) {
     return normalized;
   }
 
-  const thinking = { ...(thinkingRaw as Record<string, unknown>) };
+  const thinking = { ...thinkingRaw };
   if (thinking.type !== 'enabled') {
     normalized.thinking = thinking;
     return normalized;

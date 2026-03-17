@@ -1556,13 +1556,20 @@ describe('anthropic compat route', () => {
       request_shape: {
         stream: true,
         message_count: 2,
+        assistant_message_count: 1,
+        last_message_role: 'user',
+        last_message_content_types: ['text'],
+        assistant_prefill_suspected: false,
         system_present: true,
         tool_count: 1,
+        tool_result_block_count: 0,
         tool_choice_present: true,
         tool_choice_type: 'auto',
         thinking_present: true,
         thinking_type: 'enabled',
         thinking_budget_tokens: 2048,
+        assistant_thinking_block_count: 0,
+        assistant_tool_use_block_count: 0,
         max_tokens: 4096,
         max_output_tokens: null,
         metadata_present: true
@@ -1871,6 +1878,111 @@ describe('anthropic compat route', () => {
     expect(res.statusCode).toBe(400);
     expect((res.body as any).code).toBe('invalid_request');
     expect(String((res.body as any).message)).toContain('max_tokens');
+    expect(upstreamSpy).not.toHaveBeenCalled();
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('preserves adaptive thinking without injecting budget tokens', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_thinking_adaptive', usage: { input_tokens: 7, output_tokens: 9 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 2048,
+        messages: [{ role: 'user', content: 'hi' }],
+        thinking: { type: 'adaptive' }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    const fetchArgs = upstreamSpy.mock.calls[0];
+    const body = JSON.parse(String((fetchArgs?.[1] as RequestInit)?.body ?? '{}'));
+    expect(body.thinking).toEqual({ type: 'adaptive' });
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('returns deterministic 400 when extended thinking forces tool_choice tool', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 4096,
+        messages: [{ role: 'user', content: 'hi' }],
+        thinking: { type: 'adaptive' },
+        tools: [{ name: 'lookup', input_schema: { type: 'object' } }],
+        tool_choice: { type: 'tool', name: 'lookup' }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any).type).toBe('error');
+    expect((res.body as any).error?.type).toBe('invalid_request_error');
+    expect(String((res.body as any).error?.message)).toContain('tool_choice');
+    expect(String((res.body as any).error?.message)).toContain('"auto" or "none"');
+    expect(upstreamSpy).not.toHaveBeenCalled();
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('returns deterministic 400 when extended thinking request ends with assistant prefill', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 4096,
+        messages: [
+          { role: 'user', content: 'hi' },
+          { role: 'assistant', content: 'prefilled answer start' }
+        ],
+        thinking: { type: 'adaptive' }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any).type).toBe('error');
+    expect((res.body as any).error?.type).toBe('invalid_request_error');
+    expect(String((res.body as any).error?.message)).toContain('assistant prefill');
     expect(upstreamSpy).not.toHaveBeenCalled();
 
     upstreamSpy.mockRestore();

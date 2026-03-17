@@ -127,6 +127,9 @@ Notes:
   - If `thinking.type = "enabled"` and `thinking.budget_tokens` is provided, it must be a positive integer.
   - If `thinking.type = "enabled"` and `thinking.budget_tokens < 1024`, API normalizes it up to `1024`.
   - If `thinking.type = "enabled"` and `max_tokens`/`max_output_tokens` is `<= thinking.budget_tokens`, API returns deterministic `400` (`invalid_request`) with a clear validation message.
+  - If `thinking.type = "adaptive"`, API preserves it and does not inject `budget_tokens`.
+  - For extended thinking requests (`thinking.type = "enabled" | "adaptive"`), API returns deterministic `400` when `tool_choice.type` is `any` or `tool`; only `auto` and `none` are allowed.
+  - For extended thinking requests (`thinking.type = "enabled" | "adaptive"`), API returns deterministic `400` when the final message role is `assistant` (assistant prefill).
 - Tool-choice compatibility guardrail:
   - If `tool_choice` is a string (`auto|none|any`), API normalizes it to object form (`{"type":"..."}`).
 - Request-size guardrails (deterministic `400 invalid_request`):
@@ -145,6 +148,7 @@ Notes:
   - On upstream `401` auth error indicating OAuth-incompatible request mode, API retries once on the same credential while preserving original payload shape (`stream`/`tools`/`tool_choice`), and merges required OAuth betas.
 - Compat audit logging:
   - `/v1/messages` upstream 4xx/403 outcomes emit structured `[compat-audit]` log line with `requestId`, `credentialId`, `attemptNo`, `upstreamStatus`, and upstream error type/message (if available).
+  - Anthropic upstream `400 invalid_request_error` passthroughs also emit `[compat-invalid-request-debug]` with a redacted request-shape summary (counts/roles/types only; no prompt or tool payload text).
 - Optional operational debug tracing:
   - `INNIES_COMPAT_TRACE=true` enables redacted request/response logs for `/v1/messages` only.
   - Keep disabled in normal production operation due to log volume.
