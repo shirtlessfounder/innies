@@ -36,9 +36,10 @@ fi
 # --- fetch routing summary ---
 routing_available=0
 routing_unavailable_reason=""
+routing_stderr_file="$(mktemp)"
 if routing_response="$(curl -sS -w '\n%{http_code}' \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "${BASE_URL%/}/v1/admin/analytics/tokens/routing?window=${WINDOW}" 2>&1)"; then
+  "${BASE_URL%/}/v1/admin/analytics/tokens/routing?window=${WINDOW}" 2>"$routing_stderr_file")"; then
   routing_status="$(printf '%s' "$routing_response" | tail -n1)"
   routing_body="$(printf '%s' "$routing_response" | sed '$d')"
 
@@ -49,9 +50,10 @@ if routing_response="$(curl -sS -w '\n%{http_code}' \
   fi
 else
   routing_status=""
-  routing_body="$routing_response"
+  routing_body=""
   routing_unavailable_reason="/v1/admin/analytics/tokens/routing request failed"
 fi
+rm -f "$routing_stderr_file"
 
 # --- extract metrics ---
 ttfb_p95="$(printf '%s' "$system_body" | jq -r '.ttfbP95Ms // empty')"

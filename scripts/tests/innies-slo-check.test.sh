@@ -27,6 +27,7 @@ case "$url" in
 JSON
     ;;
   *"/v1/admin/analytics/tokens/routing?window=24h")
+    echo "note: cached routing aggregate" >&2
     cat <<'JSON'
 {"tokens":[
   {"fallbackCount":0,"totalAttempts":3}
@@ -81,7 +82,7 @@ if [[ "$output" != *"(routing cross-check: attributed per-token aggregate fallba
   exit 1
 fi
 
-echo "PASS: innies-slo-check keeps fallback truthful when routing misses unattributed events"
+echo "PASS: innies-slo-check keeps fallback truthful when routing misses unattributed events and curl writes harmless stderr"
 
 cat > "${tmp_dir}/curl" <<'EOF'
 #!/usr/bin/env bash
