@@ -25,6 +25,7 @@ innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
 innies-slo-check
+innies-compat-captured-lane-replay
 ```
 
 What they do:
@@ -40,6 +41,7 @@ What they do:
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
+- `innies-compat-captured-lane-replay`: replay the exact captured Anthropic compat first-pass header lane from a prod HTML artifact directly against Anthropic using a fresh OAuth token
 
 Behavior:
 - org id auto-uses `INNIES_ORG_ID`
@@ -79,6 +81,12 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
+- `innies-compat-captured-lane-replay` requires:
+  - a preserved `/v1/messages` payload JSON path as its first argument
+  - `INNIES_CAPTURED_RESPONSE_HTML` plus `INNIES_CAPTURED_REQUEST_ID` for the captured Innies compat artifact to replay
+  - `ANTHROPIC_OAUTH_ACCESS_TOKEN` (or `ANTHROPIC_ACCESS_TOKEN`) for the direct Anthropic request
+- `innies-compat-captured-lane-replay` preserves the captured first-pass headers except it swaps in the supplied direct bearer token, drops transport-only headers like `host` / `content-length`, and writes `captured-headers.tsv`, `direct-headers.txt`, `direct-body.txt`, and `meta.txt` under `INNIES_REPLAY_OUT_DIR`
+- `innies-compat-captured-lane-replay` fails fast if the captured upstream provider was not `anthropic`, so it cannot silently replay an OpenAI/Codex compat lane as Anthropic evidence
 
 ## Env
 
@@ -94,3 +102,13 @@ For `innies-buyer-preference-check`:
 - `DATABASE_URL` is optional, but needed for DB evidence
 - `INNIES_MODEL_ANTHROPIC` is required if you check Claude Code
 - `INNIES_MODEL_CODEX` is required if you check Codex
+
+Example for `innies-compat-captured-lane-replay`:
+
+```bash
+INNIES_CAPTURED_RESPONSE_HTML=/Users/dylanvu/Downloads/response_1773768207701.html \
+INNIES_CAPTURED_REQUEST_ID=req_1773768173495_39292 \
+ANTHROPIC_OAUTH_ACCESS_TOKEN=... \
+INNIES_REPLAY_OUT_DIR=/private/tmp/issue80-captured-lane-replay \
+innies-compat-captured-lane-replay /private/tmp/innies-issue-80-preserved-body.json
+```
