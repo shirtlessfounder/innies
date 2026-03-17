@@ -724,13 +724,25 @@ function logCompatAudit(input: {
   credentialId: string;
   attemptNo: number;
   upstreamStatus: number;
-  openclawRunId: string;
-  openclawSessionId?: string;
+  correlation: OpenClawCorrelation;
   errorType?: string;
   errorMessage?: string;
 }): void {
   // Keep this concise and machine-parsable for incident correlation.
-  console.info('[compat-audit] attempt', input);
+  console.info('[compat-audit] attempt', {
+    orgId: input.orgId,
+    provider: input.provider,
+    model: input.model,
+    requestId: input.requestId,
+    credentialId: input.credentialId,
+    attemptNo: input.attemptNo,
+    upstreamStatus: input.upstreamStatus,
+    openclawRunId: input.correlation.openclawRunId,
+    openclawSessionId: input.correlation.openclawSessionId,
+    ...buildCorrelationAuditFields(input.correlation),
+    errorType: input.errorType,
+    errorMessage: input.errorMessage
+  });
 }
 
 function logCompatTranslatedUpstreamError(input: {
@@ -2057,8 +2069,7 @@ async function executeTokenModeNonStreaming(input: {
             credentialId: credential.id,
             attemptNo,
             upstreamStatus: status,
-            openclawRunId: correlation.openclawRunId,
-            openclawSessionId: correlation.openclawSessionId,
+            correlation,
             errorType,
             errorMessage
           });
@@ -2177,8 +2188,7 @@ async function executeTokenModeNonStreaming(input: {
             credentialId: credential.id,
             attemptNo,
             upstreamStatus: status,
-            openclawRunId: correlation.openclawRunId,
-            openclawSessionId: correlation.openclawSessionId,
+            correlation,
             errorType: statusErrorType,
             errorMessage: statusErrorMessage
           });
@@ -2333,8 +2343,7 @@ async function executeTokenModeNonStreaming(input: {
           credentialId: credential.id,
           attemptNo,
           upstreamStatus: status,
-          openclawRunId: correlation.openclawRunId,
-          openclawSessionId: correlation.openclawSessionId,
+          correlation,
           errorType,
           errorMessage
         });
@@ -2716,8 +2725,7 @@ async function executeTokenModeStreaming(input: {
             credentialId: credential.id,
             attemptNo,
             upstreamStatus: status,
-            openclawRunId: correlation.openclawRunId,
-            openclawSessionId: correlation.openclawSessionId,
+            correlation,
             errorType,
             errorMessage
           });
@@ -2835,8 +2843,7 @@ async function executeTokenModeStreaming(input: {
             credentialId: credential.id,
             attemptNo,
             upstreamStatus: status,
-            openclawRunId: correlation.openclawRunId,
-            openclawSessionId: correlation.openclawSessionId,
+            correlation,
             errorType: statusErrorType,
             errorMessage: statusErrorMessage
           });
@@ -2968,8 +2975,7 @@ async function executeTokenModeStreaming(input: {
             credentialId: credential.id,
             attemptNo,
             upstreamStatus: status,
-            openclawRunId: correlation.openclawRunId,
-            openclawSessionId: correlation.openclawSessionId,
+            correlation,
             errorType,
             errorMessage
           });

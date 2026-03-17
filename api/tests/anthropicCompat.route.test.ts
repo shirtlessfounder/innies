@@ -2131,6 +2131,7 @@ describe('anthropic compat route', () => {
   });
 
   it('passes through blocked 403 when compat retry is still blocked', async () => {
+    const compatAuditSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const upstreamSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response(JSON.stringify({
         type: 'error',
@@ -2153,7 +2154,9 @@ describe('anthropic compat route', () => {
       headers: {
         authorization: 'Bearer in_test_token',
         'content-type': 'application/json',
-        'anthropic-beta': 'oauth-2025-04-20,claude-code-20250219'
+        'anthropic-beta': 'oauth-2025-04-20,claude-code-20250219',
+        'x-openclaw-session-id': 'oc_blocked_session_1',
+        'x-innies-session-id': 'sess_blocked_canonical_1'
       },
       body: {
         model: 'claude-opus-4-6',
@@ -2170,7 +2173,15 @@ describe('anthropic compat route', () => {
     expect(upstreamSpy).toHaveBeenCalledTimes(2);
     expect(res.statusCode).toBe(403);
     expect((res.body as any).error?.message).toContain('blocked');
+    const compatAuditCalls = compatAuditSpy.mock.calls.filter((call) => call[0] === '[compat-audit] attempt');
+    expect(compatAuditCalls.length).toBeGreaterThan(0);
+    const compatAudit = compatAuditCalls[compatAuditCalls.length - 1]?.[1] as any;
+    expect(String(compatAudit?.openclaw_run_id ?? '')).toMatch(/^run_req_/);
+    expect(compatAudit?.openclaw_session_id).toBe('oc_blocked_session_1');
+    expect(compatAudit?.session_id).toBe('sess_blocked_canonical_1');
+    expect(compatAudit?.session_source).toBe('x-innies-session-id');
 
+    compatAuditSpy.mockRestore();
     upstreamSpy.mockRestore();
   });
 
@@ -2728,6 +2739,7 @@ describe('anthropic compat route', () => {
   });
 
   it('does not change auth 401/403 retry behavior on compat route', async () => {
+    const compatAuditSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({
         type: 'error',
@@ -2743,7 +2755,9 @@ describe('anthropic compat route', () => {
       path: '/v1/messages',
       headers: {
         authorization: 'Bearer in_test_token',
-        'content-type': 'application/json'
+        'content-type': 'application/json',
+        'x-openclaw-session-id': 'oc_auth_session_1',
+        'x-innies-session-id': 'sess_auth_canonical_compat_1'
       },
       body: {
         model: 'claude-opus-4-6',
@@ -2759,7 +2773,15 @@ describe('anthropic compat route', () => {
 
     // 401 should still be handled as auth failure, not as a 5xx failover
     expect(res.statusCode).toBe(401);
+    const compatAuditCalls = compatAuditSpy.mock.calls.filter((call) => call[0] === '[compat-audit] attempt');
+    expect(compatAuditCalls.length).toBeGreaterThan(0);
+    const compatAudit = compatAuditCalls[compatAuditCalls.length - 1]?.[1] as any;
+    expect(String(compatAudit?.openclaw_run_id ?? '')).toMatch(/^run_req_/);
+    expect(compatAudit?.openclaw_session_id).toBe('oc_auth_session_1');
+    expect(compatAudit?.session_id).toBe('sess_auth_canonical_compat_1');
+    expect(compatAudit?.session_source).toBe('x-innies-session-id');
 
+    compatAuditSpy.mockRestore();
     upstreamSpy.mockRestore();
   });
 });
