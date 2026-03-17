@@ -25,6 +25,7 @@ innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
 innies-slo-check
+innies-compat-wire-diff
 ```
 
 What they do:
@@ -40,6 +41,7 @@ What they do:
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
+- `innies-compat-wire-diff`: compare two captured Anthropic first-pass request bundles and report exact header/body deltas
 
 Behavior:
 - org id auto-uses `INNIES_ORG_ID`
@@ -79,6 +81,17 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
+- `innies-compat-wire-diff` accepts either JSON request-bundle files or directories containing `upstream-request.json`, `request.json`, or `direct-request.json`
+- `innies-compat-wire-diff` writes `summary.txt`, `diff.json`, and normalized left/right bundle snapshots into `INNIES_WIRE_DIFF_OUT_DIR` (or a fresh temp dir when unset)
+
+Example:
+
+```bash
+INNIES_WIRE_DIFF_OUT_DIR=/private/tmp/issue80-wire-diff \
+innies-compat-wire-diff \
+  /private/tmp/issue80-artifact-extract-real/upstream-request.json \
+  /private/tmp/known-good-direct-request.json
+```
 
 ## Env
 
