@@ -144,6 +144,8 @@ Notes:
     - falls back to serialized payload byte-size check when `Content-Length` is missing
 - OAuth credential header behavior:
   - For Anthropic OAuth access tokens (`sk-ant-oat*`), upstream auth is always sent as `Authorization: Bearer <token>` even if stored credential `authScheme` is `x_api_key`.
+  - Anthropic OAuth `/v1/messages` upstream requests also send Claude-style identity headers: `anthropic-dangerous-direct-browser-access: true`, `x-app`, and `user-agent`.
+  - When strict Anthropic passthrough preserves an inbound `anthropic-beta` lane, Innies still merges the configured Anthropic OAuth beta set upstream.
 - 403 policy-block fallback (compat mode):
   - On upstream `403` with `"Your request was blocked."`, API retries once with sanitized beta headers and with `thinking` removed from payload.
   - If retry succeeds, response is returned normally.
