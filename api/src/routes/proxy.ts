@@ -731,6 +731,46 @@ function summarizeAnthropicCompatRequestShape(payload: unknown, stream: boolean)
     : {};
   const messages = Array.isArray(record.messages) ? record.messages : [];
   const tools = Array.isArray(record.tools) ? record.tools : [];
+  let assistantMessageCount = 0;
+  let assistantThinkingBlockCount = 0;
+  let assistantToolUseBlockCount = 0;
+  let toolResultBlockCount = 0;
+
+  for (const rawMessage of messages) {
+    if (!rawMessage || typeof rawMessage !== 'object' || Array.isArray(rawMessage)) continue;
+    const message = rawMessage as Record<string, unknown>;
+    const role = typeof message.role === 'string' ? message.role.trim().toLowerCase() : null;
+    if (role === 'assistant') {
+      assistantMessageCount += 1;
+    }
+    const content = Array.isArray(message.content) ? message.content : [];
+    for (const rawBlock of content) {
+      if (!rawBlock || typeof rawBlock !== 'object' || Array.isArray(rawBlock)) continue;
+      const blockType = typeof (rawBlock as Record<string, unknown>).type === 'string'
+        ? String((rawBlock as Record<string, unknown>).type)
+        : null;
+      if (!blockType) continue;
+      if (role === 'assistant' && blockType === 'thinking') assistantThinkingBlockCount += 1;
+      if (role === 'assistant' && blockType === 'tool_use') assistantToolUseBlockCount += 1;
+      if (role === 'user' && blockType === 'tool_result') toolResultBlockCount += 1;
+    }
+  }
+
+  const lastMessage = messages.length > 0 && messages[messages.length - 1] && typeof messages[messages.length - 1] === 'object' && !Array.isArray(messages[messages.length - 1])
+    ? messages[messages.length - 1] as Record<string, unknown>
+    : null;
+  const lastMessageRole = typeof lastMessage?.role === 'string' ? lastMessage.role.trim().toLowerCase() : null;
+  const lastMessageContent = lastMessage?.content;
+  const lastMessageContentTypes = typeof lastMessageContent === 'string'
+    ? ['text']
+    : (Array.isArray(lastMessageContent)
+        ? lastMessageContent.flatMap((rawBlock) => {
+          if (!rawBlock || typeof rawBlock !== 'object' || Array.isArray(rawBlock)) return [];
+          return typeof (rawBlock as Record<string, unknown>).type === 'string'
+            ? [String((rawBlock as Record<string, unknown>).type)]
+            : [];
+        })
+        : []);
   const toolChoice = record.tool_choice;
   const thinking = record.thinking && typeof record.thinking === 'object' && !Array.isArray(record.thinking)
     ? record.thinking as Record<string, unknown>
@@ -754,13 +794,20 @@ function summarizeAnthropicCompatRequestShape(payload: unknown, stream: boolean)
   return {
     stream,
     message_count: messages.length,
+    assistant_message_count: assistantMessageCount,
+    last_message_role: lastMessageRole,
+    last_message_content_types: lastMessageContentTypes,
+    assistant_prefill_suspected: lastMessageRole === 'assistant',
     system_present: record.system != null,
     tool_count: tools.length,
+    tool_result_block_count: toolResultBlockCount,
     tool_choice_present: toolChoice != null,
     tool_choice_type: toolChoiceType,
     thinking_present: thinking != null,
     thinking_type: thinkingType,
     thinking_budget_tokens: thinkingBudgetTokens,
+    assistant_thinking_block_count: assistantThinkingBlockCount,
+    assistant_tool_use_block_count: assistantToolUseBlockCount,
     max_tokens: maxTokens,
     max_output_tokens: maxOutputTokens,
     metadata_present: record.metadata != null
@@ -1388,6 +1435,54 @@ function resolveCompatUpstreamRequest(input: {
       strategy: 'anthropic_messages_to_openai_responses'
     }
   };
+}
+
+function assertCompatAnthropicThinkingPayloadSupported(input: {
+  provider: string;
+  proxiedPath: string;
+  strictUpstreamPassthrough: boolean;
+  payload: unknown;
+}): void {
+  if (!input.strictUpstreamPassthrough) return;
+  if (canonicalizeProvider(input.provider) !== 'anthropic') return;
+  if (!input.proxiedPath.startsWith('/v1/messages')) return;
+  if (!input.payload || typeof input.payload !== 'object' || Array.isArray(input.payload)) return;
+
+  const payload = input.payload as Record<string, unknown>;
+  const thinking = payload.thinking && typeof payload.thinking === 'object' && !Array.isArray(payload.thinking)
+    ? payload.thinking as Record<string, unknown>
+    : null;
+  const thinkingType = typeof thinking?.type === 'string' ? String(thinking.type) : null;
+  if (thinkingType !== 'enabled' && thinkingType !== 'adaptive') return;
+
+  const toolChoice = payload.tool_choice;
+  const toolChoiceType = typeof toolChoice === 'string'
+    ? toolChoice
+    : (toolChoice && typeof toolChoice === 'object' && !Array.isArray(toolChoice) && typeof (toolChoice as Record<string, unknown>).type === 'string'
+        ? String((toolChoice as Record<string, unknown>).type)
+        : null);
+  if (toolChoiceType === 'any' || toolChoiceType === 'tool') {
+    throw new AppError(
+      'invalid_request',
+      400,
+      `thinking.type="${thinkingType}" only supports tool_choice "auto" or "none"`,
+      { thinkingType, toolChoiceType }
+    );
+  }
+
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+  const lastMessage = messages.length > 0 && messages[messages.length - 1] && typeof messages[messages.length - 1] === 'object' && !Array.isArray(messages[messages.length - 1])
+    ? messages[messages.length - 1] as Record<string, unknown>
+    : null;
+  const lastMessageRole = typeof lastMessage?.role === 'string' ? lastMessage.role.trim().toLowerCase() : null;
+  if (lastMessageRole === 'assistant') {
+    throw new AppError(
+      'invalid_request',
+      400,
+      `assistant prefill is not supported when thinking.type="${thinkingType}"; final message role must be "user"`,
+      { thinkingType, lastMessageRole }
+    );
+  }
 }
 
 function resolveTokenModeTargetUrl(input: {
@@ -3908,6 +4003,12 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
             proxiedPath,
             payload: parsed.payload ?? {},
             strictUpstreamPassthrough: compatMode
+          });
+          assertCompatAnthropicThinkingPayloadSupported({
+            provider: upstreamRequest.provider,
+            proxiedPath: upstreamRequest.proxiedPath,
+            strictUpstreamPassthrough: upstreamRequest.strictUpstreamPassthrough,
+            payload: upstreamRequest.payload
           });
           await assertTokenProviderEligible({
             provider: upstreamRequest.provider,
