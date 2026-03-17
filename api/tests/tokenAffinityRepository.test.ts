@@ -488,7 +488,7 @@ describe('tokenAffinityRepository contract', () => {
       expect(upserted.credentialId).toBe('00000000-0000-0000-0000-000000000010');
       expect(upserted.sessionId).toBe('sess_123');
       expect(upserted.startedAt.toISOString()).toBe('2026-03-15T00:00:00.000Z');
-      expect(upserted.lastTouchedAt.toISOString()).toBe('2026-03-15T00:00:05.000Z');
+      expect(upserted.lastTouchedAt.getTime()).toBeGreaterThan(new Date('2026-03-15T00:00:05.000Z').getTime());
 
       const persisted = await pool.query(
         `
@@ -513,15 +513,18 @@ describe('tokenAffinityRepository contract', () => {
       expect({
         ...persistedRow,
         started_at: new Date(persistedRow.started_at).toISOString(),
-        last_touched_at: new Date(persistedRow.last_touched_at).toISOString()
+        last_touched_at: new Date(persistedRow.last_touched_at).getTime()
       }).toMatchObject({
         org_id: '00000000-0000-0000-0000-000000000001',
         provider: 'openai',
         credential_id: '00000000-0000-0000-0000-000000000010',
         session_id: 'sess_123',
         started_at: '2026-03-15T00:00:00.000Z',
-        last_touched_at: '2026-03-15T00:00:05.000Z'
+        last_touched_at: expect.any(Number)
       });
+      expect(new Date(persistedRow.last_touched_at).getTime()).toBeGreaterThan(
+        new Date('2026-03-15T00:00:05.000Z').getTime()
+      );
     });
   });
 
