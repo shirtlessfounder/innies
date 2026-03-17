@@ -759,13 +759,29 @@ function logCompatTranslatedUpstreamError(input: {
   });
 }
 
+function buildCorrelationAuditFields(correlation: Pick<
+  OpenClawCorrelation,
+  'openclawRunId' | 'openclawSessionId' | 'sessionId' | 'sessionSource'
+>): {
+  openclaw_run_id: string;
+  openclaw_session_id: string | null;
+  session_id: string | null;
+  session_source: SessionIdentitySource | null;
+} {
+  return {
+    openclaw_run_id: correlation.openclawRunId,
+    openclaw_session_id: correlation.openclawSessionId ?? null,
+    session_id: correlation.sessionId,
+    session_source: correlation.sessionSource
+  };
+}
+
 function logRetryAudit(input: {
   orgId: string;
   provider: string;
   model: string;
   requestId: string;
-  openclawRunId: string;
-  openclawSessionId?: string;
+  correlation: OpenClawCorrelation;
   attemptNo: number;
   credentialId: string;
   credentialLabel?: string | null;
@@ -777,8 +793,7 @@ function logRetryAudit(input: {
     provider: input.provider,
     model: input.model,
     request_id: input.requestId,
-    openclaw_run_id: input.openclawRunId,
-    openclaw_session_id: input.openclawSessionId,
+    ...buildCorrelationAuditFields(input.correlation),
     attempt_no: input.attemptNo,
     credential_id: input.credentialId,
     credential_label: input.credentialLabel ?? null,
@@ -792,8 +807,7 @@ function logAuthFailureAudit(input: {
   provider: string;
   model: string;
   requestId: string;
-  openclawRunId: string;
-  openclawSessionId?: string;
+  correlation: OpenClawCorrelation;
   attemptNo: number;
   credentialId: string;
   credentialLabel?: string | null;
@@ -806,8 +820,7 @@ function logAuthFailureAudit(input: {
     provider: input.provider,
     model: input.model,
     request_id: input.requestId,
-    openclaw_run_id: input.openclawRunId,
-    openclaw_session_id: input.openclawSessionId,
+    ...buildCorrelationAuditFields(input.correlation),
     attempt_no: input.attemptNo,
     credential_id: input.credentialId,
     credential_label: input.credentialLabel ?? null,
@@ -848,10 +861,7 @@ function buildTokenRouteDecision(
     tokenCredentialId: credential.id,
     tokenCredentialLabel: credential.debugLabel ?? null,
     tokenAuthScheme: credential.authScheme,
-    openclaw_run_id: correlation.openclawRunId,
-    openclaw_session_id: correlation.openclawSessionId ?? null,
-    session_id: correlation.sessionId,
-    session_source: correlation.sessionSource
+    ...buildCorrelationAuditFields(correlation)
   };
   if (providerPreference) {
     decision.provider_preferred = providerPreference.preferredProvider;
@@ -979,10 +989,7 @@ function buildSellerRouteDecision(input: {
       selectionReason,
       correlation: input.correlation
     }),
-    openclaw_run_id: input.correlation.openclawRunId,
-    openclaw_session_id: input.correlation.openclawSessionId ?? null,
-    session_id: input.correlation.sessionId,
-    session_source: input.correlation.sessionSource
+    ...buildCorrelationAuditFields(input.correlation)
   };
 }
 
@@ -1993,14 +2000,13 @@ async function executeTokenModeNonStreaming(input: {
             provider,
             model,
             requestId,
-            openclawRunId: correlation.openclawRunId,
-            openclawSessionId: correlation.openclawSessionId,
-          attemptNo,
-          credentialId: credential.id,
-          credentialLabel: credential.debugLabel,
-          upstreamStatus: status,
-          retryReason: 'blocked_403_compat_retry'
-        });
+            correlation,
+            attemptNo,
+            credentialId: credential.id,
+            credentialLabel: credential.debugLabel,
+            upstreamStatus: status,
+            retryReason: 'blocked_403_compat_retry'
+          });
           compat = applyCompatNormalization({
             requestId,
             attemptNo,
@@ -2113,8 +2119,7 @@ async function executeTokenModeNonStreaming(input: {
             provider,
             model,
             requestId,
-            openclawRunId: correlation.openclawRunId,
-            openclawSessionId: correlation.openclawSessionId,
+            correlation,
             attemptNo,
             credentialId: credential.id,
             credentialLabel: credential.debugLabel,
@@ -2141,8 +2146,7 @@ async function executeTokenModeNonStreaming(input: {
               provider,
               model,
               requestId,
-              openclawRunId: correlation.openclawRunId,
-              openclawSessionId: correlation.openclawSessionId,
+              correlation,
               attemptNo,
               credentialId: credential.id,
               credentialLabel: credential.debugLabel,
@@ -2203,8 +2207,7 @@ async function executeTokenModeNonStreaming(input: {
           provider,
           model,
           requestId,
-          openclawRunId: correlation.openclawRunId,
-          openclawSessionId: correlation.openclawSessionId,
+          correlation,
           attemptNo,
           credentialId: credential.id,
           credentialLabel: credential.debugLabel,
@@ -2459,8 +2462,7 @@ async function executeTokenModeNonStreaming(input: {
         provider,
         model,
         requestId,
-        openclawRunId: correlation.openclawRunId,
-        openclawSessionId: correlation.openclawSessionId,
+        correlation,
         attemptNo: lastAuthFailure.attemptNo,
         credentialId: lastAuthFailure.credentialId,
         credentialLabel: lastAuthFailure.credentialLabel,
@@ -2657,14 +2659,13 @@ async function executeTokenModeStreaming(input: {
             provider,
             model,
             requestId,
-            openclawRunId: correlation.openclawRunId,
-            openclawSessionId: correlation.openclawSessionId,
-          attemptNo,
-          credentialId: credential.id,
-          credentialLabel: credential.debugLabel,
-          upstreamStatus: status,
-          retryReason: 'blocked_403_compat_retry'
-        });
+            correlation,
+            attemptNo,
+            credentialId: credential.id,
+            credentialLabel: credential.debugLabel,
+            upstreamStatus: status,
+            retryReason: 'blocked_403_compat_retry'
+          });
           compat = applyCompatNormalization({
             requestId,
             attemptNo,
@@ -2776,8 +2777,7 @@ async function executeTokenModeStreaming(input: {
             provider,
             model,
             requestId,
-            openclawRunId: correlation.openclawRunId,
-            openclawSessionId: correlation.openclawSessionId,
+            correlation,
             attemptNo,
             credentialId: credential.id,
             credentialLabel: credential.debugLabel,
@@ -2804,8 +2804,7 @@ async function executeTokenModeStreaming(input: {
               provider,
               model,
               requestId,
-              openclawRunId: correlation.openclawRunId,
-              openclawSessionId: correlation.openclawSessionId,
+              correlation,
               attemptNo,
               credentialId: credential.id,
               credentialLabel: credential.debugLabel,
@@ -2866,8 +2865,7 @@ async function executeTokenModeStreaming(input: {
           provider,
           model,
           requestId,
-          openclawRunId: correlation.openclawRunId,
-          openclawSessionId: correlation.openclawSessionId,
+          correlation,
           attemptNo,
           credentialId: credential.id,
           credentialLabel: credential.debugLabel,
@@ -3122,8 +3120,7 @@ async function executeTokenModeStreaming(input: {
               attemptNo,
               credential_id: credential.id,
               credential_label: credential.debugLabel ?? null,
-              openclaw_run_id: correlation.openclawRunId,
-              openclaw_session_id: correlation.openclawSessionId ?? null,
+              ...buildCorrelationAuditFields(correlation),
               upstream_status: status,
               upstream_content_type: contentType,
               stream_mode: 'buffered_passthrough',
@@ -3253,8 +3250,7 @@ async function executeTokenModeStreaming(input: {
             attemptNo,
             credential_id: credential.id,
             credential_label: credential.debugLabel ?? null,
-            openclaw_run_id: correlation.openclawRunId,
-            openclaw_session_id: correlation.openclawSessionId ?? null,
+            ...buildCorrelationAuditFields(correlation),
             upstream_status: status,
             upstream_content_type: contentType,
             stream_mode: streamMode,
@@ -3591,8 +3587,7 @@ async function executeTokenModeStreaming(input: {
         attemptNo,
         credential_id: credential.id,
         credential_label: credential.debugLabel ?? null,
-        openclaw_run_id: correlation.openclawRunId,
-        openclaw_session_id: correlation.openclawSessionId ?? null,
+        ...buildCorrelationAuditFields(correlation),
         upstream_status: status,
         upstream_content_type: contentType,
         stream_mode: compatTranslation ? 'translated_passthrough' : 'passthrough',
@@ -3660,8 +3655,7 @@ async function executeTokenModeStreaming(input: {
         provider,
         model,
         requestId,
-        openclawRunId: correlation.openclawRunId,
-        openclawSessionId: correlation.openclawSessionId,
+        correlation,
         attemptNo: lastAuthFailure.attemptNo,
         credentialId: lastAuthFailure.credentialId,
         credentialLabel: lastAuthFailure.credentialLabel,

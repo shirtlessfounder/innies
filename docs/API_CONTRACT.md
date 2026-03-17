@@ -94,6 +94,8 @@ Notes:
   - `provider_fallback_reason`
   - `openclaw_run_id`
   - `openclaw_session_id`
+  - `session_id`
+  - `session_source`
 - Current reason values:
   - `preferred_provider_selected`
   - `fallback_provider_selected`

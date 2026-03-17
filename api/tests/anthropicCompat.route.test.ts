@@ -817,6 +817,8 @@ describe('anthropic compat route', () => {
     expect(lastLatency?.bridge_build_ms).toBeNull();
     expect(lastLatency?.openclaw_run_id).toBe('oc_run_123');
     expect(lastLatency?.openclaw_session_id).toBe('oc_sess_456');
+    expect(lastLatency?.session_id).toBe('sess_canonical_123');
+    expect(lastLatency?.session_source).toBe('x-innies-session-id');
     const routingArgs = routingSpy.mock.calls[0]?.[0] as any;
     expect(routingArgs?.routeDecision?.openclaw_run_id).toBe('oc_run_123');
     expect(routingArgs?.routeDecision?.openclaw_session_id).toBe('oc_sess_456');
@@ -2245,7 +2247,9 @@ describe('anthropic compat route', () => {
       headers: {
         authorization: 'Bearer in_test_token',
         'content-type': 'application/json',
-        'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14'
+        'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14',
+        'x-openclaw-session-id': 'oc_retry_session_1',
+        'x-innies-session-id': 'sess_retry_canonical_1'
       },
       body: {
         model: 'claude-opus-4-6',
@@ -2292,6 +2296,9 @@ describe('anthropic compat route', () => {
     expect(retryAudit?.org_id).toBe('818d0cc7-7ed2-469f-b690-a977e72a921d');
     expect(retryAudit?.model).toBe('claude-opus-4-6');
     expect(String(retryAudit?.openclaw_run_id ?? '')).toMatch(/^run_req_/);
+    expect(retryAudit?.openclaw_session_id).toBe('oc_retry_session_1');
+    expect(retryAudit?.session_id).toBe('sess_retry_canonical_1');
+    expect(retryAudit?.session_source).toBe('x-innies-session-id');
 
     retryAuditSpy.mockRestore();
     upstreamSpy.mockRestore();

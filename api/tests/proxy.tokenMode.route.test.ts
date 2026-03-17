@@ -553,7 +553,8 @@ describe('proxy token-mode route behavior', () => {
         'content-type': 'application/json',
         'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
         'anthropic-version': '2023-06-01',
-        'x-innies-provider-pin': 'true'
+        'x-innies-provider-pin': 'true',
+        'x-innies-session-id': 'sess_auth_canonical_1'
       },
       body: {
         provider: 'anthropic',
@@ -1011,7 +1012,8 @@ describe('proxy token-mode route behavior', () => {
         'content-type': 'application/json',
         'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
         'anthropic-version': '2023-06-01',
-        'x-innies-provider-pin': 'true'
+        'x-innies-provider-pin': 'true',
+        'x-innies-session-id': 'sess_auth_canonical_1'
       },
       body: {
         provider: 'anthropic',
@@ -1043,6 +1045,9 @@ describe('proxy token-mode route behavior', () => {
     expect(authAudit?.provider).toBe('anthropic');
     expect(authAudit?.model).toBe('claude-3-5-sonnet-latest');
     expect(String(authAudit?.openclaw_run_id ?? '')).toMatch(/^run_req_/);
+    expect(authAudit?.openclaw_session_id).toBeNull();
+    expect(authAudit?.session_id).toBe('sess_auth_canonical_1');
+    expect(authAudit?.session_source).toBe('x-innies-session-id');
 
     authFailureSpy.mockRestore();
     upstreamSpy.mockRestore();
@@ -2749,7 +2754,9 @@ describe('proxy token-mode route behavior', () => {
         authorization: 'Bearer in_test_token',
         'content-type': 'application/json',
         'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
-        'anthropic-version': '2023-06-01'
+        'anthropic-version': '2023-06-01',
+        'x-openclaw-session-id': 'oc_stream_session_1',
+        'x-innies-session-id': 'sess_stream_canonical_1'
       },
       body: {
         provider: 'anthropic',
@@ -2789,6 +2796,9 @@ describe('proxy token-mode route behavior', () => {
     expect(lastLatency?.stream_mode).toBe('synthetic_bridge');
     expect(lastLatency?.synthetic_content_block_count).toBe(2);
     expect(lastLatency?.synthetic_content_block_types).toBe('text,tool_use');
+    expect(lastLatency?.openclaw_session_id).toBe('oc_stream_session_1');
+    expect(lastLatency?.session_id).toBe('sess_stream_canonical_1');
+    expect(lastLatency?.session_source).toBe('x-innies-session-id');
 
     upstreamSpy.mockRestore();
     streamLatencySpy.mockRestore();
