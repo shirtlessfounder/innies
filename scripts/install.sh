@@ -17,6 +17,7 @@ ln -sf "${ROOT_DIR}/scripts/innies-buyer-key-create.sh" "${BIN_DIR}/innies-buyer
 ln -sf "${ROOT_DIR}/scripts/innies-buyer-preference-set.sh" "${BIN_DIR}/innies-buyer-preference-set"
 ln -sf "${ROOT_DIR}/scripts/innies-buyer-preference-get.sh" "${BIN_DIR}/innies-buyer-preference-get"
 ln -sf "${ROOT_DIR}/scripts/innies-buyer-preference-check.sh" "${BIN_DIR}/innies-buyer-preference-check"
+ln -sf "${ROOT_DIR}/scripts/innies-compat-artifact-extract.sh" "${BIN_DIR}/innies-compat-artifact-extract"
 ln -sf "${ROOT_DIR}/scripts/innies-slo-check.sh" "${BIN_DIR}/innies-slo-check"
 
 rm -f \
@@ -48,6 +49,7 @@ echo "  ${BIN_DIR}/innies-buyer-key-create -> ${ROOT_DIR}/scripts/innies-buyer-k
 echo "  ${BIN_DIR}/innies-buyer-preference-set -> ${ROOT_DIR}/scripts/innies-buyer-preference-set.sh"
 echo "  ${BIN_DIR}/innies-buyer-preference-get -> ${ROOT_DIR}/scripts/innies-buyer-preference-get.sh"
 echo "  ${BIN_DIR}/innies-buyer-preference-check -> ${ROOT_DIR}/scripts/innies-buyer-preference-check.sh"
+echo "  ${BIN_DIR}/innies-compat-artifact-extract -> ${ROOT_DIR}/scripts/innies-compat-artifact-extract.sh"
 echo "  ${BIN_DIR}/innies-slo-check -> ${ROOT_DIR}/scripts/innies-slo-check.sh"
 echo
 echo 'If command not found, add ~/.local/bin to PATH:'

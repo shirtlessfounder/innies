@@ -24,6 +24,7 @@ innies-buyer-key-create
 innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
+innies-compat-artifact-extract
 innies-slo-check
 ```
 
@@ -39,6 +40,7 @@ What they do:
 - `innies-buyer-preference-set`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
+- `innies-compat-artifact-extract`: extract the first-pass Anthropic compat request/response pair for one `request_id` from a saved prod HTML/log artifact, then write structured JSON files plus a summary for issue `#80` replay/diff work
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
 
 Behavior:
@@ -79,6 +81,9 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
+- `innies-compat-artifact-extract` accepts either `innies-compat-artifact-extract <artifact-path> <request-id>` or the env equivalents `INNIES_CAPTURED_RESPONSE_HTML` / `INNIES_CAPTURED_LOG_PATH` plus `INNIES_CAPTURED_REQUEST_ID`
+- `innies-compat-artifact-extract` extracts the first compat upstream attempt only; it writes `ingress.json`, `upstream-request.json`, `upstream-response.json`, and `summary.txt`, plus `payload.json` / `invalid-request-payload.json` when those chunks are present in the artifact
+- `innies-compat-artifact-extract` writes to `INNIES_EXTRACT_OUT_DIR` when set, otherwise to a temp-dir bundle keyed by the request id
 
 ## Env
 
