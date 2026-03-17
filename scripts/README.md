@@ -20,6 +20,7 @@ innies-token-contribution-cap-set
 innies-token-refresh-token-set
 innies-token-probe-run
 innies-token-usage-refresh
+innies-compat-direct-header-tsv
 innies-buyer-key-create
 innies-buyer-preference-set
 innies-buyer-preference-get
@@ -36,6 +37,7 @@ What they do:
 - `innies-token-refresh-token-set`: set or clear the stored OAuth refresh token for an existing credential id
 - `innies-token-probe-run`: directly probe an active or maxed token credential now; successful maxed probes immediately reactivate it
 - `innies-token-usage-refresh`: fetch Claude provider usage for a token now and print raw plus parsed 5h / 7d values
+- `innies-compat-direct-header-tsv`: convert a known-good direct Anthropic request bundle or request JSON into a reusable auth-redacted header TSV for issue-80 direct replay tooling
 - `innies-buyer-key-create`: create a new buyer key in `in_api_keys` and prompt for provider preference up front
 - `innies-buyer-preference-set`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
 - `innies-buyer-preference-get`: read the current buyer key preference
@@ -75,6 +77,8 @@ Behavior:
 - `innies-token-usage-refresh` lists unexpired Claude credentials in `active|paused|maxed`, plus expired Claude OAuth credentials that still have a stored refresh token (shown as `expired`) so you can recover them manually
 - `innies-token-usage-refresh` also needs `INNIES_ADMIN_API_KEY` (or prompts for it) because it calls the admin API provider-usage refresh endpoint directly
 - `innies-token-usage-refresh` bypasses in-memory usage-fetch backoff and prints both parsed 5h / 7d usage plus the raw Anthropic payload
+- `innies-compat-direct-header-tsv` accepts either a direct-bundle directory or a request JSON path; directory mode prefers `direct-request.json`, then falls back to `upstream-request.json` or `request.json`
+- `innies-compat-direct-header-tsv` writes `direct-headers.tsv` next to a bundle by default, strips transport/auth headers (`authorization`, `content-length`, `host`), and writes a sibling `*.summary.txt`
 - `label` maps to API field `debugLabel`
 - set/get preference accept either the buyer-key UUID or the live buyer key value; live-key lookup uses `DATABASE_URL`
 - script-side default provider display for `null` preference follows `BUYER_PROVIDER_PREFERENCE_DEFAULT` (legacy alias `INNIES_BUYER_PROVIDER_PREFERENCE_DEFAULT` also works)
