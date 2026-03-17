@@ -12,14 +12,15 @@ CREATE TABLE IF NOT EXISTS in_token_affinity_assignments (
 );
 
 CREATE TABLE IF NOT EXISTS in_token_affinity_active_streams (
-  request_id text PRIMARY KEY,
   org_id uuid NOT NULL,
   provider text NOT NULL,
   credential_id uuid NOT NULL,
   session_id text NOT NULL,
+  request_id text NOT NULL,
   started_at timestamptz NOT NULL DEFAULT now(),
   last_touched_at timestamptz NOT NULL DEFAULT now(),
-  ended_at timestamptz
+  ended_at timestamptz,
+  PRIMARY KEY (org_id, provider, credential_id, session_id, request_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_in_token_affinity_assignments_session

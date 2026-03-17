@@ -257,7 +257,7 @@ describe('tokenAffinityRepository', () => {
     expect(db.queries[0]?.sql).toContain('credential_id = $4');
   });
 
-  it('upserts an active stream by request id', async () => {
+  it('upserts an active stream by owner-scoped request id', async () => {
     const db = new SequenceSqlClient([{ rows: [activeStreamRow()], rowCount: 1 }]);
     const repo = new TokenAffinityRepository(db);
 
@@ -273,21 +273,15 @@ describe('tokenAffinityRepository', () => {
     const upsertSql = db.queries[0]?.sql ?? '';
 
     expect(upsertSql).toContain('insert into in_token_affinity_active_streams');
-    expect(upsertSql).toContain('on conflict (request_id)');
+    expect(upsertSql).toContain(
+      'on conflict (org_id, provider, credential_id, session_id, request_id)'
+    );
 
     const updateClause = upsertSql.split('do update set')[1]?.split('returning')[0] ?? '';
 
     expect(updateClause).toContain('last_touched_at = excluded.last_touched_at');
     expect(updateClause).toContain('ended_at = null');
-    expect(updateClause).toContain('where');
-    expect(updateClause).not.toContain('org_id = excluded.org_id,');
-    expect(updateClause).not.toContain('provider = excluded.provider,');
-    expect(updateClause).not.toContain('credential_id = excluded.credential_id,');
-    expect(updateClause).not.toContain('session_id = excluded.session_id,');
-    expect(updateClause).toContain('in_token_affinity_active_streams.org_id = excluded.org_id');
-    expect(updateClause).toContain('in_token_affinity_active_streams.provider = excluded.provider');
-    expect(updateClause).toContain('in_token_affinity_active_streams.credential_id = excluded.credential_id');
-    expect(updateClause).toContain('in_token_affinity_active_streams.session_id = excluded.session_id');
+    expect(updateClause).not.toContain('where');
   });
 
   it('refreshes last_touched_at for a live stream heartbeat', async () => {
@@ -296,21 +290,41 @@ describe('tokenAffinityRepository', () => {
     const touchedAt = new Date('2026-03-16T00:00:20.000Z');
 
     const touched = await repo.touchActiveStream({
+      orgId: '00000000-0000-0000-0000-000000000001',
+      provider: 'openai',
+      credentialId: '00000000-0000-0000-0000-000000000010',
+      sessionId: 'sess_123',
       requestId: 'req_123',
       touchedAt
     });
 
     expect(touched).toBe(true);
     expect(db.queries[0]?.sql).toContain('update in_token_affinity_active_streams');
-    expect(db.queries[0]?.sql).toContain('last_touched_at = $2');
-    expect(db.queries[0]?.params).toEqual(['req_123', touchedAt]);
+    expect(db.queries[0]?.sql).toContain('last_touched_at = $6');
+    expect(db.queries[0]?.sql).toContain('org_id = $1::uuid');
+    expect(db.queries[0]?.sql).toContain('provider = $2');
+    expect(db.queries[0]?.sql).toContain('credential_id = $3::uuid');
+    expect(db.queries[0]?.sql).toContain('session_id = $4');
+    expect(db.queries[0]?.sql).toContain('request_id = $5');
+    expect(db.queries[0]?.params).toEqual([
+      '00000000-0000-0000-0000-000000000001',
+      'openai',
+      '00000000-0000-0000-0000-000000000010',
+      'sess_123',
+      'req_123',
+      touchedAt
+    ]);
   });
 
-  it('returns cleared stream context by request id', async () => {
+  it('returns cleared stream context by owner-scoped request id', async () => {
     const db = new SequenceSqlClient([{ rows: [activeStreamRow()], rowCount: 1 }]);
     const repo = new TokenAffinityRepository(db);
 
     const cleared = await repo.clearActiveStream({
+      orgId: '00000000-0000-0000-0000-000000000001',
+      provider: 'openai',
+      credentialId: '00000000-0000-0000-0000-000000000010',
+      sessionId: 'sess_123',
       requestId: 'req_123'
     });
 
@@ -320,6 +334,18 @@ describe('tokenAffinityRepository', () => {
       sessionId: 'sess_123'
     });
     expect(db.queries[0]?.sql).toContain('delete from in_token_affinity_active_streams');
+    expect(db.queries[0]?.sql).toContain('org_id = $1::uuid');
+    expect(db.queries[0]?.sql).toContain('provider = $2');
+    expect(db.queries[0]?.sql).toContain('credential_id = $3::uuid');
+    expect(db.queries[0]?.sql).toContain('session_id = $4');
+    expect(db.queries[0]?.sql).toContain('request_id = $5');
+    expect(db.queries[0]?.params).toEqual([
+      '00000000-0000-0000-0000-000000000001',
+      'openai',
+      '00000000-0000-0000-0000-000000000010',
+      'sess_123',
+      'req_123'
+    ]);
     expect(db.queries[0]?.sql).toContain('returning');
   });
 
@@ -466,7 +492,7 @@ describe('tokenAffinityRepository contract', () => {
     });
   });
 
-  it('does not silently rebind an active stream when the same request id is reused by a different owner', async () => {
+  it('stores separate active-stream rows when the same request id is reused by a different owner', async () => {
     await withContractRepository(async ({ repo, pool }) => {
       await repo.upsertActiveStream({
         requestId: 'req_123',
@@ -493,23 +519,22 @@ describe('tokenAffinityRepository contract', () => {
         sessionId: 'sess_456'
       });
 
-      expect(upserted.orgId).toBe('00000000-0000-0000-0000-000000000001');
-      expect(upserted.provider).toBe('openai');
-      expect(upserted.credentialId).toBe('00000000-0000-0000-0000-000000000010');
-      expect(upserted.sessionId).toBe('sess_123');
-      expect(upserted.startedAt.toISOString()).toBe('2026-03-15T00:00:00.000Z');
-      expect(upserted.lastTouchedAt.toISOString()).toBe('2026-03-15T00:00:05.000Z');
+      expect(upserted.orgId).toBe('00000000-0000-0000-0000-000000000099');
+      expect(upserted.provider).toBe('anthropic');
+      expect(upserted.credentialId).toBe('00000000-0000-0000-0000-000000000011');
+      expect(upserted.sessionId).toBe('sess_456');
 
       const persisted = await pool.query(
         `
           select org_id, provider, credential_id, session_id, started_at, last_touched_at
           from in_token_affinity_active_streams
           where request_id = $1
+          order by org_id asc, provider asc, credential_id asc, session_id asc
         `,
         ['req_123']
       );
 
-      const persistedRow = (persisted as {
+      const persistedRows = (persisted as {
         rows: Array<{
           org_id: string;
           provider: string;
@@ -518,20 +543,29 @@ describe('tokenAffinityRepository contract', () => {
           started_at: Date | string;
           last_touched_at: Date | string;
         }>;
-      }).rows[0];
+      }).rows.map((row) => ({
+        ...row,
+        started_at: new Date(row.started_at).toISOString(),
+        last_touched_at: new Date(row.last_touched_at).toISOString()
+      }));
 
-      expect({
-        ...persistedRow,
-        started_at: new Date(persistedRow.started_at).toISOString(),
-        last_touched_at: new Date(persistedRow.last_touched_at).toISOString()
-      }).toMatchObject({
-        org_id: '00000000-0000-0000-0000-000000000001',
-        provider: 'openai',
-        credential_id: '00000000-0000-0000-0000-000000000010',
-        session_id: 'sess_123',
-        started_at: '2026-03-15T00:00:00.000Z',
-        last_touched_at: '2026-03-15T00:00:05.000Z'
-      });
+      expect(persistedRows).toHaveLength(2);
+      expect(persistedRows).toMatchObject([
+        {
+          org_id: '00000000-0000-0000-0000-000000000001',
+          provider: 'openai',
+          credential_id: '00000000-0000-0000-0000-000000000010',
+          session_id: 'sess_123',
+          started_at: '2026-03-15T00:00:00.000Z',
+          last_touched_at: '2026-03-15T00:00:05.000Z'
+        },
+        {
+          org_id: '00000000-0000-0000-0000-000000000099',
+          provider: 'anthropic',
+          credential_id: '00000000-0000-0000-0000-000000000011',
+          session_id: 'sess_456'
+        }
+      ]);
     });
   });
 
@@ -591,6 +625,10 @@ describe('tokenAffinityRepository contract', () => {
       });
 
       const touchResult = await repo.touchActiveStream({
+        orgId: '00000000-0000-0000-0000-000000000001',
+        provider: 'openai',
+        credentialId: '00000000-0000-0000-0000-000000000010',
+        sessionId: 'sess_123',
         requestId: 'req_123',
         touchedAt: new Date('2026-03-16T00:05:00.000Z')
       });
@@ -606,6 +644,10 @@ describe('tokenAffinityRepository contract', () => {
       expect(busyCredentialIds).toEqual(['00000000-0000-0000-0000-000000000010']);
 
       const cleared = await repo.clearActiveStream({
+        orgId: '00000000-0000-0000-0000-000000000001',
+        provider: 'openai',
+        credentialId: '00000000-0000-0000-0000-000000000010',
+        sessionId: 'sess_123',
         requestId: 'req_123'
       });
 
@@ -623,10 +665,55 @@ describe('tokenAffinityRepository contract', () => {
 
       expect(busyAfterClear).toEqual([]);
       expect(await repo.touchActiveStream({
+        orgId: '00000000-0000-0000-0000-000000000001',
+        provider: 'openai',
+        credentialId: '00000000-0000-0000-0000-000000000010',
+        sessionId: 'sess_123',
         requestId: 'req_123',
         touchedAt: new Date('2026-03-16T00:06:00.000Z')
       })).toBe(false);
-      expect(await repo.clearActiveStream({ requestId: 'req_123' })).toBeNull();
+      expect(await repo.clearActiveStream({
+        orgId: '00000000-0000-0000-0000-000000000001',
+        provider: 'openai',
+        credentialId: '00000000-0000-0000-0000-000000000010',
+        sessionId: 'sess_123',
+        requestId: 'req_123'
+      })).toBeNull();
+    });
+  });
+
+  it('refuses to touch or clear another owner using the same raw request id', async () => {
+    await withContractRepository(async ({ repo }) => {
+      await repo.upsertActiveStream({
+        requestId: 'req_123',
+        orgId: '00000000-0000-0000-0000-000000000001',
+        provider: 'openai',
+        credentialId: '00000000-0000-0000-0000-000000000010',
+        sessionId: 'sess_123'
+      });
+
+      expect(await repo.touchActiveStream({
+        orgId: '00000000-0000-0000-0000-000000000099',
+        provider: 'anthropic',
+        credentialId: '00000000-0000-0000-0000-000000000011',
+        sessionId: 'sess_456',
+        requestId: 'req_123',
+        touchedAt: new Date('2026-03-16T00:05:00.000Z')
+      })).toBe(false);
+
+      expect(await repo.clearActiveStream({
+        orgId: '00000000-0000-0000-0000-000000000099',
+        provider: 'anthropic',
+        credentialId: '00000000-0000-0000-0000-000000000011',
+        sessionId: 'sess_456',
+        requestId: 'req_123'
+      })).toBeNull();
+
+      expect(await repo.listBusyCredentialIds({
+        orgId: '00000000-0000-0000-0000-000000000001',
+        provider: 'openai',
+        staleBefore: new Date('2026-03-16T00:00:00.000Z')
+      })).toEqual(['00000000-0000-0000-0000-000000000010']);
     });
   });
 

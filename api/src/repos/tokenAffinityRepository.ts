@@ -55,6 +55,14 @@ export type GetPreferredAssignmentInput = {
   sessionId: string;
 };
 
+type ActiveStreamOwnerInput = {
+  requestId: string;
+  orgId: string;
+  provider: string;
+  credentialId: string;
+  sessionId: string;
+};
+
 export type ClaimPreferredAssignmentInput = GetPreferredAssignmentInput & {
   credentialId: string;
 };
@@ -74,22 +82,13 @@ export type TouchPreferredAssignmentInput = GetPreferredAssignmentInput & {
   graceExpiresAt: Date | null;
 };
 
-export type UpsertActiveStreamInput = {
-  requestId: string;
-  orgId: string;
-  provider: string;
-  credentialId: string;
-  sessionId: string;
-};
+export type UpsertActiveStreamInput = ActiveStreamOwnerInput;
 
-export type TouchActiveStreamInput = {
-  requestId: string;
+export type TouchActiveStreamInput = ActiveStreamOwnerInput & {
   touchedAt: Date;
 };
 
-export type ClearActiveStreamInput = {
-  requestId: string;
-};
+export type ClearActiveStreamInput = ActiveStreamOwnerInput;
 
 export type ListBusyCredentialIdsInput = {
   orgId: string;
@@ -127,9 +126,9 @@ function mapActiveStreamRow(row: TokenAffinityActiveStreamRow): TokenAffinityAct
   };
 }
 
-async function selectActiveStreamByRequestId(
+async function selectActiveStreamByOwner(
   db: Pick<SqlClient, 'query'> | TransactionContext,
-  requestId: string
+  input: ActiveStreamOwnerInput
 ): Promise<TokenAffinityActiveStream | null> {
   const result = await db.query<TokenAffinityActiveStreamRow>(
     `
@@ -143,10 +142,15 @@ async function selectActiveStreamByRequestId(
         last_touched_at,
         ended_at
       from ${TABLES.tokenAffinityActiveStreams}
-      where request_id = $1
+      where
+        org_id = $1::uuid
+        and provider = $2
+        and credential_id = $3::uuid
+        and session_id = $4
+        and request_id = $5
       limit 1
     `,
-    [requestId]
+    [input.orgId, input.provider, input.credentialId, input.sessionId, input.requestId]
   );
 
   return result.rowCount === 1 ? mapActiveStreamRow(result.rows[0]) : null;
@@ -333,15 +337,10 @@ export class TokenAffinityRepository {
             last_touched_at,
             ended_at
           ) values ($1, $2::uuid, $3, $4::uuid, $5, now(), now(), null)
-          on conflict (request_id)
+          on conflict (org_id, provider, credential_id, session_id, request_id)
           do update set
             last_touched_at = excluded.last_touched_at,
             ended_at = null
-          where
-            ${TABLES.tokenAffinityActiveStreams}.org_id = excluded.org_id
-            and ${TABLES.tokenAffinityActiveStreams}.provider = excluded.provider
-            and ${TABLES.tokenAffinityActiveStreams}.credential_id = excluded.credential_id
-            and ${TABLES.tokenAffinityActiveStreams}.session_id = excluded.session_id
           returning
             request_id,
             org_id,
@@ -365,7 +364,7 @@ export class TokenAffinityRepository {
         return mapActiveStreamRow(result.rows[0]);
       }
 
-      const existing = await selectActiveStreamByRequestId(tx, input.requestId);
+      const existing = await selectActiveStreamByOwner(tx, input);
       if (existing) {
         return existing;
       }
@@ -379,11 +378,17 @@ export class TokenAffinityRepository {
       `
         update ${TABLES.tokenAffinityActiveStreams}
         set
-          last_touched_at = $2,
+          last_touched_at = $6,
           ended_at = null
-        where request_id = $1 and ended_at is null
+        where
+          org_id = $1::uuid
+          and provider = $2
+          and credential_id = $3::uuid
+          and session_id = $4
+          and request_id = $5
+          and ended_at is null
       `,
-      [input.requestId, input.touchedAt]
+      [input.orgId, input.provider, input.credentialId, input.sessionId, input.requestId, input.touchedAt]
     );
 
     return result.rowCount > 0;
@@ -393,7 +398,12 @@ export class TokenAffinityRepository {
     const result = await this.db.query<TokenAffinityActiveStreamRow>(
       `
         delete from ${TABLES.tokenAffinityActiveStreams}
-        where request_id = $1
+        where
+          org_id = $1::uuid
+          and provider = $2
+          and credential_id = $3::uuid
+          and session_id = $4
+          and request_id = $5
         returning
           request_id,
           org_id,
@@ -404,7 +414,7 @@ export class TokenAffinityRepository {
           last_touched_at,
           ended_at
       `,
-      [input.requestId]
+      [input.orgId, input.provider, input.credentialId, input.sessionId, input.requestId]
     );
 
     return result.rowCount === 1 ? mapActiveStreamRow(result.rows[0]) : null;
