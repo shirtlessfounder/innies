@@ -24,6 +24,7 @@ innies-buyer-key-create
 innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
+innies-compat-direct-token-lane-matrix
 innies-slo-check
 ```
 
@@ -39,6 +40,7 @@ What they do:
 - `innies-buyer-preference-set`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
+- `innies-compat-direct-token-lane-matrix`: replay one preserved Anthropic `/v1/messages` payload directly across multiple bearer lanes to isolate credential-specific first-pass behavior for issue `#80`
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
 
 Behavior:
@@ -79,6 +81,10 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
+- `innies-compat-direct-token-lane-matrix` takes `payload.json`, `direct-headers.tsv`, and a token-matrix TSV with one lane per line:
+  - `lane_alpha<TAB>env:ANTHROPIC_TOKEN_ALPHA`
+  - `lane_beta<TAB>literal:sk-ant-oat-...`
+- `innies-compat-direct-token-lane-matrix` keeps the payload and non-auth headers fixed, rewrites `x-request-id` per lane, stores redacted request headers plus raw response artifacts under `lanes/<lane>/`, and appends one summary line per lane so issue `#80` can distinguish credential-lane-specific failures from header-held-constant failures
 
 ## Env
 
