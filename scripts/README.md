@@ -94,3 +94,17 @@ For `innies-buyer-preference-check`:
 - `DATABASE_URL` is optional, but needed for DB evidence
 - `INNIES_MODEL_ANTHROPIC` is required if you check Claude Code
 - `INNIES_MODEL_CODEX` is required if you check Codex
+
+## Issue 80 Evidence Helper
+
+```bash
+innies-compat-exact-case-token-lane-matrix /path/to/payload.json /path/to/cases /path/to/token-lanes.tsv
+```
+
+What it does:
+- replays one preserved Anthropic `/v1/messages` payload across every `*.tsv` exact-header case and every bearer lane in a token-matrix TSV
+- writes per-lane/per-case request headers, raw response artifacts, and a merged `summary.txt` under `lanes/<lane>/cases/<case>/`
+- keeps the body and non-auth per-case headers fixed so header deltas and credential-lane deltas can be compared in one run
+
+Token matrix TSV format:
+- one lane per line: `<lane-name><TAB>env:VAR_NAME` or `<lane-name><TAB>literal:TOKEN`
