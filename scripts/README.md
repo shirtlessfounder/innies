@@ -25,6 +25,7 @@ innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
 innies-slo-check
+innies-compat-direct-bundle-capture
 ```
 
 What they do:
@@ -40,6 +41,7 @@ What they do:
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
+- `innies-compat-direct-bundle-capture`: send one direct Anthropic `/v1/messages` request and persist a reusable first-pass bundle (`payload.json`, `upstream-request.json`, `upstream-response.json`, raw response artifacts, and `summary.txt`) for issue-80 diff work
 
 Behavior:
 - org id auto-uses `INNIES_ORG_ID`
@@ -79,6 +81,9 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
+- `innies-compat-direct-bundle-capture` accepts `ANTHROPIC_OAUTH_ACCESS_TOKEN`, `ANTHROPIC_ACCESS_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN`; defaults to the known-good OpenClaw-style identity lane (`anthropic-dangerous-direct-browser-access: true`, `x-app: cli`, `user-agent: OpenClawGateway/1.0`) but can disable that lane with `INNIES_DIRECT_INCLUDE_IDENTITY_HEADERS=false`
+- `innies-compat-direct-bundle-capture` writes a redacted request bundle plus raw response headers/body so the output can be diffed without leaking the live bearer token into the saved artifacts
+- `innies-compat-direct-bundle-capture` optionally enforces `INNIES_DIRECT_EXPECTED_BODY_BYTES` and/or `INNIES_DIRECT_EXPECTED_BODY_SHA256` before it sends anything, so body-held-constant replays fail fast on drifted payload files
 
 ## Env
 
