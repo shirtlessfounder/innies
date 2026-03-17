@@ -172,6 +172,17 @@ function createFakeOpenAiOauthToken(input?: {
   return `${header}.${payload}.signature`;
 }
 
+function parseChunkedJsonLog(calls: Array<any[]>, label: string): any {
+  const chunks = calls
+    .filter((call) => call[0] === label)
+    .map((call) => call[1] as { chunk_index?: number; json?: string })
+    .sort((a, b) => Number(a.chunk_index ?? 0) - Number(b.chunk_index ?? 0));
+  if (chunks.length === 0) {
+    throw new Error(`missing chunked log: ${label}`);
+  }
+  return JSON.parse(chunks.map((chunk) => String(chunk.json ?? '')).join(''));
+}
+
 function setupTranslatedCompatOpenAiRoute(runtimeModule: RuntimeModule) {
   process.env.OPENAI_UPSTREAM_BASE_URL = 'https://openai.internal.test';
   process.env.COMPAT_CODEX_DEFAULT_MODEL = 'gpt-5.4';
@@ -1539,6 +1550,16 @@ describe('anthropic compat route', () => {
     expect(res.statusCode).toBe(400);
     const compatDebugCalls = compatDebugSpy.mock.calls.filter((call) => call[0] === '[compat-invalid-request-debug]');
     expect(compatDebugCalls).toHaveLength(1);
+    const compatPayloadCalls = compatDebugSpy.mock.calls.filter((call) => call[0] === '[compat-invalid-request-payload-json]');
+    expect(compatPayloadCalls).toHaveLength(1);
+    const compatPayloadJson = JSON.parse(String(compatPayloadCalls[0]?.[1] ?? '{}'));
+    expect(compatPayloadJson.request_id).toBe('req_test_invalid_400');
+    expect(JSON.stringify(compatPayloadJson.payload)).toContain('secret prompt');
+    expect(JSON.stringify(compatPayloadJson.payload)).toContain('top-secret-system');
+    const compatPayloadChunked = parseChunkedJsonLog(compatDebugSpy.mock.calls, '[compat-invalid-request-payload-json-chunk]');
+    expect(compatPayloadChunked.request_id).toBe('req_test_invalid_400');
+    expect(JSON.stringify(compatPayloadChunked.payload)).toContain('secret prompt');
+    expect(JSON.stringify(compatPayloadChunked.payload)).toContain('top-secret-system');
 
     const compatDebugPayload = compatDebugCalls[0]?.[1] as any;
     expect(compatDebugPayload).toMatchObject({
@@ -1586,6 +1607,19 @@ describe('anthropic compat route', () => {
         }
       }
     });
+    const compatDebugChunked = parseChunkedJsonLog(compatDebugSpy.mock.calls, '[compat-invalid-request-debug-json-chunk]');
+    expect(compatDebugChunked.request_shape.message_trace_tail).toMatchObject([
+      {
+        index: 0,
+        role: 'assistant',
+        content_kind: 'string'
+      },
+      {
+        index: 1,
+        role: 'user',
+        content_kind: 'array'
+      }
+    ]);
     expect(compatDebugPayload.request_shape.message_trace_tail).toMatchObject([
       {
         index: 0,
@@ -1618,6 +1652,43 @@ describe('anthropic compat route', () => {
         thinking_signature_missing_count: 0
       }
     ]);
+    const upstreamRequestChunked = parseChunkedJsonLog(compatDebugSpy.mock.calls, '[compat-upstream-request-json-chunk]');
+    expect(upstreamRequestChunked).toMatchObject({
+      request_id: 'req_test_invalid_400',
+      attempt_no: 1,
+      credential_id: 'debug-cred',
+      credential_label: 'shirtless',
+      provider: 'anthropic',
+      model: 'claude-opus-4-6',
+      proxied_path: '/v1/messages',
+      method: 'POST',
+      target_url: 'https://api.anthropic.com/v1/messages'
+    });
+    expect(JSON.stringify(upstreamRequestChunked.payload)).toContain('secret prompt');
+    expect(JSON.stringify(upstreamRequestChunked.payload)).toContain('top-secret-system');
+    expect(String(upstreamRequestChunked.headers.authorization)).toContain('redacted');
+    expect(String(upstreamRequestChunked.headers.authorization)).not.toContain('sk-ant-oat01-debug-token');
+
+    const upstreamResponseChunked = parseChunkedJsonLog(compatDebugSpy.mock.calls, '[compat-upstream-response-json-chunk]');
+    expect(upstreamResponseChunked).toMatchObject({
+      request_id: 'req_test_invalid_400',
+      attempt_no: 1,
+      credential_id: 'debug-cred',
+      credential_label: 'shirtless',
+      provider: 'anthropic',
+      model: 'claude-opus-4-6',
+      proxied_path: '/v1/messages',
+      upstream_status: 400,
+      upstream_content_type: 'application/json'
+    });
+    expect(String(upstreamResponseChunked.raw_body_text)).toContain('"invalid_request_error"');
+    expect(upstreamResponseChunked.parsed_body).toEqual({
+      type: 'error',
+      error: {
+        type: 'invalid_request_error',
+        message: 'Error'
+      }
+    });
 
     const serializedPayload = JSON.stringify(compatDebugPayload);
     expect(serializedPayload).not.toContain('top-secret-system');
@@ -1683,6 +1754,17 @@ describe('anthropic compat route', () => {
 
     const validationCalls = localValidationSpy.mock.calls.filter((call) => call[0] === '[compat-local-validation-failed]');
     expect(validationCalls).toHaveLength(1);
+    const validationPayloadCalls = localValidationSpy.mock.calls.filter((call) => call[0] === '[compat-local-validation-payload-json]');
+    expect(validationPayloadCalls).toHaveLength(1);
+    const validationPayloadJson = JSON.parse(String(validationPayloadCalls[0]?.[1] ?? '{}'));
+    expect(validationPayloadJson.request_id).toBe('req_test_local_validation_400');
+    expect(JSON.stringify(validationPayloadJson.payload)).toContain('private reasoning without signature');
+    expect(JSON.stringify(validationPayloadJson.payload)).toContain('not first');
+    const validationPayloadChunked = parseChunkedJsonLog(localValidationSpy.mock.calls, '[compat-local-validation-payload-json-chunk]');
+    expect(validationPayloadChunked.request_id).toBe('req_test_local_validation_400');
+    expect(JSON.stringify(validationPayloadChunked.payload)).toContain('private reasoning without signature');
+    expect(JSON.stringify(validationPayloadChunked.payload)).toContain('not first');
+
     const validationPayload = validationCalls[0]?.[1] as any;
     expect(validationPayload).toMatchObject({
       request_id: 'req_test_local_validation_400',
@@ -1699,6 +1781,11 @@ describe('anthropic compat route', () => {
           unsigned_thinking_with_tool_use_message_indexes: [1]
         }
       }
+    });
+    const validationChunked = parseChunkedJsonLog(localValidationSpy.mock.calls, '[compat-local-validation-failed-json-chunk]');
+    expect(validationChunked.request_shape.history_analysis).toMatchObject({
+      tool_result_after_non_tool_result_message_indexes: [2],
+      unsigned_thinking_with_tool_use_message_indexes: [1]
     });
 
     const serializedPayload = JSON.stringify(validationPayload);

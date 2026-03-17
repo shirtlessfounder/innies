@@ -10,6 +10,7 @@ import usageRoutes from './routes/usage.js';
 import { startBackgroundJobs } from './services/runtime.js';
 import { summarizeAnthropicCompatRequestShape } from './utils/anthropicCompatTrace.js';
 import { AppError } from './utils/errors.js';
+import { logJsonChunks } from './utils/jsonChunkLog.js';
 
 export function createApp(): express.Express {
   const app = express();
@@ -46,6 +47,22 @@ export function createApp(): express.Express {
         model: body?.model,
         ...requestShape
       }
+    });
+    console.log('[/v1/messages] request-payload-json', JSON.stringify({
+      method: req.method,
+      path: req.path,
+      requestIdHeader: headers['x-request-id'],
+      body: req.body ?? null
+    }));
+    logJsonChunks({
+      label: '[/v1/messages] request-payload-json-chunk',
+      value: {
+        method: req.method,
+        path: req.path,
+        requestIdHeader: headers['x-request-id'],
+        body: req.body ?? null
+      },
+      level: 'log'
     });
 
     res.on('finish', () => {
