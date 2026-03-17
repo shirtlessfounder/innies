@@ -26,6 +26,7 @@ innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
 innies-compat-direct-request-bundle
+innies-compat-direct-bundle-from-request
 innies-slo-check
 ```
 
@@ -43,6 +44,7 @@ What they do:
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
 - `innies-compat-direct-request-bundle`: replay a payload directly against Anthropic with an exact first-pass header TSV and write a reusable request/response bundle for issue-80 wire diffs
+- `innies-compat-direct-bundle-from-request`: turn a known-good direct Anthropic request artifact into the exact header TSV that direct replay expects, then capture the resulting direct replay bundle in one output directory
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
 
 Behavior:
@@ -86,6 +88,7 @@ Behavior:
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
 - `innies-compat-direct-request-bundle` accepts a payload JSON path plus a TSV file of exact direct headers (`name<TAB>value`), replays that body to Anthropic, redacts auth on disk, and writes `payload.json`, `direct-request.json`, `upstream-request.json`, `direct-response.json`, `upstream-response.json`, `response-headers.txt`, `response-body.txt`, and `summary.txt`
+- `innies-compat-direct-bundle-from-request` accepts the replay payload plus a known-good direct request bundle / request JSON, writes `direct-headers.tsv` and `direct-headers.summary.txt`, then runs `innies-compat-direct-request-bundle` into `direct-bundle/` and adds one top-level `summary.txt` that points at both outputs
 
 ## Env
 
