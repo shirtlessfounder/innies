@@ -84,8 +84,9 @@ Behavior:
 - `innies-compat-captured-lane-replay` requires:
   - a preserved `/v1/messages` payload JSON path as its first argument
   - `INNIES_CAPTURED_RESPONSE_HTML` plus `INNIES_CAPTURED_REQUEST_ID` for the captured Innies compat artifact to replay
-  - `ANTHROPIC_OAUTH_ACCESS_TOKEN` (or `ANTHROPIC_ACCESS_TOKEN`) for the direct Anthropic request
+  - one of `ANTHROPIC_OAUTH_ACCESS_TOKEN`, `ANTHROPIC_ACCESS_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN` for the direct Anthropic request
 - `innies-compat-captured-lane-replay` preserves the captured first-pass headers except it swaps in the supplied direct bearer token, drops transport-only headers like `host` / `content-length`, and writes `captured-headers.tsv`, `direct-headers.txt`, `direct-body.txt`, and `meta.txt` under `INNIES_REPLAY_OUT_DIR`
+- `innies-compat-captured-lane-replay` records `direct_access_token_source` in `meta.txt` so the issue handoff can show which direct bearer lane was actually used
 - `innies-compat-captured-lane-replay` fails fast if the captured upstream provider was not `anthropic`, so it cannot silently replay an OpenAI/Codex compat lane as Anthropic evidence
 
 ## Env
@@ -108,7 +109,7 @@ Example for `innies-compat-captured-lane-replay`:
 ```bash
 INNIES_CAPTURED_RESPONSE_HTML=/Users/dylanvu/Downloads/response_1773768207701.html \
 INNIES_CAPTURED_REQUEST_ID=req_1773768173495_39292 \
-ANTHROPIC_OAUTH_ACCESS_TOKEN=... \
+CLAUDE_CODE_OAUTH_TOKEN=... \
 INNIES_REPLAY_OUT_DIR=/private/tmp/issue80-captured-lane-replay \
 innies-compat-captured-lane-replay /private/tmp/innies-issue-80-preserved-body.json
 ```

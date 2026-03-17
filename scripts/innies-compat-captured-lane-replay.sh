@@ -45,6 +45,29 @@ write_lines() {
   printf '%s\n' "$@" >"$file"
 }
 
+DIRECT_ACCESS_TOKEN_SOURCE=''
+ACCESS_TOKEN=''
+
+resolve_direct_access_token() {
+  if [[ -n "${ANTHROPIC_OAUTH_ACCESS_TOKEN:-}" ]]; then
+    DIRECT_ACCESS_TOKEN_SOURCE='anthropic_oauth_access_token'
+    ACCESS_TOKEN="${ANTHROPIC_OAUTH_ACCESS_TOKEN}"
+    return
+  fi
+  if [[ -n "${ANTHROPIC_ACCESS_TOKEN:-}" ]]; then
+    DIRECT_ACCESS_TOKEN_SOURCE='anthropic_access_token'
+    ACCESS_TOKEN="${ANTHROPIC_ACCESS_TOKEN}"
+    return
+  fi
+  if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+    DIRECT_ACCESS_TOKEN_SOURCE='claude_code_oauth_token'
+    ACCESS_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN}"
+    return
+  fi
+  DIRECT_ACCESS_TOKEN_SOURCE=''
+  ACCESS_TOKEN=''
+}
+
 extract_captured_request() {
   local captured_html="$1"
   local request_id="$2"
@@ -159,7 +182,7 @@ if [[ ! -f "$CAPTURED_RESPONSE_HTML" ]]; then
 fi
 
 DIRECT_BASE_URL="$(resolve_direct_base_url)"
-ACCESS_TOKEN="${ANTHROPIC_OAUTH_ACCESS_TOKEN:-${ANTHROPIC_ACCESS_TOKEN:-}}"
+resolve_direct_access_token
 require_nonempty 'Anthropic OAuth access token' "$ACCESS_TOKEN"
 
 DIRECT_REQUEST_ID="${INNIES_DIRECT_REQUEST_ID:-req_issue80_direct_$(date -u +%Y%m%dT%H%M%SZ)}"
@@ -251,6 +274,7 @@ write_lines "$META_FILE" \
   "direct_request_id=$DIRECT_REQUEST_ID" \
   "direct_status=$DIRECT_STATUS" \
   "provider_request_id=${PROVIDER_REQUEST_ID:-}" \
+  "direct_access_token_source=${DIRECT_ACCESS_TOKEN_SOURCE:-}" \
   "direct_base_url=$DIRECT_BASE_URL" \
   "direct_path=$DIRECT_PATH" \
   "captured_headers_file=$CAPTURED_HEADERS_FILE" \
