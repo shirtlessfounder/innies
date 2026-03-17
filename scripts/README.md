@@ -26,6 +26,7 @@ innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
 innies-slo-check
+innies-compat-first-pass-bundle-diff
 ```
 
 What they do:
@@ -42,6 +43,7 @@ What they do:
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
+- `innies-compat-first-pass-bundle-diff`: compare extracted compat first-pass bundles and write exact header/body deltas for the current issue-80 wire-diff path
 
 Behavior:
 - org id auto-uses `INNIES_ORG_ID`
@@ -78,6 +80,9 @@ Behavior:
 - `innies-compat-artifact-extract` writes `ingress.json`, `upstream-request.json`, `upstream-response.json`, `summary.txt`, and when available `payload.json` plus `invalid-request-payload.json`
 - `innies-compat-artifact-extract` usage:
   - `INNIES_EXTRACT_OUT_DIR=/tmp/issue80-artifact scripts/innies-compat-artifact-extract.sh /path/to/response.html req_123`
+- `innies-compat-first-pass-bundle-diff` accepts either:
+  - one extracted bundle directory to compare `ingress.json` vs `upstream-request.json`
+  - or two bundle specs, where directories default to `#upstream` and explicit `#ingress` / `#upstream` selectors override that
 - `label` maps to API field `debugLabel`
 - set/get preference accept either the buyer-key UUID or the live buyer key value; live-key lookup uses `DATABASE_URL`
 - script-side default provider display for `null` preference follows `BUYER_PROVIDER_PREFERENCE_DEFAULT` (legacy alias `INNIES_BUYER_PROVIDER_PREFERENCE_DEFAULT` also works)
