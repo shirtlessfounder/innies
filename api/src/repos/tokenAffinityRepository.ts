@@ -127,6 +127,31 @@ function mapActiveStreamRow(row: TokenAffinityActiveStreamRow): TokenAffinityAct
   };
 }
 
+async function selectActiveStreamByRequestId(
+  db: Pick<SqlClient, 'query'> | TransactionContext,
+  requestId: string
+): Promise<TokenAffinityActiveStream | null> {
+  const result = await db.query<TokenAffinityActiveStreamRow>(
+    `
+      select
+        request_id,
+        org_id,
+        provider,
+        credential_id,
+        session_id,
+        started_at,
+        last_touched_at,
+        ended_at
+      from ${TABLES.tokenAffinityActiveStreams}
+      where request_id = $1
+      limit 1
+    `,
+    [requestId]
+  );
+
+  return result.rowCount === 1 ? mapActiveStreamRow(result.rows[0]) : null;
+}
+
 async function selectAssignmentBySession(
   tx: TransactionContext,
   input: GetPreferredAssignmentInput
@@ -295,50 +320,58 @@ export class TokenAffinityRepository {
   }
 
   async upsertActiveStream(input: UpsertActiveStreamInput): Promise<TokenAffinityActiveStream> {
-    const result = await this.db.query<TokenAffinityActiveStreamRow>(
-      `
-        insert into ${TABLES.tokenAffinityActiveStreams} (
-          request_id,
-          org_id,
-          provider,
-          credential_id,
-          session_id,
-          started_at,
-          last_touched_at,
-          ended_at
-        ) values ($1, $2::uuid, $3, $4::uuid, $5, now(), now(), null)
-        on conflict (request_id)
-        do update set
-          org_id = excluded.org_id,
-          provider = excluded.provider,
-          credential_id = excluded.credential_id,
-          session_id = excluded.session_id,
-          last_touched_at = excluded.last_touched_at,
-          ended_at = null
-        returning
-          request_id,
-          org_id,
-          provider,
-          credential_id,
-          session_id,
-          started_at,
-          last_touched_at,
-          ended_at
-      `,
-      [
-        input.requestId,
-        input.orgId,
-        input.provider,
-        input.credentialId,
-        input.sessionId
-      ]
-    );
+    return this.db.transaction(async (tx) => {
+      const result = await tx.query<TokenAffinityActiveStreamRow>(
+        `
+          insert into ${TABLES.tokenAffinityActiveStreams} (
+            request_id,
+            org_id,
+            provider,
+            credential_id,
+            session_id,
+            started_at,
+            last_touched_at,
+            ended_at
+          ) values ($1, $2::uuid, $3, $4::uuid, $5, now(), now(), null)
+          on conflict (request_id)
+          do update set
+            last_touched_at = excluded.last_touched_at,
+            ended_at = null
+          where
+            ${TABLES.tokenAffinityActiveStreams}.org_id = excluded.org_id
+            and ${TABLES.tokenAffinityActiveStreams}.provider = excluded.provider
+            and ${TABLES.tokenAffinityActiveStreams}.credential_id = excluded.credential_id
+            and ${TABLES.tokenAffinityActiveStreams}.session_id = excluded.session_id
+          returning
+            request_id,
+            org_id,
+            provider,
+            credential_id,
+            session_id,
+            started_at,
+            last_touched_at,
+            ended_at
+        `,
+        [
+          input.requestId,
+          input.orgId,
+          input.provider,
+          input.credentialId,
+          input.sessionId
+        ]
+      );
 
-    if (result.rowCount !== 1) {
+      if (result.rowCount === 1) {
+        return mapActiveStreamRow(result.rows[0]);
+      }
+
+      const existing = await selectActiveStreamByRequestId(tx, input.requestId);
+      if (existing) {
+        return existing;
+      }
+
       throw new Error('expected active stream upsert');
-    }
-
-    return mapActiveStreamRow(result.rows[0]);
+    });
   }
 
   async touchActiveStream(input: TouchActiveStreamInput): Promise<boolean> {
