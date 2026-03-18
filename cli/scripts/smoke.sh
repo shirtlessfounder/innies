@@ -24,6 +24,8 @@ set -euo pipefail
   echo "ANTHROPIC_API_KEY:${ANTHROPIC_API_KEY:-}"
   echo "INNIES_TOKEN:${INNIES_TOKEN:-}"
   echo "INNIES_CORRELATION_ID:${INNIES_CORRELATION_ID:-}"
+  echo "MALLOC_STACK_LOGGING_SET:${MallocStackLogging+1}"
+  echo "MALLOC_STACK_LOGGING_DIR_SET:${MallocStackLoggingDirectory+1}"
 } >> "$FAKE_CLAUDE_LOG"
 
 if printf '%s\n' "$@" | grep -qx -- '--check-pass-through'; then
@@ -81,6 +83,8 @@ set -euo pipefail
   echo "INNIES_PROVIDER_PIN:${INNIES_PROVIDER_PIN:-}"
   echo "OPENAI_API_KEY:${OPENAI_API_KEY:-}"
   echo "OPENAI_BASE_URL:${OPENAI_BASE_URL:-}"
+  echo "MALLOC_STACK_LOGGING_SET:${MallocStackLogging+1}"
+  echo "MALLOC_STACK_LOGGING_DIR_SET:${MallocStackLoggingDirectory+1}"
 } >> "$FAKE_CODEX_LOG"
 
 if printf '%s\n' "$@" | grep -qx -- '--check-token-auth-failure'; then
@@ -184,6 +188,16 @@ if ! grep -q 'INNIES_TOKEN:in_live_test' "$FAKE_CLAUDE_LOG"; then
   exit 1
 fi
 
+if grep -q 'MALLOC_STACK_LOGGING_SET:1' "$FAKE_CLAUDE_LOG"; then
+  echo "smoke: claude wrapper still exports MallocStackLogging"
+  exit 1
+fi
+
+if grep -q 'MALLOC_STACK_LOGGING_DIR_SET:1' "$FAKE_CLAUDE_LOG"; then
+  echo "smoke: claude wrapper still exports MallocStackLoggingDirectory"
+  exit 1
+fi
+
 if ! grep -q 'arg:model_provider="innies"' "$FAKE_CODEX_LOG"; then
   echo "smoke: missing codex provider override"
   exit 1
@@ -246,6 +260,16 @@ fi
 
 if ! grep -q 'INNIES_PROVIDER_PIN:true' "$FAKE_CODEX_LOG"; then
   echo "smoke: missing codex provider pin env wiring"
+  exit 1
+fi
+
+if grep -q 'MALLOC_STACK_LOGGING_SET:1' "$FAKE_CODEX_LOG"; then
+  echo "smoke: codex wrapper still exports MallocStackLogging"
+  exit 1
+fi
+
+if grep -q 'MALLOC_STACK_LOGGING_DIR_SET:1' "$FAKE_CODEX_LOG"; then
+  echo "smoke: codex wrapper still exports MallocStackLoggingDirectory"
   exit 1
 fi
 

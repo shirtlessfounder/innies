@@ -84,12 +84,13 @@ export async function runCodex(args) {
 
   const {
     OPENAI_BASE_URL: _deprecatedOpenAiBaseUrl,
+    MallocStackLogging: _mallocStackLogging,
+    MallocStackLoggingDirectory: _mallocStackLoggingDirectory,
     ...inheritedEnv
   } = process.env;
 
   const env = {
     ...inheritedEnv,
-    MallocStackLogging: '',
     INNIES_CODEX_WRAPPED: '1',
     INNIES_TOKEN: config.token,
     INNIES_API_BASE_URL: config.apiBaseUrl,
