@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import adminRoutes from './routes/admin.js';
 import analyticsRoutes from './routes/analytics.js';
@@ -8,12 +9,70 @@ import proxyRoutes from './routes/proxy.js';
 import sellerKeysRoutes from './routes/sellerKeys.js';
 import usageRoutes from './routes/usage.js';
 import { startBackgroundJobs } from './services/runtime.js';
+import {
+  captureCompatRawBody,
+  persistCompatTraceBody,
+  sanitizeTraceHeaders
+} from './utils/compatTrace.js';
 import { AppError } from './utils/errors.js';
 
 export function createApp(): express.Express {
   const app = express();
   const jsonBodyLimit = process.env.JSON_BODY_LIMIT || '20mb';
-  app.use(express.json({ limit: jsonBodyLimit }));
+  app.use(express.json({
+    limit: jsonBodyLimit,
+    verify: (req, _res, buf) => {
+      captureCompatRawBody({
+        req: req as express.Request & { inniesRawBodyText?: string },
+        captureDir: process.env.INNIES_COMPAT_CAPTURE_DIR,
+        method: req.method,
+        path: typeof req.url === 'string' ? req.url.split('?')[0] : undefined,
+        body: Buffer.from(buf)
+      });
+    }
+  }));
+
+  app.use((req, _res, next) => {
+    const rawBodyText = (req as express.Request & { inniesRawBodyText?: string }).inniesRawBodyText;
+    if (req.method !== 'POST' || req.path !== '/v1/messages' || typeof rawBodyText !== 'string') {
+      next();
+      return;
+    }
+
+    const headers = Object.fromEntries(
+      Object.entries(req.headers)
+        .flatMap(([name, value]) => {
+          if (typeof value === 'string') return [[name, value] as const];
+          if (Array.isArray(value)) return [[name, value.join(', ')] as const];
+          return [];
+        })
+    );
+    const capture = persistCompatTraceBody({
+      requestId: req.header('x-request-id') ?? 'missing-request-id',
+      phase: 'ingress',
+      body: rawBodyText,
+      metadata: {
+        method: req.method,
+        path: req.path,
+        headers: sanitizeTraceHeaders(headers)
+      }
+    });
+
+    if (capture) {
+      console.info('[compat-ingress-capture]', {
+        request_id: req.header('x-request-id') ?? null,
+        method: req.method,
+        path: req.path,
+        headers: sanitizeTraceHeaders(headers),
+        body_sha256: capture.bodySha256,
+        body_bytes: capture.bodyBytes,
+        body_path: capture.bodyPath,
+        meta_path: capture.metaPath
+      });
+    }
+
+    next();
+  });
 
   app.use((req, res, next) => {
     if (process.env.INNIES_COMPAT_TRACE !== 'true' || req.path !== '/v1/messages') {
@@ -140,4 +199,20 @@ export function startServer(port = Number(process.env.PORT || 4010)): void {
   server.requestTimeout = Math.max(0, requestTimeoutMs);
 }
 
-startServer();
+export function shouldAutoStartServer(input: {
+  moduleUrl: string;
+  entryArgv?: string;
+  disableAutostart?: string;
+}): boolean {
+  if (input.disableAutostart === '1') return false;
+  if (!input.entryArgv) return false;
+  return pathToFileURL(input.entryArgv).href === input.moduleUrl;
+}
+
+if (shouldAutoStartServer({
+  moduleUrl: import.meta.url,
+  entryArgv: process.argv[1],
+  disableAutostart: process.env.INNIES_NO_AUTOSTART
+})) {
+  startServer();
+}

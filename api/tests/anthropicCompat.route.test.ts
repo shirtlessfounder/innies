@@ -1,4 +1,7 @@
 import { describe, expect, it, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { z } from 'zod';
 import { AppError } from '../src/utils/errors.js';
@@ -218,6 +221,7 @@ function setupTranslatedCompatOpenAiRoute(runtimeModule: RuntimeModule) {
 describe('anthropic compat route', () => {
   let runtimeModule: RuntimeModule;
   let handlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  const tempDirs: string[] = [];
 
   beforeAll(async () => {
     process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@127.0.0.1:5432/innies_test';
@@ -319,8 +323,13 @@ describe('anthropic compat route', () => {
     delete process.env.TOKEN_MODE_ENABLED_ORGS;
     delete process.env.ANTHROPIC_COMPAT_MAX_MESSAGE_COUNT;
     delete process.env.ANTHROPIC_COMPAT_MAX_REQUEST_BYTES;
+    delete process.env.INNIES_ANTHROPIC_FIRST_PASS_TRACE;
+    delete process.env.INNIES_COMPAT_CAPTURE_DIR;
     delete process.env.OPENAI_UPSTREAM_BASE_URL;
     delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
+    for (const dir of tempDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
     resetAnthropicUsageRetryStateForTests();
     vi.restoreAllMocks();
   });
@@ -1513,6 +1522,134 @@ describe('anthropic compat route', () => {
     upstreamSpy.mockRestore();
   });
 
+  it('prepends the Claude Code identity system block for anthropic oauth compat requests when missing', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_identity_1', usage: { input_tokens: 5, output_tokens: 5 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        stream: true,
+        max_tokens: 2048,
+        system: [
+          {
+            type: 'text',
+            text: 'You are a personal assistant running inside OpenClaw.',
+            cache_control: { type: 'ephemeral' }
+          }
+        ],
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [{ name: 'lookup', description: 'lookup docs', input_schema: { type: 'object', properties: {} } }],
+        thinking: { type: 'enabled', budget_tokens: 1024 }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    const fetchArgs = upstreamSpy.mock.calls[0];
+    const body = JSON.parse(String((fetchArgs?.[1] as RequestInit)?.body ?? '{}'));
+    expect(body.stream).toBe(true);
+    expect(body.tools).toBeDefined();
+    expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 1024 });
+    expect(body.system).toEqual([
+      {
+        type: 'text',
+        text: "You are Claude Code, Anthropic's official CLI for Claude.",
+        cache_control: { type: 'ephemeral' }
+      },
+      {
+        type: 'text',
+        text: 'You are a personal assistant running inside OpenClaw.',
+        cache_control: { type: 'ephemeral' }
+      }
+    ]);
+
+    upstreamSpy.mockRestore();
+  });
+
+  it('does not duplicate the Claude Code identity system block when a direct-style prelude is already present', async () => {
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'msg_identity_2', usage: { input_tokens: 5, output_tokens: 5 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        stream: true,
+        max_tokens: 2048,
+        system: [
+          {
+            type: 'text',
+            text: 'x-anthropic-billing-header: cc_version=2.1.78.13b; cc_entrypoint=cli; cch=eabee;'
+          },
+          {
+            type: 'text',
+            text: "You are Claude Code, Anthropic's official CLI for Claude.",
+            cache_control: { type: 'ephemeral' }
+          },
+          {
+            type: 'text',
+            text: 'You are a personal assistant running inside OpenClaw.',
+            cache_control: { type: 'ephemeral' }
+          }
+        ],
+        messages: [{ role: 'user', content: 'hi' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    const fetchArgs = upstreamSpy.mock.calls[0];
+    const body = JSON.parse(String((fetchArgs?.[1] as RequestInit)?.body ?? '{}'));
+    expect(body.system).toEqual([
+      {
+        type: 'text',
+        text: 'x-anthropic-billing-header: cc_version=2.1.78.13b; cc_entrypoint=cli; cch=eabee;'
+      },
+      {
+        type: 'text',
+        text: "You are Claude Code, Anthropic's official CLI for Claude.",
+        cache_control: { type: 'ephemeral' }
+      },
+      {
+        type: 'text',
+        text: 'You are a personal assistant running inside OpenClaw.',
+        cache_control: { type: 'ephemeral' }
+      }
+    ]);
+
+    upstreamSpy.mockRestore();
+  });
+
   it('passes through upstream 5xx status/body for compat route', async () => {
     const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({
@@ -1969,6 +2106,83 @@ describe('anthropic compat route', () => {
     expect(String(retryAudit?.openclaw_run_id ?? '')).toMatch(/^run_req_/);
 
     retryAuditSpy.mockRestore();
+    upstreamSpy.mockRestore();
+  });
+
+  it('emits env-gated anthropic first-pass trace logs for local diagnosis', async () => {
+    process.env.INNIES_ANTHROPIC_FIRST_PASS_TRACE = '1';
+    const captureDir = mkdtempSync(join(tmpdir(), 'innies-upstream-trace-'));
+    tempDirs.push(captureDir);
+    process.env.INNIES_COMPAT_CAPTURE_DIR = captureDir;
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'invalid_request_error', message: 'Error' },
+        request_id: 'req_upstream_trace_1'
+      }), {
+        status: 400,
+        headers: {
+          'content-type': 'application/json',
+          'request-id': 'req_upstream_trace_1'
+        }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        stream: true,
+        max_tokens: 2048,
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [{ name: 'x', description: 'x', input_schema: { type: 'object', properties: {} } }],
+        thinking: { type: 'enabled', budget_tokens: 1024 }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(400);
+    const requestTraceCall = infoSpy.mock.calls.find((call) => call[0] === '[anthropic-first-pass-trace-request]');
+    const responseTraceCall = infoSpy.mock.calls.find((call) => call[0] === '[anthropic-first-pass-trace-response]');
+    expect(requestTraceCall).toBeTruthy();
+    expect(responseTraceCall).toBeTruthy();
+
+    const requestTrace = requestTraceCall?.[1] as any;
+    expect(requestTrace.attempt_no).toBe(1);
+    expect(requestTrace.provider).toBe('anthropic');
+    expect(requestTrace.proxied_path).toBe('/v1/messages');
+    expect(requestTrace.target_url).toBe('https://api.anthropic.com/v1/messages');
+    expect(requestTrace.headers.authorization).toMatch(/^Bearer <redacted:/);
+    expect(requestTrace.headers['anthropic-beta']).toContain('oauth-2025-04-20');
+    expect(requestTrace.headers['anthropic-beta']).toContain('claude-code-20250219');
+    expect(requestTrace.body_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(requestTrace.body_bytes).toBeGreaterThan(0);
+    expect(requestTrace.body_path).toContain('/upstream-request.attempt-1.body.json');
+    expect(requestTrace.meta_path).toContain('/upstream-request.attempt-1.meta.json');
+    const capturedBody = readFileSync(requestTrace.body_path, 'utf8');
+    expect(capturedBody).toContain('"model":"claude-opus-4-6"');
+    expect(capturedBody).toContain('"thinking":{"type":"enabled","budget_tokens":1024}');
+
+    const responseTrace = responseTraceCall?.[1] as any;
+    expect(responseTrace.attempt_no).toBe(1);
+    expect(responseTrace.upstream_status).toBe(400);
+    expect(responseTrace.upstream_content_type).toBe('application/json');
+    expect(responseTrace.response_headers['request-id']).toBe('req_upstream_trace_1');
+    expect(responseTrace.parsed_body?.error?.type).toBe('invalid_request_error');
+    expect(responseTrace.parsed_body?.error?.message).toBe('Error');
+
+    infoSpy.mockRestore();
     upstreamSpy.mockRestore();
   });
 

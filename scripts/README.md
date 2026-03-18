@@ -5,7 +5,7 @@ Only the focused operator commands remain.
 ## Install
 
 ```bash
-cd /Users/dylanvu/innies
+cd /path/to/innies
 chmod +x scripts/install.sh
 ./scripts/install.sh
 ```
@@ -35,10 +35,12 @@ innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
 innies-slo-check
-innies-issue80-local-replay
-innies-issue80-direct-anthropic
-innies-issue80-prod-journal
 ```
+
+Compatibility aliases:
+- `innies-issue80-local-replay`
+- `innies-issue80-direct-anthropic`
+- `innies-issue80-prod-journal`
 
 What they do:
 - `innies-diagnose-loop`: single entrypoint for the reusable diagnosis workflow; dispatches to the more specific diagnosis commands and points at the runbook
@@ -59,9 +61,7 @@ What they do:
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
-- `innies-issue80-local-replay`: replay a saved Anthropic `/v1/messages` body against local Innies, pin Anthropic, save headers/body artifacts, and print DB evidence for the generated `x-request-id`
-- `innies-issue80-direct-anthropic`: replay the same saved body directly to Anthropic with an explicit beta-header lane (`caller_only|caller_plus_oauth|oauth_only|none`)
-- `innies-issue80-prod-journal`: pull raw Innies prod journal logs from the devops API, save an artifact file, and optionally local-filter by request id / process / error pattern
+- `innies-issue80-*`: compatibility aliases for the diagnosis commands above
 
 Behavior:
 - org id auto-uses `INNIES_ORG_ID`
@@ -105,15 +105,15 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
-- `innies-issue80-local-replay` defaults `anthropic-beta` to `fine-grained-tool-streaming-2025-05-14`, sends `x-innies-provider-pin: true`, and keeps all artifacts under `/tmp` unless `ISSUE80_OUT_DIR` is set
-- `innies-issue80-local-replay` also prints `in_routing_events`, `in_usage_ledger`, and `in_request_log` rows when `DATABASE_URL` + `psql` are available
-- `innies-issue80-direct-anthropic` picks its bearer token from `CLAUDE_CODE_OAUTH_TOKEN`, then `ANTHROPIC_OAUTH_ACCESS_TOKEN`, then `ANTHROPIC_ACCESS_TOKEN`
-- `innies-issue80-direct-anthropic caller_plus_oauth` is the closest direct-OAuth comparison lane to the working OpenClaw path
-- `innies-issue80-prod-journal` defaults to `https://admin.spicefi.xyz`, `env=prod`, `unit=innies-api`; `--since` is optional and any trailing args are treated as local `rg`/`grep` patterns
-- `innies-issue80-prod-journal` reads credentials from `DEVOPS_JOURNAL_USER` / `DEVOPS_JOURNAL_PASSWORD` when set, otherwise prompts
-- `innies-diagnose-*` commands are the supported generic names; the `innies-issue80-*` names remain as legacy aliases
+- `innies-diagnose-local-replay` defaults `anthropic-beta` to `fine-grained-tool-streaming-2025-05-14`, sends `x-innies-provider-pin: true`, and keeps artifacts under `/tmp` unless `INNIES_DIAG_OUT_DIR` or `ISSUE80_OUT_DIR` is set
+- `innies-diagnose-local-replay` also prints `in_routing_events`, `in_usage_ledger`, and `in_request_log` rows when `DATABASE_URL` + `psql` are available
+- `innies-diagnose-direct-anthropic` picks its bearer token from `CLAUDE_CODE_OAUTH_TOKEN`, then `ANTHROPIC_OAUTH_ACCESS_TOKEN`, then `ANTHROPIC_ACCESS_TOKEN`
+- `innies-diagnose-direct-anthropic caller_plus_oauth` is the closest direct-OAuth comparison lane to the working OpenClaw path
+- `innies-diagnose-prod-journal` defaults to `https://admin.spicefi.xyz`, `env=prod`, `unit=innies-api`; `--since` is optional and trailing args are treated as local `rg`/`grep` patterns
+- `innies-diagnose-prod-journal` reads credentials from `DEVOPS_JOURNAL_USER` / `DEVOPS_JOURNAL_PASSWORD` when set, otherwise prompts
+- `innies-diagnose-*` commands are the supported names; the `innies-issue80-*` names remain as compatibility aliases
 - `innies-diagnose-loop` is the preferred command to ask an agent to use, because it gives a single command prefix for future permission approval
-- local API diagnosis can set `INNIES_COMPAT_CAPTURE_DIR=/tmp/innies-issue80-capture` to save the exact compat ingress body plus the exact Anthropic first-pass upstream body under one request-id directory for diffing and direct replay
+- local API diagnosis can set `INNIES_COMPAT_CAPTURE_DIR=/tmp/innies-diagnose-capture` to save the exact compat ingress body plus the exact Anthropic first-pass upstream body under one request-id directory for diffing and direct replay
 
 ## Env
 
@@ -138,7 +138,7 @@ For `innies-buyer-preference-check`:
 - `INNIES_MODEL_ANTHROPIC` is required if you check Claude Code
 - `INNIES_MODEL_CODEX` is required if you check Codex
 
-For `innies-issue80-prod-journal`:
+For `innies-diagnose-prod-journal`:
 - `DEVOPS_JOURNAL_USER` is optional, but avoids the username prompt
 - `DEVOPS_JOURNAL_PASSWORD` is optional, but avoids the password prompt
 - `DEVOPS_JOURNAL_HOST` is optional; default is `https://admin.spicefi.xyz`
