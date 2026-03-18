@@ -358,6 +358,32 @@ describe('tokenCredentialRepository', () => {
     expect(db.queries[0].sql).toContain("and provider = 'anthropic'");
   });
 
+  it('updates debug_label without rotating or reviving revoked credentials', async () => {
+    const db = new SequenceSqlClient([{
+      rows: [{
+        id: 'cred_1',
+        org_id: '00000000-0000-0000-0000-000000000001',
+        provider: 'openai',
+        debug_label: 'codex-main-2'
+      }],
+      rowCount: 1
+    }]);
+    const repo = new TokenCredentialRepository(db);
+
+    const updated = await repo.updateDebugLabel('cred_1', 'codex-main-2');
+
+    expect(updated).toEqual({
+      id: 'cred_1',
+      orgId: '00000000-0000-0000-0000-000000000001',
+      provider: 'openai',
+      debugLabel: 'codex-main-2'
+    });
+    expect(db.queries[0].sql).toContain('debug_label = $2');
+    expect(db.queries[0].sql).toContain('updated_at = now()');
+    expect(db.queries[0].sql).toContain("status <> 'revoked'");
+    expect(db.queries[0].params).toEqual(['cred_1', 'codex-main-2']);
+  });
+
   it('records failure and marks credential maxed when threshold is reached', async () => {
     const db = new SequenceSqlClient([
       {

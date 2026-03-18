@@ -151,6 +151,7 @@ describe('admin token credential routes idempotent replay', () => {
   let revokeHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let pauseHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let unpauseHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let labelHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let refreshTokenHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let contributionCapHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let probeHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
@@ -169,6 +170,7 @@ describe('admin token credential routes idempotent replay', () => {
     revokeHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/revoke');
     pauseHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/pause');
     unpauseHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/unpause');
+    labelHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/label');
     refreshTokenHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/refresh-token');
     contributionCapHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/contribution-cap');
     probeHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/probe');
@@ -216,6 +218,13 @@ describe('admin token credential routes idempotent replay', () => {
       provider: 'anthropic',
       debugLabel: 'oauth-main-1',
       status: 'active',
+      changed: true
+    } as any);
+    (runtimeModule.runtime.services.tokenCredentials as any).updateDebugLabel = vi.fn().mockResolvedValue({
+      id: 'z',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      debugLabel: 'oauth-main-2',
       changed: true
     } as any);
     vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'setRefreshToken').mockResolvedValue(true);
@@ -282,7 +291,7 @@ describe('admin token credential routes idempotent replay', () => {
     vi.restoreAllMocks();
   });
 
-  it('replays create/rotate/revoke/pause/unpause/refresh-token/contribution-cap/probe/provider-usage-refresh deterministically without executing mutations', async () => {
+  it('replays create/rotate/revoke/pause/unpause/label/refresh-token/contribution-cap/probe/provider-usage-refresh deterministically without executing mutations', async () => {
     const headers = {
       authorization: 'Bearer in_admin_token',
       'content-type': 'application/json',
@@ -366,6 +375,22 @@ describe('admin token credential routes idempotent replay', () => {
     expect(resUnpause.headers['x-idempotent-replay']).toBe('true');
     expect((resUnpause.body as any).replayed).toBe(true);
 
+    const reqLabel = createMockReq({
+      method: 'PATCH',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/label',
+      headers,
+      params: { id: '11111111-1111-4111-8111-111111111111' },
+      body: {
+        debugLabel: 'codex-main-2'
+      }
+    });
+    const resLabel = createMockRes();
+    await invoke(labelHandlers[0], reqLabel, resLabel);
+    await invoke(labelHandlers[1], reqLabel, resLabel);
+    expect(resLabel.statusCode).toBe(200);
+    expect(resLabel.headers['x-idempotent-replay']).toBe('true');
+    expect((resLabel.body as any).replayed).toBe(true);
+
     const reqRefresh = createMockReq({
       method: 'PATCH',
       path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/refresh-token',
@@ -429,6 +454,7 @@ describe('admin token credential routes idempotent replay', () => {
     expect(runtimeModule.runtime.services.tokenCredentials.revoke).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.tokenCredentials.pause).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.tokenCredentials.unpause).not.toHaveBeenCalled();
+    expect((runtimeModule.runtime.services.tokenCredentials as any).updateDebugLabel).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.tokenCredentials.setRefreshToken).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.tokenCredentials.updateContributionCap).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.repos.tokenCredentials.getById).not.toHaveBeenCalled();
@@ -938,6 +964,196 @@ describe('admin token credential routes idempotent replay', () => {
     });
     expect(unpauseSpy).toHaveBeenCalledTimes(2);
     expect(commitSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('updates a token credential label without rotating it', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_label_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123472',
+        requestHash: 'label_h_1'
+      }
+    } as any);
+
+    const updateSpy = vi.fn().mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      debugLabel: 'codex-main-2',
+      changed: true
+    } as any);
+    (runtimeModule.runtime.services.tokenCredentials as any).updateDebugLabel = updateSpy;
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'PATCH',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/label',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123472'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' },
+      body: {
+        debugLabel: 'codex-main-2'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(labelHandlers[0], req, res);
+    await invoke(labelHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any)).toEqual({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      debugLabel: 'codex-main-2',
+      changed: true
+    });
+    expect(updateSpy).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111',
+      'codex-main-2',
+      expect.any(Object)
+    );
+    expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns changed=false when the requested label already matches', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_label_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123473',
+        requestHash: 'label_h_2'
+      }
+    } as any);
+
+    const updateSpy = vi.fn().mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      debugLabel: 'oauth-main-1',
+      changed: false
+    } as any);
+    (runtimeModule.runtime.services.tokenCredentials as any).updateDebugLabel = updateSpy;
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'PATCH',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/label',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123473'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' },
+      body: {
+        debugLabel: 'oauth-main-1'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(labelHandlers[0], req, res);
+    await invoke(labelHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any)).toEqual({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      debugLabel: 'oauth-main-1',
+      changed: false
+    });
+    expect(updateSpy).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111',
+      'oauth-main-1',
+      expect.any(Object)
+    );
+    expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects empty token credential labels', async () => {
+    const updateSpy = vi.fn();
+    (runtimeModule.runtime.services.tokenCredentials as any).updateDebugLabel = updateSpy;
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'PATCH',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/label',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123474'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' },
+      body: {
+        debugLabel: '   '
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(labelHandlers[0], req, res);
+    await invoke(labelHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any)).toMatchObject({
+      code: 'invalid_request',
+      message: 'Invalid request'
+    });
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(commitSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when updating the label of a missing token credential', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_label_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123475',
+        requestHash: 'label_h_missing'
+      }
+    } as any);
+
+    const updateSpy = vi.fn().mockResolvedValue(null);
+    (runtimeModule.runtime.services.tokenCredentials as any).updateDebugLabel = updateSpy;
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'PATCH',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/label',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123475'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' },
+      body: {
+        debugLabel: 'missing-label'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(labelHandlers[0], req, res);
+    await invoke(labelHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(404);
+    expect((res.body as any)).toMatchObject({
+      code: 'invalid_request',
+      message: 'Token credential not found'
+    });
+    expect(updateSpy).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111',
+      'missing-label',
+      expect.any(Object)
+    );
+    expect(commitSpy).not.toHaveBeenCalled();
   });
 
   it('updates token contribution caps by id without touching rotation state', async () => {

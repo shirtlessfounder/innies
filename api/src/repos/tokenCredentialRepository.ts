@@ -436,6 +436,48 @@ export class TokenCredentialRepository {
     return result.rowCount === 1;
   }
 
+  async updateDebugLabel(
+    id: string,
+    debugLabel: string
+  ): Promise<{
+    id: string;
+    orgId: string;
+    provider: string;
+    debugLabel: string;
+  } | null> {
+    const sql = `
+      update ${TABLES.tokenCredentials}
+      set
+        debug_label = $2,
+        updated_at = now()
+      where id = $1
+        and status <> 'revoked'
+      returning
+        id,
+        org_id,
+        provider,
+        debug_label
+    `;
+
+    const result = await this.db.query<{
+      id: string;
+      org_id: string;
+      provider: string;
+      debug_label: string;
+    }>(sql, [id, debugLabel]);
+
+    if (result.rowCount !== 1) {
+      return null;
+    }
+
+    return {
+      id: result.rows[0].id,
+      orgId: result.rows[0].org_id,
+      provider: result.rows[0].provider,
+      debugLabel: result.rows[0].debug_label
+    };
+  }
+
   async updateContributionCap(
     id: string,
     input: UpdateTokenCredentialContributionCapInput

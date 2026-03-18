@@ -9,6 +9,7 @@ mkdir -p "$BIN_DIR"
 ln -sf "${ROOT_DIR}/scripts/innies-token-add.sh" "${BIN_DIR}/innies-token-add"
 ln -sf "${ROOT_DIR}/scripts/innies-token-rotate.sh" "${BIN_DIR}/innies-token-rotate"
 ln -sf "${ROOT_DIR}/scripts/innies-token-pause.sh" "${BIN_DIR}/innies-token-pause"
+ln -sf "${ROOT_DIR}/scripts/innies-token-label-set.sh" "${BIN_DIR}/innies-token-label-set"
 ln -sf "${ROOT_DIR}/scripts/innies-token-contribution-cap-set.sh" "${BIN_DIR}/innies-token-contribution-cap-set"
 ln -sf "${ROOT_DIR}/scripts/innies-token-refresh-token-set.sh" "${BIN_DIR}/innies-token-refresh-token-set"
 ln -sf "${ROOT_DIR}/scripts/innies-token-probe-run.sh" "${BIN_DIR}/innies-token-probe-run"
@@ -18,6 +19,9 @@ ln -sf "${ROOT_DIR}/scripts/innies-buyer-preference-set.sh" "${BIN_DIR}/innies-b
 ln -sf "${ROOT_DIR}/scripts/innies-buyer-preference-get.sh" "${BIN_DIR}/innies-buyer-preference-get"
 ln -sf "${ROOT_DIR}/scripts/innies-buyer-preference-check.sh" "${BIN_DIR}/innies-buyer-preference-check"
 ln -sf "${ROOT_DIR}/scripts/innies-slo-check.sh" "${BIN_DIR}/innies-slo-check"
+ln -sf "${ROOT_DIR}/scripts/issue80-local-replay.sh" "${BIN_DIR}/innies-issue80-local-replay"
+ln -sf "${ROOT_DIR}/scripts/issue80-direct-anthropic.sh" "${BIN_DIR}/innies-issue80-direct-anthropic"
+ln -sf "${ROOT_DIR}/scripts/issue80-prod-journal.sh" "${BIN_DIR}/innies-issue80-prod-journal"
 
 rm -f \
   "${BIN_DIR}/innies-admin" \
@@ -40,6 +44,7 @@ echo 'Installed:'
 echo "  ${BIN_DIR}/innies-token-add -> ${ROOT_DIR}/scripts/innies-token-add.sh"
 echo "  ${BIN_DIR}/innies-token-rotate -> ${ROOT_DIR}/scripts/innies-token-rotate.sh"
 echo "  ${BIN_DIR}/innies-token-pause -> ${ROOT_DIR}/scripts/innies-token-pause.sh"
+echo "  ${BIN_DIR}/innies-token-label-set -> ${ROOT_DIR}/scripts/innies-token-label-set.sh"
 echo "  ${BIN_DIR}/innies-token-contribution-cap-set -> ${ROOT_DIR}/scripts/innies-token-contribution-cap-set.sh"
 echo "  ${BIN_DIR}/innies-token-refresh-token-set -> ${ROOT_DIR}/scripts/innies-token-refresh-token-set.sh"
 echo "  ${BIN_DIR}/innies-token-probe-run -> ${ROOT_DIR}/scripts/innies-token-probe-run.sh"
@@ -49,6 +54,9 @@ echo "  ${BIN_DIR}/innies-buyer-preference-set -> ${ROOT_DIR}/scripts/innies-buy
 echo "  ${BIN_DIR}/innies-buyer-preference-get -> ${ROOT_DIR}/scripts/innies-buyer-preference-get.sh"
 echo "  ${BIN_DIR}/innies-buyer-preference-check -> ${ROOT_DIR}/scripts/innies-buyer-preference-check.sh"
 echo "  ${BIN_DIR}/innies-slo-check -> ${ROOT_DIR}/scripts/innies-slo-check.sh"
+echo "  ${BIN_DIR}/innies-issue80-local-replay -> ${ROOT_DIR}/scripts/issue80-local-replay.sh"
+echo "  ${BIN_DIR}/innies-issue80-direct-anthropic -> ${ROOT_DIR}/scripts/issue80-direct-anthropic.sh"
+echo "  ${BIN_DIR}/innies-issue80-prod-journal -> ${ROOT_DIR}/scripts/issue80-prod-journal.sh"
 echo
 echo 'If command not found, add ~/.local/bin to PATH:'
 echo '  export PATH="$HOME/.local/bin:$PATH"'

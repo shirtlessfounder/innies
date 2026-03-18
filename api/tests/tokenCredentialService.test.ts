@@ -128,6 +128,89 @@ describe('tokenCredentialService', () => {
     expect(createEvent).not.toHaveBeenCalled();
   });
 
+  it('updates a token credential debug label and writes an audit event', async () => {
+    const repo = {
+      getById: vi.fn(async () => ({
+        id: 'cred_1',
+        orgId: 'org_1',
+        provider: 'openai',
+        debugLabel: 'codex-main-1',
+        status: 'active'
+      })),
+      updateDebugLabel: vi.fn(async () => ({
+        id: 'cred_1',
+        orgId: 'org_1',
+        provider: 'openai',
+        debugLabel: 'codex-main-2'
+      }))
+    };
+    const createEvent = vi.fn(async () => ({ id: 'audit_1' }));
+    const service = new TokenCredentialService(repo as any, { createEvent } as any);
+
+    const updated = await service.updateDebugLabel('cred_1', 'codex-main-2');
+
+    expect(updated).toEqual({
+      id: 'cred_1',
+      orgId: 'org_1',
+      provider: 'openai',
+      debugLabel: 'codex-main-2',
+      changed: true
+    });
+    expect(repo.getById).toHaveBeenCalledWith('cred_1');
+    expect(repo.updateDebugLabel).toHaveBeenCalledWith('cred_1', 'codex-main-2');
+    expect(createEvent).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'token_credential.update_debug_label',
+      targetId: 'cred_1',
+      orgId: 'org_1',
+      metadata: expect.objectContaining({
+        previousDebugLabel: 'codex-main-1',
+        debugLabel: 'codex-main-2'
+      })
+    }));
+  });
+
+  it('preserves label no-ops and rejects revoked credentials', async () => {
+    const activeRepo = {
+      getById: vi.fn(async () => ({
+        id: 'cred_1',
+        orgId: 'org_1',
+        provider: 'anthropic',
+        debugLabel: 'oauth-main-1',
+        status: 'active'
+      })),
+      updateDebugLabel: vi.fn()
+    };
+    const activeCreateEvent = vi.fn();
+    const activeService = new TokenCredentialService(activeRepo as any, { createEvent: activeCreateEvent } as any);
+
+    await expect(activeService.updateDebugLabel('cred_1', 'oauth-main-1')).resolves.toEqual({
+      id: 'cred_1',
+      orgId: 'org_1',
+      provider: 'anthropic',
+      debugLabel: 'oauth-main-1',
+      changed: false
+    });
+    expect(activeRepo.updateDebugLabel).not.toHaveBeenCalled();
+    expect(activeCreateEvent).not.toHaveBeenCalled();
+
+    const revokedRepo = {
+      getById: vi.fn(async () => ({
+        id: 'cred_revoked',
+        orgId: 'org_1',
+        provider: 'anthropic',
+        debugLabel: 'old-label',
+        status: 'revoked'
+      })),
+      updateDebugLabel: vi.fn()
+    };
+    const revokedCreateEvent = vi.fn();
+    const revokedService = new TokenCredentialService(revokedRepo as any, { createEvent: revokedCreateEvent } as any);
+
+    await expect(revokedService.updateDebugLabel('cred_revoked', 'new-label')).resolves.toBeNull();
+    expect(revokedRepo.updateDebugLabel).not.toHaveBeenCalled();
+    expect(revokedCreateEvent).not.toHaveBeenCalled();
+  });
+
   it('writes audit events for pause and unpause', async () => {
     const repo = {
       getById: vi.fn(async (id: string) => ({
