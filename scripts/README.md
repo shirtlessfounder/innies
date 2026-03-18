@@ -10,9 +10,18 @@ chmod +x scripts/install.sh
 ./scripts/install.sh
 ```
 
+Notes:
+- if you accidentally run install from a temp worker/worktree path under `/tmp` or `/private/tmp`, it now prefers `~/innies` as the canonical symlink target when that repo exists
+- override that behavior with `INNIES_INSTALL_ROOT=/absolute/path ./scripts/install.sh`
+
 ## Commands
 
 ```bash
+innies-diagnose-loop
+innies-diagnose-prod-journal
+innies-diagnose-local-replay
+innies-diagnose-direct-anthropic
+innies-diagnose-anthropic-pool
 innies-token-add
 innies-token-rotate
 innies-token-pause
@@ -32,6 +41,11 @@ innies-issue80-prod-journal
 ```
 
 What they do:
+- `innies-diagnose-loop`: single entrypoint for the reusable diagnosis workflow; dispatches to the more specific diagnosis commands and points at the runbook
+- `innies-diagnose-prod-journal`: fetch/filter Innies prod journal logs from the devops API for request-id / process / error correlation
+- `innies-diagnose-local-replay`: replay a saved Anthropic `/v1/messages` body against local Innies, pin Anthropic, save artifacts, and print DB evidence
+- `innies-diagnose-direct-anthropic`: replay the same saved body directly to Anthropic so a direct-vs-Innies diff can be proven
+- `innies-diagnose-anthropic-pool`: print the active Anthropic token pool with reserve thresholds and latest provider-usage snapshots
 - `innies-token-add`: create a Claude Code or Codex OAuth credential
 - `innies-token-rotate`: rotate a Claude Code or Codex OAuth credential pool
 - `innies-token-pause`: pause or unpause a token credential so routing excludes or re-admits it manually
@@ -97,6 +111,8 @@ Behavior:
 - `innies-issue80-direct-anthropic caller_plus_oauth` is the closest direct-OAuth comparison lane to the working OpenClaw path
 - `innies-issue80-prod-journal` defaults to `https://admin.spicefi.xyz`, `env=prod`, `unit=innies-api`; `--since` is optional and any trailing args are treated as local `rg`/`grep` patterns
 - `innies-issue80-prod-journal` reads credentials from `DEVOPS_JOURNAL_USER` / `DEVOPS_JOURNAL_PASSWORD` when set, otherwise prompts
+- `innies-diagnose-*` commands are the supported generic names; the `innies-issue80-*` names remain as legacy aliases
+- `innies-diagnose-loop` is the preferred command to ask an agent to use, because it gives a single command prefix for future permission approval
 - local API diagnosis can set `INNIES_COMPAT_CAPTURE_DIR=/tmp/innies-issue80-capture` to save the exact compat ingress body plus the exact Anthropic first-pass upstream body under one request-id directory for diffing and direct replay
 
 ## Env
