@@ -20,6 +20,8 @@ innies-token-contribution-cap-set
 innies-token-refresh-token-set
 innies-token-probe-run
 innies-token-usage-refresh
+innies-compat-artifact-extract
+innies-compat-artifact-index
 innies-buyer-key-create
 innies-buyer-preference-set
 innies-buyer-preference-get
@@ -35,6 +37,8 @@ What they do:
 - `innies-token-refresh-token-set`: set or clear the stored OAuth refresh token for an existing credential id
 - `innies-token-probe-run`: directly probe an active or maxed token credential now; successful maxed probes immediately reactivate it
 - `innies-token-usage-refresh`: fetch Claude provider usage for a token now and print raw plus parsed 5h / 7d values
+- `innies-compat-artifact-extract`: reconstruct one saved compat artifact request bundle by `request_id` and write the ingress, payload, upstream request, upstream response, and summary files to an output directory
+- `innies-compat-artifact-index`: scan a saved compat response HTML/log artifact and list reconstructable request bundles; optional second and third args filter by provider and upstream status
 - `innies-buyer-key-create`: create a new buyer key in `in_api_keys` and prompt for provider preference up front
 - `innies-buyer-preference-set`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
 - `innies-buyer-preference-get`: read the current buyer key preference
