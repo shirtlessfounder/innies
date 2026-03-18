@@ -35,12 +35,16 @@ Use this to get your own Claude or Codex/OpenAI login into a form an Innies admi
 1. Log in:
 
    ```bash
-   codex --login
+   codex login
    ```
 
-2. Confirm Codex stays logged in when you reopen it.
+2. Confirm Codex stays logged in when you reopen it. A quick sanity check is:
 
-3. Open:
+   ```bash
+   codex login status
+   ```
+
+3. Current Codex CLI builds store the login session in:
 
    ```text
    ~/.codex/auth.json
@@ -67,4 +71,4 @@ Codex:
 ## Quick Fixes
 - `claude` opens Innies instead of Claude Code: run `which -a claude` and use the non-wrapper path.
 - You cannot find the Claude token on macOS: check Keychain Access.
-- `~/.codex/auth.json` is missing: re-run `codex --login`.
+- `~/.codex/auth.json` is missing: re-run `codex login`. If `codex login status` still shows a logged-in session but the file is absent, your Codex build may be storing auth elsewhere, so confirm the current storage path before extracting tokens manually.
