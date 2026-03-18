@@ -34,17 +34,23 @@ if [[ "$system_status" != "200" ]]; then
 fi
 
 # --- fetch routing summary ---
-routing_response="$(curl -sS -w '\n%{http_code}' \
+routing_available=0
+routing_unavailable_reason=""
+if routing_response="$(curl -sS -w '\n%{http_code}' \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "${BASE_URL%/}/v1/admin/analytics/tokens/routing?window=${WINDOW}")"
+  "${BASE_URL%/}/v1/admin/analytics/tokens/routing?window=${WINDOW}" 2>/dev/null)"; then
+  routing_status="$(printf '%s' "$routing_response" | tail -n1)"
+  routing_body="$(printf '%s' "$routing_response" | sed '$d')"
 
-routing_status="$(printf '%s' "$routing_response" | tail -n1)"
-routing_body="$(printf '%s' "$routing_response" | sed '$d')"
-
-if [[ "$routing_status" != "200" ]]; then
-  echo "error: /v1/admin/analytics/tokens/routing returned HTTP $routing_status" >&2
-  echo "$routing_body" >&2
-  exit 1
+  if [[ "$routing_status" == "200" ]]; then
+    routing_available=1
+  else
+    routing_unavailable_reason="/v1/admin/analytics/tokens/routing returned HTTP $routing_status"
+  fi
+else
+  routing_status=""
+  routing_body="$routing_response"
+  routing_unavailable_reason="/v1/admin/analytics/tokens/routing request failed"
 fi
 
 # --- extract metrics ---
@@ -53,15 +59,44 @@ error_rate="$(printf '%s' "$system_body" | jq -r '.errorRate // 0')"
 system_fallback_rate="$(printf '%s' "$system_body" | jq -r '.fallbackRate // 0')"
 total_requests="$(printf '%s' "$system_body" | jq -r '.totalRequests // 0')"
 
-# Compute fallback rate from routing tokens as cross-check
-routing_fallback_rate="$(printf '%s' "$routing_body" | jq -r '
-  [.tokens[] | {f: (.fallbackCount // 0), t: (.totalAttempts // 0)}]
-  | {total_fallbacks: (map(.f) | add // 0), total_attempts: (map(.t) | add // 0)}
-  | if .total_attempts == 0 then 0
-    else (.total_fallbacks / .total_attempts)
-    end')"
+# Compute fallback rate from routing tokens as cross-check when available.
+if [[ "$routing_available" -eq 1 ]]; then
+  if routing_fallback_rate="$(printf '%s' "$routing_body" | jq -er '
+    if (.tokens | type) != "array" then
+      error("tokens must be an array")
+    elif any(.tokens[]?;
+      if (type != "object") then
+        true
+      else
+        (.fallbackCount | type) != "number"
+        or (.totalAttempts | type) != "number"
+        or (.fallbackCount != (.fallbackCount | floor))
+        or (.totalAttempts != (.totalAttempts | floor))
+        or (.fallbackCount < 0)
+        or (.totalAttempts < 0)
+        or (.fallbackCount > .totalAttempts)
+      end
+    ) then
+      error("tokens must contain valid fallbackCount and totalAttempts counts")
+    else
+      [.tokens[] | {f: .fallbackCount, t: .totalAttempts}]
+      | {total_fallbacks: (map(.f) | add // 0), total_attempts: (map(.t) | add // 0)}
+      | if .total_attempts == 0 then 0
+        else (.total_fallbacks / .total_attempts)
+        end
+    end' 2>/dev/null)"; then
+    routing_fallback_display="$(jq -n -r --argjson v "$routing_fallback_rate" '($v * 100 * 100 | round) / 100 | tostring + "%"')"
+    routing_cross_check_line="(routing cross-check: attributed per-token aggregate fallback rate = ${routing_fallback_display})"
+  else
+    routing_cross_check_line="(routing cross-check: unavailable - /v1/admin/analytics/tokens/routing returned malformed data)"
+  fi
+else
+  routing_cross_check_line="(routing cross-check: unavailable - ${routing_unavailable_reason})"
+fi
 
-# Use system-level fallback rate as primary
+# Keep the main fallback row on the whole-population system summary.
+# The routing aggregate is still useful operator context, but it excludes
+# events without a resolved tokenCredentialId.
 fallback_rate="$system_fallback_rate"
 
 # Derive timeout rate and success rate from errorRate
@@ -131,6 +166,8 @@ printf '%-28s %-12s %-12s %s\n' "Fallback rate" "flag > 20%" "$fallback_display"
 echo "================================================================"
 echo "* timeout_rate and success_rate are derived from the same errorRate metric."
 echo "  The API does not yet separate timeouts from other errors."
+echo "* Fallback source: /v1/admin/analytics/system whole-population fallback rate."
+echo "* Routing cross-check below is per-token-only and may exclude unattributed events."
 
 if [[ "$exit_code" -eq 0 ]]; then
   echo "All SLOs passed."
@@ -139,6 +176,6 @@ else
 fi
 
 echo ""
-echo "(routing cross-check: per-token aggregate fallback rate = $(jq -n --argjson v "$routing_fallback_rate" '($v * 100 * 100 | round) / 100 | tostring + "%"'))"
+echo "${routing_cross_check_line}"
 
 exit "$exit_code"
