@@ -19,6 +19,11 @@ import {
   hasTerminalOpenAiResponsesStreamEvent,
   summarizeSyntheticOpenAiOutputItems
 } from '../utils/openaiSyntheticStream.js';
+import {
+  collectTraceResponseHeaders,
+  persistCompatTraceBody,
+  sanitizeTraceHeaders
+} from '../utils/compatTrace.js';
 import { extractRequestPreview, extractResponsePreview } from '../utils/requestLogPreview.js';
 import {
   isOpenAiOauthAccessToken,
@@ -474,6 +479,8 @@ const ANTHROPIC_OAUTH_BETAS = [
   'oauth-2025-04-20',
   ...ANTHROPIC_DEFAULT_BETAS
 ] as const;
+
+const CLAUDE_CODE_IDENTITY_SYSTEM_TEXT = "You are Claude Code, Anthropic's official CLI for Claude.";
 
 function parseAnthropicBetaHeader(value: string): string[] {
   return value
@@ -1318,6 +1325,50 @@ function resolveTokenModeTargetUrl(input: {
   return new URL(proxiedPath, upstreamBaseUrl(provider));
 }
 
+function createClaudeCodeIdentitySystemBlock(): Record<string, unknown> {
+  return {
+    type: 'text',
+    text: CLAUDE_CODE_IDENTITY_SYSTEM_TEXT,
+    cache_control: { type: 'ephemeral' }
+  };
+}
+
+function hasClaudeCodeIdentitySystemBlock(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return (value as Record<string, unknown>).type === 'text'
+    && (value as Record<string, unknown>).text === CLAUDE_CODE_IDENTITY_SYSTEM_TEXT;
+}
+
+function normalizeAnthropicOauthMessagesPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...payload };
+  const system = normalized.system;
+
+  if (Array.isArray(system)) {
+    if (system.some(hasClaudeCodeIdentitySystemBlock)) {
+      return normalized;
+    }
+    normalized.system = [createClaudeCodeIdentitySystemBlock(), ...system];
+    return normalized;
+  }
+
+  if (typeof system === 'string') {
+    if (system.trimStart().startsWith(CLAUDE_CODE_IDENTITY_SYSTEM_TEXT)) {
+      return normalized;
+    }
+    normalized.system = [
+      createClaudeCodeIdentitySystemBlock(),
+      { type: 'text', text: system }
+    ];
+    return normalized;
+  }
+
+  if (system == null) {
+    normalized.system = [createClaudeCodeIdentitySystemBlock()];
+  }
+
+  return normalized;
+}
+
 function normalizeTokenModeUpstreamPayload(input: {
   provider: string;
   credential: TokenCredential;
@@ -1326,9 +1377,13 @@ function normalizeTokenModeUpstreamPayload(input: {
   streaming?: boolean;
 }): unknown {
   const { provider, credential, proxiedPath, payload, streaming } = input;
-  if (!isOpenAiOauthToken(credential, provider)) return payload;
-
   const parsed = parseRelativeProxyUrl(proxiedPath);
+  if (isAnthropicOauthToken(credential, provider)) {
+    if (parsed.pathname !== '/v1/messages') return payload;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+    return normalizeAnthropicOauthMessagesPayload(payload as Record<string, unknown>);
+  }
+  if (!isOpenAiOauthToken(credential, provider)) return payload;
   if (parsed.pathname !== '/v1/responses') return payload;
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
 
@@ -1451,6 +1506,109 @@ async function readUpstreamBody(input: {
       looksLikeSse: sseLike
     };
   }
+}
+
+function shouldTraceAnthropicFirstPass(input: {
+  provider: string;
+  proxiedPath: string;
+  credential: TokenCredential;
+  attemptNo: number;
+  compat: CompatNormalizationState;
+}): boolean {
+  return process.env.INNIES_ANTHROPIC_FIRST_PASS_TRACE === '1'
+    && input.provider === 'anthropic'
+    && input.proxiedPath === '/v1/messages'
+    && input.attemptNo === 1
+    && isAnthropicOauthToken(input.credential, input.provider)
+    && !input.compat.blockedRetryApplied
+    && !input.compat.oauthRetryApplied;
+}
+
+function logAnthropicFirstPassTraceRequest(input: {
+  requestId: string;
+  attemptNo: number;
+  provider: string;
+  proxiedPath: string;
+  targetUrl: URL;
+  credential: TokenCredential;
+  headers: Record<string, string>;
+  body: string;
+  streaming: boolean;
+}): void {
+  const headers = sanitizeTraceHeaders(input.headers);
+  const capture = persistCompatTraceBody({
+    requestId: input.requestId,
+    phase: 'upstream-request',
+    attemptNo: input.attemptNo,
+    body: input.body,
+    metadata: {
+      provider: input.provider,
+      proxied_path: input.proxiedPath,
+      target_url: input.targetUrl.toString(),
+      credential_id: input.credential.id,
+      credential_label: input.credential.debugLabel ?? null,
+      stream: input.streaming,
+      headers
+    }
+  });
+
+  console.info('[anthropic-first-pass-trace-request]', {
+    request_id: input.requestId,
+    attempt_no: input.attemptNo,
+    provider: input.provider,
+    proxied_path: input.proxiedPath,
+    target_url: input.targetUrl.toString(),
+    credential_id: input.credential.id,
+    credential_label: input.credential.debugLabel ?? null,
+    stream: input.streaming,
+    headers,
+    body_sha256: capture?.bodySha256 ?? sha256Hex(input.body),
+    body_bytes: capture?.bodyBytes ?? Buffer.byteLength(input.body, 'utf8'),
+    body_path: capture?.bodyPath ?? null,
+    meta_path: capture?.metaPath ?? null
+  });
+}
+
+async function logAnthropicFirstPassTraceResponse(input: {
+  requestId: string;
+  attemptNo: number;
+  provider: string;
+  proxiedPath: string;
+  targetUrl: URL;
+  credential: TokenCredential;
+  upstreamResponse: globalThis.Response;
+}): Promise<void> {
+  const contentType = input.upstreamResponse.headers.get('content-type') ?? 'application/octet-stream';
+  const responseHeaders = collectTraceResponseHeaders(input.upstreamResponse.headers);
+  let parsedBody: unknown = undefined;
+  let bodySha256: string | null = null;
+  let bodyBytes: number | null = null;
+
+  if (input.upstreamResponse.status >= 400 || contentType.includes('application/json')) {
+    const tracedBody = await readUpstreamBody({
+      upstreamResponse: input.upstreamResponse.clone(),
+      contentType
+    });
+    parsedBody = tracedBody.data;
+    bodySha256 = sha256Hex(tracedBody.rawText);
+    bodyBytes = Buffer.byteLength(tracedBody.rawText, 'utf8');
+  }
+
+  console.info('[anthropic-first-pass-trace-response]', {
+    request_id: input.requestId,
+    attempt_no: input.attemptNo,
+    provider: input.provider,
+    proxied_path: input.proxiedPath,
+    target_url: input.targetUrl.toString(),
+    credential_id: input.credential.id,
+    credential_label: input.credential.debugLabel ?? null,
+    upstream_status: input.upstreamResponse.status,
+    upstream_content_type: contentType,
+    response_headers: responseHeaders,
+    body_sha256: bodySha256,
+    body_bytes: bodyBytes,
+    parsed_body: parsedBody
+  });
 }
 
 function summarizeSyntheticContentBlocks(message: Record<string, unknown>): { count: number; types: string } {
@@ -1906,6 +2064,35 @@ async function executeTokenModeNonStreaming(input: {
         payload: compat.payload ?? {},
         streaming: false
       });
+      const upstreamHeaders = buildTokenModeUpstreamHeaders({
+        requestId,
+        anthropicVersion,
+        anthropicBeta: compat.anthropicBeta,
+        provider,
+        credential,
+        skipOauthDefaultBetas: compat.blockedRetryApplied
+      });
+      const upstreamBody = JSON.stringify(upstreamPayload);
+      const traceAnthropicFirstPass = shouldTraceAnthropicFirstPass({
+        provider,
+        proxiedPath,
+        credential,
+        attemptNo,
+        compat
+      });
+      if (traceAnthropicFirstPass) {
+        logAnthropicFirstPassTraceRequest({
+          requestId,
+          attemptNo,
+          provider,
+          proxiedPath,
+          targetUrl,
+          credential,
+          headers: upstreamHeaders,
+          body: upstreamBody,
+          streaming: false
+        });
+      }
 
       const logAttemptFailure = async (failure: AttemptFailure, ttfb?: number | null) => {
         await runtime.repos.routingEvents.insert({
@@ -1933,15 +2120,8 @@ async function executeTokenModeNonStreaming(input: {
 
       const upstreamResponse = await fetch(targetUrl, {
         method: 'POST',
-        headers: buildTokenModeUpstreamHeaders({
-          requestId,
-          anthropicVersion,
-          anthropicBeta: compat.anthropicBeta,
-          provider,
-          credential,
-          skipOauthDefaultBetas: compat.blockedRetryApplied
-        }),
-        body: JSON.stringify(upstreamPayload),
+        headers: upstreamHeaders,
+        body: upstreamBody,
         signal: controller.signal
       })
         .catch(async (error: unknown) => {
@@ -1956,6 +2136,17 @@ async function executeTokenModeNonStreaming(input: {
       const status = upstreamResponse.status;
       const upstreamHeadersAt = Date.now();
       const ttfbMs = Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt));
+      if (traceAnthropicFirstPass) {
+        await logAnthropicFirstPassTraceResponse({
+          requestId,
+          attemptNo,
+          provider,
+          proxiedPath,
+          targetUrl,
+          credential,
+          upstreamResponse
+        });
+      }
       if (status === 403 && strictUpstreamPassthrough) {
         const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
         const data = contentType.includes('application/json')
@@ -2556,6 +2747,26 @@ async function executeTokenModeStreaming(input: {
         payload: compat.payload ?? {},
         streaming: true
       }));
+      const traceAnthropicFirstPass = shouldTraceAnthropicFirstPass({
+        provider,
+        proxiedPath,
+        credential,
+        attemptNo,
+        compat
+      });
+      if (traceAnthropicFirstPass) {
+        logAnthropicFirstPassTraceRequest({
+          requestId,
+          attemptNo,
+          provider,
+          proxiedPath,
+          targetUrl,
+          credential,
+          headers: upstreamHeaders,
+          body: upstreamBody,
+          streaming: true
+        });
+      }
       const dispatchStartedAt = Date.now();
 
       const logAttemptFailure = async (failure: AttemptFailure, ttfb?: number | null) => {
@@ -2599,6 +2810,17 @@ async function executeTokenModeStreaming(input: {
 
       const status = upstreamResponse.status;
       const upstreamHeadersAt = Date.now();
+      if (traceAnthropicFirstPass) {
+        await logAnthropicFirstPassTraceResponse({
+          requestId,
+          attemptNo,
+          provider,
+          proxiedPath,
+          targetUrl,
+          credential,
+          upstreamResponse
+        });
+      }
       if (status === 403 && strictUpstreamPassthrough) {
         const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
         const data = contentType.includes('application/json')

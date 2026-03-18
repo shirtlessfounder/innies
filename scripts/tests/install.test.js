@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { chmod, cp, mkdtemp, mkdir, readlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-const sourceInstallPath = '/Users/dylanvu/innies/scripts/install.sh';
+const testDir = dirname(fileURLToPath(import.meta.url));
+const sourceInstallPath = join(testDir, '..', 'install.sh');
 
 async function setupFakeRepo(rootDir) {
   const scriptsDir = join(rootDir, 'scripts');

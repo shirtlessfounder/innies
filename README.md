@@ -54,9 +54,12 @@ scripts/      Operator scripts (add/rotate tokens, check preference)
 
 ### Environment
 ```bash
-cp scripts/innies-env.example .env
+mkdir -p ~/.config/innies
+cp scripts/innies-env.example ~/.config/innies/.env
 # Fill in DATABASE_URL, admin secret, and at least one OAuth token
 ```
+
+Operator scripts also accept checkout-local overrides in `scripts/.env.local`.
 
 ### Run
 ```bash

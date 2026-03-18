@@ -2,6 +2,8 @@
 
 Operator playbooks for the three most common incidents. Each uses `curl` against the analytics API.
 
+For agent-led end-to-end diagnosis and local-fix loops, see [INNIES_DIAGNOSIS_LOOP.md](./INNIES_DIAGNOSIS_LOOP.md).
+
 ## Setup
 
 ```bash
