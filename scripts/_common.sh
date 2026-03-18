@@ -11,11 +11,26 @@ SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENV_FILE="${INNIES_ENV_FILE:-${ROOT_DIR}/scripts/.env.local}"
 
-if [[ -f "$ENV_FILE" ]]; then
+load_env_file() {
+  local path="$1"
+  if [[ -f "$path" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$path"
+    set +a
+  fi
+}
+
+if [[ -n "${INNIES_ENV_FILE:-}" ]]; then
   set -a
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   set +a
+else
+  if [[ -n "${HOME:-}" ]]; then
+    load_env_file "${HOME}/.config/innies/.env"
+  fi
+  load_env_file "$ENV_FILE"
 fi
 
 if [[ -z "${DATABASE_URL:-}" && -f "${ROOT_DIR}/api/.env" ]]; then

@@ -23,6 +23,7 @@
 - `POST /v1/admin/token-credentials`
 - `POST /v1/admin/token-credentials/rotate`
 - `POST /v1/admin/token-credentials/:id/revoke`
+- `PATCH /v1/admin/token-credentials/:id/label`
 - `PATCH /v1/admin/token-credentials/:id/contribution-cap`
 - `POST /v1/admin/token-credentials/:id/probe`
 - `POST /v1/admin/token-credentials/:id/provider-usage-refresh`
@@ -231,6 +232,31 @@ Notes:
 - `maxed|expired|revoked|rotating` credentials are rejected with `invalid_request` / `409`
 - unpausing does not wipe any existing `rate_limited_until` backoff; it only restores `status = active`
 - request is idempotent and requires an `idempotency-key` header
+
+### `PATCH /v1/admin/token-credentials/:id/label`
+Change the stored credential label without rotating credential material (admin only).
+
+Request body:
+```json
+{
+  "debugLabel": "codex-main-2"
+}
+```
+
+Notes:
+- `debugLabel` is required, trimmed, and must be `1..64` characters
+- this is a metadata-only change; it does not rotate or revoke credentials
+- revoked or missing credentials return `invalid_request` / `404`
+- if the requested label already matches the stored label, Innies returns `200` with `changed: false`
+- request is idempotent and requires an `idempotency-key` header
+
+Response shape:
+- `ok`: always `true` on success
+- `id`: token credential id
+- `orgId`: owning org id
+- `provider`: token provider
+- `debugLabel`: resulting stored label
+- `changed`: `true` when Innies updated the stored label; `false` when the label already matched
 
 ### `PATCH /v1/admin/token-credentials/:id/contribution-cap`
 Set or clear Claude contribution-cap reserves for a token credential (admin only).

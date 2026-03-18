@@ -115,6 +115,10 @@ const tokenCredentialRefreshTokenSchema = z.object({
   refreshToken: z.string().trim().min(1).nullable()
 });
 
+const tokenCredentialDebugLabelSchema = z.object({
+  debugLabel: z.string().trim().min(1).max(64)
+});
+
 const tokenCredentialContributionCapSchema = z.object({
   fiveHourReservePercent: z.number().int().min(0).max(100).optional(),
   sevenDayReservePercent: z.number().int().min(0).max(100).optional()
@@ -686,6 +690,61 @@ router.post('/v1/admin/token-credentials/:id/unpause', requireApiKey(runtime.rep
       debugLabel: unpaused.debugLabel,
       status: unpaused.status,
       changed: unpaused.changed
+    } as const;
+
+    await runtime.services.idempotency.commit(idemStart, {
+      responseCode: 200,
+      responseBody,
+      responseDigest: sha256Hex(stableJson(responseBody)),
+      responseRef: id
+    });
+
+    res.status(200).json(responseBody);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/v1/admin/token-credentials/:id/label', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const id = z.string().uuid().parse(req.params.id);
+    const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
+    const parsed = tokenCredentialDebugLabelSchema.parse(req.body);
+    const requestHash = sha256Hex(stableJson({ id, body: parsed, apiKeyId: req.auth?.apiKeyId }));
+    const tenantScope = req.auth?.orgId ?? `admin:${req.auth?.apiKeyId}`;
+
+    const idemStart = await runtime.services.idempotency.start({
+      scope: 'admin_token_credentials_label_v1',
+      tenantScope,
+      idempotencyKey,
+      requestHash
+    });
+
+    if (idemStart.replay) {
+      if (!idemStart.responseBody) {
+        throw new AppError('idempotency_replay_unavailable', 409, 'Idempotent replay not available for this request');
+      }
+      res.setHeader('x-idempotent-replay', 'true');
+      res.status(idemStart.responseCode).json(idemStart.responseBody);
+      return;
+    }
+
+    const updated = await runtime.services.tokenCredentials.updateDebugLabel(
+      id,
+      parsed.debugLabel,
+      { actorApiKeyId: req.auth?.apiKeyId ?? null }
+    );
+    if (!updated) {
+      throw new AppError('invalid_request', 404, 'Token credential not found');
+    }
+
+    const responseBody = {
+      ok: true,
+      id,
+      orgId: updated.orgId,
+      provider: updated.provider,
+      debugLabel: updated.debugLabel,
+      changed: updated.changed
     } as const;
 
     await runtime.services.idempotency.commit(idemStart, {

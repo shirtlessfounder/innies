@@ -231,6 +231,57 @@ export class TokenCredentialService {
     return updated;
   }
 
+  async updateDebugLabel(
+    id: string,
+    debugLabel: string,
+    actor?: ActorContext
+  ): Promise<{
+    id: string;
+    orgId: string;
+    provider: string;
+    debugLabel: string;
+    changed: boolean;
+  } | null> {
+    const existing = await this.repo.getById(id);
+    if (!existing || existing.status === 'revoked') {
+      return null;
+    }
+
+    if (existing.debugLabel === debugLabel) {
+      return {
+        id,
+        orgId: existing.orgId,
+        provider: existing.provider,
+        debugLabel,
+        changed: false,
+      };
+    }
+
+    const updated = await this.repo.updateDebugLabel(id, debugLabel);
+    if (!updated) {
+      return null;
+    }
+
+    await this.auditLogs.createEvent({
+      actorApiKeyId: actor?.actorApiKeyId ?? null,
+      actorUserId: actor?.actorUserId ?? null,
+      orgId: updated.orgId,
+      action: 'token_credential.update_debug_label',
+      targetType: 'token_credential',
+      targetId: id,
+      metadata: {
+        provider: updated.provider,
+        previousDebugLabel: existing.debugLabel,
+        debugLabel: updated.debugLabel,
+      }
+    });
+
+    return {
+      ...updated,
+      changed: true,
+    };
+  }
+
   async updateContributionCap(
     id: string,
     input: UpdateTokenCredentialContributionCapInput,

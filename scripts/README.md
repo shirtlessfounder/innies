@@ -16,6 +16,7 @@ chmod +x scripts/install.sh
 innies-token-add
 innies-token-rotate
 innies-token-pause
+innies-token-label-set
 innies-token-contribution-cap-set
 innies-token-refresh-token-set
 innies-token-probe-run
@@ -25,12 +26,16 @@ innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
 innies-slo-check
+innies-issue80-local-replay
+innies-issue80-direct-anthropic
+innies-issue80-prod-journal
 ```
 
 What they do:
 - `innies-token-add`: create a Claude Code or Codex OAuth credential
 - `innies-token-rotate`: rotate a Claude Code or Codex OAuth credential pool
 - `innies-token-pause`: pause or unpause a token credential so routing excludes or re-admits it manually
+- `innies-token-label-set`: change the stored `debugLabel` on an existing Claude Code or Codex credential without rotating it
 - `innies-token-contribution-cap-set`: set the 5h / 7d reserve percents for a Claude token credential
 - `innies-token-refresh-token-set`: set or clear the stored OAuth refresh token for an existing credential id
 - `innies-token-probe-run`: directly probe an active or maxed token credential now; successful maxed probes immediately reactivate it
@@ -40,6 +45,9 @@ What they do:
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
+- `innies-issue80-local-replay`: replay a saved Anthropic `/v1/messages` body against local Innies, pin Anthropic, save headers/body artifacts, and print DB evidence for the generated `x-request-id`
+- `innies-issue80-direct-anthropic`: replay the same saved body directly to Anthropic with an explicit beta-header lane (`caller_only|caller_plus_oauth|oauth_only|none`)
+- `innies-issue80-prod-journal`: pull raw Innies prod journal logs from the devops API, save an artifact file, and optionally local-filter by request id / process / error pattern
 
 Behavior:
 - org id auto-uses `INNIES_ORG_ID`
@@ -59,6 +67,10 @@ Behavior:
 - `innies-token-pause` needs `DATABASE_URL` so it can list/select existing credentials and verify the current state before calling the admin API
 - `innies-token-pause` needs `INNIES_ADMIN_API_KEY` (or prompts for it) because it calls the admin API pause/unpause endpoint directly
 - `innies-token-pause pause` only targets currently `active` credentials; `unpause` only targets currently `paused` credentials
+- `innies-token-label-set` lists all non-revoked credentials for the chosen provider and lets you select one by number / UUID / exact current `debugLabel`
+- `innies-token-label-set` needs `DATABASE_URL` so it can list/select existing credentials before calling the admin API
+- `innies-token-label-set` also needs `INNIES_ADMIN_API_KEY` (or prompts for it) because it calls the admin API label endpoint directly
+- `innies-token-label-set` only sets non-empty labels; it does not support clearing a label to `null`
 - `innies-token-contribution-cap-set` lists only `active`/`maxed` Claude Code credentials, lets you choose one by number / UUID / exact `debugLabel`, then prompts for the resulting `5h` and `7d` reserve percents
 - `innies-token-contribution-cap-set` needs `DATABASE_URL` so it can list/select existing Claude credentials and show the current reserve percents as defaults
 - `innies-token-refresh-token-set` accepts a credential UUID, then:
@@ -79,12 +91,27 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
+- `innies-issue80-local-replay` defaults `anthropic-beta` to `fine-grained-tool-streaming-2025-05-14`, sends `x-innies-provider-pin: true`, and keeps all artifacts under `/tmp` unless `ISSUE80_OUT_DIR` is set
+- `innies-issue80-local-replay` also prints `in_routing_events`, `in_usage_ledger`, and `in_request_log` rows when `DATABASE_URL` + `psql` are available
+- `innies-issue80-direct-anthropic` picks its bearer token from `CLAUDE_CODE_OAUTH_TOKEN`, then `ANTHROPIC_OAUTH_ACCESS_TOKEN`, then `ANTHROPIC_ACCESS_TOKEN`
+- `innies-issue80-direct-anthropic caller_plus_oauth` is the closest direct-OAuth comparison lane to the working OpenClaw path
+- `innies-issue80-prod-journal` defaults to `https://admin.spicefi.xyz`, `env=prod`, `unit=innies-api`; `--since` is optional and any trailing args are treated as local `rg`/`grep` patterns
+- `innies-issue80-prod-journal` reads credentials from `DEVOPS_JOURNAL_USER` / `DEVOPS_JOURNAL_PASSWORD` when set, otherwise prompts
+- local API diagnosis can set `INNIES_COMPAT_CAPTURE_DIR=/tmp/innies-issue80-capture` to save the exact compat ingress body plus the exact Anthropic first-pass upstream body under one request-id directory for diffing and direct replay
 
 ## Env
 
-Scripts auto-load `scripts/.env.local` if present.
+Scripts auto-load `~/.config/innies/.env` first, then `scripts/.env.local` if present.
+Use the shared file for worktree-safe operator secrets; use `scripts/.env.local` only when you need checkout-local overrides.
 
-Bootstrap:
+Bootstrap shared config:
+
+```bash
+mkdir -p ~/.config/innies
+cp scripts/innies-env.example ~/.config/innies/.env
+```
+
+Optional checkout-local override:
 
 ```bash
 cp scripts/innies-env.example scripts/.env.local
@@ -94,3 +121,8 @@ For `innies-buyer-preference-check`:
 - `DATABASE_URL` is optional, but needed for DB evidence
 - `INNIES_MODEL_ANTHROPIC` is required if you check Claude Code
 - `INNIES_MODEL_CODEX` is required if you check Codex
+
+For `innies-issue80-prod-journal`:
+- `DEVOPS_JOURNAL_USER` is optional, but avoids the username prompt
+- `DEVOPS_JOURNAL_PASSWORD` is optional, but avoids the password prompt
+- `DEVOPS_JOURNAL_HOST` is optional; default is `https://admin.spicefi.xyz`
