@@ -25,6 +25,7 @@ innies-buyer-key-create
 innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
+innies-compat-request-bundle-diff
 innies-slo-check
 innies-issue80-local-replay
 innies-issue80-direct-anthropic
@@ -44,6 +45,7 @@ What they do:
 - `innies-buyer-preference-set`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
+- `innies-compat-request-bundle-diff`: compare a failing first-pass request bundle against a known-good direct bundle and classify whether the remaining issue-80 delta is wire-level or provider-side
 - `innies-slo-check`: query analytics endpoints and report Phase 1 SLO pass/fail (TTFB p95, timeout rate, success rate, fallback rate); optional arg sets the window (default `24h`); exits 0 if all SLOs pass, 1 if any fail
 - `innies-issue80-local-replay`: replay a saved Anthropic `/v1/messages` body against local Innies, pin Anthropic, save headers/body artifacts, and print DB evidence for the generated `x-request-id`
 - `innies-issue80-direct-anthropic`: replay the same saved body directly to Anthropic with an explicit beta-header lane (`caller_only|caller_plus_oauth|oauth_only|none`)
@@ -91,6 +93,7 @@ Behavior:
 - non-pinned buyer traffic always gets automatic cross-provider fallback to the other provider; flipping preference flips fallback order too
 - `innies-buyer-preference-set` prints the effective preferred provider plus the automatic fallback provider before sending the update
 - `innies-buyer-preference-check` now expects and validates the two-provider plan in DB evidence mode
+- `innies-compat-request-bundle-diff` accepts two issue-80 bundle paths (directory or any file inside the bundle), reads `payload.json` plus the request/response JSON artifacts, and writes `summary.txt` plus `summary.json` showing exact wire/body deltas and whether the remaining mismatch now looks provider-side
 - `innies-issue80-local-replay` defaults `anthropic-beta` to `fine-grained-tool-streaming-2025-05-14`, sends `x-innies-provider-pin: true`, and keeps all artifacts under `/tmp` unless `ISSUE80_OUT_DIR` is set
 - `innies-issue80-local-replay` also prints `in_routing_events`, `in_usage_ledger`, and `in_request_log` rows when `DATABASE_URL` + `psql` are available
 - `innies-issue80-direct-anthropic` picks its bearer token from `CLAUDE_CODE_OAUTH_TOKEN`, then `ANTHROPIC_OAUTH_ACCESS_TOKEN`, then `ANTHROPIC_ACCESS_TOKEN`
