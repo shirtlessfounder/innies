@@ -95,9 +95,14 @@ export async function runClaude(args) {
 
   printConnectionStatus({ model, proxyUrl, correlationId });
 
+  const {
+    MallocStackLogging: _mallocStackLogging,
+    MallocStackLoggingDirectory: _mallocStackLoggingDirectory,
+    ...inheritedEnv
+  } = process.env;
+
   const env = {
-    ...process.env,
-    MallocStackLogging: '',
+    ...inheritedEnv,
     INNIES_CLAUDE_WRAPPED: '1',
     INNIES_TOKEN: config.token,
     INNIES_API_BASE_URL: config.apiBaseUrl,
