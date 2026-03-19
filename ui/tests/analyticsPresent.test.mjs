@@ -48,3 +48,10 @@ test('analytics server preserves non-Claude usage ratios for 5h and 7d cells', (
   assert.ok(serverSource.includes('sevenDayCapUsedRatio: deriveContributionCapUsedRatio({'));
   assert.ok(!serverSource.includes("if ((input.provider ?? '').trim().toLowerCase() !== 'anthropic') return null;"));
 });
+
+test('analytics table highlights exhausted usage windows for Codex rows too', () => {
+  const tableSource = readFileSync(join(uiRoot, 'src/components/analytics/AnalyticsTables.tsx'), 'utf8');
+
+  assert.ok(!tableSource.includes("if (provider !== 'anthropic') return '';"));
+  assert.ok(tableSource.includes("if (input.utilizationRatio !== null && input.utilizationRatio >= 1) return styles.statusPillMaxed;"));
+});
