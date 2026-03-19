@@ -46,7 +46,10 @@ function readAnthropicOauthClientId(): string {
 
 export async function attemptOpenAiOauthRefresh(
   repo: TokenCredentialRepository,
-  credential: TokenCredential
+  credential: TokenCredential,
+  options?: {
+    preserveStatus?: boolean;
+  }
 ): Promise<TokenCredential | null> {
   if (!credential.refreshToken) return null;
   if (!isOpenAiOauthAccessToken(credential.accessToken)) return null;
@@ -90,13 +93,17 @@ export async function attemptOpenAiOauthRefresh(
     id: credential.id,
     accessToken,
     refreshToken,
-    expiresAt
+    expiresAt,
+    preserveStatus: options?.preserveStatus
   });
 }
 
 export async function attemptAnthropicOauthRefresh(
   repo: TokenCredentialRepository,
-  credential: TokenCredential
+  credential: TokenCredential,
+  options?: {
+    preserveStatus?: boolean;
+  }
 ): Promise<TokenCredential | null> {
   if (!credential.refreshToken) return null;
   if (!providerUsageService.isAnthropicOauthTokenCredential(credential)) return null;
@@ -133,18 +140,22 @@ export async function attemptAnthropicOauthRefresh(
     id: credential.id,
     accessToken,
     refreshToken,
-    expiresAt
+    expiresAt,
+    preserveStatus: options?.preserveStatus
   });
 }
 
 export async function attemptTokenCredentialRefresh(
   repo: TokenCredentialRepository,
-  credential: TokenCredential
+  credential: TokenCredential,
+  options?: {
+    preserveStatus?: boolean;
+  }
 ): Promise<TokenCredential | null> {
-  const anthropicOauthCredential = await attemptAnthropicOauthRefresh(repo, credential);
+  const anthropicOauthCredential = await attemptAnthropicOauthRefresh(repo, credential, options);
   if (anthropicOauthCredential) return anthropicOauthCredential;
 
-  const openAiOauthCredential = await attemptOpenAiOauthRefresh(repo, credential);
+  const openAiOauthCredential = await attemptOpenAiOauthRefresh(repo, credential, options);
   if (openAiOauthCredential) return openAiOauthCredential;
 
   if (!credential.refreshToken) return null;
@@ -175,7 +186,8 @@ export async function attemptTokenCredentialRefresh(
     id: credential.id,
     accessToken,
     refreshToken,
-    expiresAt
+    expiresAt,
+    preserveStatus: options?.preserveStatus
   });
 }
 
@@ -255,7 +267,9 @@ export async function refreshTokenCredentialProviderUsageWithCredentialRefresh(
     };
   }
 
-  const refreshedCredential = await attemptTokenCredentialRefresh(tokenCredentialRepo, credential);
+  const refreshedCredential = await attemptTokenCredentialRefresh(tokenCredentialRepo, credential, {
+    preserveStatus: credential.status === 'maxed'
+  });
   if (!refreshedCredential) {
     return {
       credential,

@@ -776,6 +776,31 @@ describe('tokenCredentialRepository', () => {
     });
   });
 
+  it('preserves a meaningful parked cause when recording a generic probe failure', async () => {
+    const db = new SequenceSqlClient([
+      {
+        rows: [{
+          org_id: '00000000-0000-0000-0000-000000000001',
+          provider: 'anthropic',
+          maxed_at: '2026-03-02T00:00:00Z'
+        }],
+        rowCount: 1
+      },
+      { rows: [], rowCount: 1 }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    const ok = await repo.markProbeFailure(
+      'cred_parked_reason',
+      new Date('2026-03-05T00:00:00Z'),
+      'probe_failed:status_400:400'
+    );
+
+    expect(ok).toBe(true);
+    expect(db.queries[0].sql).toContain("$3::text like 'probe_failed:%'");
+    expect(db.queries[0].sql).toContain("last_refresh_error like 'probe_failed:%'");
+  });
+
   it('refreshes a credential in place without changing rotation_version', async () => {
     process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 13).toString('base64');
     const db = new SequenceSqlClient([{
@@ -826,8 +851,57 @@ describe('tokenCredentialRepository', () => {
     expect(db.queries[0].sql).toContain('last_failed_status = null');
     expect(db.queries[0].sql).toContain('last_failed_at = null');
     expect(db.queries[0].sql).toContain('last_rate_limited_at = null');
-    expect(db.queries[0].sql).toContain('maxed_at = null');
+    expect(db.queries[0].sql).toContain('maxed_at = case');
     expect(db.queries[0].sql).toContain('next_probe_at = null');
     expect(db.queries[0].sql).toContain('last_probe_at = now()');
+  });
+
+  it('can refresh parked credentials in place while preserving maxed status', async () => {
+    process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 14).toString('base64');
+    const db = new SequenceSqlClient([{
+      rows: [{
+        id: 'cred_maxed_refresh',
+        org_id: '00000000-0000-0000-0000-000000000001',
+        provider: 'openai',
+        auth_scheme: 'bearer',
+        encrypted_access_token: encryptSecret('access-new'),
+        encrypted_refresh_token: encryptSecret('refresh-new'),
+        expires_at: '2026-03-02T00:00:00Z',
+        status: 'maxed',
+        rotation_version: 7,
+        created_at: '2026-03-01T00:00:00Z',
+        updated_at: '2026-03-01T00:00:00Z',
+        revoked_at: null,
+        monthly_contribution_limit_units: null,
+        monthly_contribution_used_units: 0,
+        monthly_window_start_at: '2026-03-01T00:00:00Z',
+        five_hour_reserve_percent: 0,
+        seven_day_reserve_percent: 0,
+        debug_label: 'codex-parked',
+        consecutive_failure_count: 0,
+        consecutive_rate_limit_count: 0,
+        last_failed_status: null,
+        last_failed_at: null,
+        last_rate_limited_at: null,
+        maxed_at: '2026-03-01T00:05:00Z',
+        rate_limited_until: null,
+        next_probe_at: null,
+        last_probe_at: '2026-03-01T00:01:00Z'
+      }],
+      rowCount: 1
+    }]);
+    const repo = new TokenCredentialRepository(db);
+
+    const updated = await repo.refreshInPlace({
+      id: 'cred_maxed_refresh',
+      accessToken: 'access-new',
+      refreshToken: 'refresh-new',
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      preserveStatus: true
+    } as any);
+
+    expect(updated?.status).toBe('maxed');
+    expect(db.queries[0].sql).toContain('status = case');
+    expect(db.queries[0].sql).toContain('maxed_at = case');
   });
 });

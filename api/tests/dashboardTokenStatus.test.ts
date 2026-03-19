@@ -2,15 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { deriveDashboardTokenStatusRow } from '../src/services/dashboardTokenStatus.js';
 
 describe('deriveDashboardTokenStatusRow', () => {
-  it('marks backend maxed tokens as maxed from backend source', () => {
+  it('marks backend maxed tokens as benched from backend source', () => {
     expect(deriveDashboardTokenStatusRow({
       provider: 'anthropic',
       rawStatus: 'maxed',
       rateLimitedUntil: null
     })).toEqual({
       rawStatus: 'maxed',
-      compactStatus: 'maxed',
-      expandedStatus: 'maxed, source: backend_maxed',
+      compactStatus: 'benched',
+      expandedStatus: 'benched, source: backend_maxed',
       statusSource: 'backend_maxed',
       exclusionReason: null,
       hidden: false
@@ -27,15 +27,15 @@ describe('deriveDashboardTokenStatusRow', () => {
       refreshTokenState: 'missing'
     })).toEqual({
       rawStatus: 'maxed',
-      compactStatus: 'maxed',
-      expandedStatus: 'maxed, source: backend_maxed, auth: access_token_expired_local, refresh: missing',
+      compactStatus: 'benched',
+      expandedStatus: 'benched, source: backend_maxed, auth: access_token_expired_local, refresh: missing',
       statusSource: 'backend_maxed',
       exclusionReason: null,
       hidden: false
     });
   });
 
-  it('marks active cap-exhausted tokens as maxed from cap exhaustion', () => {
+  it('marks active cap-exhausted tokens as benched from cap exhaustion', () => {
     expect(deriveDashboardTokenStatusRow({
       provider: 'anthropic',
       rawStatus: 'active',
@@ -47,15 +47,15 @@ describe('deriveDashboardTokenStatusRow', () => {
       providerUsageFetchedAt: '2026-03-12T12:00:00.000Z'
     })).toEqual({
       rawStatus: 'active',
-      compactStatus: 'maxed',
-      expandedStatus: 'maxed, source: cap_exhausted',
+      compactStatus: 'benched',
+      expandedStatus: 'benched, source: cap_exhausted',
       statusSource: 'cap_exhausted',
       exclusionReason: null,
       hidden: false
     });
   });
 
-  it('marks active Codex usage-exhausted tokens as maxed from provider usage exhaustion', () => {
+  it('marks active Codex usage-exhausted tokens as benched from provider usage exhaustion', () => {
     expect(deriveDashboardTokenStatusRow({
       provider: 'openai',
       rawStatus: 'active',
@@ -65,8 +65,8 @@ describe('deriveDashboardTokenStatusRow', () => {
       providerUsageFetchedAt: '2026-03-12T12:00:00.000Z'
     })).toEqual({
       rawStatus: 'active',
-      compactStatus: 'maxed',
-      expandedStatus: 'maxed, source: usage_exhausted',
+      compactStatus: 'benched',
+      expandedStatus: 'benched, source: usage_exhausted',
       statusSource: 'usage_exhausted',
       exclusionReason: null,
       hidden: false

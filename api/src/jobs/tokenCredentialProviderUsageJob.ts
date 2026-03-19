@@ -23,9 +23,7 @@ import {
   readClaudeContributionCapSnapshotState
 } from '../services/claudeContributionCapState.js';
 import {
-  probeAndUpdateTokenCredential,
   readTokenCredentialProbeIntervalMinutes,
-  readTokenCredentialProbeTimeoutMs
 } from '../services/tokenCredentialProbe.js';
 import { isOpenAiOauthAccessToken } from '../utils/openaiOauth.js';
 
@@ -108,7 +106,6 @@ export function createTokenCredentialProviderUsageJob(
         'TOKEN_CREDENTIAL_PROVIDER_USAGE_EXHAUSTED_REVALIDATE_MS',
         DEFAULT_PROVIDER_EXHAUSTION_REVALIDATE_MS
       );
-      const probeTimeoutMs = readTokenCredentialProbeTimeoutMs();
       const probeIntervalMinutes = readTokenCredentialProbeIntervalMinutes();
       const credentialsById = new Map<string, Awaited<ReturnType<typeof tokenCredentialsRepo.listActiveOauthByProvider>>[number]>();
       for (const credentialList of await Promise.all([
@@ -317,7 +314,7 @@ export function createTokenCredentialProviderUsageJob(
               reason: logReason ?? result.reason,
               detailReason: result.reason,
               statusCode: result.statusCode,
-              retryAfterMs: result.category === 'fetch_backoff' ? result.retryAfterMs ?? null : null,
+              retryAfterMs: null,
               errorMessage: result.errorMessage ?? null
             });
           }
@@ -370,26 +367,85 @@ export function createTokenCredentialProviderUsageJob(
 
         if (availability.authFailed) {
           authProbeChecked += 1;
-          const result = await probeAndUpdateTokenCredential(tokenCredentialsRepo, credential, {
-            timeoutMs: probeTimeoutMs,
-            probeIntervalMinutes
+          const refreshedUsage = await refreshAnthropicOauthUsageWithCredentialRefresh(
+            providerUsageRepo,
+            tokenCredentialsRepo,
+            credential
+          );
+          const credentialForUsage = refreshedUsage.credential;
+          const result = refreshedUsage.outcome;
+          const authFailureStatusCode = providerUsageAuthFailureStatusCode(result);
+          if (authFailureStatusCode !== null) {
+            const nextProbeAt = new Date(ctx.now.getTime() + (probeIntervalMinutes * 60 * 1000));
+            await parkAnthropicOauthCredentialAfterUsageAuthFailure(tokenCredentialsRepo, credentialForUsage, {
+              statusCode: authFailureStatusCode,
+              nextProbeAt,
+              reason: `upstream_${authFailureStatusCode}_provider_usage_refresh`
+            });
+            authProbeDeferred += 1;
+            ctx.logger.info('Claude auth recovery deferred', {
+              credentialId: credentialForUsage.id,
+              credentialLabel: credentialForUsage.debugLabel ?? null,
+              statusCode: authFailureStatusCode,
+              reason: `upstream_${authFailureStatusCode}_provider_usage_refresh`,
+              nextProbeAt: nextProbeAt.toISOString()
+            });
+            continue;
+          }
+
+          await syncProviderUsageWarning(credentialForUsage.id, credentialForUsage.debugLabel, result);
+          if (!result.ok) {
+            authProbeDeferred += 1;
+            ctx.logger.info('Claude auth recovery deferred', {
+              credentialId: credentialForUsage.id,
+              credentialLabel: credentialForUsage.debugLabel ?? null,
+              statusCode: result.statusCode,
+              reason: providerUsageLogReasonFromOutcome(result) ?? result.reason,
+              nextProbeAt: null
+            });
+            continue;
+          }
+
+          await syncContributionCapLifecycle(credentialForUsage, result.snapshot);
+          const providerExhaustionHold = readClaudeContributionCapProviderExhaustionHold({
+            credential: credentialForUsage,
+            snapshot: result.snapshot,
+            now: ctx.now
           });
-          if (result.reactivated) {
+          if (providerExhaustionHold.hasActiveHold && providerExhaustionHold.nextRefreshAt) {
+            await tokenCredentialsRepo.markProbeFailure(
+              credentialForUsage.id,
+              providerExhaustionHold.nextRefreshAt,
+              providerExhaustionHold.reason ?? 'provider_usage_exhausted'
+            );
+            authProbeDeferred += 1;
+            ctx.logger.info('Claude auth recovery deferred', {
+              credentialId: credentialForUsage.id,
+              credentialLabel: credentialForUsage.debugLabel ?? null,
+              statusCode: 200,
+              reason: providerExhaustionHold.reason,
+              nextProbeAt: providerExhaustionHold.nextRefreshAt.toISOString()
+            });
+            continue;
+          }
+
+          const reactivated = await tokenCredentialsRepo.reactivateFromMaxed(credential.id);
+          if (reactivated) {
             authProbeReactivated += 1;
             ctx.logger.info('Claude auth recovery reactivated', {
               credentialId: credential.id,
               credentialLabel: credential.debugLabel ?? null,
-              statusCode: result.statusCode,
-              reason: result.reason
+              statusCode: 200,
+              reason: 'provider_usage_ok'
             });
           } else {
             authProbeDeferred += 1;
             ctx.logger.info('Claude auth recovery deferred', {
               credentialId: credential.id,
               credentialLabel: credential.debugLabel ?? null,
-              statusCode: result.statusCode,
-              reason: result.reason,
-              nextProbeAt: result.nextProbeAt?.toISOString() ?? null
+              statusCode: 200,
+              reason: 'reactivate_failed',
+              nextProbeAt: null
             });
           }
           continue;

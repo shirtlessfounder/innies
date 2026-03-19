@@ -128,7 +128,17 @@ describe('tokenCredentialHealthJob', () => {
       reactivateFromMaxed: vi.fn(async () => true)
     };
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ rate_limit: {} }), { status: 200 })
+      new Response(JSON.stringify({
+        rate_limit: {
+          allowed: true,
+          limit_reached: false,
+          primary_window: { used_percent: 12, reset_at: '2026-03-19T16:00:00.000Z' },
+          secondary_window: { used_percent: 18, reset_at: '2026-03-24T23:07:59.000Z' }
+        }
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
     );
     const job = createTokenCredentialHealthJob(repo as any);
     const ctx = createCtx();
@@ -167,5 +177,118 @@ describe('tokenCredentialHealthJob', () => {
 
     expect(repo.markProbeFailure).toHaveBeenCalledTimes(1);
     expect(repo.reactivateFromMaxed).not.toHaveBeenCalled();
+  });
+
+  it('keeps OpenAI OAuth credentials benched when the WHAM probe says usage is exhausted', async () => {
+    const usageResetAt = new Date('2026-03-24T23:07:59.000Z');
+    const oauthToken = createFakeOpenAiOauthToken({ accountId: 'acct_probe_exhausted' });
+    const repo = {
+      listMaxedForProbe: vi.fn(async () => [{
+        id: 'cred_codex_oauth_exhausted',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: oauthToken,
+        debugLabel: 'codex-oauth-exhausted'
+      }]),
+      markProbeFailure: vi.fn(async () => true),
+      reactivateFromMaxed: vi.fn(async () => false)
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        rate_limit: {
+          allowed: false,
+          limit_reached: true,
+          primary_window: { used_percent: 0, reset_at: '2026-03-19T16:00:00.000Z' },
+          secondary_window: { used_percent: 100, reset_at: usageResetAt.toISOString() }
+        }
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const job = createTokenCredentialHealthJob(repo as any);
+    const ctx = createCtx();
+
+    await job.run(ctx as any);
+
+    expect(repo.reactivateFromMaxed).not.toHaveBeenCalled();
+    expect(repo.markProbeFailure).toHaveBeenCalledWith(
+      'cred_codex_oauth_exhausted',
+      usageResetAt,
+      'usage_exhausted_7d'
+    );
+  });
+
+  it('refreshes expired OpenAI OAuth credentials before probing them from the parked health job', async () => {
+    const expiredOauthToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_probe_old',
+      exp: Math.floor(new Date('2026-03-03T23:00:00Z').getTime() / 1000)
+    });
+    const refreshedOauthToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_probe_new',
+      exp: Math.floor(new Date('2026-03-05T23:00:00Z').getTime() / 1000)
+    });
+    const repo = {
+      listMaxedForProbe: vi.fn(async () => [{
+        id: 'cred_codex_oauth_refresh',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: expiredOauthToken,
+        refreshToken: 'rt_codex_live',
+        status: 'maxed',
+        lastFailedStatus: 401,
+        debugLabel: 'codex-oauth-refresh'
+      }]),
+      refreshInPlace: vi.fn(async () => ({
+        id: 'cred_codex_oauth_refresh',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: refreshedOauthToken,
+        refreshToken: 'rt_codex_new',
+        status: 'maxed',
+        debugLabel: 'codex-oauth-refresh'
+      })),
+      markProbeFailure: vi.fn(async () => true),
+      reactivateFromMaxed: vi.fn(async () => true)
+    };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === 'https://auth.openai.com/oauth/token') {
+        return new Response(JSON.stringify({
+          access_token: refreshedOauthToken,
+          refresh_token: 'rt_codex_new'
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      if (url === 'https://chatgpt.com/backend-api/wham/usage') {
+        const headers = (init?.headers as Record<string, string>) ?? {};
+        if (headers.authorization === `Bearer ${refreshedOauthToken}`) {
+          return new Response(JSON.stringify({
+            rate_limit: {
+              allowed: true,
+              limit_reached: false,
+              primary_window: { used_percent: 0, reset_at: '2026-03-19T16:00:00.000Z' },
+              secondary_window: { used_percent: 12, reset_at: '2026-03-24T23:07:59.000Z' }
+            }
+          }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        return new Response('unauthorized', { status: 401 });
+      }
+      return new Response('not found', { status: 404 });
+    });
+    const job = createTokenCredentialHealthJob(repo as any);
+    const ctx = createCtx();
+
+    await job.run(ctx as any);
+
+    expect(fetchSpy).toHaveBeenCalled();
+    expect(repo.refreshInPlace).toHaveBeenCalledTimes(1);
+    expect(repo.reactivateFromMaxed).toHaveBeenCalledWith('cred_codex_oauth_refresh');
+    expect(repo.markProbeFailure).not.toHaveBeenCalled();
   });
 });
