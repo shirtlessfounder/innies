@@ -1303,6 +1303,16 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         re.model,
         (${SOURCE_CASE}) AS source,
         CASE WHEN re.route_decision->>'translated' = 'true' THEN true ELSE false END AS translated,
+        CASE WHEN re.route_decision->>'rescued' = 'true' THEN true ELSE false END AS rescued,
+        re.route_decision->>'rescue_scope' AS rescue_scope,
+        re.route_decision->>'rescue_initial_provider' AS rescue_initial_provider,
+        re.route_decision->>'rescue_initial_credential_id' AS rescue_initial_credential_id,
+        re.route_decision->>'rescue_initial_failure_code' AS rescue_initial_failure_code,
+        CASE
+          WHEN re.route_decision->>'rescue_initial_failure_status' ~ '^\\d+$'
+            THEN (re.route_decision->>'rescue_initial_failure_status')::integer
+          ELSE null
+        END AS rescue_initial_failure_status,
         re.streaming,
         re.upstream_status,
         re.latency_ms,
@@ -1340,6 +1350,12 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
       model: row.model,
       source: row.source,
       translated: row.translated,
+      rescued: row.rescued,
+      rescue_scope: row.rescue_scope,
+      rescue_initial_provider: row.rescue_initial_provider,
+      rescue_initial_credential_id: row.rescue_initial_credential_id,
+      rescue_initial_failure_code: row.rescue_initial_failure_code,
+      rescue_initial_failure_status: row.rescue_initial_failure_status,
       streaming: row.streaming,
       upstream_status: row.upstream_status,
       latency_ms: row.latency_ms,
