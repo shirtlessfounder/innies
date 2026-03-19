@@ -848,8 +848,8 @@ Notes:
 - `tokens[*]` also carries the same provider-usage snapshot fields as `/v1/admin/analytics/tokens/health`; reserve / contribution-cap flags stay Claude-only
 - `tokens[*]` may also include best-effort auth-diagnosis fields from `/v1/admin/analytics/tokens/health`; the dashboard status text can fold those into backend-`maxed` visibility
 - `summary.maxedTokens` counts tokens currently at usage capacity; for Claude that means provider usage has hit the provider ceiling or the configured reserve threshold, and for OpenAI/Codex that means a stored provider-usage window is exhausted
-- the dashboard UI shows raw Claude provider utilization in `5H` / `7D`; reserve/exhausted fields only control whether those cells are highlighted as effectively exhausted
-- OpenAI/Codex rows may carry raw provider-usage utilization/reset fields, but their reserve / contribution-cap fields stay `null` and the UI still renders `--` in the CAP cells
+- the dashboard UI shows raw provider usage in `5H` / `7D`; Claude reserve/exhausted fields only control whether those cells are highlighted as effectively exhausted
+- OpenAI/Codex rows may carry raw provider-usage utilization/reset fields even though their reserve / contribution-cap fields stay `null`
 - `buyers[*]` may include `latencyP50Ms` and `errorRate` when those buyer aggregates are available
 - snapshot `events` is currently capped to the 20 most recent lifecycle events
 - `warnings` is a free-form operator-facing list for provider-usage freshness/exhaustion issues; Claude rows can emit auth-failed / cap warnings, and OpenAI/Codex rows can emit snapshot freshness or `usage_exhausted_*` warnings when the backend emits them

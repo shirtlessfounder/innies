@@ -70,8 +70,6 @@ function directionValue(direction: SortDirection, comparison: number): number {
 }
 
 function contributionCapSortValue(row: AnalyticsTokenRow, key: 'fiveHourCapUsedRatio' | 'sevenDayCapUsedRatio'): number | null {
-  const provider = row.provider.trim().toLowerCase();
-  if (provider !== 'anthropic') return null;
   return key === 'fiveHourCapUsedRatio' ? row.fiveHourCapUsedRatio : row.sevenDayCapUsedRatio;
 }
 
