@@ -14,25 +14,28 @@ ensure_admin_token
 ensure_database_url
 ensure_psql
 
-echo 'Claude Code token credentials:'
+echo 'Token credentials eligible for manual provider-usage refresh:'
 credential_rows="$(
   psql "$DATABASE_URL" -X -A -F $'\x1f' -t -v ON_ERROR_STOP=1 <<'SQL'
 select
   id,
   coalesce(debug_label, ''),
+  provider,
   case
     when expires_at <= now() then 'expired'
     else status
   end as display_status,
   to_char(updated_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as updated_at_utc
 from in_token_credentials
-where provider = 'anthropic'
+where status <> 'revoked'
+  and provider in ('anthropic', 'openai')
   and (
     (status in ('active', 'paused', 'maxed') and expires_at > now())
-    or (expires_at <= now() and encrypted_refresh_token is not null and status <> 'revoked')
+    or (expires_at <= now() and encrypted_refresh_token is not null)
   )
 order by
   case when expires_at <= now() then 1 else 0 end,
+  provider asc,
   updated_at desc;
 SQL
 )"
@@ -41,13 +44,13 @@ credential_rows="$(printf '%s\n' "$credential_rows" | sed '/^[[:space:]]*$/d')"
 credential_ids=()
 if [[ -n "$credential_rows" ]]; then
   selection_index=0
-  while IFS=$'\x1f' read -r listed_id listed_label listed_status listed_updated_at; do
+  while IFS=$'\x1f' read -r listed_id listed_label listed_provider listed_status listed_updated_at; do
     selection_index=$((selection_index + 1))
     credential_ids+=("$listed_id")
     if [[ -n "$listed_label" ]]; then
-      echo "  ${selection_index}) ${listed_label} (${listed_status}) id=${listed_id} updatedAt=${listed_updated_at}"
+      echo "  ${selection_index}) ${listed_label} (${listed_provider}, ${listed_status}) id=${listed_id} updatedAt=${listed_updated_at}"
     else
-      echo "  ${selection_index}) (no label) (${listed_status}) id=${listed_id} updatedAt=${listed_updated_at}"
+      echo "  ${selection_index}) (no label) (${listed_provider}, ${listed_status}) id=${listed_id} updatedAt=${listed_updated_at}"
     fi
   done <<< "$credential_rows"
 else
@@ -65,13 +68,13 @@ if [[ "$credential_input" =~ ^[0-9]+$ ]]; then
   fi
   credential_id="${credential_ids[$((selection_number - 1))]}"
 else
-  credential_id="$(resolve_token_credential_id "$credential_input" "anthropic")"
+  credential_id="$(resolve_token_credential_id "$credential_input")"
 fi
 
 idk="$(prompt 'Idempotency-Key (press Enter to auto-generate)' "$(gen_idempotency_key)")"
 
 echo "tokenCredentialId: $credential_id"
-echo 'Action: direct Claude provider-usage refresh'
+echo 'Action: direct provider-usage refresh'
 
 headers_file="$(mktemp)"
 body_file="$(mktemp)"
@@ -112,10 +115,10 @@ state_sync_errors="$(jq -c '.stateSyncErrors // []' "$body_file")"
 if [[ "$refresh_ok" == "true" ]]; then
   five_hour_used_percent="$(jq -r '.snapshot.fiveHourUsedPercent // "null"' "$body_file")"
   five_hour_resets_at="$(jq -r '.snapshot.fiveHourResetsAt // "null"' "$body_file")"
-  five_hour_cap_exhausted="$(jq -r '.snapshot.fiveHourContributionCapExhausted // false' "$body_file")"
+  five_hour_cap_exhausted="$(jq -r '.snapshot.fiveHourContributionCapExhausted // "null"' "$body_file")"
   seven_day_used_percent="$(jq -r '.snapshot.sevenDayUsedPercent // "null"' "$body_file")"
   seven_day_resets_at="$(jq -r '.snapshot.sevenDayResetsAt // "null"' "$body_file")"
-  seven_day_cap_exhausted="$(jq -r '.snapshot.sevenDayContributionCapExhausted // false' "$body_file")"
+  seven_day_cap_exhausted="$(jq -r '.snapshot.sevenDayContributionCapExhausted // "null"' "$body_file")"
 
   echo
   echo 'Usage refresh result: SUCCESS'
@@ -128,10 +131,14 @@ if [[ "$refresh_ok" == "true" ]]; then
   echo "upstream: ${result_upstream_status} (${result_reason})"
   echo "5h used: ${five_hour_used_percent}%"
   echo "5h reset: ${five_hour_resets_at}"
-  echo "5h cap exhausted: ${five_hour_cap_exhausted}"
+  if [[ "$five_hour_cap_exhausted" != "null" ]]; then
+    echo "5h cap exhausted: ${five_hour_cap_exhausted}"
+  fi
   echo "7d used: ${seven_day_used_percent}%"
   echo "7d reset: ${seven_day_resets_at}"
-  echo "7d cap exhausted: ${seven_day_cap_exhausted}"
+  if [[ "$seven_day_cap_exhausted" != "null" ]]; then
+    echo "7d cap exhausted: ${seven_day_cap_exhausted}"
+  fi
 else
   echo
   echo 'Usage refresh result: FAILED'
