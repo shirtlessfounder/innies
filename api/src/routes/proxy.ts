@@ -2041,6 +2041,8 @@ async function executeTokenModeNonStreaming(input: {
   let terminalCompatError: ReturnType<typeof mapOpenAiErrorToAnthropic> | null = null;
   let terminalCompatCredentialId: string | null = null;
   let terminalCompatAttemptNo = 0;
+  let terminalNative400Result: ProxyRouteResult | null = null;
+  let sawNonAuthNon400Failure = false;
   for (const initialCredential of credentials) {
     attemptNo += 1;
     let credential = initialCredential;
@@ -2131,7 +2133,10 @@ async function executeTokenModeNonStreaming(input: {
         })
         .finally(() => clearTimeout(timer));
 
-      if (!upstreamResponse) break;
+      if (!upstreamResponse) {
+        sawNonAuthNon400Failure = true;
+        break;
+      }
 
       const status = upstreamResponse.status;
       const upstreamHeadersAt = Date.now();
@@ -2387,6 +2392,7 @@ async function executeTokenModeNonStreaming(input: {
         });
         const backoffMs = 200 * (2 ** (attemptNo - 1)) + Math.floor(Math.random() * 100);
         await sleep(backoffMs);
+        sawNonAuthNon400Failure = true;
         break;
       }
 
@@ -2443,6 +2449,39 @@ async function executeTokenModeNonStreaming(input: {
         }
 
         await logAttemptFailure({ kind: 'server_error', statusCode: status, message: 'upstream server error' }, ttfbMs);
+        sawNonAuthNon400Failure = true;
+        break;
+      }
+
+      if (status === 400) {
+        const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+        const upstreamErrorData = await readUpstreamErrorPayload(upstreamResponse);
+        if (compatTranslation) {
+          terminalCompatError = mapOpenAiErrorToAnthropic(status, upstreamErrorData);
+          terminalCompatCredentialId = credential.id;
+          terminalCompatAttemptNo = attemptNo;
+        } else if (allowCompatTerminalErrorResponse) {
+          terminalNative400Result = {
+            requestId,
+            keyId: credential.id,
+            attemptNo,
+            upstreamStatus: status,
+            usageUnits: 0,
+            contentType,
+            data: upstreamErrorData,
+            routeKind: 'token_credential',
+            alreadyRecorded: true
+          };
+        }
+        await recordTokenCredentialOutcome({
+          credential,
+          requestId,
+          attemptNo,
+          provider,
+          model,
+          upstreamStatus: status
+        });
+        await logAttemptFailure({ statusCode: status, message: 'upstream provider rejected request' }, ttfbMs);
         break;
       }
 
@@ -2508,6 +2547,7 @@ async function executeTokenModeNonStreaming(input: {
           statusCode: effectiveStatus,
           message: 'upstream responses stream reported failure'
         }, ttfbMs);
+        sawNonAuthNon400Failure = true;
         break;
       }
       const downstreamData = compatTranslation && status >= 200 && status < 300 && !extractedFailed
@@ -2654,6 +2694,10 @@ async function executeTokenModeNonStreaming(input: {
         lastAuthStatus,
         ...(compatTerminalResult ? { compatTerminalResult } : {})
       });
+  }
+
+  if (allowCompatTerminalErrorResponse && terminalNative400Result && !sawNonAuthNon400Failure) {
+    return terminalNative400Result;
   }
 
   throw new AppError('capacity_unavailable', 429, 'All token credential attempts exhausted', {
