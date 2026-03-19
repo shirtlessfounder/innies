@@ -147,8 +147,6 @@ function contributionCapTone(input: {
   utilizationRatio: number | null;
   exhausted: boolean | null;
 }): string {
-  const provider = input.provider.trim().toLowerCase();
-  if (provider !== 'anthropic') return '';
   if (input.exhausted === true) return styles.statusPillMaxed;
   if (input.utilizationRatio !== null && input.utilizationRatio >= 1) return styles.statusPillMaxed;
   return '';
