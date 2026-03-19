@@ -21,10 +21,29 @@
 2. Open repo settings and set:
 - `Branch new workspaces from` -> `origin/main`
 - `Remote` -> `origin`
+- `Setup script` -> `bash scripts/conductor-bootstrap.sh`
 
 3. Do not leave the imported repo rooted on a local-only branch.
 
 If Conductor imports `~/innies` while that checkout is on a local branch like `codex/...`, it can incorrectly try to create new workspaces from `origin/codex/...`, which fails if that remote ref does not exist.
+
+## Automatic Workspace Bootstrap
+
+Conductor can run a repo-local setup command every time it creates a new workspace. For `innies`, use:
+
+```bash
+bash scripts/conductor-bootstrap.sh
+```
+
+This bootstrap script:
+- symlinks `api/.env` from `~/innies/api/.env`
+- symlinks `scripts/.env.local` from `~/innies/scripts/.env.local`
+- symlinks `ui/.env.local` from `~/innies/ui/.env.local`
+- installs missing local dependencies for `api` and `ui`
+
+This gives each fresh Conductor workspace the same local env-backed setup as the canonical `~/innies` checkout, without copying secrets into git-tracked files.
+
+`Run script` is separate from `Setup script`. Leave `Run script` blank unless you want the play button to start something specific like `cd api && npm run dev`.
 
 ## Launching Conductor For Codex
 
