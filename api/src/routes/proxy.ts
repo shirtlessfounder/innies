@@ -2446,6 +2446,25 @@ async function executeTokenModeNonStreaming(input: {
         break;
       }
 
+      if (status === 400) {
+        if (compatTranslation) {
+          const upstreamErrorData = await readUpstreamErrorPayload(upstreamResponse);
+          terminalCompatError = mapOpenAiErrorToAnthropic(status, upstreamErrorData);
+          terminalCompatCredentialId = credential.id;
+          terminalCompatAttemptNo = attemptNo;
+        }
+        await recordTokenCredentialOutcome({
+          credential,
+          requestId,
+          attemptNo,
+          provider,
+          model,
+          upstreamStatus: status
+        });
+        await logAttemptFailure({ statusCode: status, message: 'upstream provider rejected request' }, ttfbMs);
+        break;
+      }
+
       const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
       const { data: rawData, rawText, looksLikeSse } = await readUpstreamBody({
         upstreamResponse,
