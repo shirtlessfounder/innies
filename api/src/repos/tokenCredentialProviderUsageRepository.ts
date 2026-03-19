@@ -1,7 +1,7 @@
 import type { SqlClient, SqlQueryResult, SqlValue } from './sqlClient.js';
 import { TABLES } from './tableNames.js';
 
-export type ProviderUsageSource = 'anthropic_oauth_usage';
+export type ProviderUsageSource = 'anthropic_oauth_usage' | 'openai_wham_usage';
 export type ProviderUsagePayload = Record<string, unknown> | unknown[];
 
 type TokenCredentialProviderUsageRow = {
