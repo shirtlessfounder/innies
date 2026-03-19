@@ -49,6 +49,29 @@ If the key changes, refresh the saved Keychain copy from a shell that already ha
 conductor-openai-key-sync
 ```
 
+## Launching Conductor For Opus
+
+Conductor's Claude/Opus path is separate from its Codex path. To keep normal terminal `claude` unchanged while routing Conductor's Opus sessions through Innies, install the Conductor-only Claude shim:
+
+```bash
+conductor-claude-install
+```
+
+This installer:
+- preserves Conductor's private Claude binary as `~/Library/Application Support/com.conductor.app/bin/claude-real`
+- replaces Conductor's private `bin/claude` entrypoint with a wrapper
+- routes only Conductor's Claude/Opus lane through `innies claude`
+- leaves normal terminal `claude` untouched
+
+The installer script lives at:
+- `~/.local/bin/conductor-claude-install`
+
+After installing or changing either helper, fully quit Conductor and relaunch it:
+
+```bash
+conductor-open
+```
+
 ## Daily Flow
 
 1. Start Conductor:
@@ -69,9 +92,14 @@ conductor-openai-key-sync
 |---------|-----|
 | `Couldn't find origin/codex/...` during workspace creation | Repo base branch is wrong. Set `Branch new workspaces from` to `origin/main`, remove the failed workspace, and recreate it. |
 | `Missing environment variable: OPENAI_API_KEY` in Codex | Quit Conductor and relaunch with `conductor-open`. |
+| Opus/Claude says authentication is required | Install the Conductor-only Claude shim with `conductor-claude-install`, then fully relaunch with `conductor-open`. |
 | Conductor still behaves like the old config | Fully quit Conductor before relaunching; the app must start fresh with the new environment. |
 | Failed workspace stuck in sidebar | Archive/delete it in Conductor, then recreate after fixing the base branch. |
+| Opus routing breaks again after a Conductor update | Re-run `conductor-claude-install`; app updates may restore Conductor's private `bin/claude`. |
 
 ## Notes
 - Keep `~/innies` itself on `main` unless you intentionally need otherwise.
 - New workspaces should generally branch from pushed remote branches like `origin/main`, not unpublished local branches.
+- Codex and Opus are wired separately inside Conductor:
+  - Codex works through `conductor-open`
+  - Opus works through Conductor's private Claude wrapper installed by `conductor-claude-install`
