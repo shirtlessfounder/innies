@@ -59,9 +59,10 @@ The admin analytics read surface now carries these Claude quota fields:
 - `claudeSevenDayAvgUsageUnitsBeforeCapExhaustion`
 
 Current expectation:
-- non-Claude rows keep those fields `null`
+- OpenAI/Codex rows may populate the raw provider-usage snapshot fields (`fiveHourUtilizationRatio`, `fiveHourResetsAt`, `sevenDayUtilizationRatio`, `sevenDayResetsAt`, `providerUsageFetchedAt`) when a stored snapshot exists
+- non-Claude reserve / contribution-cap fields still keep `null`
 - Claude rows may still keep them `null` when the latest usage snapshot is missing or analytics is reading against a pre-migration environment
-- the dashboard shows raw Claude utilization in `5H` / `7D`, tints exhausted cells red when a reserve or provider limit is hit, and renders `n/a` for non-Claude rows
+- the dashboard shows raw provider usage in `5H` / `7D`; Claude rows tint exhausted cells when a reserve or provider limit is hit, while OpenAI/Codex rows use those windows for derived usage-exhausted status without reserve semantics
 - the Claude cap-cycle usage fields are derived from durable `contribution_cap_exhausted` / `contribution_cap_cleared` events plus usage-ledger sums between the prior clear point and each exhaustion point
 
 ## What We Actually Store
@@ -101,7 +102,7 @@ Current expectation:
   - current manual monthly budget usage
   - exact `maxedEvents7d`
   - empirical maxing / recovery / capacity / utilization metrics when enough history exists
-  - live Claude provider-usage / reserve fields for contribution-cap routing
+  - live provider-usage snapshot fields when a stored snapshot exists; reserve / contribution-cap flags remain Claude-only
   - Claude 5h / 7d usage-units-before-cap-exhaustion metrics when those cap cycles have been observed
   - best-effort auth diagnosis fields when Innies can derive them (`authDiagnosis`, `accessTokenExpiresAt`, `refreshTokenState`)
 
@@ -113,7 +114,7 @@ Current expectation:
   - request volume
   - top buyers
   - system-wide latency / error / fallback metrics
-  - current usage-maxed token count in `maxedTokens`
+  - current usage-maxed token count in `maxedTokens`, including active OpenAI/Codex rows whose stored provider-usage window is exhausted
 
 - `/timeseries`
   - request / usage / error / latency over time
@@ -141,11 +142,11 @@ Current expectation:
   - one merged snapshot for summary + tokens + buyers + anomalies + events
   - shared snapshot cache keyed by `window/provider/source`, refreshed at most once every ~2.5s per key
   - keeps the admin dashboard feeling live without recomputing the heaviest buyer/token-health queries for every tab
-  - carries raw Claude provider-usage/reserve fields when available
+  - carries raw provider-usage snapshot fields when available; reserve / contribution-cap flags remain Claude-only
   - derives `5H` / `7D` in the dashboard layer
-  - renders `n/a` CAP placeholders for non-Claude rows while keeping the raw API fields `null`
-  - surfaces provider-usage freshness and contribution-cap warnings in the snapshot `warnings` list
-  - surfaces operator-facing Claude quota warnings for missing snapshots, stale snapshots, and cap exhaustion
+  - renders `n/a` CAP placeholders for non-Claude rows while still allowing OpenAI/Codex rows to carry raw usage-window telemetry
+  - surfaces provider-usage freshness and exhaustion warnings in the snapshot `warnings` list
+  - distinguishes backend auth parking (`backend_maxed`) from derived usage exhaustion (`cap_exhausted` for Claude, `usage_exhausted` for OpenAI/Codex)
 
 - `/anomalies`
   - aggregate staleness / mismatch and attribution checks
