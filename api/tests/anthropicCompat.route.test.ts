@@ -1446,7 +1446,7 @@ describe('anthropic compat route', () => {
     expect((res.body as any).code).toBe('proxy_replay_not_supported');
   });
 
-  it('passes through upstream 4xx status/body for compat route', async () => {
+  it('passes through the final upstream 4xx status/body for compat route after retry exhaustion', async () => {
     const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({
         type: 'error',
@@ -1476,7 +1476,7 @@ describe('anthropic compat route', () => {
     await invoke(handlers[1], req, res);
     await invoke(handlers[2], req, res);
 
-    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
     expect(res.statusCode).toBe(400);
     expect((res.body as any).error?.type).toBe('invalid_request_error');
 

@@ -450,6 +450,7 @@ describe('analytics routes', () => {
     analytics.getRecentRequests.mockResolvedValue([
       {
         request_id: 'req_123',
+        attempt_no: 2,
         created_at: '2026-03-08T15:00:00.000Z',
         credential_id: '11111111-1111-4111-8111-111111111111',
         credential_label: 'alpha',
@@ -457,6 +458,12 @@ describe('analytics routes', () => {
         model: 'claude-opus-4-6',
         source: 'openclaw',
         translated: true,
+        rescued: true,
+        rescue_scope: 'cross_provider',
+        rescue_initial_provider: 'openai',
+        rescue_initial_credential_id: '22222222-2222-4222-8222-222222222222',
+        rescue_initial_failure_code: 'upstream_400',
+        rescue_initial_failure_status: 400,
         streaming: true,
         upstream_status: 200,
         latency_ms: 450,
@@ -502,7 +509,7 @@ describe('analytics routes', () => {
       requests: [
         {
           requestId: 'req_123',
-          attemptNo: 1,
+          attemptNo: 2,
           createdAt: '2026-03-08T15:00:00.000Z',
           credentialId: '11111111-1111-4111-8111-111111111111',
           credentialLabel: 'alpha',
@@ -510,6 +517,12 @@ describe('analytics routes', () => {
           model: 'claude-opus-4-6',
           source: 'openclaw',
           translated: true,
+          rescued: true,
+          rescueScope: 'cross_provider',
+          rescueInitialProvider: 'openai',
+          rescueInitialCredentialId: '22222222-2222-4222-8222-222222222222',
+          rescueInitialFailureCode: 'upstream_400',
+          rescueInitialFailureStatus: 400,
           streaming: true,
           upstreamStatus: 200,
           latencyMs: 450,

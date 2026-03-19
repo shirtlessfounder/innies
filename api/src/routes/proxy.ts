@@ -124,6 +124,21 @@ type CompatTranslationMeta = {
   strategy: 'anthropic_messages_to_openai_responses';
 };
 
+type RescueScope = 'same_provider' | 'cross_provider';
+
+type RescueFailureSnapshot = {
+  provider: string;
+  credentialId: string;
+  credentialLabel?: string | null;
+  attemptNo: number;
+  failureCode: string;
+  failureStatus: number | null;
+};
+
+type RescueTracker = {
+  firstFailure: RescueFailureSnapshot | null;
+};
+
 function requestSeed(requestId: string): number {
   let seed = 0;
   for (let i = 0; i < requestId.length; i += 1) {
@@ -417,6 +432,10 @@ function parseProviderPreferencePlan(input: {
     providerPlan: deduped,
     preferredProvider: deduped[0]
   };
+}
+
+function selectSameProviderRetryCredentials(credentials: TokenCredential[]): TokenCredential[] {
+  return credentials.slice(0, 2);
 }
 
 function resolveProviderSelectionReason(input: {
@@ -910,7 +929,8 @@ function buildTokenRouteDecision(
   correlation: OpenClawCorrelation,
   providerPreference?: ProviderPreferenceMeta,
   compatTranslation?: CompatTranslationMeta,
-  providerUsageMeta?: Record<string, unknown>
+  providerUsageMeta?: Record<string, unknown>,
+  rescueMeta?: Record<string, unknown>
 ): Record<string, unknown> {
   const selectionReason = providerPreference?.selectionReason ?? 'preferred_provider_selected';
   const decision: Record<string, unknown> = {
@@ -946,7 +966,103 @@ function buildTokenRouteDecision(
   if (providerUsageMeta) {
     Object.assign(decision, providerUsageMeta);
   }
+  if (rescueMeta) {
+    Object.assign(decision, rescueMeta);
+  }
   return decision;
+}
+
+function rememberRescueFailure(
+  tracker: RescueTracker | undefined,
+  input: {
+    provider: string;
+    credential: TokenCredential;
+    attemptNo: number;
+    failure: AttemptFailure;
+  }
+): void {
+  if (!tracker || tracker.firstFailure) return;
+  tracker.firstFailure = {
+    provider: canonicalizeProvider(input.provider),
+    credentialId: input.credential.id,
+    credentialLabel: input.credential.debugLabel ?? null,
+    attemptNo: input.attemptNo,
+    failureCode: inferErrorCode(input.failure),
+    failureStatus: input.failure.statusCode ?? null
+  };
+}
+
+function buildRescueRouteDecisionMeta(
+  tracker: RescueTracker | undefined,
+  input: {
+    provider: string;
+    credential: TokenCredential;
+  }
+): Record<string, unknown> {
+  const initialFailure = tracker?.firstFailure ?? null;
+  if (!initialFailure) {
+    return {
+      rescued: false,
+      rescue_scope: null
+    };
+  }
+
+  const finalProvider = canonicalizeProvider(input.provider);
+  const rescueScope: RescueScope = initialFailure.provider === finalProvider
+    ? 'same_provider'
+    : 'cross_provider';
+
+  return {
+    rescued: true,
+    rescue_scope: rescueScope,
+    rescue_initial_provider: initialFailure.provider,
+    rescue_initial_credential_id: initialFailure.credentialId,
+    rescue_initial_credential_label: initialFailure.credentialLabel ?? null,
+    rescue_initial_attempt_no: initialFailure.attemptNo,
+    rescue_initial_failure_code: initialFailure.failureCode,
+    rescue_initial_failure_status: initialFailure.failureStatus,
+    rescue_final_provider: finalProvider,
+    rescue_final_credential_id: input.credential.id,
+    rescue_final_credential_label: input.credential.debugLabel ?? null
+  };
+}
+
+function logDegradedSuccess(input: {
+  tracker: RescueTracker | undefined;
+  requestId: string;
+  orgId: string;
+  correlation: OpenClawCorrelation;
+  provider: string;
+  model: string;
+  credential: TokenCredential;
+  attemptNo: number;
+}): void {
+  const initialFailure = input.tracker?.firstFailure ?? null;
+  if (!initialFailure) return;
+
+  const rescueScope: RescueScope = initialFailure.provider === canonicalizeProvider(input.provider)
+    ? 'same_provider'
+    : 'cross_provider';
+
+  console.info('[degraded_success]', {
+    org_id: input.orgId,
+    request_id: input.requestId,
+    openclaw_run_id: input.correlation.openclawRunId,
+    openclaw_session_id: input.correlation.openclawSessionId ?? null,
+    provider: input.provider,
+    model: input.model,
+    final_attempt_no: input.attemptNo,
+    rescue_scope: rescueScope,
+    initial_provider: initialFailure.provider,
+    initial_credential_id: initialFailure.credentialId,
+    initial_credential_label: initialFailure.credentialLabel ?? null,
+    initial_attempt_no: initialFailure.attemptNo,
+    initial_failure_code: initialFailure.failureCode,
+    initial_failure_status: initialFailure.failureStatus,
+    final_provider: canonicalizeProvider(input.provider),
+    final_credential_id: input.credential.id,
+    final_credential_label: input.credential.debugLabel ?? null
+  });
 }
 
 async function resolveEligibleTokenCredentials(input: {
@@ -2102,6 +2218,7 @@ async function executeTokenModeNonStreaming(input: {
   providerPreference?: ProviderPreferenceMeta;
   compatTranslation?: CompatTranslationMeta;
   allowCompatTerminalErrorResponse?: boolean;
+  rescueTracker?: RescueTracker;
 }): Promise<ProxyRouteResult> {
   const {
     requestId,
@@ -2119,7 +2236,8 @@ async function executeTokenModeNonStreaming(input: {
     strictUpstreamPassthrough,
     providerPreference,
     compatTranslation,
-    allowCompatTerminalErrorResponse
+    allowCompatTerminalErrorResponse,
+    rescueTracker
   } = input;
   const {
     credentials,
@@ -2152,7 +2270,9 @@ async function executeTokenModeNonStreaming(input: {
   let terminalCompatError: ReturnType<typeof mapOpenAiErrorToAnthropic> | null = null;
   let terminalCompatCredentialId: string | null = null;
   let terminalCompatAttemptNo = 0;
-  for (const initialCredential of credentials) {
+  let terminalNative400Result: ProxyRouteResult | null = null;
+  let sawNonAuthNon400Failure = false;
+  for (const initialCredential of selectSameProviderRetryCredentials(credentials)) {
     attemptNo += 1;
     let credential = initialCredential;
     let refreshed = false;
@@ -2220,7 +2340,11 @@ async function executeTokenModeNonStreaming(input: {
             correlation,
             providerPreference,
             compatTranslation,
-            providerUsageRouteMeta.get(credential.id)
+            providerUsageRouteMeta.get(credential.id),
+            buildRescueRouteDecisionMeta(rescueTracker, {
+              provider,
+              credential
+            })
           ),
           upstreamStatus: failure.statusCode,
           errorCode: inferErrorCode(failure),
@@ -2234,7 +2358,7 @@ async function executeTokenModeNonStreaming(input: {
         headers: upstreamHeaders,
         body: upstreamBody,
         signal: controller.signal
-      })
+        })
         .catch(async (error: unknown) => {
           const message = error instanceof Error ? error.message : 'network error';
           await logAttemptFailure({ kind: 'network', message });
@@ -2242,7 +2366,16 @@ async function executeTokenModeNonStreaming(input: {
         })
         .finally(() => clearTimeout(timer));
 
-      if (!upstreamResponse) break;
+      if (!upstreamResponse) {
+        rememberRescueFailure(rescueTracker, {
+          provider,
+          credential,
+          attemptNo,
+          failure: { kind: 'network', message: 'network error' }
+        });
+        sawNonAuthNon400Failure = true;
+        break;
+      }
 
       const status = upstreamResponse.status;
       const upstreamHeadersAt = Date.now();
@@ -2449,6 +2582,12 @@ async function executeTokenModeNonStreaming(input: {
           errorMessage: statusErrorMessage
         };
         await logAttemptFailure({ kind: 'auth', statusCode: status, message: 'token auth failed' }, ttfbMs);
+        rememberRescueFailure(rescueTracker, {
+          provider,
+          credential,
+          attemptNo,
+          failure: { kind: 'auth', statusCode: status, message: 'token auth failed' }
+        });
         if (strictUpstreamPassthrough) {
           logCompatAudit({
             orgId,
@@ -2498,6 +2637,13 @@ async function executeTokenModeNonStreaming(input: {
         });
         const backoffMs = 200 * (2 ** (attemptNo - 1)) + Math.floor(Math.random() * 100);
         await sleep(backoffMs);
+        rememberRescueFailure(rescueTracker, {
+          provider,
+          credential,
+          attemptNo,
+          failure: { kind: 'rate_limited', statusCode: 429, message: 'rate limited' }
+        });
+        sawNonAuthNon400Failure = true;
         break;
       }
 
@@ -2554,6 +2700,67 @@ async function executeTokenModeNonStreaming(input: {
         }
 
         await logAttemptFailure({ kind: 'server_error', statusCode: status, message: 'upstream server error' }, ttfbMs);
+        rememberRescueFailure(rescueTracker, {
+          provider,
+          credential,
+          attemptNo,
+          failure: { kind: 'server_error', statusCode: status, message: 'upstream server error' }
+        });
+        sawNonAuthNon400Failure = true;
+        break;
+      }
+
+      if (status === 400) {
+        const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+        const upstreamErrorData = await readUpstreamErrorPayload(upstreamResponse);
+        if (compatTranslation) {
+          terminalCompatError = mapOpenAiErrorToAnthropic(status, upstreamErrorData);
+          terminalCompatCredentialId = credential.id;
+          terminalCompatAttemptNo = attemptNo;
+        } else if (allowCompatTerminalErrorResponse) {
+          terminalNative400Result = {
+            requestId,
+            keyId: credential.id,
+            attemptNo,
+            upstreamStatus: status,
+            usageUnits: 0,
+            contentType,
+            data: upstreamErrorData,
+            routeKind: 'token_credential',
+            alreadyRecorded: true
+          };
+        }
+        await recordTokenCredentialOutcome({
+          credential,
+          requestId,
+          attemptNo,
+          provider,
+          model,
+          upstreamStatus: status
+        });
+        if (strictUpstreamPassthrough) {
+          const { errorType, errorMessage } = extractUpstreamErrorDetails(upstreamErrorData);
+          logCompatAudit({
+            orgId,
+            provider,
+            model,
+            requestId,
+            credentialId: credential.id,
+            attemptNo,
+            upstreamStatus: status,
+            openclawRunId: correlation.openclawRunId,
+            openclawSessionId: correlation.openclawSessionId,
+            errorType,
+            errorMessage
+          });
+        }
+        await logAttemptFailure({ statusCode: status, message: 'upstream provider rejected request' }, ttfbMs);
+        rememberRescueFailure(rescueTracker, {
+          provider,
+          credential,
+          attemptNo,
+          failure: { statusCode: status, message: 'upstream provider rejected request' }
+        });
         break;
       }
 
@@ -2600,6 +2807,17 @@ async function executeTokenModeNonStreaming(input: {
           statusCode: effectiveStatus,
           message: 'upstream responses stream reported failure'
         }, ttfbMs);
+        rememberRescueFailure(rescueTracker, {
+          provider,
+          credential,
+          attemptNo,
+          failure: {
+            kind: 'upstream_failed_stream',
+            statusCode: effectiveStatus,
+            message: 'upstream responses stream reported failure'
+          }
+        });
+        sawNonAuthNon400Failure = true;
         break;
       }
       const downstreamData = compatTranslation && status >= 200 && status < 300 && !extractedFailed
@@ -2654,7 +2872,11 @@ async function executeTokenModeNonStreaming(input: {
           correlation,
           providerPreference,
           compatTranslation,
-          providerUsageRouteMeta.get(credential.id)
+          providerUsageRouteMeta.get(credential.id),
+          buildRescueRouteDecisionMeta(rescueTracker, {
+            provider,
+            credential
+          })
         ),
         upstreamStatus: status,
         latencyMs: Date.now() - startedAt,
@@ -2695,6 +2917,17 @@ async function executeTokenModeNonStreaming(input: {
           responsePreview: extractResponsePreview(data)
         }).catch(() => {});
       }
+
+      logDegradedSuccess({
+        tracker: rescueTracker,
+        requestId,
+        orgId,
+        correlation,
+        provider,
+        model,
+        credential,
+        attemptNo
+      });
 
       return {
         requestId,
@@ -2748,6 +2981,10 @@ async function executeTokenModeNonStreaming(input: {
       });
   }
 
+  if (allowCompatTerminalErrorResponse && terminalNative400Result && !sawNonAuthNon400Failure) {
+    return terminalNative400Result;
+  }
+
   throw new AppError('capacity_unavailable', 429, 'All token credential attempts exhausted', {
     provider,
     model,
@@ -2775,6 +3012,7 @@ async function executeTokenModeStreaming(input: {
   compatTranslation?: CompatTranslationMeta;
   compatMode?: boolean;
   allowCompatTerminalErrorResponse?: boolean;
+  rescueTracker?: RescueTracker;
 }): Promise<ProxyRouteResult | null> {
   const {
     requestId,
@@ -2795,7 +3033,8 @@ async function executeTokenModeStreaming(input: {
     providerPreference,
     compatTranslation,
     compatMode: compatModeFlag,
-    allowCompatTerminalErrorResponse
+    allowCompatTerminalErrorResponse,
+    rescueTracker
   } = input;
 
   const {
@@ -2829,8 +3068,10 @@ async function executeTokenModeStreaming(input: {
   let terminalCompatError: ReturnType<typeof mapOpenAiErrorToAnthropic> | null = null;
   let terminalCompatCredentialId: string | null = null;
   let terminalCompatAttemptNo = 0;
+  let terminalNative400Result: ProxyRouteResult | null = null;
+  let sawNonAuthNon400Failure = false;
 
-  for (const initialCredential of credentials) {
+  for (const initialCredential of selectSameProviderRetryCredentials(credentials)) {
     attemptNo += 1;
     let credential = initialCredential;
     let refreshed = false;
@@ -2921,7 +3162,16 @@ async function executeTokenModeStreaming(input: {
         })
         .finally(() => clearTimeout(timer));
 
-      if (!upstreamResponse) break;
+      if (!upstreamResponse) {
+        rememberRescueFailure(rescueTracker, {
+          provider,
+          credential,
+          attemptNo,
+          failure: { kind: 'network', message: 'network error' }
+        });
+        sawNonAuthNon400Failure = true;
+        break;
+      }
 
       const status = upstreamResponse.status;
       const upstreamHeadersAt = Date.now();
@@ -3126,6 +3376,12 @@ async function executeTokenModeStreaming(input: {
           errorMessage: statusErrorMessage
         };
         await logAttemptFailure({ kind: 'auth', statusCode: status, message: 'token auth failed' }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
+        rememberRescueFailure(rescueTracker, {
+          provider,
+          credential,
+          attemptNo,
+          failure: { kind: 'auth', statusCode: status, message: 'token auth failed' }
+        });
         if (strictUpstreamPassthrough) {
           logCompatAudit({
             orgId,
@@ -3175,6 +3431,13 @@ async function executeTokenModeStreaming(input: {
         });
         const backoffMs = 200 * (2 ** (attemptNo - 1)) + Math.floor(Math.random() * 100);
         await sleep(backoffMs);
+        rememberRescueFailure(rescueTracker, {
+          provider,
+          credential,
+          attemptNo,
+          failure: { kind: 'rate_limited', statusCode: 429, message: 'rate limited' }
+        });
+        sawNonAuthNon400Failure = true;
         break;
       }
 
@@ -3189,6 +3452,67 @@ async function executeTokenModeStreaming(input: {
           terminalCompatAttemptNo = attemptNo;
         }
         await logAttemptFailure({ kind: 'server_error', statusCode: status, message: 'upstream server error' }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
+        rememberRescueFailure(rescueTracker, {
+          provider,
+          credential,
+          attemptNo,
+          failure: { kind: 'server_error', statusCode: status, message: 'upstream server error' }
+        });
+        sawNonAuthNon400Failure = true;
+        break;
+      }
+
+      if (status === 400) {
+        const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+        const upstreamErrorData = await readUpstreamErrorPayload(upstreamResponse);
+        if (compatTranslation) {
+          terminalCompatError = mapOpenAiErrorToAnthropic(status, upstreamErrorData);
+          terminalCompatCredentialId = credential.id;
+          terminalCompatAttemptNo = attemptNo;
+        } else if (allowCompatTerminalErrorResponse) {
+          terminalNative400Result = {
+            requestId,
+            keyId: credential.id,
+            attemptNo,
+            upstreamStatus: status,
+            usageUnits: 0,
+            contentType,
+            data: upstreamErrorData,
+            routeKind: 'token_credential',
+            alreadyRecorded: true
+          };
+        }
+        await recordTokenCredentialOutcome({
+          credential,
+          requestId,
+          attemptNo,
+          provider,
+          model,
+          upstreamStatus: status
+        });
+        if (strictUpstreamPassthrough) {
+          const { errorType, errorMessage } = extractUpstreamErrorDetails(upstreamErrorData);
+          logCompatAudit({
+            orgId,
+            provider,
+            model,
+            requestId,
+            credentialId: credential.id,
+            attemptNo,
+            upstreamStatus: status,
+            openclawRunId: correlation.openclawRunId,
+            openclawSessionId: correlation.openclawSessionId,
+            errorType,
+            errorMessage
+          });
+        }
+        await logAttemptFailure({ statusCode: status, message: 'upstream provider rejected request' }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
+        rememberRescueFailure(rescueTracker, {
+          provider,
+          credential,
+          attemptNo,
+          failure: { statusCode: status, message: 'upstream provider rejected request' }
+        });
         break;
       }
 
@@ -3237,6 +3561,17 @@ async function executeTokenModeStreaming(input: {
             statusCode: effectiveStatus,
             message: 'upstream responses stream reported failure'
           }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
+          rememberRescueFailure(rescueTracker, {
+            provider,
+            credential,
+            attemptNo,
+            failure: {
+              kind: 'upstream_failed_stream',
+              statusCode: effectiveStatus,
+              message: 'upstream responses stream reported failure'
+            }
+          });
+          sawNonAuthNon400Failure = true;
           break;
         }
         const downstreamData = compatTranslation && status >= 200 && status < 300 && !extractedFailed
@@ -3275,13 +3610,17 @@ async function executeTokenModeStreaming(input: {
           provider,
           model,
           streaming: true,
-            routeDecision: buildTokenRouteDecision(
-              credential,
-              correlation,
-              providerPreference,
-              compatTranslation,
-              providerUsageRouteMeta.get(credential.id)
-            ),
+          routeDecision: buildTokenRouteDecision(
+            credential,
+            correlation,
+            providerPreference,
+            compatTranslation,
+            providerUsageRouteMeta.get(credential.id),
+            buildRescueRouteDecisionMeta(rescueTracker, {
+              provider,
+              credential
+            })
+          ),
           upstreamStatus: effectiveStatus,
           errorCode: extractedFailed ? 'upstream_failed_stream' : (status >= 500 ? 'upstream_5xx_passthrough' : undefined),
           latencyMs: Date.now() - startedAt,
@@ -3437,6 +3776,16 @@ async function executeTokenModeStreaming(input: {
                 responsePreview: extractResponsePreview(rawText)
               }).catch(() => {});
             }
+            logDegradedSuccess({
+              tracker: rescueTracker,
+              requestId,
+              orgId,
+              correlation,
+              provider,
+              model,
+              credential,
+              attemptNo
+            });
             return {
               requestId,
               keyId: credential.id,
@@ -3568,6 +3917,18 @@ async function executeTokenModeStreaming(input: {
               responsePreview: extractResponsePreview(data)
             }).catch(() => {});
           }
+          if (status >= 200 && status < 300 && !extractedFailed) {
+            logDegradedSuccess({
+              tracker: rescueTracker,
+              requestId,
+              orgId,
+              correlation,
+              provider,
+              model,
+              credential,
+              attemptNo
+            });
+          }
           return {
             requestId,
             keyId: credential.id,
@@ -3613,6 +3974,13 @@ async function executeTokenModeStreaming(input: {
 
       if (!upstreamResponse.body) {
         await logAttemptFailure({ kind: 'network', message: 'upstream stream missing body' }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
+        rememberRescueFailure(rescueTracker, {
+          provider,
+          credential,
+          attemptNo,
+          failure: { kind: 'network', message: 'upstream stream missing body' }
+        });
+        sawNonAuthNon400Failure = true;
         break;
       }
       await runtime.repos.routingEvents.insert({
@@ -3629,7 +3997,11 @@ async function executeTokenModeStreaming(input: {
           correlation,
           providerPreference,
           compatTranslation,
-          providerUsageRouteMeta.get(credential.id)
+          providerUsageRouteMeta.get(credential.id),
+          buildRescueRouteDecisionMeta(rescueTracker, {
+            provider,
+            credential
+          })
         ),
         upstreamStatus: status,
         latencyMs: Date.now() - startedAt,
@@ -3902,6 +4274,18 @@ async function executeTokenModeStreaming(input: {
           responsePreview: extractResponsePreview(sampled)
         }).catch(() => {});
       }
+      if (status >= 200 && status < 300 && shouldRecordUsage) {
+        logDegradedSuccess({
+          tracker: rescueTracker,
+          requestId,
+          orgId,
+          correlation,
+          provider,
+          model,
+          credential,
+          attemptNo
+        });
+      }
 
       return null;
     }
@@ -4040,6 +4424,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
       let previousReason: string | undefined;
       let terminalError: unknown = null;
       let deferredCompatTerminalResult: ProxyRouteResult | null = null;
+      const rescueTracker: RescueTracker = { firstFailure: null };
 
       for (const provider of providerPlan) {
         try {
@@ -4089,7 +4474,8 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               providerPreference,
               compatTranslation: upstreamRequest.compatTranslation,
               compatMode,
-              allowCompatTerminalErrorResponse: provider === providerPlan[providerPlan.length - 1]
+              allowCompatTerminalErrorResponse: provider === providerPlan[providerPlan.length - 1],
+              rescueTracker
             });
             if (streamedResult === null || res.headersSent || res.writableEnded) return;
             result = streamedResult;
@@ -4110,7 +4496,8 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               strictUpstreamPassthrough: upstreamRequest.strictUpstreamPassthrough,
               providerPreference,
               compatTranslation: upstreamRequest.compatTranslation,
-              allowCompatTerminalErrorResponse: provider === providerPlan[providerPlan.length - 1]
+              allowCompatTerminalErrorResponse: provider === providerPlan[providerPlan.length - 1],
+              rescueTracker
             });
           }
           terminalError = null;
