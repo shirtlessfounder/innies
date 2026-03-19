@@ -2353,6 +2353,202 @@ describe('proxy token-mode route behavior', () => {
     upstreamSpy.mockRestore();
   });
 
+  it('keeps healthy legacy codex credentials eligible on native openai responses requests', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const oauthToken = createFakeOpenAiOauthToken({ accountId: 'acct_native_codex_healthy' });
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      supports_streaming: false
+    } as any);
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'dddd0002-0000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'codex',
+      authScheme: 'bearer',
+      accessToken: oauthToken,
+      refreshToken: 'rt_native_codex_healthy',
+      expiresAt: new Date('2026-03-20T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentialProviderUsage, 'listByTokenCredentialIds').mockResolvedValue([{
+      tokenCredentialId: 'dddd0002-0000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'codex',
+      usageSource: 'openai_wham_usage',
+      fiveHourUtilizationRatio: 0.41,
+      fiveHourResetsAt: new Date('2026-03-19T01:00:00.000Z'),
+      sevenDayUtilizationRatio: 0.12,
+      sevenDayResetsAt: new Date('2026-03-22T00:00:00.000Z'),
+      rawPayload: {
+        rate_limit: {
+          primary_window: { used_percent: 41, reset_at: 1760000400 },
+          secondary_window: { used_percent: 12, reset_at: 1760256000 }
+        }
+      },
+      fetchedAt: new Date('2026-03-18T22:31:00.000Z'),
+      createdAt: new Date('2026-03-18T22:31:00.000Z'),
+      updatedAt: new Date('2026-03-18T22:31:00.000Z')
+    } as any]);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'resp_native_legacy_codex_ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/responses',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-request-id': 'req_native_legacy_codex_healthy',
+        'x-innies-provider-pin': 'true'
+      },
+      body: {
+        model: 'gpt-5.4',
+        input: 'hello from native openai',
+        stream: false
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('resp_native_legacy_codex_ok');
+    expect(listSpy).toHaveBeenCalledWith('818d0cc7-7ed2-469f-b690-a977e72a921d', 'openai');
+    expect(runtimeModule.runtime.repos.routingEvents.insert).toHaveBeenCalledWith(expect.objectContaining({
+      routeDecision: expect.objectContaining({
+        tokenCredentialId: 'dddd0002-0000-4000-8000-000000000000',
+        openaiProviderUsageInScope: true,
+        providerUsageSnapshotState: 'fresh',
+        providerUsageExhaustionReason: null,
+        providerUsageExhaustionHoldActive: false
+      })
+    }));
+    const [targetUrl, init] = upstreamSpy.mock.calls[0] as [URL, RequestInit];
+    const headers = (init.headers ?? {}) as Record<string, string>;
+    expect(String(targetUrl)).toBe('https://chatgpt.com/backend-api/codex/responses');
+    expect(headers['chatgpt-account-id']).toBe('acct_native_codex_healthy');
+    upstreamSpy.mockRestore();
+  });
+
+  it('benches exhausted legacy codex credentials on native openai responses requests', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const oauthToken = createFakeOpenAiOauthToken({ accountId: 'acct_native_codex_exhausted' });
+    const exhaustedUntil = new Date(Date.now() + (60 * 60 * 1000));
+    const sevenDayResetAt = new Date(Date.now() + (72 * 60 * 60 * 1000));
+    const fetchedAt = new Date(Date.now() - (15 * 60 * 1000));
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      supports_streaming: false
+    } as any);
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'dddd0003-0000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'codex',
+      authScheme: 'bearer',
+      accessToken: oauthToken,
+      refreshToken: 'rt_native_codex_exhausted',
+      expiresAt: new Date('2026-03-20T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentialProviderUsage, 'listByTokenCredentialIds').mockResolvedValue([{
+      tokenCredentialId: 'dddd0003-0000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'codex',
+      usageSource: 'openai_wham_usage',
+      fiveHourUtilizationRatio: 1,
+      fiveHourResetsAt: exhaustedUntil,
+      sevenDayUtilizationRatio: 0.42,
+      sevenDayResetsAt: sevenDayResetAt,
+      rawPayload: {
+        rate_limit: {
+          primary_window: { used_percent: 100, reset_at: Math.floor(exhaustedUntil.getTime() / 1000) },
+          secondary_window: { used_percent: 42, reset_at: Math.floor(sevenDayResetAt.getTime() / 1000) }
+        }
+      },
+      fetchedAt,
+      createdAt: fetchedAt,
+      updatedAt: fetchedAt
+    } as any]);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/responses',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-innies-provider-pin': 'true'
+      },
+      body: {
+        model: 'gpt-5.4',
+        input: 'hello from native openai',
+        stream: false
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(429);
+    expect((res.body as any).code).toBe('capacity_unavailable');
+    expect(listSpy).toHaveBeenCalledWith('818d0cc7-7ed2-469f-b690-a977e72a921d', 'openai');
+    expect((res.body as any).details?.providerUsageExcludedReasonCounts).toEqual({
+      usage_exhausted_5h: 1
+    });
+    expect((res.body as any).details?.providerUsageExcludedRouteMeta?.['dddd0003-0000-4000-8000-000000000000']).toEqual(
+      expect.objectContaining({
+        openaiProviderUsageInScope: true,
+        providerUsageSnapshotState: 'fresh',
+        fiveHourUtilizationRatio: 1,
+        fiveHourProviderUsageExhausted: true,
+        providerUsageExhaustionReason: 'usage_exhausted_5h',
+        providerUsageExhaustionHoldActive: true,
+        providerUsageExhaustionHoldUntil: exhaustedUntil.toISOString()
+      })
+    );
+    expect(upstreamSpy).not.toHaveBeenCalled();
+  });
+
   it('accepts native anthropic message bodies on /v1/proxy/v1/messages and preserves claude-cli pinning', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     process.env.ANTHROPIC_UPSTREAM_BASE_URL = 'https://anthropic.internal.test';
