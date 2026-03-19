@@ -244,6 +244,53 @@ describe('AnalyticsRepository', () => {
     expect(db.queries[0]?.sql).toContain("AND ul.entry_type = 'usage'");
   });
 
+  it('returns rescued-request metadata from final routing rows in recent-request analytics', async () => {
+    const db = new MockSqlClient({
+      rows: [{
+        request_id: 'req_rescued_1',
+        attempt_no: 2,
+        created_at: '2026-03-08T15:00:00.000Z',
+        credential_id: '11111111-1111-4111-8111-111111111111',
+        credential_label: 'alpha',
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        source: 'openclaw',
+        translated: false,
+        rescued: true,
+        rescue_scope: 'cross_provider',
+        rescue_initial_provider: 'openai',
+        rescue_initial_credential_id: '22222222-2222-4222-8222-222222222222',
+        rescue_initial_failure_code: 'upstream_400',
+        rescue_initial_failure_status: 400,
+        streaming: true,
+        upstream_status: 200,
+        latency_ms: 450,
+        ttfb_ms: 120,
+        input_tokens: 1000,
+        output_tokens: 50,
+        usage_units: 200,
+        prompt_preview: 'hello',
+        response_preview: 'world'
+      }],
+      rowCount: 1
+    });
+    const repo = new AnalyticsRepository(db);
+
+    const rows = await repo.getRecentRequests({ window: '24h', limit: 25 }) as Array<Record<string, unknown>>;
+
+    expect(db.queries[0]?.sql).toContain(`CASE WHEN re.route_decision->>'rescued' = 'true' THEN true ELSE false END AS rescued`);
+    expect(db.queries[0]?.sql).toContain(`re.route_decision->>'rescue_scope' AS rescue_scope`);
+    expect(rows).toEqual([expect.objectContaining({
+      request_id: 'req_rescued_1',
+      rescued: true,
+      rescue_scope: 'cross_provider',
+      rescue_initial_provider: 'openai',
+      rescue_initial_credential_id: '22222222-2222-4222-8222-222222222222',
+      rescue_initial_failure_code: 'upstream_400',
+      rescue_initial_failure_status: 400
+    })]);
+  });
+
   it('reads lifecycle events with window/provider filters and limits', async () => {
     const db = new MockSqlClient({ rows: [], rowCount: 0 });
     const repo = new AnalyticsRepository(db);

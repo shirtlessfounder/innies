@@ -4952,4 +4952,355 @@ describe('proxy token-mode route behavior', () => {
     expect(routeDecision?.provider_fallback_reason).toBe('capacity_unavailable');
     upstreamSpy.mockRestore();
   });
+
+  it('emits one degraded_success summary log and same-provider rescue metadata on final non-stream success', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const firstOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_degraded_same_provider_first',
+      clientId: 'app_degraded_same_provider_first'
+    });
+    const secondOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_degraded_same_provider_second',
+      clientId: 'app_degraded_same_provider_second'
+    });
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string) => {
+      if (provider === 'openai') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: false } as any;
+      }
+      if (provider === 'anthropic') {
+        return { provider: 'anthropic', model: 'gpt-5.4', supports_streaming: false } as any;
+      }
+      return null as any;
+    });
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider === 'openai') {
+        return [
+          createRoutingCredentialFixture({
+            id: 'degraded-same-provider-openai-first',
+            provider: 'openai',
+            authScheme: 'bearer',
+            accessToken: firstOpenAiToken,
+            refreshToken: 'rt_degraded_same_provider_first'
+          }),
+          createRoutingCredentialFixture({
+            id: 'degraded-same-provider-openai-second',
+            provider: 'openai',
+            authScheme: 'bearer',
+            accessToken: secondOpenAiToken,
+            refreshToken: 'rt_degraded_same_provider_second'
+          })
+        ];
+      }
+      if (provider === 'anthropic') {
+        return [createRoutingCredentialFixture({
+          id: 'degraded-same-provider-anthropic-fallback',
+          provider: 'anthropic',
+          authScheme: 'x_api_key',
+          accessToken: 'sk-ant-degraded-same-provider-fallback'
+        })];
+      }
+      return [];
+    });
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input: URL | RequestInfo, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      if (headers?.authorization === `Bearer ${firstOpenAiToken}`) {
+        return new Response(JSON.stringify({
+          error: {
+            type: 'invalid_request_error',
+            message: 'first degraded credential rejected request'
+          }
+        }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      if (headers?.authorization === `Bearer ${secondOpenAiToken}`) {
+        return new Response(JSON.stringify({
+          id: 'resp_degraded_same_provider_ok',
+          usage: { input_tokens: 2, output_tokens: 1 }
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      throw new Error(`unexpected degraded_success auth header: ${JSON.stringify(headers ?? {})}`);
+    });
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'b'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'gpt-5.4',
+        streaming: false,
+        payload: { model: 'gpt-5.4', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls.at(-1)?.[0]?.routeDecision;
+    expect(routeDecision?.rescued).toBe(true);
+    expect(routeDecision?.rescue_scope).toBe('same_provider');
+    expect(routeDecision?.rescue_initial_provider).toBe('openai');
+    expect(routeDecision?.rescue_initial_credential_id).toBe('degraded-same-provider-openai-first');
+    expect(routeDecision?.rescue_initial_failure_code).toBe('upstream_400');
+    expect(routeDecision?.rescue_initial_failure_status).toBe(400);
+    expect(routeDecision?.rescue_final_provider).toBe('openai');
+    expect(routeDecision?.rescue_final_credential_id).toBe('degraded-same-provider-openai-second');
+    const degradedCalls = infoSpy.mock.calls.filter((call) => call[0] === '[degraded_success]');
+    expect(degradedCalls).toHaveLength(1);
+    expect(degradedCalls[0]?.[1]).toMatchObject({
+      request_id: 'b',
+      rescue_scope: 'same_provider',
+      initial_provider: 'openai',
+      initial_credential_id: 'degraded-same-provider-openai-first',
+      initial_failure_code: 'upstream_400',
+      initial_failure_status: 400,
+      final_provider: 'openai',
+      final_credential_id: 'degraded-same-provider-openai-second'
+    });
+
+    upstreamSpy.mockRestore();
+    infoSpy.mockRestore();
+  });
+
+  it('emits one degraded_success summary log and cross-provider rescue metadata on final streaming success', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const firstOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_degraded_cross_provider_first',
+      clientId: 'app_degraded_cross_provider_first'
+    });
+    const secondOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_degraded_cross_provider_second',
+      clientId: 'app_degraded_cross_provider_second'
+    });
+    const thirdOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_degraded_cross_provider_third',
+      clientId: 'app_degraded_cross_provider_third'
+    });
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string) => {
+      if (provider === 'openai') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: true } as any;
+      }
+      if (provider === 'anthropic') {
+        return { provider: 'anthropic', model: 'gpt-5.4', supports_streaming: true } as any;
+      }
+      return null as any;
+    });
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider === 'openai') {
+        return [
+          createRoutingCredentialFixture({
+            id: 'degraded-cross-provider-openai-first',
+            provider: 'openai',
+            authScheme: 'bearer',
+            accessToken: firstOpenAiToken,
+            refreshToken: 'rt_degraded_cross_provider_first'
+          }),
+          createRoutingCredentialFixture({
+            id: 'degraded-cross-provider-openai-second',
+            provider: 'openai',
+            authScheme: 'bearer',
+            accessToken: secondOpenAiToken,
+            refreshToken: 'rt_degraded_cross_provider_second'
+          }),
+          createRoutingCredentialFixture({
+            id: 'degraded-cross-provider-openai-third',
+            provider: 'openai',
+            authScheme: 'bearer',
+            accessToken: thirdOpenAiToken,
+            refreshToken: 'rt_degraded_cross_provider_third'
+          })
+        ];
+      }
+      if (provider === 'anthropic') {
+        return [createRoutingCredentialFixture({
+          id: 'degraded-cross-provider-anthropic-fallback',
+          provider: 'anthropic',
+          authScheme: 'x_api_key',
+          accessToken: 'sk-ant-degraded-cross-provider-fallback'
+        })];
+      }
+      return [];
+    });
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input: URL | RequestInfo, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      if (headers?.authorization === `Bearer ${firstOpenAiToken}` || headers?.authorization === `Bearer ${secondOpenAiToken}`) {
+        return new Response(JSON.stringify({
+          error: {
+            type: 'invalid_request_error',
+            message: 'translated provider rejected streaming request'
+          }
+        }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      if (headers?.authorization === `Bearer ${thirdOpenAiToken}`) {
+        return new Response(JSON.stringify({
+          id: 'resp_should_not_use_third_degraded_cross_provider_credential'
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      if (headers?.['x-api-key'] === 'sk-ant-degraded-cross-provider-fallback') {
+        return new Response(JSON.stringify({
+          id: 'msg_degraded_cross_provider_ok',
+          usage: { input_tokens: 2, output_tokens: 1 },
+          content: [{ type: 'text', text: 'cross-provider retry ok' }]
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      throw new Error(`unexpected degraded cross-provider auth header: ${JSON.stringify(headers ?? {})}`);
+    });
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'c'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'gpt-5.4',
+        streaming: true,
+        payload: { model: 'gpt-5.4', stream: true, max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
+      }
+    });
+    const res = createStreamingMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(String(res.body)).toContain('cross-provider retry ok');
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls.at(-1)?.[0]?.routeDecision;
+    expect(routeDecision?.rescued).toBe(true);
+    expect(routeDecision?.rescue_scope).toBe('cross_provider');
+    expect(routeDecision?.rescue_initial_provider).toBe('openai');
+    expect(routeDecision?.rescue_initial_credential_id).toBe('degraded-cross-provider-openai-first');
+    expect(routeDecision?.rescue_initial_failure_code).toBe('upstream_400');
+    expect(routeDecision?.rescue_initial_failure_status).toBe(400);
+    expect(routeDecision?.rescue_final_provider).toBe('anthropic');
+    expect(routeDecision?.rescue_final_credential_id).toBe('degraded-cross-provider-anthropic-fallback');
+    const degradedCalls = infoSpy.mock.calls.filter((call) => call[0] === '[degraded_success]');
+    expect(degradedCalls).toHaveLength(1);
+    expect(degradedCalls[0]?.[1]).toMatchObject({
+      request_id: 'c',
+      rescue_scope: 'cross_provider',
+      initial_provider: 'openai',
+      initial_credential_id: 'degraded-cross-provider-openai-first',
+      final_provider: 'anthropic',
+      final_credential_id: 'degraded-cross-provider-anthropic-fallback'
+    });
+
+    upstreamSpy.mockRestore();
+    infoSpy.mockRestore();
+  });
+
+  it('does not emit degraded_success noise on direct first-attempt success', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'anthropic'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'anthropic',
+      model: 'claude-3-5-sonnet-latest',
+      supports_streaming: false
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([
+      createRoutingCredentialFixture({
+        id: 'direct-success-anthropic-first',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-direct-success-first'
+      })
+    ]);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      id: 'msg_direct_success_ok',
+      usage: { input_tokens: 2, output_tokens: 1 },
+      content: [{ type: 'text', text: 'direct success ok' }]
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-innies-provider-pin': 'true',
+        'x-request-id': 'direct-success'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-3-5-sonnet-latest',
+        streaming: false,
+        payload: { model: 'claude-3-5-sonnet-latest', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls.at(-1)?.[0]?.routeDecision;
+    expect(routeDecision?.rescued).toBe(false);
+    expect(routeDecision?.rescue_scope).toBeNull();
+    const degradedCalls = infoSpy.mock.calls.filter((call) => call[0] === '[degraded_success]');
+    expect(degradedCalls).toHaveLength(0);
+
+    upstreamSpy.mockRestore();
+    infoSpy.mockRestore();
+  });
 });
