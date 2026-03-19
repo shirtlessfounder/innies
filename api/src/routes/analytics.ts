@@ -747,6 +747,16 @@ function appendDashboardWarning(
   warnings.push(warning);
 }
 
+function openAiUsageExhausted(row: {
+  fiveHourUtilizationRatio: number | null;
+  sevenDayUtilizationRatio: number | null;
+}) {
+  return {
+    fiveHour: (row.fiveHourUtilizationRatio ?? 0) >= 1,
+    sevenDay: (row.sevenDayUtilizationRatio ?? 0) >= 1
+  };
+}
+
 function buildProviderUsageWarnings(
   rawTokenHealthRows: unknown,
   now = Date.now()
@@ -758,10 +768,77 @@ function buildProviderUsageWarnings(
   const hardStaleMs = readTokenCredentialProviderUsageHardStaleMs();
 
   for (const row of tokenHealthRows) {
-    if (row.provider !== 'anthropic') continue;
     if (row.status === 'expired' || row.status === 'revoked') continue;
 
     const label = tokenHealthWarningLabel(row);
+    if (row.provider === 'openai') {
+      const fetchedAtRaw = row.providerUsageFetchedAt;
+
+      if (row.lastRefreshError === PROVIDER_USAGE_FETCH_FAILED_REASON) {
+        appendDashboardWarning(
+          warnings,
+          seen,
+          `${label}: provider_usage_fetch_failed - last Codex usage refresh failed; dashboard usage state may lag until a successful refresh.`
+        );
+      } else if (row.lastRefreshError === PROVIDER_USAGE_FETCH_BACKOFF_ACTIVE_REASON) {
+        appendDashboardWarning(
+          warnings,
+          seen,
+          `${label}: provider_usage_fetch_backoff_active - Codex usage refresh is temporarily backing off after recent fetch failures; dashboard usage state may lag until retry.`
+        );
+      }
+
+      if (!fetchedAtRaw) {
+        appendDashboardWarning(
+          warnings,
+          seen,
+          `${label}: provider_usage_snapshot_missing - Codex token has no provider-usage snapshot yet; dashboard usage state may lag until one arrives.`
+        );
+        continue;
+      }
+
+      const fetchedAtMs = Date.parse(fetchedAtRaw);
+      const ageMs = Number.isFinite(fetchedAtMs) ? Math.max(0, now - fetchedAtMs) : null;
+
+      if (ageMs !== null && ageMs > hardStaleMs) {
+        appendDashboardWarning(
+          warnings,
+          seen,
+          `${label}: provider_usage_snapshot_hard_stale - last Codex usage snapshot is ${formatWarningAge(ageMs)} old; dashboard usage state may lag until a fresh snapshot arrives.`
+        );
+        continue;
+      }
+
+      if (ageMs !== null && ageMs > softStaleMs) {
+        appendDashboardWarning(
+          warnings,
+          seen,
+          `${label}: provider_usage_snapshot_soft_stale - last Codex usage snapshot is ${formatWarningAge(ageMs)} old; dashboard is still using the last successful snapshot.`
+        );
+      }
+
+      const exhausted = openAiUsageExhausted(row);
+      if (exhausted.fiveHour) {
+        appendDashboardWarning(
+          warnings,
+          seen,
+          `${label}: usage_exhausted_5h - Codex usage is exhausted for the 5h window${row.fiveHourResetsAt ? ` until ${row.fiveHourResetsAt}` : ''}.`
+        );
+      }
+
+      if (exhausted.sevenDay) {
+        appendDashboardWarning(
+          warnings,
+          seen,
+          `${label}: usage_exhausted_7d - Codex usage is exhausted for the 7d window${row.sevenDayResetsAt ? ` until ${row.sevenDayResetsAt}` : ''}.`
+        );
+      }
+
+      continue;
+    }
+
+    if (row.provider !== 'anthropic') continue;
+
     const availability = evaluateClaudeCredentialAvailability({
       credential: {
         provider: row.provider,

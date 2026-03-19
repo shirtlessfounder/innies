@@ -113,6 +113,24 @@ function applyBaseFilters(
   }
 }
 
+function applyCanonicalCredentialProviderFilter(
+  where: string[],
+  params: SqlValue[],
+  provider: string | undefined,
+  column: string
+): void {
+  if (!provider) return;
+
+  if (provider === 'openai') {
+    params.push(['openai', 'codex']);
+    where.push(`${column} = ANY($${params.length}::text[])`);
+    return;
+  }
+
+  params.push(provider);
+  where.push(`${column} = $${params.length}`);
+}
+
 function isMissingReserveColumn(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const details = error as { code?: string; column?: string; message?: string };
@@ -170,15 +188,15 @@ function buildSystemSummaryTokenCountsSql(input: {
       provider_usage as (
         select
           pu.token_credential_id,
+          pu.provider,
           pu.five_hour_utilization_ratio,
           pu.seven_day_utilization_ratio
         from ${TABLES.tokenCredentialProviderUsage} pu
-        where pu.provider = 'anthropic'
       ),
       `
     : '';
   const providerUsageJoin = input.options.includeProviderUsage
-    ? 'left join provider_usage pu on pu.token_credential_id = tc.id'
+    ? 'left join provider_usage pu on pu.token_credential_id = tc.id and pu.provider = tc.provider'
     : '';
   const fiveHourReservePercent = input.options.includeReserveColumns
     ? 'coalesce(tc.five_hour_reserve_percent, 0)'
@@ -198,6 +216,17 @@ function buildSystemSummaryTokenCountsSql(input: {
               and (
                 coalesce((pu.five_hour_utilization_ratio * 100) >= (100 - ${fiveHourReservePercent}), false)
                 or coalesce((pu.seven_day_utilization_ratio * 100) >= (100 - ${sevenDayReservePercent}), false)
+              )
+            )
+            when tc.provider in ('openai', 'codex')
+            then (
+              tc.status = 'maxed'
+              or (
+                pu.token_credential_id is not null
+                and (
+                  coalesce(pu.five_hour_utilization_ratio >= 1, false)
+                  or coalesce(pu.seven_day_utilization_ratio >= 1, false)
+                )
               )
             )
             else tc.status = 'maxed'
@@ -253,18 +282,18 @@ function buildTokenHealthSql(input: {
       provider_usage as (
         select
           pu.token_credential_id,
+          pu.provider,
           pu.five_hour_utilization_ratio,
           pu.five_hour_resets_at,
           pu.seven_day_utilization_ratio,
           pu.seven_day_resets_at,
           pu.fetched_at as provider_usage_fetched_at
         from ${TABLES.tokenCredentialProviderUsage} pu
-        where pu.provider = 'anthropic'
       ),
       `
     : '';
   const providerUsageJoin = input.options.includeProviderUsage
-    ? 'left join provider_usage pu on pu.token_credential_id = cb.id'
+    ? 'left join provider_usage pu on pu.token_credential_id = cb.id and pu.provider = cb.provider'
     : '';
   const providerUsageSelect = input.options.includeProviderUsage
     ? `
@@ -796,10 +825,7 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
     // Provider filter applies to the credential inventory. Source is intentionally ignored
     // for health metrics so derived cycle/utilization fields stay credential-global.
     const credWhere: string[] = [];
-    if (filters.provider) {
-      params.push(filters.provider);
-      credWhere.push(`tc.provider = $${params.length}`);
-    }
+    applyCanonicalCredentialProviderFilter(credWhere, params, filters.provider, 'tc.provider');
     const credFilter = credWhere.length > 0 ? `WHERE ${credWhere.join(' AND ')}` : '';
     const maxedWindowFilter = windowSqlRaw(filters.window, 'cr.maxed_at');
     const recoveryWindowFilter = windowSqlRaw(filters.window, 'cr.reactivated_at');
@@ -956,15 +982,17 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
     const params: SqlValue[] = [];
     const where: string[] = [];
     applyBaseFilters(where, params, filters);
-    const providerOnlyParams: SqlValue[] = [];
-    const providerOnlyFilter = filters.provider
-      ? (() => {
-        providerOnlyParams.push(filters.provider);
-        return ` where provider = $${providerOnlyParams.length}`;
-      })()
-      : '';
-    const tokenCountProviderFilter = filters.provider
-      ? `where tc.provider = $1`
+    const maxedParams: SqlValue[] = [];
+    const maxedWhere = [
+      `event_type = 'maxed'`,
+      `created_at >= now() - interval '7 days'`
+    ];
+    applyCanonicalCredentialProviderFilter(maxedWhere, maxedParams, filters.provider, 'provider');
+    const tokenCountParams: SqlValue[] = [];
+    const tokenCountWhere: string[] = [];
+    applyCanonicalCredentialProviderFilter(tokenCountWhere, tokenCountParams, filters.provider, 'tc.provider');
+    const tokenCountProviderFilter = tokenCountWhere.length > 0
+      ? `where ${tokenCountWhere.join(' AND ')}`
       : '';
 
     // Main aggregates
@@ -997,8 +1025,7 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
     const maxedSql = `
       SELECT count(*) AS maxed_events_7d
       FROM ${TABLES.tokenCredentialEvents}
-      WHERE event_type = 'maxed'
-        AND created_at >= now() - interval '7 days'${filters.provider ? ` AND provider = $${providerOnlyParams.length}` : ''}
+      WHERE ${maxedWhere.join('\n        AND ')}
     `;
 
     // By provider
@@ -1094,7 +1121,7 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
               providerFilter: tokenCountProviderFilter,
               options
             }),
-            providerOnlyParams
+            tokenCountParams
           );
         } catch (error) {
           const nextOptions: TokenHealthSqlOptions = {
@@ -1118,7 +1145,7 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
       await Promise.all([
         this.db.query(mainSql, params),
         tokenCountsPromise,
-        this.db.query(maxedSql, providerOnlyParams),
+        this.db.query(maxedSql, maxedParams),
         this.db.query(byProviderSql, byProviderParams),
         this.db.query(byModelSql, byModelParams),
         this.db.query(bySourceSql, bySourceParams),

@@ -55,7 +55,7 @@ What they do:
 - `innies-token-contribution-cap-set`: set the 5h / 7d reserve percents for a Claude token credential
 - `innies-token-refresh-token-set`: set or clear the stored OAuth refresh token for an existing credential id
 - `innies-token-probe-run`: directly probe an active or maxed token credential now; successful maxed probes immediately reactivate it
-- `innies-token-usage-refresh`: fetch Claude provider usage for a token now and print raw plus parsed 5h / 7d values
+- `innies-token-usage-refresh`: fetch provider usage for a Claude Code or Codex token now and print raw plus parsed 5h / 7d values
 - `innies-buyer-key-create`: create a new buyer key in `in_api_keys` and prompt for provider preference up front
 - `innies-buyer-preference-set`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
 - `innies-buyer-preference-get`: read the current buyer key preference
@@ -95,10 +95,12 @@ Behavior:
 - `innies-token-probe-run` also needs `INNIES_ADMIN_API_KEY` (or prompts for it) because it calls the admin API probe endpoint directly
 - `innies-token-probe-run` now prints a plain-English result summary (`REACTIVATED`, `PROBE OK, NO STATUS CHANGE`, or `PROBE FAILED, NO STATUS CHANGE`) before the raw JSON response
 - `innies-token-probe-run` also prints auth diagnosis details when the backend can derive them, including local OpenAI OAuth expiry and missing-refresh-token state
-- `innies-token-usage-refresh` accepts a credential number, UUID, or exact Claude `debugLabel`; it needs `DATABASE_URL`
-- `innies-token-usage-refresh` lists unexpired Claude credentials in `active|paused|maxed`, plus expired Claude OAuth credentials that still have a stored refresh token (shown as `expired`) so you can recover them manually
+- `innies-token-usage-refresh` accepts a credential number, UUID, or exact `debugLabel`; it needs `DATABASE_URL`
+- `innies-token-usage-refresh` lists only manual-refresh-eligible credentials: unexpired Claude Code and OpenAI/Codex OAuth/session credentials in `active|paused|maxed`, plus expired OAuth credentials from either provider that still have a stored refresh token (shown as `expired`)
 - `innies-token-usage-refresh` also needs `INNIES_ADMIN_API_KEY` (or prompts for it) because it calls the admin API provider-usage refresh endpoint directly
-- `innies-token-usage-refresh` bypasses in-memory usage-fetch backoff and prints both parsed 5h / 7d usage plus the raw Anthropic payload
+- `innies-token-usage-refresh` uses local credential decryption to hide unsupported OpenAI/Codex rows from the numbered selector; it reads `SELLER_SECRET_ENC_KEY_B64` from the environment or `api/.env` when needed
+- `innies-token-usage-refresh` bypasses Anthropic in-memory usage-fetch backoff and prints both parsed 5h / 7d usage plus the raw upstream payload for either provider
+- `innies-token-usage-refresh` only prints contribution-cap exhaustion lines when the backend returns Claude-specific cap state; Codex/OpenAI refreshes leave those fields `null`
 - `label` maps to API field `debugLabel`
 - set/get preference accept either the buyer-key UUID or the live buyer key value; live-key lookup uses `DATABASE_URL`
 - script-side default provider display for `null` preference follows `BUYER_PROVIDER_PREFERENCE_DEFAULT` (legacy alias `INNIES_BUYER_PROVIDER_PREFERENCE_DEFAULT` also works)

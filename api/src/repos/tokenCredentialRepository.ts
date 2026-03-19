@@ -207,6 +207,13 @@ function contributionCapLifecycleReason(
     : `provider_usage_${window}_threshold_cleared`;
 }
 
+function routingProvidersForLookup(provider: string): string[] {
+  const normalized = provider.trim().toLowerCase();
+  return normalized === 'openai'
+    ? ['openai', 'codex']
+    : [normalized];
+}
+
 function contributionCapLifecycleMetadata(input: {
   window: ClaudeContributionCapWindow;
   latestEventType: string | null;
@@ -289,12 +296,13 @@ export class TokenCredentialRepository {
   }
 
   async listActiveForRouting(orgId: string, provider: string): Promise<TokenCredential[]> {
+    const routingProviders = routingProvidersForLookup(provider);
     const sql = (includeContributionCapColumns: boolean) => `
       select
         ${tokenCredentialSelectColumns(includeContributionCapColumns)}
       from ${TABLES.tokenCredentials}
       where org_id = $1
-        and provider = $2
+        and provider = ANY($2::text[])
         and status = 'active'
         and expires_at > now()
         and (rate_limited_until is null or rate_limited_until <= now())
@@ -311,7 +319,7 @@ export class TokenCredentialRepository {
       order by rotation_version desc, updated_at desc
     `;
 
-    const result = await queryTokenCredentialRowsWithContributionCapFallback(this.db, sql, [orgId, provider]);
+    const result = await queryTokenCredentialRowsWithContributionCapFallback(this.db, sql, [orgId, routingProviders]);
     return result.rows.map(mapRow);
   }
 

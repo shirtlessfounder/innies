@@ -309,41 +309,42 @@ Notes:
 - auth-diagnosis fields are best-effort operator hints; they are omitted when Innies cannot derive anything more specific than the raw probe result
 
 ### `POST /v1/admin/token-credentials/:id/provider-usage-refresh`
-Refresh Claude provider usage for a token immediately (admin only).
+Refresh provider usage for a token immediately (admin only).
 
 Response shape:
-- `refreshOk`: whether the Anthropic usage refresh succeeded
+- `refreshOk`: whether the provider usage refresh succeeded
 - `status`: current Innies credential status
 - `upstreamStatus`: upstream HTTP status when available
 - `reason`: refresh result reason (`ok|status_<code>|network:<message>|invalid_payload:*|provider_usage_snapshot_write_failed`)
-- `category`: refresh failure category (`fetch_failed|fetch_backoff|snapshot_write_failed`) or `null`
-- `warningReason`: operator warning state synced from the refresh result when applicable
+- `category`: refresh failure category (`fetch_failed|fetch_backoff|invalid_payload|snapshot_write_failed`) or `null`
+- `warningReason`: operator warning state synced from the refresh result when applicable; currently Anthropic-only and `null` for OpenAI/Codex
 - `nextProbeAt`: next scheduled auth-recovery probe time when a usage refresh auth-failure parked the credential
 - `retryAfterMs`: retry backoff duration when the refresh failed and surfaced one
-- `reserve`: stored `fiveHourReservePercent` / `sevenDayReservePercent`
+- `reserve`: stored `fiveHourReservePercent` / `sevenDayReservePercent` for Anthropic credentials, otherwise `null`
 - `snapshot`: parsed snapshot summary when refresh succeeded:
   - `usageSource`
   - `fetchedAt`
   - `fiveHourUtilizationRatio`
   - `fiveHourUsedPercent`
   - `fiveHourResetsAt`
-  - `fiveHourContributionCapExhausted`
+  - `fiveHourContributionCapExhausted` (`null` for OpenAI/Codex)
   - `fiveHourProviderUsageExhausted`
   - `sevenDayUtilizationRatio`
   - `sevenDayUsedPercent`
   - `sevenDayResetsAt`
-  - `sevenDayContributionCapExhausted`
+  - `sevenDayContributionCapExhausted` (`null` for OpenAI/Codex)
   - `sevenDayProviderUsageExhausted`
-- `lifecycle`: contribution-cap lifecycle transitions emitted during sync (`fiveHourTransition`, `sevenDayTransition`)
-- `rawPayload`: raw Anthropic usage payload when one was returned
+- `lifecycle`: Anthropic contribution-cap lifecycle transitions emitted during sync (`fiveHourTransition`, `sevenDayTransition`), otherwise `null`
+- `rawPayload`: raw Anthropic or OpenAI/Codex usage payload when one was returned
 - `stateSyncErrors`: non-fatal warning/lifecycle sync errors encountered after refresh
 
 Notes:
-- intended operator use: compare Anthropic's raw quota payload with Innies' parsed 5h / 7d view for a specific Claude token
-- supported for Anthropic OAuth credentials; expired access tokens can still be refreshed here when Innies has a stored OAuth refresh token
-- route bypasses in-memory usage-fetch backoff so operators can debug a token immediately
-- successful refresh persists the latest snapshot locally and attempts to sync warning + contribution-cap lifecycle state
-- upstream `401` / `403` from the usage endpoint is treated as an auth failure: Innies parks the credential, schedules probe recovery, and stops treating the token like merely stale quota state
+- intended operator use: compare the upstream raw quota payload with Innies' parsed 5h / 7d view for a specific Claude Code or Codex token
+- supported for Anthropic OAuth credentials and OpenAI/Codex OAuth or session credentials; expired access tokens can still be refreshed here when Innies has a stored OAuth refresh token
+- unsupported non-OAuth or non-session OpenAI/Codex credentials fail early with `409 invalid_request` before any `ok: true` response envelope is built
+- route bypasses Anthropic in-memory usage-fetch backoff so operators can debug a Claude token immediately, and it uses the shared provider-usage-plus-token-refresh helper for both providers
+- successful refresh persists the latest snapshot locally; warning sync and contribution-cap lifecycle sync remain Anthropic-only follow-up state
+- upstream `401` / `403` from the usage endpoint is treated as an auth failure for active credentials: Innies parks the credential, schedules probe recovery, and stops treating the token like merely stale quota state
 
 ### `GET /v1/admin/buyer-keys/:id/provider-preference`
 Read provider preference for a buyer API key (admin only).
@@ -448,7 +449,8 @@ Notes:
   - `claudeSevenDayCapExhaustionCyclesObserved`
   - `claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow`
   - `claudeSevenDayAvgUsageUnitsBeforeCapExhaustion`
-- those fields are Claude-only and stay `null` on non-Claude rows
+- reserve / contribution-cap fields stay Claude-only and remain `null` on non-Claude rows
+- OpenAI/Codex rows may populate the raw provider-usage snapshot fields (`fiveHourUtilizationRatio`, `fiveHourResetsAt`, `sevenDayUtilizationRatio`, `sevenDayResetsAt`, `providerUsageFetchedAt`) when a stored snapshot exists
 - Claude rows may also keep them `null` when a fresh provider-usage snapshot has not been fetched yet or analytics is reading against a pre-migration environment
 - analytics should treat rows with `expiresAt <= now` as `expired` for operator-facing status/counting even if the stored DB `status` has not been swept yet
 - rows may also include best-effort auth-diagnosis fields for operator visibility:
@@ -607,7 +609,7 @@ Notes:
 - `topBuyers[*].percentOfTotal` is a `0..1` ratio, not a `0..100` percentage
 - `maxedTokens` counts tokens currently at usage capacity, not broken credentials
 - for Claude, `maxedTokens` uses the latest provider-reported 5h / 7d utilization against each token's configured reserve
-- for non-Claude providers, `maxedTokens` continues to follow the current durable usage-maxed status until provider-usage telemetry exists there
+- for OpenAI/Codex, `maxedTokens` also treats active tokens as maxed when a stored provider-usage `5h` or `7d` window is exhausted
 
 ### `GET /v1/admin/analytics/timeseries`
 Admin-only chart-series endpoint.
@@ -843,14 +845,14 @@ Notes:
 - returns a best-effort merged snapshot for the UI so summary/tables/anomalies/events share one `snapshotAt`
 - `tokens[*]` merges usage, health, and routing metrics by `credentialId`
 - `tokens[*].attempts` is attempt-level volume; `tokens[*].requests` is distinct `request_id` count for the same window
-- `tokens[*]` also carries the same nullable Claude-only contribution-cap/provider-usage fields as `/v1/admin/analytics/tokens/health`
+- `tokens[*]` also carries the same provider-usage snapshot fields as `/v1/admin/analytics/tokens/health`; reserve / contribution-cap flags stay Claude-only
 - `tokens[*]` may also include best-effort auth-diagnosis fields from `/v1/admin/analytics/tokens/health`; the dashboard status text can fold those into backend-`maxed` visibility
-- `summary.maxedTokens` counts tokens currently at usage capacity; for Claude that means provider usage has hit the provider ceiling or the configured reserve threshold
+- `summary.maxedTokens` counts tokens currently at usage capacity; for Claude that means provider usage has hit the provider ceiling or the configured reserve threshold, and for OpenAI/Codex that means a stored provider-usage window is exhausted
 - the dashboard UI shows raw Claude provider utilization in `5H` / `7D`; reserve/exhausted fields only control whether those cells are highlighted as effectively exhausted
-- non-Claude rows keep those raw API fields `null` and the UI renders `--` in the CAP cells
+- OpenAI/Codex rows may carry raw provider-usage utilization/reset fields, but their reserve / contribution-cap fields stay `null` and the UI still renders `--` in the CAP cells
 - `buyers[*]` may include `latencyP50Ms` and `errorRate` when those buyer aggregates are available
 - snapshot `events` is currently capped to the 20 most recent lifecycle events
-- `warnings` is a free-form operator-facing list for Claude operator issues such as auth-failed parked tokens, missing snapshots, stale snapshots, and contribution-cap exhaustion when the backend emits them
+- `warnings` is a free-form operator-facing list for provider-usage freshness/exhaustion issues; Claude rows can emit auth-failed / cap warnings, and OpenAI/Codex rows can emit snapshot freshness or `usage_exhausted_*` warnings when the backend emits them
 
 Response example:
 ```json

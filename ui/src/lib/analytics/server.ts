@@ -345,7 +345,9 @@ function deriveFallbackTokenStatus(input: {
   rateLimitedUntil: string | null;
   consecutiveRateLimitCount?: number | null;
   fiveHourReservePercent?: number | null;
+  fiveHourUtilizationRatio?: number | null;
   sevenDayReservePercent?: number | null;
+  sevenDayUtilizationRatio?: number | null;
   providerUsageFetchedAt?: string | null;
   fiveHourContributionCapExhausted?: boolean | null;
   sevenDayContributionCapExhausted?: boolean | null;
@@ -378,6 +380,20 @@ function deriveFallbackTokenStatus(input: {
       compactStatus: 'maxed',
       expandedStatus: 'maxed, source: cap_exhausted',
       statusSource: 'cap_exhausted',
+      exclusionReason: null,
+    };
+  }
+
+  if (
+    rawStatus === 'active'
+    && provider === 'openai'
+    && ((input.fiveHourUtilizationRatio ?? 0) >= 1 || (input.sevenDayUtilizationRatio ?? 0) >= 1)
+  ) {
+    return {
+      rawStatus,
+      compactStatus: 'maxed',
+      expandedStatus: 'maxed, source: usage_exhausted',
+      statusSource: 'usage_exhausted',
       exclusionReason: null,
     };
   }
@@ -812,7 +828,9 @@ function buildTokenRows(
       rateLimitedUntil,
       consecutiveRateLimitCount: toNullableNumber(health?.consecutiveRateLimitCount),
       fiveHourReservePercent,
+      fiveHourUtilizationRatio,
       sevenDayReservePercent,
+      sevenDayUtilizationRatio,
       providerUsageFetchedAt: toStringOrNull(health?.providerUsageFetchedAt),
       fiveHourContributionCapExhausted,
       sevenDayContributionCapExhausted,

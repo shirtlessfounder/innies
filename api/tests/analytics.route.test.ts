@@ -1264,7 +1264,9 @@ describe('analytics routes', () => {
     });
     expect((res.body as any).window).toBe('5h');
     expect(typeof (res.body as any).snapshotAt).toBe('string');
-    expect((res.body as any).warnings).toEqual([]);
+    expect((res.body as any).warnings).toEqual([
+      'alpha: provider_usage_snapshot_missing - Codex token has no provider-usage snapshot yet; dashboard usage state may lag until one arrives.'
+    ]);
     expect((res.body as any).tokens).toEqual([
       {
         credentialId: '11111111-1111-4111-8111-111111111111',
@@ -1305,6 +1307,102 @@ describe('analytics routes', () => {
         authFailures24h: 1,
         rateLimited24h: 2
       }
+    ]);
+  });
+
+  it('marks Codex dashboard token rows as maxed when provider usage shows an exhausted window', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-12T12:10:00.000Z'));
+
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    analytics.getSystemSummary.mockResolvedValue({
+      total_requests: 10,
+      total_usage_units: 100,
+      active_tokens: 1,
+      maxed_tokens: 0,
+      total_tokens: 1,
+      maxed_events_7d: 0,
+      error_rate: 0,
+      fallback_rate: 0,
+      by_provider: [],
+      by_model: [],
+      by_source: []
+    });
+    analytics.getTokenUsage.mockResolvedValue([
+      {
+        credential_id: '55555555-5555-4555-8555-555555555555',
+        debug_label: 'codex-alpha',
+        provider: 'openai',
+        status: 'active',
+        attempts: 5,
+        requests: 5,
+        usage_units: 100,
+        by_source: []
+      }
+    ]);
+    analytics.getTokenHealth.mockResolvedValue([
+      {
+        credential_id: '55555555-5555-4555-8555-555555555555',
+        debug_label: 'codex-alpha',
+        provider: 'openai',
+        status: 'active',
+        consecutive_rate_limit_count: 0,
+        rate_limited_until: null,
+        monthly_contribution_used_units: 0,
+        monthly_contribution_limit_units: null,
+        maxed_events_7d: 0,
+        utilization_rate_24h: null,
+        five_hour_reserve_percent: null,
+        five_hour_utilization_ratio: 1,
+        five_hour_resets_at: '2026-03-12T14:00:00.000Z',
+        five_hour_contribution_cap_exhausted: null,
+        seven_day_reserve_percent: null,
+        seven_day_utilization_ratio: 0.2,
+        seven_day_resets_at: '2026-03-15T00:00:00.000Z',
+        seven_day_contribution_cap_exhausted: null,
+        provider_usage_fetched_at: '2026-03-12T12:09:00.000Z'
+      }
+    ]);
+    analytics.getTokenRouting.mockResolvedValue([]);
+    analytics.getBuyers.mockResolvedValue([]);
+    analytics.getAnomalies.mockResolvedValue({ checks: {}, ok: true });
+    analytics.getEvents.mockResolvedValue([]);
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/dashboard', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/dashboard',
+      headers: {
+        authorization: 'Bearer admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect((res.body as any).summary).toEqual(expect.objectContaining({
+      activeTokens: 0,
+      maxedTokens: 1,
+      totalTokens: 1
+    }));
+    expect((res.body as any).tokens).toEqual([
+      expect.objectContaining({
+        credentialId: '55555555-5555-4555-8555-555555555555',
+        provider: 'openai',
+        rawStatus: 'active',
+        status: 'maxed',
+        compactStatus: 'maxed',
+        expandedStatus: 'maxed, source: usage_exhausted',
+        statusSource: 'usage_exhausted',
+        exclusionReason: null,
+        fiveHourUtilizationRatio: 1,
+        providerUsageFetchedAt: '2026-03-12T12:09:00.000Z'
+      })
+    ]);
+    expect((res.body as any).warnings).toEqual([
+      'codex-alpha: usage_exhausted_5h - Codex usage is exhausted for the 5h window until 2026-03-12T14:00:00.000Z.'
     ]);
   });
 

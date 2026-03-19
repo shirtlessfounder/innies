@@ -60,14 +60,40 @@ describe('AnalyticsRepository', () => {
     expect(mainQuery?.sql).toContain("AND ul.entry_type = 'usage'");
     expect(tokenCountsQuery?.sql).toContain('from in_token_credential_provider_usage pu');
     expect(tokenCountsQuery?.sql).toContain('FROM in_token_credentials tc');
-    expect(tokenCountsQuery?.sql).toContain("where tc.provider = $1");
+    expect(tokenCountsQuery?.sql).toContain('where tc.provider = ANY($1::text[])');
     expect(tokenCountsQuery?.sql).toContain("when tc.expires_at <= now() then 'expired'");
     expect(tokenCountsQuery?.sql).toContain("count(*) FILTER (WHERE status <> 'expired' AND status <> 'revoked' AND NOT usage_maxed) AS active_tokens");
     expect(tokenCountsQuery?.sql).toContain("count(*) FILTER (WHERE status <> 'expired' AND status <> 'revoked' AND usage_maxed) AS maxed_tokens");
-    expect(tokenCountsQuery?.params).toEqual(['openai']);
-    expect(maxedQuery?.sql).toContain('AND provider = $1');
-    expect(maxedQuery?.params).toEqual(['openai']);
+    expect(tokenCountsQuery?.params).toEqual([['openai', 'codex']]);
+    expect(maxedQuery?.sql).toContain('AND provider = ANY($1::text[])');
+    expect(maxedQuery?.params).toEqual([['openai', 'codex']]);
     expect(usageLedgerQueries).toHaveLength(5);
+  });
+
+  it('treats active canonical OpenAI tokens with exhausted provider-usage windows as maxed in system summary counts', async () => {
+    const db = new MockSqlClient({ rows: [], rowCount: 0 });
+    const repo = new AnalyticsRepository(db);
+
+    await repo.getSystemSummary({ window: '24h', provider: 'openai' });
+
+    const tokenCountsQuery = db.queries.find((query) => query.sql.includes('token_inventory AS'));
+
+    expect(tokenCountsQuery?.sql).toContain('from in_token_credential_provider_usage pu');
+    expect(tokenCountsQuery?.sql).toContain('left join provider_usage pu on pu.token_credential_id = tc.id and pu.provider = tc.provider');
+    expect(tokenCountsQuery?.sql).toContain("when tc.provider in ('openai', 'codex')");
+    expect(tokenCountsQuery?.sql).toContain('coalesce(pu.five_hour_utilization_ratio >= 1, false)');
+    expect(tokenCountsQuery?.sql).toContain('coalesce(pu.seven_day_utilization_ratio >= 1, false)');
+    expect(tokenCountsQuery?.sql).toContain("when tc.provider = 'anthropic'");
+  });
+
+  it('applies canonical OpenAI provider filters to token health credential inventory queries', async () => {
+    const db = new MockSqlClient({ rows: [], rowCount: 0 });
+    const repo = new AnalyticsRepository(db);
+
+    await repo.getTokenHealth({ window: '7d', provider: 'openai' });
+
+    expect(db.queries[0]?.sql).toContain('WHERE tc.provider = ANY($1::text[])');
+    expect(db.queries[0]?.params).toEqual([['openai', 'codex']]);
   });
 
   it('uses routing metadata request_source in token routing filters, including 24h side counts', async () => {

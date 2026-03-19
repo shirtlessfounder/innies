@@ -88,6 +88,41 @@ describe('tokenCredentialRepository', () => {
     expect(db.queries[0].sql).toContain('rate_limited_until is null or rate_limited_until <= now()');
   });
 
+  it('treats canonical openai routing reads as including legacy codex credentials', async () => {
+    process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 23).toString('base64');
+    const db = new SequenceSqlClient([{
+      rows: [{
+        id: 'cred_codex_1',
+        org_id: '00000000-0000-0000-0000-000000000001',
+        provider: 'codex',
+        auth_scheme: 'bearer',
+        encrypted_access_token: encryptSecret('codex-session-live'),
+        encrypted_refresh_token: encryptSecret('codex-refresh-live'),
+        expires_at: '2026-03-02T00:00:00Z',
+        status: 'active',
+        rotation_version: 1,
+        created_at: '2026-03-01T00:00:00Z',
+        updated_at: '2026-03-01T00:00:00Z',
+        revoked_at: null,
+        monthly_contribution_limit_units: null,
+        monthly_contribution_used_units: 0,
+        monthly_window_start_at: '2026-03-01T00:00:00Z'
+      }],
+      rowCount: 1
+    }]);
+    const repo = new TokenCredentialRepository(db);
+
+    const [found] = await repo.listActiveForRouting('00000000-0000-0000-0000-000000000001', 'openai');
+
+    expect(found?.provider).toBe('codex');
+    expect(found?.accessToken).toBe('codex-session-live');
+    expect(db.queries[0].sql).toContain('provider = ANY($2::text[])');
+    expect(db.queries[0].params).toEqual([
+      '00000000-0000-0000-0000-000000000001',
+      ['openai', 'codex']
+    ]);
+  });
+
   it('falls back cleanly when contribution-cap columns are missing from routing reads', async () => {
     process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 10).toString('base64');
     const db = new SequenceSqlClient([
