@@ -309,41 +309,41 @@ Notes:
 - auth-diagnosis fields are best-effort operator hints; they are omitted when Innies cannot derive anything more specific than the raw probe result
 
 ### `POST /v1/admin/token-credentials/:id/provider-usage-refresh`
-Refresh Claude provider usage for a token immediately (admin only).
+Refresh provider usage for a token immediately (admin only).
 
 Response shape:
-- `refreshOk`: whether the Anthropic usage refresh succeeded
+- `refreshOk`: whether the provider usage refresh succeeded
 - `status`: current Innies credential status
 - `upstreamStatus`: upstream HTTP status when available
 - `reason`: refresh result reason (`ok|status_<code>|network:<message>|invalid_payload:*|provider_usage_snapshot_write_failed`)
-- `category`: refresh failure category (`fetch_failed|fetch_backoff|snapshot_write_failed`) or `null`
-- `warningReason`: operator warning state synced from the refresh result when applicable
+- `category`: refresh failure category (`fetch_failed|fetch_backoff|invalid_payload|snapshot_write_failed`) or `null`
+- `warningReason`: operator warning state synced from the refresh result when applicable; currently Anthropic-only and `null` for OpenAI/Codex
 - `nextProbeAt`: next scheduled auth-recovery probe time when a usage refresh auth-failure parked the credential
 - `retryAfterMs`: retry backoff duration when the refresh failed and surfaced one
-- `reserve`: stored `fiveHourReservePercent` / `sevenDayReservePercent`
+- `reserve`: stored `fiveHourReservePercent` / `sevenDayReservePercent` for Anthropic credentials, otherwise `null`
 - `snapshot`: parsed snapshot summary when refresh succeeded:
   - `usageSource`
   - `fetchedAt`
   - `fiveHourUtilizationRatio`
   - `fiveHourUsedPercent`
   - `fiveHourResetsAt`
-  - `fiveHourContributionCapExhausted`
+  - `fiveHourContributionCapExhausted` (`null` for OpenAI/Codex)
   - `fiveHourProviderUsageExhausted`
   - `sevenDayUtilizationRatio`
   - `sevenDayUsedPercent`
   - `sevenDayResetsAt`
-  - `sevenDayContributionCapExhausted`
+  - `sevenDayContributionCapExhausted` (`null` for OpenAI/Codex)
   - `sevenDayProviderUsageExhausted`
-- `lifecycle`: contribution-cap lifecycle transitions emitted during sync (`fiveHourTransition`, `sevenDayTransition`)
-- `rawPayload`: raw Anthropic usage payload when one was returned
+- `lifecycle`: Anthropic contribution-cap lifecycle transitions emitted during sync (`fiveHourTransition`, `sevenDayTransition`), otherwise `null`
+- `rawPayload`: raw Anthropic or OpenAI/Codex usage payload when one was returned
 - `stateSyncErrors`: non-fatal warning/lifecycle sync errors encountered after refresh
 
 Notes:
-- intended operator use: compare Anthropic's raw quota payload with Innies' parsed 5h / 7d view for a specific Claude token
-- supported for Anthropic OAuth credentials; expired access tokens can still be refreshed here when Innies has a stored OAuth refresh token
-- route bypasses in-memory usage-fetch backoff so operators can debug a token immediately
-- successful refresh persists the latest snapshot locally and attempts to sync warning + contribution-cap lifecycle state
-- upstream `401` / `403` from the usage endpoint is treated as an auth failure: Innies parks the credential, schedules probe recovery, and stops treating the token like merely stale quota state
+- intended operator use: compare the upstream raw quota payload with Innies' parsed 5h / 7d view for a specific Claude Code or Codex token
+- supported for Anthropic and OpenAI/Codex OAuth credentials; expired access tokens can still be refreshed here when Innies has a stored OAuth refresh token
+- route bypasses Anthropic in-memory usage-fetch backoff so operators can debug a Claude token immediately, and it uses the shared provider-usage-plus-token-refresh helper for both providers
+- successful refresh persists the latest snapshot locally; warning sync and contribution-cap lifecycle sync remain Anthropic-only follow-up state
+- upstream `401` / `403` from the usage endpoint is treated as an auth failure for active credentials: Innies parks the credential, schedules probe recovery, and stops treating the token like merely stale quota state
 
 ### `GET /v1/admin/buyer-keys/:id/provider-preference`
 Read provider preference for a buyer API key (admin only).
