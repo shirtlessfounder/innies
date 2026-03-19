@@ -28,7 +28,7 @@ select
   to_char(updated_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as updated_at_utc
 from in_token_credentials
 where status <> 'revoked'
-  and provider in ('anthropic', 'openai')
+  and provider in ('anthropic', 'openai', 'codex')
   and (
     (status in ('active', 'paused', 'maxed') and expires_at > now())
     or (expires_at <= now() and encrypted_refresh_token is not null)
