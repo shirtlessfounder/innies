@@ -1,10 +1,12 @@
 import { type TokenCredential, type TokenCredentialRepository } from '../repos/tokenCredentialRepository.js';
 import type {
   ProviderUsageSource,
+  ProviderUsagePayload,
   TokenCredentialProviderUsageRepository,
   TokenCredentialProviderUsageSnapshot,
   UpsertTokenCredentialProviderUsageInput
 } from '../repos/tokenCredentialProviderUsageRepository.js';
+import { isOpenAiOauthAccessToken, resolveOpenAiOauthAccountId } from '../utils/openaiOauth.js';
 import {
   clearAnthropicUsageRefreshFailure,
   getAnthropicUsageRetryBackoff,
@@ -21,9 +23,11 @@ const DEFAULT_PROVIDER_USAGE_SOFT_STALE_MS = 2 * 60 * 1000;
 const DEFAULT_PROVIDER_USAGE_HARD_STALE_MS = 10 * 60 * 1000;
 const DEFAULT_RATE_LIMIT_LONG_BACKOFF_MINUTES = 15;
 const DEFAULT_ANTHROPIC_OAUTH_USAGE_USER_AGENT = 'claude-code/2.1.34';
+const DEFAULT_OPENAI_OAUTH_USAGE_USER_AGENT = 'CodexBar';
 
 const ANTHROPIC_OAUTH_USAGE_BETA = 'oauth-2025-04-20';
 const ANTHROPIC_OAUTH_USAGE_PATH = '/api/oauth/usage';
+const OPENAI_OAUTH_USAGE_PATH = '/backend-api/wham/usage';
 const inFlightAnthropicUsageRefreshes = new Map<string, Promise<AnthropicOauthUsageRefreshOutcome>>();
 export const PROVIDER_USAGE_FETCH_FAILED_REASON = 'provider_usage_fetch_failed';
 export const PROVIDER_USAGE_FETCH_BACKOFF_ACTIVE_REASON = 'provider_usage_fetch_backoff_active';
@@ -45,6 +49,20 @@ export type AnthropicOauthUsageRefreshOutcome =
       warningReason: typeof PROVIDER_USAGE_FETCH_FAILED_REASON | null;
       rawPayload?: Record<string, unknown>;
       retryAfterMs?: number;
+      errorMessage?: string;
+    };
+export type OpenAiOauthUsageRefreshOutcome =
+  | {
+      ok: true;
+      snapshot: TokenCredentialProviderUsageSnapshot;
+      rawPayload: ProviderUsagePayload;
+    }
+  | {
+      ok: false;
+      reason: string;
+      statusCode: number | null;
+      category: 'fetch_failed' | 'invalid_payload' | 'snapshot_write_failed';
+      rawPayload?: ProviderUsagePayload;
       errorMessage?: string;
     };
 
@@ -199,6 +217,27 @@ function readDateField(record: Record<string, unknown>, keys: string[]): Date | 
   return null;
 }
 
+function readUnixTimestampField(record: Record<string, unknown>, keys: string[]): Date | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return new Date(value * 1000);
+    }
+    if (typeof value === 'string' && value.trim().length > 0) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return new Date(parsed * 1000);
+      }
+    }
+  }
+  return null;
+}
+
+function readPayloadForStorage(payload: unknown): ProviderUsagePayload | undefined {
+  if (Array.isArray(payload)) return payload;
+  return readObject(payload) ?? undefined;
+}
+
 function normalizeUtilizationRatio(value: number | null): number | null {
   if (value === null) return null;
   if (value < 0) return 0;
@@ -265,6 +304,46 @@ function parseAnthropicOauthUsagePayload(payload: unknown): {
   }
   return {
     usageSource: 'anthropic_oauth_usage',
+    fiveHourUtilizationRatio: fiveHour.utilizationRatio,
+    fiveHourResetsAt: fiveHour.resetsAt,
+    sevenDayUtilizationRatio: sevenDay.utilizationRatio,
+    sevenDayResetsAt: sevenDay.resetsAt,
+    rawPayload: record
+  };
+}
+
+function readOpenAiWhamWindow(window: Record<string, unknown>): {
+  utilizationRatio: number | null;
+  resetsAt: Date | null;
+} {
+  return {
+    utilizationRatio: normalizeUtilizationRatio(readNumberField(window, ['used_percent', 'usedPercent'])),
+    resetsAt: readUnixTimestampField(window, ['reset_at', 'resetAt']) ?? readDateField(window, ['reset_at', 'resetAt'])
+  };
+}
+
+function parseOpenAiOauthUsagePayload(payload: unknown): {
+  usageSource: ProviderUsageSource;
+  fiveHourUtilizationRatio: number;
+  fiveHourResetsAt: Date | null;
+  sevenDayUtilizationRatio: number;
+  sevenDayResetsAt: Date | null;
+  rawPayload: ProviderUsagePayload;
+} {
+  const record = readObject(payload);
+  if (!record) {
+    throw new Error('invalid_payload:not_object');
+  }
+  const rateLimit = readObject(record.rate_limit);
+  const primaryWindow = rateLimit ? readObject(rateLimit.primary_window) : null;
+  const secondaryWindow = rateLimit ? readObject(rateLimit.secondary_window) : null;
+  const fiveHour = primaryWindow ? readOpenAiWhamWindow(primaryWindow) : { utilizationRatio: null, resetsAt: null };
+  const sevenDay = secondaryWindow ? readOpenAiWhamWindow(secondaryWindow) : { utilizationRatio: null, resetsAt: null };
+  if (fiveHour.utilizationRatio === null || sevenDay.utilizationRatio === null) {
+    throw new Error('invalid_payload:missing_utilization');
+  }
+  return {
+    usageSource: 'openai_wham_usage',
     fiveHourUtilizationRatio: fiveHour.utilizationRatio,
     fiveHourResetsAt: fiveHour.resetsAt,
     sevenDayUtilizationRatio: sevenDay.utilizationRatio,
@@ -342,6 +421,104 @@ async function fetchAnthropicOauthUsagePayload(
       statusCode: null,
       category: 'fetch_failed',
       warningReason: PROVIDER_USAGE_FETCH_FAILED_REASON
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function buildOpenAiOauthUsageHeaders(credential: TokenCredential): Record<string, string> {
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${credential.accessToken}`,
+    accept: 'application/json',
+    'user-agent': process.env.OPENAI_OAUTH_USAGE_USER_AGENT?.trim() || DEFAULT_OPENAI_OAUTH_USAGE_USER_AGENT
+  };
+  const accountId = resolveOpenAiOauthAccountId(credential.accessToken);
+  if (accountId) {
+    headers['chatgpt-account-id'] = accountId;
+  }
+  return headers;
+}
+
+async function fetchOpenAiOauthUsagePayload(
+  credential: TokenCredential,
+  timeoutMs: number
+): Promise<OpenAiOauthUsageRefreshOutcome> {
+  if (
+    (credential.provider !== 'openai' && credential.provider !== 'codex')
+    || !isOpenAiOauthAccessToken(credential.accessToken)
+  ) {
+    return {
+      ok: false,
+      reason: 'unsupported_credential',
+      statusCode: null,
+      category: 'fetch_failed'
+    };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(new URL(OPENAI_OAUTH_USAGE_PATH, 'https://chatgpt.com'), {
+      method: 'GET',
+      headers: buildOpenAiOauthUsageHeaders(credential),
+      signal: controller.signal
+    });
+
+    let payload: unknown = {};
+    try {
+      payload = await response.json();
+    } catch {
+      payload = {};
+    }
+    const rawPayload = readPayloadForStorage(payload);
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        reason: `status_${response.status}`,
+        statusCode: response.status,
+        category: 'fetch_failed',
+        rawPayload
+      };
+    }
+
+    try {
+      const parsed = parseOpenAiOauthUsagePayload(payload);
+      return {
+        ok: true,
+        snapshot: {
+          tokenCredentialId: credential.id,
+          orgId: credential.orgId,
+          provider: 'openai',
+          usageSource: parsed.usageSource,
+          fiveHourUtilizationRatio: parsed.fiveHourUtilizationRatio,
+          fiveHourResetsAt: parsed.fiveHourResetsAt,
+          sevenDayUtilizationRatio: parsed.sevenDayUtilizationRatio,
+          sevenDayResetsAt: parsed.sevenDayResetsAt,
+          rawPayload: parsed.rawPayload,
+          fetchedAt: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date()
+        },
+        rawPayload: parsed.rawPayload
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: error instanceof Error ? error.message : 'invalid_payload',
+        statusCode: response.status,
+        category: 'invalid_payload',
+        rawPayload
+      };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'provider_usage_fetch_error';
+    return {
+      ok: false,
+      reason: `network:${message}`,
+      statusCode: null,
+      category: 'fetch_failed'
     };
   } finally {
     clearTimeout(timer);
@@ -430,6 +607,51 @@ export async function refreshAnthropicOauthUsageNow(
     return await refreshPromise;
   } finally {
     inFlightAnthropicUsageRefreshes.delete(credential.id);
+  }
+}
+
+export async function refreshOpenAiOauthUsageNow(
+  repo: TokenCredentialProviderUsageRepository,
+  credential: TokenCredential,
+  options?: {
+    timeoutMs?: number;
+  }
+): Promise<OpenAiOauthUsageRefreshOutcome> {
+  const fetched = await fetchOpenAiOauthUsagePayload(
+    credential,
+    options?.timeoutMs ?? readTokenCredentialProviderUsageTimeoutMs()
+  );
+  if (!fetched.ok) {
+    return fetched;
+  }
+
+  try {
+    const snapshot = await repo.upsertSnapshot({
+      tokenCredentialId: credential.id,
+      orgId: credential.orgId,
+      provider: 'openai',
+      usageSource: fetched.snapshot.usageSource,
+      fiveHourUtilizationRatio: fetched.snapshot.fiveHourUtilizationRatio,
+      fiveHourResetsAt: fetched.snapshot.fiveHourResetsAt,
+      sevenDayUtilizationRatio: fetched.snapshot.sevenDayUtilizationRatio,
+      sevenDayResetsAt: fetched.snapshot.sevenDayResetsAt,
+      rawPayload: fetched.rawPayload,
+      fetchedAt: fetched.snapshot.fetchedAt
+    });
+
+    return {
+      ok: true,
+      snapshot,
+      rawPayload: fetched.rawPayload
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: 'provider_usage_snapshot_write_failed',
+      statusCode: null,
+      category: 'snapshot_write_failed',
+      errorMessage: error instanceof Error ? error.message : 'snapshot_write_failed'
+    };
   }
 }
 
