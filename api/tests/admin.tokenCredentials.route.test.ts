@@ -2020,6 +2020,57 @@ describe('admin token credential routes idempotent replay', () => {
     expect(commitSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('rejects unsupported OpenAI/Codex provider usage refresh credentials before building a success envelope', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_provider_usage_refresh_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123467',
+        requestHash: 'provider_usage_refresh_h_8'
+      }
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: 'not-an-openai-oauth-session-token',
+      refreshToken: 'rt_codex_live',
+      debugLabel: 'unsupported-openai',
+      status: 'active',
+      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+    } as any);
+    const refreshSpy = vi.spyOn(oauthRefreshModule, 'refreshTokenCredentialProviderUsageWithCredentialRefresh');
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/provider-usage-refresh',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123467'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const res = createMockRes();
+
+    await invoke(providerUsageRefreshHandlers[0], req, res);
+    await invoke(providerUsageRefreshHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(409);
+    expect((res.body as any)).toEqual(expect.objectContaining({
+      code: 'invalid_request',
+      details: expect.objectContaining({
+        provider: 'openai',
+        status: 'active'
+      })
+    }));
+    expect(String((res.body as any).message)).toContain('OpenAI/Codex OAuth or session credentials');
+    expect((res.body as any).ok).toBeUndefined();
+    expect(refreshSpy).not.toHaveBeenCalled();
+  });
+
   it('parks active OpenAI/Codex OAuth credentials on provider usage auth failure and returns the next probe time', async () => {
     vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
       replay: false,

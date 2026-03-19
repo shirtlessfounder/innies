@@ -6,7 +6,9 @@ import { requireApiKey } from '../middleware/auth.js';
 import { runtime } from '../services/runtime.js';
 import { readClaudeContributionCapSnapshotState } from '../services/claudeContributionCapState.js';
 import {
+  type AnthropicOauthUsageRefreshOutcome,
   isAnthropicOauthTokenCredential,
+  isTokenCredentialProviderUsageRefreshSupported,
   parkAnthropicOauthCredentialAfterUsageAuthFailure,
   providerUsageWarningReasonFromRefreshOutcome
 } from '../services/tokenCredentialProviderUsage.js';
@@ -1012,11 +1014,11 @@ router.post('/v1/admin/token-credentials/:id/provider-usage-refresh', requireApi
       throw new AppError('invalid_request', 409, 'Revoked token credential cannot refresh provider usage');
     }
     const isAnthropicOauthCredential = isAnthropicOauthTokenCredential(existing);
-    if (!isAnthropicOauthCredential && existing.provider !== 'openai' && existing.provider !== 'codex') {
+    if (!isTokenCredentialProviderUsageRefreshSupported(existing)) {
       throw new AppError(
         'invalid_request',
         409,
-        'Provider usage refresh is only supported for Anthropic and OpenAI/Codex OAuth credentials',
+        'Provider usage refresh is only supported for Anthropic OAuth and OpenAI/Codex OAuth or session credentials',
         {
           provider: existing.provider,
           status: existing.status
@@ -1062,8 +1064,11 @@ router.post('/v1/admin/token-credentials/:id/provider-usage-refresh', requireApi
         reason: `upstream_${authFailureStatusCode}_provider_usage_refresh`
       })
       : null;
-    const warningReason = isAnthropicOauthCredential && authFailureStatusCode === null
-      ? providerUsageWarningReasonFromRefreshOutcome(refreshOutcome)
+    const anthropicRefreshOutcome = isAnthropicOauthCredential
+      ? refreshOutcome as AnthropicOauthUsageRefreshOutcome
+      : null;
+    const warningReason = anthropicRefreshOutcome !== null && authFailureStatusCode === null
+      ? providerUsageWarningReasonFromRefreshOutcome(anthropicRefreshOutcome)
       : null;
     const stateSyncErrors: string[] = [];
     let lifecycle = isAnthropicOauthCredential
@@ -1175,7 +1180,9 @@ router.post('/v1/admin/token-credentials/:id/provider-usage-refresh', requireApi
       category: refreshOutcome.ok ? null : refreshOutcome.category,
       warningReason,
       nextProbeAt: nextProbeAt?.toISOString() ?? null,
-      retryAfterMs: refreshOutcome.ok ? null : (refreshOutcome.retryAfterMs ?? null),
+      retryAfterMs: !refreshOutcome.ok && 'retryAfterMs' in refreshOutcome
+        ? (refreshOutcome.retryAfterMs ?? null)
+        : null,
       errorMessage: refreshOutcome.ok ? null : (refreshOutcome.errorMessage ?? null),
       reserve: isAnthropicOauthCredential
         ? {
