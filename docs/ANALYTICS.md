@@ -144,7 +144,7 @@ Current expectation:
   - keeps the admin dashboard feeling live without recomputing the heaviest buyer/token-health queries for every tab
   - carries raw provider-usage snapshot fields when available; reserve / contribution-cap flags remain Claude-only
   - derives `5H` / `7D` in the dashboard layer
-  - renders `n/a` CAP placeholders for non-Claude rows while still allowing OpenAI/Codex rows to carry raw usage-window telemetry
+  - renders raw `5H` / `7D` percentages for both Claude and OpenAI/Codex rows when usage-window telemetry exists; only Claude rows get reserve/exhaustion highlighting
   - surfaces provider-usage freshness and exhaustion warnings in the snapshot `warnings` list
   - distinguishes backend auth parking (`backend_maxed`) from derived usage exhaustion (`cap_exhausted` for Claude, `usage_exhausted` for OpenAI/Codex)
 
