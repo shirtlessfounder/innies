@@ -1,11 +1,6 @@
 import type { TokenCredential, TokenCredentialRepository } from '../repos/tokenCredentialRepository.js';
 import type { TokenCredentialProviderUsageRepository } from '../repos/tokenCredentialProviderUsageRepository.js';
-import {
-  anthropicOauthUsageAuthFailureStatusCode,
-  type AnthropicOauthUsageRefreshOutcome,
-  isAnthropicOauthTokenCredential,
-  refreshAnthropicOauthUsageNow
-} from './tokenCredentialProviderUsage.js';
+import * as providerUsageService from './tokenCredentialProviderUsage.js';
 import {
   isOpenAiOauthAccessToken,
   resolveOpenAiOauthClientId,
@@ -16,6 +11,10 @@ const DEFAULT_OPENAI_OAUTH_TOKEN_ENDPOINT = 'https://auth.openai.com/oauth/token
 const DEFAULT_ANTHROPIC_OAUTH_TOKEN_ENDPOINT = 'https://platform.claude.com/v1/oauth/token';
 const DEFAULT_ANTHROPIC_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const ANTHROPIC_OAUTH_BETA = 'oauth-2025-04-20';
+
+export type TokenCredentialProviderUsageRefreshOutcome =
+  | providerUsageService.AnthropicOauthUsageRefreshOutcome
+  | providerUsageService.OpenAiOauthUsageRefreshOutcome;
 
 function parseRefreshExpiry(
   payload: Record<string, unknown>,
@@ -100,7 +99,7 @@ export async function attemptAnthropicOauthRefresh(
   credential: TokenCredential
 ): Promise<TokenCredential | null> {
   if (!credential.refreshToken) return null;
-  if (!isAnthropicOauthTokenCredential(credential)) return null;
+  if (!providerUsageService.isAnthropicOauthTokenCredential(credential)) return null;
 
   const refreshUrl = process.env.ANTHROPIC_OAUTH_TOKEN_ENDPOINT || DEFAULT_ANTHROPIC_OAUTH_TOKEN_ENDPOINT;
   const form = new URLSearchParams({
@@ -190,11 +189,65 @@ export async function refreshAnthropicOauthUsageWithCredentialRefresh(
   }
 ): Promise<{
   credential: TokenCredential;
-  outcome: AnthropicOauthUsageRefreshOutcome;
+  outcome: providerUsageService.AnthropicOauthUsageRefreshOutcome;
   refreshedCredential: TokenCredential | null;
 }> {
-  const initialOutcome = await refreshAnthropicOauthUsageNow(providerUsageRepo, credential, options);
-  if (anthropicOauthUsageAuthFailureStatusCode(initialOutcome) === null) {
+  const refreshedUsage = await refreshTokenCredentialProviderUsageWithCredentialRefresh(
+    providerUsageRepo,
+    tokenCredentialRepo,
+    credential,
+    options
+  );
+
+  return {
+    credential: refreshedUsage.credential,
+    outcome: refreshedUsage.outcome as providerUsageService.AnthropicOauthUsageRefreshOutcome,
+    refreshedCredential: refreshedUsage.refreshedCredential
+  };
+}
+
+function providerUsageAuthFailureStatusCode(
+  outcome: TokenCredentialProviderUsageRefreshOutcome
+): 401 | 403 | null {
+  if (outcome.ok) return null;
+  if (outcome.statusCode === 401 || outcome.statusCode === 403) {
+    return outcome.statusCode;
+  }
+  return null;
+}
+
+async function refreshProviderUsageNow(
+  providerUsageRepo: TokenCredentialProviderUsageRepository,
+  credential: TokenCredential,
+  options?: {
+    timeoutMs?: number;
+    ignoreRetryBackoff?: boolean;
+  }
+): Promise<TokenCredentialProviderUsageRefreshOutcome> {
+  if (providerUsageService.isAnthropicOauthTokenCredential(credential)) {
+    return providerUsageService.refreshAnthropicOauthUsageNow(providerUsageRepo, credential, options);
+  }
+
+  return providerUsageService.refreshOpenAiOauthUsageNow(providerUsageRepo, credential, {
+    timeoutMs: options?.timeoutMs
+  });
+}
+
+export async function refreshTokenCredentialProviderUsageWithCredentialRefresh(
+  providerUsageRepo: TokenCredentialProviderUsageRepository,
+  tokenCredentialRepo: TokenCredentialRepository,
+  credential: TokenCredential,
+  options?: {
+    timeoutMs?: number;
+    ignoreRetryBackoff?: boolean;
+  }
+): Promise<{
+  credential: TokenCredential;
+  outcome: TokenCredentialProviderUsageRefreshOutcome;
+  refreshedCredential: TokenCredential | null;
+}> {
+  const initialOutcome = await refreshProviderUsageNow(providerUsageRepo, credential, options);
+  if (providerUsageAuthFailureStatusCode(initialOutcome) === null) {
     return {
       credential,
       outcome: initialOutcome,
@@ -211,7 +264,7 @@ export async function refreshAnthropicOauthUsageWithCredentialRefresh(
     };
   }
 
-  const retriedOutcome = await refreshAnthropicOauthUsageNow(providerUsageRepo, refreshedCredential, {
+  const retriedOutcome = await refreshProviderUsageNow(providerUsageRepo, refreshedCredential, {
     timeoutMs: options?.timeoutMs,
     ignoreRetryBackoff: true
   });
