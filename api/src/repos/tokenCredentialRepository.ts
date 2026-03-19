@@ -353,6 +353,7 @@ export class TokenCredentialRepository {
     accessToken: string;
     refreshToken: string | null;
     expiresAt: Date | null;
+    preserveStatus?: boolean;
   }): Promise<TokenCredential | null> {
     const sql = (includeContributionCapColumns: boolean) => `
       update ${TABLES.tokenCredentials}
@@ -376,10 +377,16 @@ export class TokenCredentialRepository {
         consecutive_rate_limit_count = 0,
         last_rate_limited_at = null,
         rate_limited_until = null,
-        maxed_at = null,
+        maxed_at = case
+          when $5::boolean then maxed_at
+          else null
+        end,
         next_probe_at = null,
         last_probe_at = now(),
-        status = 'active',
+        status = case
+          when $5::boolean then status
+          else 'active'
+        end,
         rotated_at = now(),
         updated_at = now()
       where id = $1
@@ -420,7 +427,8 @@ export class TokenCredentialRepository {
       input.id,
       encryptSecret(input.accessToken),
       input.refreshToken ? encryptSecret(input.refreshToken) : null,
-      input.expiresAt
+      input.expiresAt,
+      input.preserveStatus === true
     ];
 
     const result = await queryTokenCredentialRowsWithContributionCapFallback(this.db, sql, params);
@@ -1325,8 +1333,14 @@ export class TokenCredentialRepository {
           last_probe_at = now(),
           next_probe_at = $2,
           last_refresh_error = case
-            when $3::text is not null then $3
-            else last_refresh_error
+            when $3::text is null then last_refresh_error
+            when $3::text like 'probe_failed:%'
+              then case
+                when last_refresh_error is null or last_refresh_error like 'probe_failed:%'
+                then $3
+                else last_refresh_error
+              end
+            else $3
           end,
           updated_at = now()
         where id = $1

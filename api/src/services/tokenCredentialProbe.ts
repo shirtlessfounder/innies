@@ -1,5 +1,11 @@
 import { type TokenCredential, type TokenCredentialRepository } from '../repos/tokenCredentialRepository.js';
-import { isOpenAiOauthAccessToken, resolveOpenAiOauthAccountId } from '../utils/openaiOauth.js';
+import { attemptTokenCredentialRefresh } from './tokenCredentialOauthRefresh.js';
+import { parseOpenAiOauthUsagePayload } from './tokenCredentialProviderUsage.js';
+import {
+  isOpenAiOauthAccessToken,
+  resolveOpenAiOauthAccountId,
+  resolveOpenAiOauthExpiresAt
+} from '../utils/openaiOauth.js';
 
 const DEFAULT_TIMEOUT_MS = 10000;
 const DEFAULT_INTERVAL_MINUTES = 10;
@@ -17,8 +23,13 @@ const ANTHROPIC_OAUTH_BETAS = [
 
 type ProbeResult = {
   ok: boolean;
-  statusCode?: number;
+  statusCode?: number | null;
   reason: string;
+  authValid: boolean | null;
+  availabilityOk: boolean | null;
+  usageExhausted: boolean;
+  usageExhaustedWindow: '5h' | '7d' | 'unknown' | null;
+  usageResetAt: Date | null;
 };
 
 type ProbeRequest = {
@@ -35,6 +46,15 @@ export type TokenCredentialProbeOutcome = {
   reactivated: boolean;
   status: 'active' | 'maxed';
   nextProbeAt: Date | null;
+  authValid: boolean | null;
+  availabilityOk: boolean | null;
+  usageExhausted: boolean;
+  usageExhaustedWindow: '5h' | '7d' | 'unknown' | null;
+  usageResetAt: Date | null;
+  refreshAttempted: boolean;
+  refreshSucceeded: boolean | null;
+  refreshReason: string | null;
+  refreshedCredential: boolean;
 };
 
 function readIntEnv(name: string, fallback: number): number {
@@ -60,6 +80,19 @@ export function readTokenCredentialProbeIntervalMinutes(): number {
   }
 
   return DEFAULT_INTERVAL_MINUTES;
+}
+
+function defaultProbeTruth(): Pick<
+  ProbeResult,
+  'authValid' | 'availabilityOk' | 'usageExhausted' | 'usageExhaustedWindow' | 'usageResetAt'
+> {
+  return {
+    authValid: null,
+    availabilityOk: null,
+    usageExhausted: false,
+    usageExhaustedWindow: null,
+    usageResetAt: null
+  };
 }
 
 function providerBaseUrl(provider: string): string | null {
@@ -138,7 +171,13 @@ function buildProbeRequest(credential: TokenCredential): ProbeRequest | null {
 
 export async function probeTokenCredentialUpstream(credential: TokenCredential, timeoutMs: number): Promise<ProbeResult> {
   const request = buildProbeRequest(credential);
-  if (!request) return { ok: false, reason: `unsupported_provider:${credential.provider}` };
+  if (!request) {
+    return {
+      ok: false,
+      reason: `unsupported_provider:${credential.provider}`,
+      ...defaultProbeTruth()
+    };
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -149,14 +188,141 @@ export async function probeTokenCredentialUpstream(credential: TokenCredential, 
       body: request.body,
       signal: controller.signal
     });
-    if (response.ok) return { ok: true, statusCode: response.status, reason: 'ok' };
-    return { ok: false, statusCode: response.status, reason: `status_${response.status}` };
+    if (response.ok) {
+      if ((credential.provider === 'openai' || credential.provider === 'codex') && isOpenAiOauthAccessToken(credential.accessToken)) {
+        let payload: unknown = {};
+        try {
+          payload = await response.json();
+        } catch {
+          payload = {};
+        }
+
+        try {
+          const usage = parseOpenAiOauthUsagePayload(payload);
+          const fiveHourExhausted = usage.fiveHourUtilizationRatio >= 1;
+          const sevenDayExhausted = usage.sevenDayUtilizationRatio >= 1;
+          if (fiveHourExhausted) {
+            return {
+              ok: false,
+              statusCode: response.status,
+              reason: 'usage_exhausted_5h',
+              authValid: true,
+              availabilityOk: false,
+              usageExhausted: true,
+              usageExhaustedWindow: '5h',
+              usageResetAt: usage.fiveHourResetsAt ?? usage.sevenDayResetsAt
+            };
+          }
+          if (sevenDayExhausted) {
+            return {
+              ok: false,
+              statusCode: response.status,
+              reason: 'usage_exhausted_7d',
+              authValid: true,
+              availabilityOk: false,
+              usageExhausted: true,
+              usageExhaustedWindow: '7d',
+              usageResetAt: usage.sevenDayResetsAt ?? usage.fiveHourResetsAt
+            };
+          }
+
+          return {
+            ok: true,
+            statusCode: response.status,
+            reason: 'ok',
+            authValid: true,
+            availabilityOk: true,
+            usageExhausted: false,
+            usageExhaustedWindow: null,
+            usageResetAt: null
+          };
+        } catch {
+          return {
+            ok: false,
+            statusCode: response.status,
+            reason: 'invalid_payload',
+            authValid: true,
+            availabilityOk: null,
+            usageExhausted: false,
+            usageExhaustedWindow: null,
+            usageResetAt: null
+          };
+        }
+      }
+
+      return {
+        ok: true,
+        statusCode: response.status,
+        reason: 'ok',
+        authValid: true,
+        availabilityOk: true,
+        usageExhausted: false,
+        usageExhaustedWindow: null,
+        usageResetAt: null
+      };
+    }
+
+    const authFailed = response.status === 401 || response.status === 403;
+    return {
+      ok: false,
+      statusCode: response.status,
+      reason: `status_${response.status}`,
+      authValid: authFailed ? false : null,
+      availabilityOk: false,
+      usageExhausted: false,
+      usageExhaustedWindow: null,
+      usageResetAt: null
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'probe_error';
-    return { ok: false, reason: `network:${message}` };
+    return {
+      ok: false,
+      reason: `network:${message}`,
+      ...defaultProbeTruth()
+    };
   } finally {
     clearTimeout(timer);
   }
+}
+
+function shouldAttemptRefreshBeforeProbe(
+  credential: TokenCredential,
+  isMaxedProbe: boolean
+): string | null {
+  if (!(credential.provider === 'openai' || credential.provider === 'codex')) {
+    return null;
+  }
+  if (!credential.refreshToken) {
+    return null;
+  }
+  if (!isOpenAiOauthAccessToken(credential.accessToken)) {
+    return null;
+  }
+
+  const accessTokenExpiresAt = resolveOpenAiOauthExpiresAt(credential.accessToken);
+  if (accessTokenExpiresAt && accessTokenExpiresAt.getTime() <= Date.now()) {
+    return 'access_token_expired_local';
+  }
+
+  if (isMaxedProbe && (credential.lastFailedStatus === 401 || credential.lastFailedStatus === 403)) {
+    return 'parked_auth_failure';
+  }
+
+  return null;
+}
+
+function nextProbeAtForFailure(result: ProbeResult, probeIntervalMinutes: number): Date {
+  if (result.usageResetAt) {
+    return result.usageResetAt;
+  }
+  return new Date(Date.now() + (probeIntervalMinutes * 60 * 1000));
+}
+
+function rowFailureReason(result: ProbeResult): string {
+  if (result.reason.startsWith('usage_exhausted_')) {
+    return result.reason;
+  }
+  return `probe_failed:${result.reason}${result.statusCode ? `:${result.statusCode}` : ''}`;
 }
 
 export async function probeAndUpdateTokenCredential(
@@ -170,7 +336,78 @@ export async function probeAndUpdateTokenCredential(
   const timeoutMs = options?.timeoutMs ?? readTokenCredentialProbeTimeoutMs();
   const probeIntervalMinutes = options?.probeIntervalMinutes ?? readTokenCredentialProbeIntervalMinutes();
   const isMaxedProbe = credential.status === 'maxed' || credential.status === undefined;
-  const result = await probeTokenCredentialUpstream(credential, timeoutMs);
+  let refreshAttempted = false;
+  let refreshSucceeded: boolean | null = null;
+  let refreshReason: string | null = null;
+  let refreshedCredential = false;
+  let credentialToProbe = credential;
+
+  const refreshTrigger = shouldAttemptRefreshBeforeProbe(credential, isMaxedProbe);
+  if (refreshTrigger) {
+    refreshAttempted = true;
+    refreshReason = refreshTrigger;
+    const refreshed = await attemptTokenCredentialRefresh(repo, credential, {
+      preserveStatus: isMaxedProbe
+    });
+    if (!refreshed) {
+      refreshSucceeded = false;
+      const refreshFailureResult: ProbeResult = {
+        ok: false,
+        statusCode: null,
+        reason: 'refresh_failed',
+        authValid: false,
+        availabilityOk: false,
+        usageExhausted: false,
+        usageExhaustedWindow: null,
+        usageResetAt: null
+      };
+      if (!isMaxedProbe) {
+        return {
+          ok: false,
+          statusCode: null,
+          reason: refreshFailureResult.reason,
+          reactivated: false,
+          status: 'active',
+          nextProbeAt: null,
+          authValid: refreshFailureResult.authValid,
+          availabilityOk: refreshFailureResult.availabilityOk,
+          usageExhausted: refreshFailureResult.usageExhausted,
+          usageExhaustedWindow: refreshFailureResult.usageExhaustedWindow,
+          usageResetAt: refreshFailureResult.usageResetAt,
+          refreshAttempted,
+          refreshSucceeded,
+          refreshReason,
+          refreshedCredential
+        };
+      }
+
+      const nextProbeAt = nextProbeAtForFailure(refreshFailureResult, probeIntervalMinutes);
+      await repo.markProbeFailure(credential.id, nextProbeAt, rowFailureReason(refreshFailureResult));
+      return {
+        ok: false,
+        statusCode: null,
+        reason: refreshFailureResult.reason,
+        reactivated: false,
+        status: 'maxed',
+        nextProbeAt,
+        authValid: refreshFailureResult.authValid,
+        availabilityOk: refreshFailureResult.availabilityOk,
+        usageExhausted: refreshFailureResult.usageExhausted,
+        usageExhaustedWindow: refreshFailureResult.usageExhaustedWindow,
+        usageResetAt: refreshFailureResult.usageResetAt,
+        refreshAttempted,
+        refreshSucceeded,
+        refreshReason,
+        refreshedCredential
+      };
+    }
+
+    refreshSucceeded = true;
+    refreshedCredential = true;
+    credentialToProbe = refreshed;
+  }
+
+  const result = await probeTokenCredentialUpstream(credentialToProbe, timeoutMs);
 
   if (result.ok) {
     const reactivated = isMaxedProbe
@@ -182,7 +419,16 @@ export async function probeAndUpdateTokenCredential(
       reason: result.reason,
       reactivated,
       status: reactivated ? 'active' : (isMaxedProbe ? 'maxed' : 'active'),
-      nextProbeAt: null
+      nextProbeAt: null,
+      authValid: result.authValid,
+      availabilityOk: result.availabilityOk,
+      usageExhausted: result.usageExhausted,
+      usageExhaustedWindow: result.usageExhaustedWindow,
+      usageResetAt: result.usageResetAt,
+      refreshAttempted,
+      refreshSucceeded,
+      refreshReason,
+      refreshedCredential
     };
   }
 
@@ -193,16 +439,21 @@ export async function probeAndUpdateTokenCredential(
       reason: result.reason,
       reactivated: false,
       status: 'active',
-      nextProbeAt: null
+      nextProbeAt: null,
+      authValid: result.authValid,
+      availabilityOk: result.availabilityOk,
+      usageExhausted: result.usageExhausted,
+      usageExhaustedWindow: result.usageExhaustedWindow,
+      usageResetAt: result.usageResetAt,
+      refreshAttempted,
+      refreshSucceeded,
+      refreshReason,
+      refreshedCredential
     };
   }
 
-  const nextProbeAt = new Date(Date.now() + (probeIntervalMinutes * 60 * 1000));
-  await repo.markProbeFailure(
-    credential.id,
-    nextProbeAt,
-    `probe_failed:${result.reason}${result.statusCode ? `:${result.statusCode}` : ''}`
-  );
+  const nextProbeAt = nextProbeAtForFailure(result, probeIntervalMinutes);
+  await repo.markProbeFailure(credential.id, nextProbeAt, rowFailureReason(result));
 
   return {
     ok: false,
@@ -210,6 +461,15 @@ export async function probeAndUpdateTokenCredential(
     reason: result.reason,
     reactivated: false,
     status: 'maxed',
-    nextProbeAt
+    nextProbeAt,
+    authValid: result.authValid,
+    availabilityOk: result.availabilityOk,
+    usageExhausted: result.usageExhausted,
+    usageExhaustedWindow: result.usageExhaustedWindow,
+    usageResetAt: result.usageResetAt,
+    refreshAttempted,
+    refreshSucceeded,
+    refreshReason,
+    refreshedCredential
   };
 }

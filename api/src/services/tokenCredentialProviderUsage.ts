@@ -336,7 +336,7 @@ function readOpenAiWhamWindow(window: Record<string, unknown>): {
   };
 }
 
-function parseOpenAiOauthUsagePayload(payload: unknown): {
+export function parseOpenAiOauthUsagePayload(payload: unknown): {
   usageSource: ProviderUsageSource;
   fiveHourUtilizationRatio: number;
   fiveHourResetsAt: Date | null;

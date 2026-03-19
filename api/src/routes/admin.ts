@@ -4,7 +4,10 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireApiKey } from '../middleware/auth.js';
 import { runtime } from '../services/runtime.js';
-import { readClaudeContributionCapSnapshotState } from '../services/claudeContributionCapState.js';
+import {
+  readClaudeContributionCapProviderExhaustionHold,
+  readClaudeContributionCapSnapshotState
+} from '../services/claudeContributionCapState.js';
 import {
   type AnthropicOauthUsageRefreshOutcome,
   isAnthropicOauthTokenCredential,
@@ -920,7 +923,7 @@ router.post('/v1/admin/token-credentials/:id/probe', requireApiKey(runtime.repos
       timeoutMs: readTokenCredentialProbeTimeoutMs(),
       probeIntervalMinutes: readTokenCredentialProbeIntervalMinutes()
     });
-    const authDiagnosis = probeOutcome.ok
+    const authDiagnosis = probeOutcome.ok || probeOutcome.authValid === true
       ? {
           authDiagnosis: null,
           accessTokenExpiresAt: null,
@@ -945,6 +948,17 @@ router.post('/v1/admin/token-credentials/:id/probe', requireApiKey(runtime.repos
       upstreamStatus: probeOutcome.statusCode,
       reason: probeOutcome.reason,
       nextProbeAt: probeOutcome.nextProbeAt ? probeOutcome.nextProbeAt.toISOString() : null,
+      ...(probeOutcome.authValid !== undefined ? { authValid: probeOutcome.authValid } : {}),
+      ...(probeOutcome.availabilityOk !== undefined ? { availabilityOk: probeOutcome.availabilityOk } : {}),
+      ...(probeOutcome.usageExhausted !== undefined ? { usageExhausted: probeOutcome.usageExhausted } : {}),
+      ...(probeOutcome.usageExhaustedWindow !== undefined ? { usageExhaustedWindow: probeOutcome.usageExhaustedWindow } : {}),
+      ...(probeOutcome.usageResetAt !== undefined
+        ? { usageResetAt: probeOutcome.usageResetAt ? probeOutcome.usageResetAt.toISOString() : null }
+        : {}),
+      ...(probeOutcome.refreshAttempted !== undefined ? { refreshAttempted: probeOutcome.refreshAttempted } : {}),
+      ...(probeOutcome.refreshSucceeded !== undefined ? { refreshSucceeded: probeOutcome.refreshSucceeded } : {}),
+      ...(probeOutcome.refreshReason !== undefined ? { refreshReason: probeOutcome.refreshReason } : {}),
+      ...(probeOutcome.refreshedCredential !== undefined ? { refreshedCredential: probeOutcome.refreshedCredential } : {}),
       ...(authDiagnosis.authDiagnosis !== null ? { authDiagnosis: authDiagnosis.authDiagnosis } : {}),
       ...(authDiagnosis.accessTokenExpiresAt !== null ? { accessTokenExpiresAt: authDiagnosis.accessTokenExpiresAt } : {}),
       ...(authDiagnosis.refreshTokenState !== null ? { refreshTokenState: authDiagnosis.refreshTokenState } : {})
@@ -964,6 +978,15 @@ router.post('/v1/admin/token-credentials/:id/probe', requireApiKey(runtime.repos
         upstreamStatus: probeOutcome.statusCode,
         reason: probeOutcome.reason,
         nextProbeAt: responseBody.nextProbeAt,
+        authValid: probeOutcome.authValid,
+        availabilityOk: probeOutcome.availabilityOk,
+        usageExhausted: probeOutcome.usageExhausted,
+        usageExhaustedWindow: probeOutcome.usageExhaustedWindow,
+        usageResetAt: responseBody.usageResetAt,
+        refreshAttempted: probeOutcome.refreshAttempted,
+        refreshSucceeded: probeOutcome.refreshSucceeded,
+        refreshReason: probeOutcome.refreshReason,
+        refreshedCredential: probeOutcome.refreshedCredential,
         authDiagnosis: authDiagnosis.authDiagnosis,
         accessTokenExpiresAt: authDiagnosis.accessTokenExpiresAt,
         refreshTokenState: authDiagnosis.refreshTokenState
@@ -1077,6 +1100,12 @@ router.post('/v1/admin/token-credentials/:id/provider-usage-refresh', requireApi
         sevenDayTransition: null as 'exhausted' | 'cleared' | null
       }
       : null;
+    let authValid: boolean | null = refreshOutcome.ok ? true : (authFailureStatusCode !== null ? false : null);
+    let availabilityOk: boolean | null = refreshOutcome.ok;
+    let usageExhausted = false;
+    let usageExhaustedWindow: '5h' | '7d' | 'unknown' | null = null;
+    let usageResetAt: string | null = null;
+    let reactivated = false;
     let snapshotSummary: {
       usageSource: string;
       fetchedAt: string;
@@ -1150,6 +1179,19 @@ router.post('/v1/admin/token-credentials/:id/provider-usage-refresh', requireApi
             stateSyncErrors.push(error instanceof Error ? error.message : 'contribution_cap_lifecycle_sync_failed');
           }
         }
+
+        const providerExhaustionHold = readClaudeContributionCapProviderExhaustionHold({
+          credential: effectiveCredential,
+          snapshot: refreshOutcome.snapshot
+        });
+        if (providerExhaustionHold.hasActiveHold) {
+          usageExhausted = true;
+          usageExhaustedWindow = providerExhaustionHold.reason === 'usage_exhausted_5h' ? '5h' : '7d';
+          usageResetAt = providerExhaustionHold.nextRefreshAt?.toISOString() ?? null;
+          availabilityOk = false;
+        } else if (state.fiveHourContributionCapExhausted || state.sevenDayContributionCapExhausted) {
+          availabilityOk = false;
+        }
       } else {
         snapshotSummary = {
           usageSource: refreshOutcome.snapshot.usageSource,
@@ -1165,21 +1207,57 @@ router.post('/v1/admin/token-credentials/:id/provider-usage-refresh', requireApi
           sevenDayContributionCapExhausted: null,
           sevenDayProviderUsageExhausted: refreshOutcome.snapshot.sevenDayUtilizationRatio >= 1
         };
+
+        if (refreshOutcome.snapshot.fiveHourUtilizationRatio >= 1) {
+          usageExhausted = true;
+          usageExhaustedWindow = '5h';
+          usageResetAt = refreshOutcome.snapshot.fiveHourResetsAt?.toISOString() ?? null;
+          availabilityOk = false;
+        } else if (refreshOutcome.snapshot.sevenDayUtilizationRatio >= 1) {
+          usageExhausted = true;
+          usageExhaustedWindow = '7d';
+          usageResetAt = refreshOutcome.snapshot.sevenDayResetsAt?.toISOString() ?? null;
+          availabilityOk = false;
+        }
+      }
+
+      if (existing.status === 'maxed') {
+        if (availabilityOk) {
+          reactivated = await runtime.repos.tokenCredentials.reactivateFromMaxed(effectiveCredential.id);
+        } else if (usageExhausted && usageResetAt) {
+          await runtime.repos.tokenCredentials.markProbeFailure(
+            effectiveCredential.id,
+            new Date(usageResetAt),
+            `usage_exhausted_${usageExhaustedWindow}`
+          );
+        }
       }
     }
+
+    const topLevelReason = refreshOutcome.ok
+      ? (usageExhausted ? `usage_exhausted_${usageExhaustedWindow}` : 'ok')
+      : refreshOutcome.reason;
+    const computedNextProbeAt = nextProbeAt?.toISOString()
+      ?? (existing.status === 'maxed' && usageExhausted ? usageResetAt : null);
 
     const responseBody = {
       ok: true,
       id,
       provider: effectiveCredential.provider,
       debugLabel: effectiveCredential.debugLabel,
-      status: parkedOutcome?.status ?? effectiveCredential.status,
+      status: parkedOutcome?.status ?? (reactivated ? 'active' : effectiveCredential.status),
       refreshOk: refreshOutcome.ok,
+      reactivated,
       upstreamStatus: refreshOutcome.ok ? 200 : refreshOutcome.statusCode,
-      reason: refreshOutcome.ok ? 'ok' : refreshOutcome.reason,
+      reason: topLevelReason,
       category: refreshOutcome.ok ? null : refreshOutcome.category,
       warningReason,
-      nextProbeAt: nextProbeAt?.toISOString() ?? null,
+      nextProbeAt: computedNextProbeAt,
+      authValid,
+      availabilityOk,
+      usageExhausted,
+      usageExhaustedWindow,
+      usageResetAt,
       retryAfterMs: !refreshOutcome.ok && 'retryAfterMs' in refreshOutcome
         ? (refreshOutcome.retryAfterMs ?? null)
         : null,
@@ -1205,11 +1283,17 @@ router.post('/v1/admin/token-credentials/:id/provider-usage-refresh', requireApi
         provider: effectiveCredential.provider,
         debugLabel: effectiveCredential.debugLabel,
         refreshOk: refreshOutcome.ok,
+        reactivated,
         upstreamStatus: responseBody.upstreamStatus,
         reason: responseBody.reason,
         category: responseBody.category,
         warningReason: responseBody.warningReason,
         nextProbeAt: responseBody.nextProbeAt,
+        authValid: responseBody.authValid,
+        availabilityOk: responseBody.availabilityOk,
+        usageExhausted: responseBody.usageExhausted,
+        usageExhaustedWindow: responseBody.usageExhaustedWindow,
+        usageResetAt: responseBody.usageResetAt,
         stateSyncErrors: responseBody.stateSyncErrors
       }
     });

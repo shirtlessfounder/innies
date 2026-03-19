@@ -1323,7 +1323,7 @@ describe('analytics routes', () => {
     ]);
   });
 
-  it('marks Codex dashboard token rows as maxed when provider usage shows an exhausted window', async () => {
+  it('marks Codex dashboard token rows as benched when provider usage shows an exhausted window', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-12T12:10:00.000Z'));
 
@@ -1405,9 +1405,9 @@ describe('analytics routes', () => {
         credentialId: '55555555-5555-4555-8555-555555555555',
         provider: 'openai',
         rawStatus: 'active',
-        status: 'maxed',
-        compactStatus: 'maxed',
-        expandedStatus: 'maxed, source: usage_exhausted',
+        status: 'benched',
+        compactStatus: 'benched',
+        expandedStatus: 'benched, source: usage_exhausted',
         statusSource: 'usage_exhausted',
         exclusionReason: null,
         fiveHourUtilizationRatio: 1,
@@ -1419,7 +1419,7 @@ describe('analytics routes', () => {
     ]);
   });
 
-  it('marks Claude dashboard token rows as maxed when provider usage has exhausted a contribution cap', async () => {
+  it('marks Claude dashboard token rows as benched when provider usage has exhausted a contribution cap', async () => {
     const apiKeys = createApiKeysRepo();
     const analytics = createAnalyticsRepo();
     analytics.getSystemSummary.mockResolvedValue({
@@ -1498,9 +1498,9 @@ describe('analytics routes', () => {
         credentialId: '22222222-2222-4222-8222-222222222222',
         provider: 'anthropic',
         rawStatus: 'active',
-        status: 'maxed',
-        compactStatus: 'maxed',
-        expandedStatus: 'maxed, source: cap_exhausted',
+        status: 'benched',
+        compactStatus: 'benched',
+        expandedStatus: 'benched, source: cap_exhausted',
         statusSource: 'cap_exhausted',
         exclusionReason: null,
         fiveHourContributionCapExhausted: true
@@ -1614,7 +1614,7 @@ describe('analytics routes', () => {
     ]);
   });
 
-  it('keeps legacy Claude maxed status visible as backend maxed in dashboard rows', async () => {
+  it('keeps legacy Claude maxed status visible as backend benched in dashboard rows', async () => {
     const apiKeys = createApiKeysRepo();
     const analytics = createAnalyticsRepo();
     analytics.getSystemSummary.mockResolvedValue({
@@ -1693,9 +1693,9 @@ describe('analytics routes', () => {
         credentialId: '33333333-3333-4333-8333-333333333333',
         provider: 'anthropic',
         rawStatus: 'maxed',
-        status: 'maxed',
-        compactStatus: 'maxed',
-        expandedStatus: 'maxed, source: backend_maxed',
+        status: 'benched',
+        compactStatus: 'benched',
+        expandedStatus: 'benched, source: backend_maxed',
         statusSource: 'backend_maxed',
         exclusionReason: null,
         fiveHourContributionCapExhausted: false,
@@ -1790,9 +1790,9 @@ describe('analytics routes', () => {
         credentialId: '44444444-4444-4444-8444-444444444444',
         provider: 'anthropic',
         rawStatus: 'maxed',
-        status: 'maxed',
-        compactStatus: 'maxed',
-        expandedStatus: 'maxed, source: backend_maxed',
+        status: 'benched',
+        compactStatus: 'benched',
+        expandedStatus: 'benched, source: backend_maxed',
         statusSource: 'backend_maxed',
         exclusionReason: null
       })

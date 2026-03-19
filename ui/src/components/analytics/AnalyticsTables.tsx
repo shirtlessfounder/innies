@@ -87,7 +87,7 @@ function tokenStatusTone(row: AnalyticsTokenRow): string {
   if (compactStatus === 'active*' || row.exclusionReason !== null) {
     return styles.statusPillRateLimited;
   }
-  if (compactStatus === 'maxed') {
+  if (compactStatus === 'maxed' || compactStatus === 'benched') {
     return styles.statusPillMaxed;
   }
   switch (rawStatus) {

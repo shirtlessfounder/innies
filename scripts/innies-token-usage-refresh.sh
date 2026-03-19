@@ -23,6 +23,15 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
+display_status_label() {
+  local raw_status="$1"
+  if [[ "$raw_status" == 'maxed' ]]; then
+    printf 'benched'
+  else
+    printf '%s' "$raw_status"
+  fi
+}
+
 list_manual_provider_usage_candidates() {
   psql "$DATABASE_URL" -X -A -F $'\x1f' -t -v ON_ERROR_STOP=1 <<'SQL'
 select
@@ -188,10 +197,11 @@ if [[ -n "$credential_rows" ]]; then
   while IFS=$'\x1f' read -r listed_id listed_label listed_provider listed_status listed_updated_at; do
     selection_index=$((selection_index + 1))
     credential_ids+=("$listed_id")
+    display_status="$(display_status_label "$listed_status")"
     if [[ -n "$listed_label" ]]; then
-      echo "  ${selection_index}) ${listed_label} (${listed_provider}, ${listed_status}) id=${listed_id} updatedAt=${listed_updated_at}"
+      echo "  ${selection_index}) ${listed_label} (${listed_provider}, ${display_status}) id=${listed_id} updatedAt=${listed_updated_at}"
     else
-      echo "  ${selection_index}) (no label) (${listed_provider}, ${listed_status}) id=${listed_id} updatedAt=${listed_updated_at}"
+      echo "  ${selection_index}) (no label) (${listed_provider}, ${display_status}) id=${listed_id} updatedAt=${listed_updated_at}"
     fi
   done <<< "$credential_rows"
 else
@@ -252,8 +262,49 @@ warning_reason="$(jq -r '.warningReason // "null"' "$body_file")"
 retry_after_ms="$(jq -r '.retryAfterMs // "null"' "$body_file")"
 next_probe_at="$(jq -r '.nextProbeAt // "null"' "$body_file")"
 state_sync_errors="$(jq -c '.stateSyncErrors // []' "$body_file")"
+result_auth_valid="$(jq -r '.authValid // "null"' "$body_file")"
+result_availability_ok="$(jq -r '.availabilityOk // "null"' "$body_file")"
+result_usage_exhausted="$(jq -r '.usageExhausted // "null"' "$body_file")"
+result_usage_exhausted_window="$(jq -r '.usageExhaustedWindow // "null"' "$body_file")"
+result_usage_reset_at="$(jq -r '.usageResetAt // "null"' "$body_file")"
+result_reactivated="$(jq -r '.reactivated // false' "$body_file")"
+result_display_status="$(display_status_label "$result_status")"
 
-if [[ "$refresh_ok" == "true" ]]; then
+if [[ "$refresh_ok" == "true" && "$result_reactivated" == "true" ]]; then
+  five_hour_used_percent="$(jq -r '.snapshot.fiveHourUsedPercent // "null"' "$body_file")"
+  seven_day_used_percent="$(jq -r '.snapshot.sevenDayUsedPercent // "null"' "$body_file")"
+
+  echo
+  echo 'Usage refresh result: REACTIVATED'
+  if [[ -n "$result_label" ]]; then
+    echo "credential: $result_label ($result_provider)"
+  else
+    echo "credential: $credential_id ($result_provider)"
+  fi
+  echo "status: $result_display_status"
+  echo "upstream: ${result_upstream_status} (${result_reason})"
+  echo "5h used: ${five_hour_used_percent}%"
+  echo "7d used: ${seven_day_used_percent}%"
+elif [[ "$refresh_ok" == "true" && "$result_auth_valid" == "true" && "$result_usage_exhausted" == "true" ]]; then
+  five_hour_used_percent="$(jq -r '.snapshot.fiveHourUsedPercent // "null"' "$body_file")"
+  seven_day_used_percent="$(jq -r '.snapshot.sevenDayUsedPercent // "null"' "$body_file")"
+
+  echo
+  echo 'Usage refresh result: AUTH VALID, USAGE EXHAUSTED'
+  if [[ -n "$result_label" ]]; then
+    echo "credential: $result_label ($result_provider)"
+  else
+    echo "credential: $credential_id ($result_provider)"
+  fi
+  echo "status: $result_display_status"
+  echo "upstream: ${result_upstream_status} (${result_reason})"
+  echo "authValid: $result_auth_valid"
+  echo "availabilityOk: $result_availability_ok"
+  echo "usageWindow: $result_usage_exhausted_window"
+  echo "usageResetAt: $result_usage_reset_at"
+  echo "5h used: ${five_hour_used_percent}%"
+  echo "7d used: ${seven_day_used_percent}%"
+elif [[ "$refresh_ok" == "true" ]]; then
   five_hour_used_percent="$(jq -r '.snapshot.fiveHourUsedPercent // "null"' "$body_file")"
   five_hour_resets_at="$(jq -r '.snapshot.fiveHourResetsAt // "null"' "$body_file")"
   five_hour_cap_exhausted="$(jq -r '.snapshot.fiveHourContributionCapExhausted // "null"' "$body_file")"
@@ -262,13 +313,13 @@ if [[ "$refresh_ok" == "true" ]]; then
   seven_day_cap_exhausted="$(jq -r '.snapshot.sevenDayContributionCapExhausted // "null"' "$body_file")"
 
   echo
-  echo 'Usage refresh result: SUCCESS'
+  echo 'Usage refresh result: AUTH VALID, AVAILABLE'
   if [[ -n "$result_label" ]]; then
     echo "credential: $result_label ($result_provider)"
   else
     echo "credential: $credential_id ($result_provider)"
   fi
-  echo "status: $result_status"
+  echo "status: $result_display_status"
   echo "upstream: ${result_upstream_status} (${result_reason})"
   echo "5h used: ${five_hour_used_percent}%"
   echo "5h reset: ${five_hour_resets_at}"
@@ -288,7 +339,7 @@ else
   else
     echo "credential: $credential_id ($result_provider)"
   fi
-  echo "status: $result_status"
+  echo "status: $result_display_status"
   echo "upstream: ${result_upstream_status} (${result_reason})"
   echo "warningReason: ${warning_reason}"
   echo "retryAfterMs: ${retry_after_ms}"

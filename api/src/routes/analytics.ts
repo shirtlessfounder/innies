@@ -429,8 +429,11 @@ function deriveDashboardSummaryFromTokens(
   }
 
   const maxedTokens = tokens.filter((row) => {
-    const status = readTrimmedString((row as { status?: unknown }).status) ?? 'unknown';
-    return status.toLowerCase() === 'maxed';
+    const compactStatus = readTrimmedString((row as { compactStatus?: unknown }).compactStatus)
+      ?? readTrimmedString((row as { status?: unknown }).status)
+      ?? 'unknown';
+    const normalized = compactStatus.toLowerCase();
+    return normalized === 'maxed' || normalized === 'benched';
   }).length;
 
   return {

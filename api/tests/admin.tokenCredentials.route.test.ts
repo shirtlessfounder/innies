@@ -1450,6 +1450,88 @@ describe('admin token credential routes idempotent replay', () => {
     expect(commitSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('surfaces auth-valid but usage-exhausted probe outcomes without inventing an auth failure', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_probe_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123459usage',
+        requestHash: 'probe_h_usage_exhausted'
+      }
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      accessToken: makeOpenAiOauthToken('2026-03-24T15:49:35.000Z'),
+      refreshToken: 'rt_codex_live',
+      debugLabel: 'aelix',
+      status: 'active',
+      expiresAt: new Date('2026-03-24T15:49:35.000Z')
+    } as any);
+    vi.spyOn(probeModule, 'probeAndUpdateTokenCredential').mockResolvedValue({
+      ok: false,
+      statusCode: 200,
+      reason: 'usage_exhausted_7d',
+      reactivated: false,
+      status: 'active',
+      nextProbeAt: null,
+      authValid: true,
+      availabilityOk: false,
+      usageExhausted: true,
+      usageExhaustedWindow: '7d',
+      usageResetAt: new Date('2026-03-24T23:07:59.000Z'),
+      refreshAttempted: false,
+      refreshSucceeded: null,
+      refreshReason: null,
+      refreshedCredential: false
+    } as any);
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/probe',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123459usage'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const res = createMockRes();
+
+    await invoke(probeHandlers[0], req, res);
+    await invoke(probeHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any)).toEqual({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      provider: 'openai',
+      debugLabel: 'aelix',
+      probeOk: false,
+      reactivated: false,
+      status: 'active',
+      upstreamStatus: 200,
+      reason: 'usage_exhausted_7d',
+      nextProbeAt: null,
+      authValid: true,
+      availabilityOk: false,
+      usageExhausted: true,
+      usageExhaustedWindow: '7d',
+      usageResetAt: '2026-03-24T23:07:59.000Z',
+      refreshAttempted: false,
+      refreshSucceeded: null,
+      refreshReason: null,
+      refreshedCredential: false
+    });
+    expect((res.body as any).authDiagnosis).toBeUndefined();
+    expect((res.body as any).accessTokenExpiresAt).toBeUndefined();
+    expect((res.body as any).refreshTokenState).toBeUndefined();
+    expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects manual probe when the credential is neither active nor maxed', async () => {
     vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
       replay: false,
@@ -1566,11 +1648,17 @@ describe('admin token credential routes idempotent replay', () => {
       debugLabel: 'shirtless',
       status: 'active',
       refreshOk: true,
+      reactivated: false,
       upstreamStatus: 200,
       reason: 'ok',
       category: null,
       warningReason: null,
       nextProbeAt: null,
+      authValid: true,
+      availabilityOk: true,
+      usageExhausted: false,
+      usageExhaustedWindow: null,
+      usageResetAt: null,
       retryAfterMs: null,
       errorMessage: null,
       reserve: {
@@ -1974,11 +2062,17 @@ describe('admin token credential routes idempotent replay', () => {
       debugLabel: 'niyant-codex',
       status: 'active',
       refreshOk: true,
+      reactivated: false,
       upstreamStatus: 200,
       reason: 'ok',
       category: null,
       warningReason: null,
       nextProbeAt: null,
+      authValid: true,
+      availabilityOk: true,
+      usageExhausted: false,
+      usageExhaustedWindow: null,
+      usageResetAt: null,
       retryAfterMs: null,
       errorMessage: null,
       reserve: null,

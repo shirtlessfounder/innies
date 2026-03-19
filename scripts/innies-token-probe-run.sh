@@ -13,7 +13,16 @@ source "${SCRIPT_DIR}/_common.sh"
 ensure_database_url
 ensure_psql
 
-echo 'Active and maxed token credentials:'
+display_status_label() {
+  local raw_status="$1"
+  if [[ "$raw_status" == 'maxed' ]]; then
+    printf 'benched'
+  else
+    printf '%s' "$raw_status"
+  fi
+}
+
+echo 'Active and benched token credentials:'
 probe_rows="$(
   psql "$DATABASE_URL" -X -A -F $'\t' -t -v ON_ERROR_STOP=1 <<'SQL'
 select
@@ -38,14 +47,15 @@ if [[ -z "$probe_rows" ]]; then
   echo '  (none)'
 else
   printf '%s\n' "$probe_rows" | while IFS=$'\t' read -r listed_id listed_label listed_status listed_provider listed_next_probe_at; do
+    display_status="$(display_status_label "$listed_status")"
     next_probe_suffix=''
     if [[ "$listed_status" == 'maxed' ]]; then
       next_probe_suffix=" nextProbeAt=${listed_next_probe_at:-null}"
     fi
     if [[ -n "$listed_label" ]]; then
-      echo "  - ${listed_label} (${listed_provider}, ${listed_status}) id=${listed_id}${next_probe_suffix}"
+      echo "  - ${listed_label} (${listed_provider}, ${display_status}) id=${listed_id}${next_probe_suffix}"
     else
-      echo "  - (no label) (${listed_provider}, ${listed_status}) id=${listed_id}${next_probe_suffix}"
+      echo "  - (no label) (${listed_provider}, ${display_status}) id=${listed_id}${next_probe_suffix}"
     fi
   done
 fi
@@ -78,7 +88,7 @@ idk="$(prompt 'Idempotency-Key (press Enter to auto-generate)' "$(gen_idempotenc
 
 echo "tokenCredentialId: $credential_id"
 echo 'Action: direct manual probe'
-echo "current status: $selected_status"
+echo "current status: $(display_status_label "$selected_status")"
 
 headers_file="$(mktemp)"
 body_file="$(mktemp)"
@@ -116,6 +126,16 @@ result_next_probe_at="$(jq -r '.nextProbeAt // "null"' "$body_file")"
 result_auth_diagnosis="$(jq -r '.authDiagnosis // "null"' "$body_file")"
 result_access_token_expires_at="$(jq -r '.accessTokenExpiresAt // "null"' "$body_file")"
 result_refresh_token_state="$(jq -r '.refreshTokenState // "null"' "$body_file")"
+result_auth_valid="$(jq -r '.authValid // "null"' "$body_file")"
+result_availability_ok="$(jq -r '.availabilityOk // "null"' "$body_file")"
+result_usage_exhausted="$(jq -r '.usageExhausted // "null"' "$body_file")"
+result_usage_exhausted_window="$(jq -r '.usageExhaustedWindow // "null"' "$body_file")"
+result_usage_reset_at="$(jq -r '.usageResetAt // "null"' "$body_file")"
+result_refresh_attempted="$(jq -r '.refreshAttempted // "null"' "$body_file")"
+result_refresh_succeeded="$(jq -r '.refreshSucceeded // "null"' "$body_file")"
+result_refresh_reason="$(jq -r '.refreshReason // "null"' "$body_file")"
+result_refreshed_credential="$(jq -r '.refreshedCredential // "null"' "$body_file")"
+result_display_status="$(display_status_label "$result_status")"
 
 if [[ "$reactivated" == "true" ]]; then
   echo
@@ -126,7 +146,7 @@ if [[ "$reactivated" == "true" ]]; then
     echo "credential: $credential_id ($result_provider)"
   fi
   echo "upstream: ${result_upstream_status} (${result_reason})"
-  echo "status: $result_status"
+  echo "status: $result_display_status"
   if [[ "$result_auth_diagnosis" != "null" ]]; then
     echo "auth: $result_auth_diagnosis"
   fi
@@ -137,16 +157,47 @@ if [[ "$reactivated" == "true" ]]; then
     echo "accessTokenExpiresAt: $result_access_token_expires_at"
   fi
   echo 'summary: live probe succeeded; Innies flipped this credential back to active immediately.'
-elif [[ "$probe_ok" == "true" ]]; then
+elif [[ "$result_auth_valid" == "true" && "$result_usage_exhausted" == "true" ]]; then
   echo
-  echo 'Probe result: PROBE OK, NO STATUS CHANGE'
+  echo 'Probe result: AUTH VALID, USAGE EXHAUSTED'
   if [[ -n "$result_label" ]]; then
     echo "credential: $result_label ($result_provider)"
   else
     echo "credential: $credential_id ($result_provider)"
   fi
   echo "upstream: ${result_upstream_status} (${result_reason})"
-  echo "status: $result_status"
+  echo "status: $result_display_status"
+  echo "authValid: $result_auth_valid"
+  echo "availabilityOk: $result_availability_ok"
+  echo "usageWindow: $result_usage_exhausted_window"
+  echo "usageResetAt: $result_usage_reset_at"
+  if [[ "$result_refresh_attempted" != "null" ]]; then
+    echo "refreshAttempted: $result_refresh_attempted"
+  fi
+  if [[ "$result_refresh_succeeded" != "null" ]]; then
+    echo "refreshSucceeded: $result_refresh_succeeded"
+  fi
+  if [[ "$result_refresh_reason" != "null" ]]; then
+    echo "refreshReason: $result_refresh_reason"
+  fi
+  if [[ "$result_refreshed_credential" != "null" ]]; then
+    echo "refreshedCredential: $result_refreshed_credential"
+  fi
+  if [[ "$selected_status" == "active" ]]; then
+    echo 'summary: auth is valid, but provider usage is exhausted; the stored row remains active while dashboards may still show it as benched.'
+  else
+    echo 'summary: auth is valid, but provider usage is exhausted; Innies kept this credential benched until the reset window.'
+  fi
+elif [[ "$probe_ok" == "true" ]]; then
+  echo
+  echo 'Probe result: AUTH VALID, AVAILABLE'
+  if [[ -n "$result_label" ]]; then
+    echo "credential: $result_label ($result_provider)"
+  else
+    echo "credential: $credential_id ($result_provider)"
+  fi
+  echo "upstream: ${result_upstream_status} (${result_reason})"
+  echo "status: $result_display_status"
   if [[ "$result_auth_diagnosis" != "null" ]]; then
     echo "auth: $result_auth_diagnosis"
   fi
@@ -156,17 +207,17 @@ elif [[ "$probe_ok" == "true" ]]; then
   if [[ "$result_access_token_expires_at" != "null" ]]; then
     echo "accessTokenExpiresAt: $result_access_token_expires_at"
   fi
-  echo 'summary: upstream probe succeeded, but Innies did not mark the credential active.'
+  echo 'summary: auth is valid and upstream capacity is available.'
 elif [[ "$selected_status" == "active" ]]; then
   echo
-  echo 'Probe result: PROBE FAILED, NO STATUS CHANGE'
+  echo 'Probe result: AUTH CHECK FAILED, STILL ACTIVE'
   if [[ -n "$result_label" ]]; then
     echo "credential: $result_label ($result_provider)"
   else
     echo "credential: $credential_id ($result_provider)"
   fi
   echo "upstream: ${result_upstream_status} (${result_reason})"
-  echo "status: $result_status"
+  echo "status: $result_display_status"
   if [[ "$result_auth_diagnosis" != "null" ]]; then
     echo "auth: $result_auth_diagnosis"
   fi
@@ -179,14 +230,14 @@ elif [[ "$selected_status" == "active" ]]; then
   echo 'summary: upstream probe failed; Innies left this credential active and did not schedule a recovery probe.'
 else
   echo
-  echo 'Probe result: STILL MAXED'
+  echo 'Probe result: STILL BENCHED'
   if [[ -n "$result_label" ]]; then
     echo "credential: $result_label ($result_provider)"
   else
     echo "credential: $credential_id ($result_provider)"
   fi
   echo "upstream: ${result_upstream_status} (${result_reason})"
-  echo "status: $result_status"
+  echo "status: $result_display_status"
   if [[ "$result_auth_diagnosis" != "null" ]]; then
     echo "auth: $result_auth_diagnosis"
   fi
@@ -197,7 +248,7 @@ else
     echo "accessTokenExpiresAt: $result_access_token_expires_at"
   fi
   echo "nextProbeAt: $result_next_probe_at"
-  echo 'summary: live probe failed; Innies kept this credential maxed.'
+  echo 'summary: live probe failed; Innies kept this credential benched.'
 fi
 
 echo

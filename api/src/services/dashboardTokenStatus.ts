@@ -6,7 +6,7 @@ export type DashboardCompactStatus =
   | 'active*'
   | 'paused'
   | 'rotating'
-  | 'maxed'
+  | 'benched'
   | 'expired'
   | 'revoked';
 
@@ -135,8 +135,8 @@ export function deriveDashboardTokenStatusRow(
   if (rawStatus === 'maxed') {
     return buildStatusOutput({
       rawStatus,
-      compactStatus: 'maxed',
-      expandedStatus: `maxed, source: backend_maxed${buildAuthDetailSuffix(input)}`,
+      compactStatus: 'benched',
+      expandedStatus: `benched, source: backend_maxed${buildAuthDetailSuffix(input)}`,
       statusSource: 'backend_maxed'
     });
   }
@@ -147,8 +147,8 @@ export function deriveDashboardTokenStatusRow(
   if (rawStatus === 'active' && capExhausted) {
     return buildStatusOutput({
       rawStatus,
-      compactStatus: 'maxed',
-      expandedStatus: 'maxed, source: cap_exhausted',
+      compactStatus: 'benched',
+      expandedStatus: 'benched, source: cap_exhausted',
       statusSource: 'cap_exhausted'
     });
   }
@@ -156,8 +156,8 @@ export function deriveDashboardTokenStatusRow(
   if (rawStatus === 'active' && hasOpenAiUsageExhausted(input)) {
     return buildStatusOutput({
       rawStatus,
-      compactStatus: 'maxed',
-      expandedStatus: 'maxed, source: usage_exhausted',
+      compactStatus: 'benched',
+      expandedStatus: 'benched, source: usage_exhausted',
       statusSource: 'usage_exhausted'
     });
   }

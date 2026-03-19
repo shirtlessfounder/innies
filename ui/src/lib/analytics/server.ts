@@ -361,10 +361,10 @@ function deriveFallbackTokenStatus(input: {
   if (rawStatus === 'maxed') {
     return {
       rawStatus,
-      compactStatus: 'maxed',
+      compactStatus: 'benched',
       expandedStatus: authSuffix.length > 0
-        ? `maxed, source: backend_maxed, ${authSuffix}`
-        : 'maxed, source: backend_maxed',
+        ? `benched, source: backend_maxed, ${authSuffix}`
+        : 'benched, source: backend_maxed',
       statusSource: 'backend_maxed',
       exclusionReason: null,
     };
@@ -376,8 +376,8 @@ function deriveFallbackTokenStatus(input: {
   ) {
     return {
       rawStatus,
-      compactStatus: 'maxed',
-      expandedStatus: 'maxed, source: cap_exhausted',
+      compactStatus: 'benched',
+      expandedStatus: 'benched, source: cap_exhausted',
       statusSource: 'cap_exhausted',
       exclusionReason: null,
     };
@@ -390,8 +390,8 @@ function deriveFallbackTokenStatus(input: {
   ) {
     return {
       rawStatus,
-      compactStatus: 'maxed',
-      expandedStatus: 'maxed, source: usage_exhausted',
+      compactStatus: 'benched',
+      expandedStatus: 'benched, source: usage_exhausted',
       statusSource: 'usage_exhausted',
       exclusionReason: null,
     };

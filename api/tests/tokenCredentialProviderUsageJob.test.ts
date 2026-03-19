@@ -1539,7 +1539,8 @@ describe('tokenCredentialProviderUsageJob', () => {
     );
   });
 
-  it('reactivates auth-failed Claude maxed credentials through the minute supervisor probe path', async () => {
+  it('reactivates auth-failed Claude maxed credentials through the provider-usage recovery path', async () => {
+    process.env.ANTHROPIC_OAUTH_USAGE_BASE_URL = 'https://anthropic.internal.test';
     const tokenRepo = {
       listActiveOauthByProvider: vi.fn(async () => []),
       clearRateLimitBackoff: vi.fn(async () => false),
@@ -1578,10 +1579,26 @@ describe('tokenCredentialProviderUsageJob', () => {
       markProbeFailure: vi.fn(async () => true)
     };
     const usageRepo = {
-      upsertSnapshot: vi.fn()
+      upsertSnapshot: vi.fn(async (input: any) => ({
+        tokenCredentialId: input.tokenCredentialId,
+        orgId: input.orgId,
+        provider: input.provider,
+        usageSource: input.usageSource,
+        fiveHourUtilizationRatio: input.fiveHourUtilizationRatio,
+        fiveHourResetsAt: input.fiveHourResetsAt,
+        sevenDayUtilizationRatio: input.sevenDayUtilizationRatio,
+        sevenDayResetsAt: input.sevenDayResetsAt,
+        rawPayload: input.rawPayload,
+        fetchedAt: input.fetchedAt,
+        createdAt: input.fetchedAt,
+        updatedAt: input.fetchedAt
+      }))
     };
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ id: 'ok' }), {
+      new Response(JSON.stringify({
+        '5h': { percent: 12, resets_at: '2026-03-04T05:00:00Z' },
+        '7d': { percent: 18, resets_at: '2026-03-09T00:00:00Z' }
+      }), {
         status: 200,
         headers: { 'content-type': 'application/json' }
       })
@@ -1592,7 +1609,9 @@ describe('tokenCredentialProviderUsageJob', () => {
     await job.run(ctx as any);
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(usageRepo.upsertSnapshot).not.toHaveBeenCalled();
+    const [targetUrl] = fetchSpy.mock.calls[0] as [URL, RequestInit];
+    expect(String(targetUrl)).toBe('https://anthropic.internal.test/api/oauth/usage');
+    expect(usageRepo.upsertSnapshot).toHaveBeenCalledTimes(1);
     expect(tokenRepo.reactivateFromMaxed).toHaveBeenCalledWith('cred_auth_maxed');
     expect(tokenRepo.markProbeFailure).not.toHaveBeenCalled();
     expect(ctx.logger.info).toHaveBeenCalledWith(
