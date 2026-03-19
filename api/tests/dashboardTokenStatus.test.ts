@@ -55,6 +55,24 @@ describe('deriveDashboardTokenStatusRow', () => {
     });
   });
 
+  it('marks active Codex usage-exhausted tokens as maxed from provider usage exhaustion', () => {
+    expect(deriveDashboardTokenStatusRow({
+      provider: 'openai',
+      rawStatus: 'active',
+      rateLimitedUntil: null,
+      fiveHourUtilizationRatio: 1,
+      fiveHourResetsAt: '2026-03-12T14:00:00.000Z',
+      providerUsageFetchedAt: '2026-03-12T12:00:00.000Z'
+    })).toEqual({
+      rawStatus: 'active',
+      compactStatus: 'maxed',
+      expandedStatus: 'maxed, source: usage_exhausted',
+      statusSource: 'usage_exhausted',
+      exclusionReason: null,
+      hidden: false
+    });
+  });
+
   it('marks cooldowns as active* with rate_limited exclusion', () => {
     expect(deriveDashboardTokenStatusRow({
       provider: 'openai',

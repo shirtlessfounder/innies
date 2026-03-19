@@ -170,15 +170,15 @@ function buildSystemSummaryTokenCountsSql(input: {
       provider_usage as (
         select
           pu.token_credential_id,
+          pu.provider,
           pu.five_hour_utilization_ratio,
           pu.seven_day_utilization_ratio
         from ${TABLES.tokenCredentialProviderUsage} pu
-        where pu.provider = 'anthropic'
       ),
       `
     : '';
   const providerUsageJoin = input.options.includeProviderUsage
-    ? 'left join provider_usage pu on pu.token_credential_id = tc.id'
+    ? 'left join provider_usage pu on pu.token_credential_id = tc.id and pu.provider = tc.provider'
     : '';
   const fiveHourReservePercent = input.options.includeReserveColumns
     ? 'coalesce(tc.five_hour_reserve_percent, 0)'
@@ -198,6 +198,17 @@ function buildSystemSummaryTokenCountsSql(input: {
               and (
                 coalesce((pu.five_hour_utilization_ratio * 100) >= (100 - ${fiveHourReservePercent}), false)
                 or coalesce((pu.seven_day_utilization_ratio * 100) >= (100 - ${sevenDayReservePercent}), false)
+              )
+            )
+            when tc.provider = 'openai'
+            then (
+              tc.status = 'maxed'
+              or (
+                pu.token_credential_id is not null
+                and (
+                  coalesce(pu.five_hour_utilization_ratio >= 1, false)
+                  or coalesce(pu.seven_day_utilization_ratio >= 1, false)
+                )
               )
             )
             else tc.status = 'maxed'
@@ -253,18 +264,18 @@ function buildTokenHealthSql(input: {
       provider_usage as (
         select
           pu.token_credential_id,
+          pu.provider,
           pu.five_hour_utilization_ratio,
           pu.five_hour_resets_at,
           pu.seven_day_utilization_ratio,
           pu.seven_day_resets_at,
           pu.fetched_at as provider_usage_fetched_at
         from ${TABLES.tokenCredentialProviderUsage} pu
-        where pu.provider = 'anthropic'
       ),
       `
     : '';
   const providerUsageJoin = input.options.includeProviderUsage
-    ? 'left join provider_usage pu on pu.token_credential_id = cb.id'
+    ? 'left join provider_usage pu on pu.token_credential_id = cb.id and pu.provider = cb.provider'
     : '';
   const providerUsageSelect = input.options.includeProviderUsage
     ? `
