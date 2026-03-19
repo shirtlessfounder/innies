@@ -122,7 +122,7 @@ describe('refreshOpenAiOauthUsageNow', () => {
     expect(outcome.rawPayload).toEqual(payload);
   });
 
-  it('normalizes primary and secondary wham windows into canonical openai snapshots', async () => {
+  it('preserves the stored codex provider when persisting wham snapshots for legacy credentials', async () => {
     const credential = createCredential({
       provider: 'codex',
       accessToken: createFakeOpenAiOauthToken({ accountId: 'acct_codex_usage_live' })
@@ -176,13 +176,13 @@ describe('refreshOpenAiOauthUsageNow', () => {
       throw new Error('expected openai usage refresh to succeed');
     }
     expect(usageRepo.upsertSnapshot).toHaveBeenCalledWith(expect.objectContaining({
-      provider: 'openai',
+      provider: 'codex',
       usageSource: 'openai_wham_usage',
       fiveHourUtilizationRatio: 0.07,
       sevenDayUtilizationRatio: 0.12,
       rawPayload: payload
     }));
-    expect(outcome.snapshot.provider).toBe('openai');
+    expect(outcome.snapshot.provider).toBe('codex');
     expect(outcome.snapshot.fiveHourResetsAt?.toISOString()).toBe(new Date(1_773_888_569 * 1000).toISOString());
     expect(outcome.snapshot.sevenDayResetsAt?.toISOString()).toBe(new Date(1_774_457_367 * 1000).toISOString());
     expect(outcome.snapshot.rawPayload).toEqual(payload);

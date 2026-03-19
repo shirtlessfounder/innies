@@ -501,7 +501,7 @@ async function fetchOpenAiOauthUsagePayload(
         snapshot: {
           tokenCredentialId: credential.id,
           orgId: credential.orgId,
-          provider: 'openai',
+          provider: credential.provider,
           usageSource: parsed.usageSource,
           fiveHourUtilizationRatio: parsed.fiveHourUtilizationRatio,
           fiveHourResetsAt: parsed.fiveHourResetsAt,
@@ -640,7 +640,7 @@ export async function refreshOpenAiOauthUsageNow(
     const snapshot = await repo.upsertSnapshot({
       tokenCredentialId: credential.id,
       orgId: credential.orgId,
-      provider: 'openai',
+      provider: credential.provider,
       usageSource: fetched.snapshot.usageSource,
       fiveHourUtilizationRatio: fetched.snapshot.fiveHourUtilizationRatio,
       fiveHourResetsAt: fetched.snapshot.fiveHourResetsAt,
