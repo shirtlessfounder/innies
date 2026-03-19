@@ -5,15 +5,18 @@ import {
 } from '../repos/tokenCredentialProviderUsageRepository.js';
 import type { JobDefinition } from './types.js';
 import {
-  type AnthropicOauthUsageRefreshOutcome,
-  anthropicOauthUsageAuthFailureStatusCode,
   evaluateClaudeContributionCap,
   isAnthropicOauthTokenCredential,
   parkAnthropicOauthCredentialAfterUsageAuthFailure,
-  providerUsageWarningReasonFromRefreshOutcome,
+  PROVIDER_USAGE_FETCH_BACKOFF_ACTIVE_REASON,
+  PROVIDER_USAGE_FETCH_FAILED_REASON,
   readTokenCredentialProviderUsagePollMs,
 } from '../services/tokenCredentialProviderUsage.js';
-import { refreshAnthropicOauthUsageWithCredentialRefresh } from '../services/tokenCredentialOauthRefresh.js';
+import {
+  refreshAnthropicOauthUsageWithCredentialRefresh,
+  refreshTokenCredentialProviderUsageWithCredentialRefresh,
+  type TokenCredentialProviderUsageRefreshOutcome
+} from '../services/tokenCredentialOauthRefresh.js';
 import { evaluateClaudeCredentialAvailability } from '../services/claudeCredentialAvailability.js';
 import {
   readClaudeContributionCapProviderExhaustionHold,
@@ -24,6 +27,7 @@ import {
   readTokenCredentialProbeIntervalMinutes,
   readTokenCredentialProbeTimeoutMs
 } from '../services/tokenCredentialProbe.js';
+import { isOpenAiOauthAccessToken } from '../utils/openaiOauth.js';
 
 const DEFAULT_RATE_LIMIT_ESCALATION_THRESHOLD = 10;
 const DEFAULT_LEGACY_MAXED_RECOVERY_LIMIT = 25;
@@ -41,6 +45,46 @@ function readIntEnv(name: string, fallback: number): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.floor(parsed);
+}
+
+function isScheduledProviderUsageCredential(
+  credential: Parameters<typeof isAnthropicOauthTokenCredential>[0]
+): boolean {
+  if (isAnthropicOauthTokenCredential(credential)) {
+    return true;
+  }
+
+  return (
+    (credential.provider === 'openai' || credential.provider === 'codex')
+    && isOpenAiOauthAccessToken(credential.accessToken)
+  );
+}
+
+function providerUsageAuthFailureStatusCode(
+  outcome: TokenCredentialProviderUsageRefreshOutcome
+): 401 | 403 | null {
+  if (outcome.ok) return null;
+  if (outcome.statusCode === 401 || outcome.statusCode === 403) {
+    return outcome.statusCode;
+  }
+  return null;
+}
+
+function providerUsageWarningReasonFromOutcome(
+  outcome: TokenCredentialProviderUsageRefreshOutcome
+): typeof PROVIDER_USAGE_FETCH_BACKOFF_ACTIVE_REASON | typeof PROVIDER_USAGE_FETCH_FAILED_REASON | null {
+  if (outcome.ok) return null;
+  if (outcome.category === 'fetch_backoff') return PROVIDER_USAGE_FETCH_BACKOFF_ACTIVE_REASON;
+  if (outcome.category === 'fetch_failed') return PROVIDER_USAGE_FETCH_FAILED_REASON;
+  return null;
+}
+
+function providerUsageLogReasonFromOutcome(outcome: TokenCredentialProviderUsageRefreshOutcome): string | null {
+  if (outcome.ok) return null;
+  if ('warningReason' in outcome) {
+    return outcome.warningReason ?? outcome.reason;
+  }
+  return outcome.reason;
 }
 
 export function createTokenCredentialProviderUsageJob(
@@ -66,9 +110,25 @@ export function createTokenCredentialProviderUsageJob(
       );
       const probeTimeoutMs = readTokenCredentialProbeTimeoutMs();
       const probeIntervalMinutes = readTokenCredentialProbeIntervalMinutes();
-      const credentials = await tokenCredentialsRepo.listActiveOauthByProvider('anthropic', {
-        includeRecoverableExpired: true
-      });
+      const credentialsById = new Map<string, Awaited<ReturnType<typeof tokenCredentialsRepo.listActiveOauthByProvider>>[number]>();
+      for (const credentialList of await Promise.all([
+        tokenCredentialsRepo.listActiveOauthByProvider('anthropic', {
+          includeRecoverableExpired: true
+        }),
+        tokenCredentialsRepo.listActiveOauthByProvider('openai', {
+          includeRecoverableExpired: true
+        }),
+        tokenCredentialsRepo.listActiveOauthByProvider('codex', {
+          includeRecoverableExpired: true
+        })
+      ])) {
+        for (const credential of credentialList) {
+          if (!credentialsById.has(credential.id)) {
+            credentialsById.set(credential.id, credential);
+          }
+        }
+      }
+      const credentials = [...credentialsById.values()];
       const existingSnapshots = typeof (providerUsageRepo as {
         listByTokenCredentialIds?: (ids: string[]) => Promise<TokenCredentialProviderUsageSnapshot[]>;
       }).listByTokenCredentialIds === 'function'
@@ -92,12 +152,12 @@ export function createTokenCredentialProviderUsageJob(
       const syncProviderUsageWarning = async (
         credentialId: string,
         credentialLabel: string | null | undefined,
-        result: AnthropicOauthUsageRefreshOutcome
+        result: TokenCredentialProviderUsageRefreshOutcome
       ): Promise<void> => {
         try {
           await tokenCredentialsRepo.setProviderUsageWarning(
             credentialId,
-            providerUsageWarningReasonFromRefreshOutcome(result)
+            providerUsageWarningReasonFromOutcome(result)
           );
         } catch (error) {
           ctx.logger.error('token credential provider usage warning sync failed', {
@@ -152,51 +212,54 @@ export function createTokenCredentialProviderUsageJob(
       };
 
       for (const credential of credentials) {
-        if (!isAnthropicOauthTokenCredential(credential)) {
+        const isAnthropicCredential = isAnthropicOauthTokenCredential(credential);
+        if (!isScheduledProviderUsageCredential(credential)) {
           skippedNonOauth += 1;
           continue;
         }
 
         const expiredAtRunStart = credential.status === 'expired' || credential.expiresAt.getTime() <= ctx.now.getTime();
         const existingSnapshot = existingSnapshotsByCredentialId.get(credential.id) ?? null;
-        const providerExhaustionHold = readClaudeContributionCapProviderExhaustionHold({
-          credential,
-          snapshot: existingSnapshot,
-          now: ctx.now
-        });
-        const snapshotFetchedAt = existingSnapshot?.fetchedAt ?? null;
-        const snapshotAgeMs = snapshotFetchedAt
-          ? Math.max(0, ctx.now.getTime() - snapshotFetchedAt.getTime())
-          : null;
-        const recentlyVerifiedExhausted = snapshotAgeMs !== null && snapshotAgeMs < providerExhaustionRevalidateMs;
-        if (
-          !expiredAtRunStart
-          &&
-          providerExhaustionHold.hasActiveHold
-          && providerExhaustionHold.nextRefreshAt
-          && recentlyVerifiedExhausted
-        ) {
-          paused += 1;
-          await tokenCredentialsRepo.setProviderUsageWarning(credential.id, null);
-          ctx.logger.info('token credential provider usage refresh paused (provider exhausted)', {
-            credentialId: credential.id,
-            credentialLabel: credential.debugLabel ?? null,
-            provider: credential.provider,
-            reason: providerExhaustionHold.reason,
-            nextRefreshAt: providerExhaustionHold.nextRefreshAt.toISOString(),
-            snapshotAgeMs
+        if (isAnthropicCredential) {
+          const providerExhaustionHold = readClaudeContributionCapProviderExhaustionHold({
+            credential,
+            snapshot: existingSnapshot,
+            now: ctx.now
           });
-          continue;
+          const snapshotFetchedAt = existingSnapshot?.fetchedAt ?? null;
+          const snapshotAgeMs = snapshotFetchedAt
+            ? Math.max(0, ctx.now.getTime() - snapshotFetchedAt.getTime())
+            : null;
+          const recentlyVerifiedExhausted = snapshotAgeMs !== null && snapshotAgeMs < providerExhaustionRevalidateMs;
+          if (
+            !expiredAtRunStart
+            &&
+            providerExhaustionHold.hasActiveHold
+            && providerExhaustionHold.nextRefreshAt
+            && recentlyVerifiedExhausted
+          ) {
+            paused += 1;
+            await tokenCredentialsRepo.setProviderUsageWarning(credential.id, null);
+            ctx.logger.info('token credential provider usage refresh paused (provider exhausted)', {
+              credentialId: credential.id,
+              credentialLabel: credential.debugLabel ?? null,
+              provider: credential.provider,
+              reason: providerExhaustionHold.reason,
+              nextRefreshAt: providerExhaustionHold.nextRefreshAt.toISOString(),
+              snapshotAgeMs
+            });
+            continue;
+          }
         }
 
-        const refreshedUsage = await refreshAnthropicOauthUsageWithCredentialRefresh(
+        const refreshedUsage = await refreshTokenCredentialProviderUsageWithCredentialRefresh(
           providerUsageRepo,
           tokenCredentialsRepo,
           credential
         );
         const credentialForUsage = refreshedUsage.credential;
         const result = refreshedUsage.outcome;
-        const authFailureStatusCode = anthropicOauthUsageAuthFailureStatusCode(result);
+        const authFailureStatusCode = providerUsageAuthFailureStatusCode(result);
         if (authFailureStatusCode !== null) {
           if (expiredAtRunStart) {
             await tokenCredentialsRepo.markExpired(
@@ -233,13 +296,14 @@ export function createTokenCredentialProviderUsageJob(
         }
         await syncProviderUsageWarning(credentialForUsage.id, credentialForUsage.debugLabel, result);
         if (!result.ok) {
+          const logReason = providerUsageLogReasonFromOutcome(result);
           if (result.category === 'fetch_backoff') {
             deferred += 1;
             ctx.logger.info('token credential provider usage refresh deferred', {
               credentialId: credentialForUsage.id,
               credentialLabel: credentialForUsage.debugLabel ?? null,
               provider: credentialForUsage.provider,
-              reason: result.warningReason ?? result.reason,
+              reason: logReason ?? result.reason,
               detailReason: result.reason,
               statusCode: result.statusCode,
               retryAfterMs: result.retryAfterMs ?? null
@@ -250,10 +314,10 @@ export function createTokenCredentialProviderUsageJob(
               credentialId: credentialForUsage.id,
               credentialLabel: credentialForUsage.debugLabel ?? null,
               provider: credentialForUsage.provider,
-              reason: result.warningReason ?? result.reason,
+              reason: logReason ?? result.reason,
               detailReason: result.reason,
               statusCode: result.statusCode,
-              retryAfterMs: result.retryAfterMs ?? null,
+              retryAfterMs: result.category === 'fetch_backoff' ? result.retryAfterMs ?? null : null,
               errorMessage: result.errorMessage ?? null
             });
           }
@@ -261,6 +325,10 @@ export function createTokenCredentialProviderUsageJob(
         }
 
         refreshed += 1;
+        if (!isAnthropicCredential) {
+          continue;
+        }
+
         await syncContributionCapLifecycle(credentialForUsage, result.snapshot);
 
         const evaluation = evaluateClaudeContributionCap({
@@ -343,7 +411,7 @@ export function createTokenCredentialProviderUsageJob(
         );
         const credentialForUsage = refreshedUsage.credential;
         const result = refreshedUsage.outcome;
-        const authFailureStatusCode = anthropicOauthUsageAuthFailureStatusCode(result);
+        const authFailureStatusCode = providerUsageAuthFailureStatusCode(result);
         if (authFailureStatusCode !== null) {
           const nextProbeAt = new Date(ctx.now.getTime() + (probeIntervalMinutes * 60 * 1000));
           await parkAnthropicOauthCredentialAfterUsageAuthFailure(tokenCredentialsRepo, credentialForUsage, {
