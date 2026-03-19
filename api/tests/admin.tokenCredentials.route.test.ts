@@ -1881,7 +1881,7 @@ describe('admin token credential routes idempotent replay', () => {
     expect(refreshSpy).not.toHaveBeenCalled();
   });
 
-  it('rejects manual provider usage refresh for non-Claude OAuth credentials', async () => {
+  it('allows provider usage refresh for active OpenAI/Codex OAuth credentials', async () => {
     vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
       replay: false,
       input: {
@@ -1896,11 +1896,60 @@ describe('admin token credential routes idempotent replay', () => {
       orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
       provider: 'openai',
       authScheme: 'bearer',
-      accessToken: 'openai-live-token',
+      accessToken: makeOpenAiOauthToken('2026-03-20T15:49:35.000Z'),
+      refreshToken: 'rt_codex_live',
       debugLabel: 'niyant-codex',
       status: 'active',
       expiresAt: new Date('2026-03-20T00:00:00.000Z')
     } as any);
+    const refreshSpy = vi.spyOn(oauthRefreshModule, 'refreshTokenCredentialProviderUsageWithCredentialRefresh').mockResolvedValue({
+      credential: {
+        id: '11111111-1111-4111-8111-111111111111',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: makeOpenAiOauthToken('2026-03-20T15:49:35.000Z'),
+        refreshToken: 'rt_codex_live',
+        debugLabel: 'niyant-codex',
+        status: 'active',
+        expiresAt: new Date('2026-03-20T00:00:00.000Z')
+      },
+      refreshedCredential: null,
+      outcome: {
+        ok: true,
+        rawPayload: {
+          rate_limit: {
+            primary_window: { used_percent: 36, reset_at: 1773655200 },
+            secondary_window: { used_percent: 72, reset_at: 1774112400 }
+          }
+        },
+        snapshot: {
+          tokenCredentialId: '11111111-1111-4111-8111-111111111111',
+          orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+          provider: 'openai',
+          usageSource: 'openai_wham_usage',
+          fiveHourUtilizationRatio: 0.36,
+          fiveHourResetsAt: new Date('2026-03-14T10:00:00.000Z'),
+          sevenDayUtilizationRatio: 0.72,
+          sevenDayResetsAt: new Date('2026-03-19T17:00:00.000Z'),
+          rawPayload: {
+            rate_limit: {
+              primary_window: { used_percent: 36, reset_at: 1773655200 },
+              secondary_window: { used_percent: 72, reset_at: 1774112400 }
+            }
+          },
+          fetchedAt: new Date('2026-03-14T09:45:00.000Z'),
+          createdAt: new Date('2026-03-14T09:45:00.000Z'),
+          updatedAt: new Date('2026-03-14T09:45:00.000Z')
+        }
+      }
+    } as any);
+    const setWarningSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'setProviderUsageWarning').mockResolvedValue(false);
+    const lifecycleSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'syncClaudeContributionCapLifecycle').mockResolvedValue({
+      fiveHourTransition: null,
+      sevenDayTransition: null
+    } as any);
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
 
     const req = createMockReq({
       method: 'POST',
@@ -1917,9 +1966,341 @@ describe('admin token credential routes idempotent replay', () => {
     await invoke(providerUsageRefreshHandlers[0], req, res);
     await invoke(providerUsageRefreshHandlers[1], req, res);
 
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any)).toEqual({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      provider: 'openai',
+      debugLabel: 'niyant-codex',
+      status: 'active',
+      refreshOk: true,
+      upstreamStatus: 200,
+      reason: 'ok',
+      category: null,
+      warningReason: null,
+      nextProbeAt: null,
+      retryAfterMs: null,
+      errorMessage: null,
+      reserve: null,
+      snapshot: {
+        usageSource: 'openai_wham_usage',
+        fetchedAt: '2026-03-14T09:45:00.000Z',
+        fiveHourUtilizationRatio: 0.36,
+        fiveHourUsedPercent: 36,
+        fiveHourResetsAt: '2026-03-14T10:00:00.000Z',
+        fiveHourContributionCapExhausted: null,
+        fiveHourProviderUsageExhausted: false,
+        sevenDayUtilizationRatio: 0.72,
+        sevenDayUsedPercent: 72,
+        sevenDayResetsAt: '2026-03-19T17:00:00.000Z',
+        sevenDayContributionCapExhausted: null,
+        sevenDayProviderUsageExhausted: false
+      },
+      lifecycle: null,
+      rawPayload: {
+        rate_limit: {
+          primary_window: { used_percent: 36, reset_at: 1773655200 },
+          secondary_window: { used_percent: 72, reset_at: 1774112400 }
+        }
+      },
+      stateSyncErrors: []
+    });
+    expect(refreshSpy).toHaveBeenCalledWith(
+      runtimeModule.runtime.repos.tokenCredentialProviderUsage,
+      runtimeModule.runtime.repos.tokenCredentials,
+      expect.objectContaining({
+        id: '11111111-1111-4111-8111-111111111111',
+        provider: 'openai',
+        debugLabel: 'niyant-codex'
+      }),
+      { ignoreRetryBackoff: true }
+    );
+    expect(setWarningSpy).not.toHaveBeenCalled();
+    expect(lifecycleSpy).not.toHaveBeenCalled();
+    expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects unsupported OpenAI/Codex provider usage refresh credentials before building a success envelope', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_provider_usage_refresh_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123467',
+        requestHash: 'provider_usage_refresh_h_8'
+      }
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: 'not-an-openai-oauth-session-token',
+      refreshToken: 'rt_codex_live',
+      debugLabel: 'unsupported-openai',
+      status: 'active',
+      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+    } as any);
+    const refreshSpy = vi.spyOn(oauthRefreshModule, 'refreshTokenCredentialProviderUsageWithCredentialRefresh');
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/provider-usage-refresh',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123467'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const res = createMockRes();
+
+    await invoke(providerUsageRefreshHandlers[0], req, res);
+    await invoke(providerUsageRefreshHandlers[1], req, res);
+
     expect(res.statusCode).toBe(409);
-    expect((res.body as any).code).toBe('invalid_request');
-    expect(String((res.body as any).message)).toContain('Anthropic OAuth credentials');
-    expect(providerUsageModule.refreshAnthropicOauthUsageNow).not.toHaveBeenCalled();
+    expect((res.body as any)).toEqual(expect.objectContaining({
+      code: 'invalid_request',
+      details: expect.objectContaining({
+        provider: 'openai',
+        status: 'active'
+      })
+    }));
+    expect(String((res.body as any).message)).toContain('OpenAI/Codex OAuth or session credentials');
+    expect((res.body as any).ok).toBeUndefined();
+    expect(refreshSpy).not.toHaveBeenCalled();
+  });
+
+  it('parks active OpenAI/Codex OAuth credentials on provider usage auth failure and returns the next probe time', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_provider_usage_refresh_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123465',
+        requestHash: 'provider_usage_refresh_h_6'
+      }
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: makeOpenAiOauthToken('2026-03-20T15:49:35.000Z'),
+      refreshToken: 'rt_codex_live',
+      debugLabel: 'niyant-codex',
+      status: 'active',
+      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+    } as any);
+    vi.spyOn(oauthRefreshModule, 'refreshTokenCredentialProviderUsageWithCredentialRefresh').mockResolvedValue({
+      credential: {
+        id: '11111111-1111-4111-8111-111111111111',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: makeOpenAiOauthToken('2026-03-20T15:49:35.000Z'),
+        refreshToken: 'rt_codex_live',
+        debugLabel: 'niyant-codex',
+        status: 'active',
+        expiresAt: new Date('2026-03-20T00:00:00.000Z')
+      },
+      refreshedCredential: null,
+      outcome: {
+        ok: false,
+        reason: 'status_401',
+        statusCode: 401,
+        category: 'fetch_failed',
+        rawPayload: {
+          error: {
+            message: 'OAuth token expired'
+          }
+        }
+      }
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'recordFailureAndMaybeMax').mockResolvedValue({
+      status: 'maxed',
+      consecutiveFailures: 1,
+      newlyMaxed: true
+    } as any);
+    const setWarningSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'setProviderUsageWarning').mockResolvedValue(false);
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/provider-usage-refresh',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123465'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const res = createMockRes();
+
+    await invoke(providerUsageRefreshHandlers[0], req, res);
+    await invoke(providerUsageRefreshHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any)).toEqual(expect.objectContaining({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      provider: 'openai',
+      debugLabel: 'niyant-codex',
+      status: 'maxed',
+      refreshOk: false,
+      upstreamStatus: 401,
+      reason: 'status_401',
+      category: 'fetch_failed',
+      warningReason: null,
+      nextProbeAt: expect.any(String),
+      retryAfterMs: null,
+      errorMessage: null,
+      reserve: null,
+      snapshot: null,
+      lifecycle: null,
+      rawPayload: {
+        error: {
+          message: 'OAuth token expired'
+        }
+      }
+    }));
+    expect(runtimeModule.runtime.repos.tokenCredentials.recordFailureAndMaybeMax).toHaveBeenCalledWith(expect.objectContaining({
+      id: '11111111-1111-4111-8111-111111111111',
+      statusCode: 401,
+      threshold: 1,
+      reason: 'upstream_401_provider_usage_refresh'
+    }));
+    expect(setWarningSpy).not.toHaveBeenCalled();
+    expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows provider usage refresh to recover an expired OpenAI/Codex credential when a refresh token is stored', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_provider_usage_refresh_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123466',
+        requestHash: 'provider_usage_refresh_h_7'
+      }
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: makeOpenAiOauthToken('2026-03-14T10:10:41.407Z'),
+      refreshToken: 'rt_codex_old',
+      debugLabel: 'niyant-codex',
+      status: 'active',
+      expiresAt: new Date('2026-03-14T10:10:41.407Z')
+    } as any);
+    const refreshSpy = vi.spyOn(oauthRefreshModule, 'refreshTokenCredentialProviderUsageWithCredentialRefresh').mockResolvedValue({
+      credential: {
+        id: '11111111-1111-4111-8111-111111111111',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: makeOpenAiOauthToken('2026-03-14T15:10:41.407Z'),
+        refreshToken: 'rt_codex_new',
+        debugLabel: 'niyant-codex',
+        status: 'active',
+        expiresAt: new Date('2026-03-14T15:10:41.407Z')
+      },
+      refreshedCredential: {
+        id: '11111111-1111-4111-8111-111111111111',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: makeOpenAiOauthToken('2026-03-14T15:10:41.407Z'),
+        refreshToken: 'rt_codex_new',
+        debugLabel: 'niyant-codex',
+        status: 'active',
+        expiresAt: new Date('2026-03-14T15:10:41.407Z')
+      },
+      outcome: {
+        ok: true,
+        rawPayload: {
+          rate_limit: {
+            primary_window: { used_percent: 0, reset_at: 1773655200 },
+            secondary_window: { used_percent: 18, reset_at: 1774112400 }
+          }
+        },
+        snapshot: {
+          tokenCredentialId: '11111111-1111-4111-8111-111111111111',
+          orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+          provider: 'openai',
+          usageSource: 'openai_wham_usage',
+          fiveHourUtilizationRatio: 0,
+          fiveHourResetsAt: new Date('2026-03-14T10:00:00.000Z'),
+          sevenDayUtilizationRatio: 0.18,
+          sevenDayResetsAt: new Date('2026-03-19T17:00:00.000Z'),
+          rawPayload: {
+            rate_limit: {
+              primary_window: { used_percent: 0, reset_at: 1773655200 },
+              secondary_window: { used_percent: 18, reset_at: 1774112400 }
+            }
+          },
+          fetchedAt: new Date('2026-03-14T12:50:00.000Z'),
+          createdAt: new Date('2026-03-14T12:50:00.000Z'),
+          updatedAt: new Date('2026-03-14T12:50:00.000Z')
+        }
+      }
+    } as any);
+    const setWarningSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'setProviderUsageWarning').mockResolvedValue(false);
+    const lifecycleSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'syncClaudeContributionCapLifecycle').mockResolvedValue({
+      fiveHourTransition: null,
+      sevenDayTransition: null
+    } as any);
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/provider-usage-refresh',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123466'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const res = createMockRes();
+
+    await invoke(providerUsageRefreshHandlers[0], req, res);
+    await invoke(providerUsageRefreshHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any)).toEqual(expect.objectContaining({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      provider: 'openai',
+      debugLabel: 'niyant-codex',
+      status: 'active',
+      refreshOk: true,
+      upstreamStatus: 200,
+      reason: 'ok',
+      nextProbeAt: null,
+      reserve: null,
+      snapshot: expect.objectContaining({
+        fiveHourUsedPercent: 0,
+        sevenDayUsedPercent: 18,
+        fiveHourContributionCapExhausted: null,
+        sevenDayContributionCapExhausted: null
+      }),
+      lifecycle: null
+    }));
+    expect(refreshSpy).toHaveBeenCalledWith(
+      runtimeModule.runtime.repos.tokenCredentialProviderUsage,
+      runtimeModule.runtime.repos.tokenCredentials,
+      expect.objectContaining({
+        id: '11111111-1111-4111-8111-111111111111',
+        provider: 'openai',
+        debugLabel: 'niyant-codex'
+      }),
+      { ignoreRetryBackoff: true }
+    );
+    expect(setWarningSpy).not.toHaveBeenCalled();
+    expect(lifecycleSpy).not.toHaveBeenCalled();
+    expect(commitSpy).toHaveBeenCalledTimes(1);
   });
 });

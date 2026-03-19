@@ -4,6 +4,7 @@ import { Router, type Response } from 'express';
 import { z } from 'zod';
 import { requireApiKey } from '../middleware/auth.js';
 import type { TokenCredential } from '../repos/tokenCredentialRepository.js';
+import type { TokenCredentialProviderUsageSnapshot } from '../repos/tokenCredentialProviderUsageRepository.js';
 import { runtime } from '../services/runtime.js';
 import type { IdempotencySession } from '../services/idempotencyService.js';
 import { AppError } from '../utils/errors.js';
@@ -38,7 +39,10 @@ import {
   providerUsageWarningReasonFromRefreshOutcome,
   readTokenCredentialRateLimitLongBackoffMinutes
 } from '../services/tokenCredentialProviderUsage.js';
-import { readClaudeContributionCapSnapshotState } from '../services/claudeContributionCapState.js';
+import {
+  readClaudeContributionCapSnapshotState,
+  readClaudeProviderUsageExhaustionHoldState
+} from '../services/claudeContributionCapState.js';
 import {
   attemptTokenCredentialRefresh,
   refreshAnthropicOauthUsageWithCredentialRefresh
@@ -160,6 +164,79 @@ function findUniqueBuyerLabelMatchedCredentialId(
 
 function isProviderUsageWindowExhausted(utilizationRatio: unknown): boolean {
   return typeof utilizationRatio === 'number' && utilizationRatio >= 1;
+}
+
+function evaluateOpenAiProviderUsageEligibility(input: {
+  credential: TokenCredential;
+  snapshot: TokenCredentialProviderUsageSnapshot | null;
+  now?: Date;
+}): {
+  inScope: boolean;
+  eligible: boolean;
+  exclusionReason: 'usage_exhausted_5h' | 'usage_exhausted_7d' | null;
+  routeDecisionMeta: Record<string, unknown>;
+} {
+  const inScope = canonicalizeProvider(input.credential.provider) === 'openai';
+  if (!inScope) {
+    return {
+      inScope,
+      eligible: true,
+      exclusionReason: null,
+      routeDecisionMeta: {
+        openaiProviderUsageInScope: false
+      }
+    };
+  }
+
+  if (!input.snapshot) {
+    return {
+      inScope,
+      eligible: true,
+      exclusionReason: null,
+      routeDecisionMeta: {
+        openaiProviderUsageInScope: true,
+        providerUsageSnapshotState: 'missing',
+        providerUsageFetchedAt: null,
+        fiveHourUtilizationRatio: null,
+        fiveHourResetsAt: null,
+        fiveHourProviderUsageExhausted: false,
+        sevenDayUtilizationRatio: null,
+        sevenDayResetsAt: null,
+        sevenDayProviderUsageExhausted: false,
+        providerUsageExhaustionReason: null,
+        providerUsageExhaustionHoldActive: false,
+        providerUsageExhaustionHoldUntil: null
+      }
+    };
+  }
+
+  const exhaustionHold = readClaudeProviderUsageExhaustionHoldState({
+    fiveHourUtilizationRatio: input.snapshot.fiveHourUtilizationRatio,
+    fiveHourResetsAt: input.snapshot.fiveHourResetsAt,
+    sevenDayUtilizationRatio: input.snapshot.sevenDayUtilizationRatio,
+    sevenDayResetsAt: input.snapshot.sevenDayResetsAt,
+    now: input.now
+  });
+
+  return {
+    inScope,
+    eligible: !exhaustionHold.hasActiveHold,
+    exclusionReason: exhaustionHold.reason,
+    routeDecisionMeta: {
+      openaiProviderUsageInScope: true,
+      providerUsageSnapshotState: 'fresh',
+      providerUsageFetchedAt: input.snapshot.fetchedAt.toISOString(),
+      fiveHourUtilizationRatio: input.snapshot.fiveHourUtilizationRatio,
+      fiveHourResetsAt: input.snapshot.fiveHourResetsAt?.toISOString() ?? null,
+      fiveHourProviderUsageExhausted: exhaustionHold.fiveHourProviderUsageExhausted,
+      sevenDayUtilizationRatio: input.snapshot.sevenDayUtilizationRatio,
+      sevenDayResetsAt: input.snapshot.sevenDayResetsAt?.toISOString() ?? null,
+      sevenDayProviderUsageExhausted: exhaustionHold.sevenDayProviderUsageExhausted,
+      providerUsageExhaustionReason: exhaustionHold.reason,
+      providerUsageExhaustionHoldActive: exhaustionHold.hasActiveHold,
+      providerUsageExhaustionHoldUntil: exhaustionHold.nextRefreshAt?.toISOString() ?? null
+    }
+  };
 }
 
 function buildRequestId(headerValue: string | undefined): string {
@@ -881,22 +958,25 @@ async function resolveEligibleTokenCredentials(input: {
   credentials: TokenCredential[];
   providerUsageRouteMeta: Map<string, Record<string, unknown>>;
   providerUsageExcludedReasonCounts: Record<string, number>;
+  providerUsageExcludedRouteMeta: Record<string, Record<string, unknown>>;
 }> {
+  const canonicalProvider = canonicalizeProvider(input.provider);
   const seededCredentials = orderCredentialsForRequest(
     await runtime.repos.tokenCredentials.listActiveForRouting(input.orgId, input.provider),
     input.requestId
   );
-  const buyerLabelMatchedCredentialId = canonicalizeProvider(input.provider) === 'anthropic'
+  const buyerLabelMatchedCredentialId = canonicalProvider === 'anthropic'
     ? findUniqueBuyerLabelMatchedCredentialId(seededCredentials, input.buyerKeyLabel)
     : null;
   const orderedCredentials = seededCredentials;
 
   const providerUsageRouteMeta = new Map<string, Record<string, unknown>>();
-  if (canonicalizeProvider(input.provider) !== 'anthropic' || orderedCredentials.length === 0) {
+  if ((canonicalProvider !== 'anthropic' && canonicalProvider !== 'openai') || orderedCredentials.length === 0) {
     return {
       credentials: orderedCredentials,
       providerUsageRouteMeta,
-      providerUsageExcludedReasonCounts: {}
+      providerUsageExcludedReasonCounts: {},
+      providerUsageExcludedRouteMeta: {}
     };
   }
 
@@ -906,9 +986,29 @@ async function resolveEligibleTokenCredentials(input: {
   const snapshotsByCredentialId = new Map(snapshots.map((snapshot) => [snapshot.tokenCredentialId, snapshot]));
   const eligibleCredentials: TokenCredential[] = [];
   const providerUsageExcludedReasonCounts: Record<string, number> = {};
+  const providerUsageExcludedRouteMeta: Record<string, Record<string, unknown>> = {};
   const rateLimitEscalationThreshold = tokenCredentialRateLimitThreshold();
 
   for (const credential of orderedCredentials) {
+    if (canonicalProvider === 'openai') {
+      const evaluation = evaluateOpenAiProviderUsageEligibility({
+        credential,
+        snapshot: snapshotsByCredentialId.get(credential.id) ?? null
+      });
+      if (evaluation.inScope) {
+        providerUsageRouteMeta.set(credential.id, evaluation.routeDecisionMeta);
+      }
+      if (!evaluation.eligible) {
+        const reason = evaluation.exclusionReason ?? 'provider_usage_unknown';
+        providerUsageExcludedReasonCounts[reason] = (providerUsageExcludedReasonCounts[reason] ?? 0) + 1;
+        providerUsageExcludedRouteMeta[credential.id] = evaluation.routeDecisionMeta;
+        continue;
+      }
+
+      eligibleCredentials.push(credential);
+      continue;
+    }
+
     const evaluation = evaluateClaudeContributionCap({
       credential,
       snapshot: snapshotsByCredentialId.get(credential.id) ?? null
@@ -941,6 +1041,9 @@ async function resolveEligibleTokenCredentials(input: {
     if (!evaluation.eligible && !buyerLabelAffinityBypassApplied) {
       const reason = evaluation.exclusionReason ?? 'provider_usage_unknown';
       providerUsageExcludedReasonCounts[reason] = (providerUsageExcludedReasonCounts[reason] ?? 0) + 1;
+      if (providerUsageRouteMeta.has(credential.id)) {
+        providerUsageExcludedRouteMeta[credential.id] = providerUsageRouteMeta.get(credential.id) as Record<string, unknown>;
+      }
       continue;
     }
 
@@ -948,6 +1051,9 @@ async function resolveEligibleTokenCredentials(input: {
       providerUsageExcludedReasonCounts[CLAUDE_REPEATED_429_LOCAL_BACKOFF_REASON] = (
         providerUsageExcludedReasonCounts[CLAUDE_REPEATED_429_LOCAL_BACKOFF_REASON] ?? 0
       ) + 1;
+      if (providerUsageRouteMeta.has(credential.id)) {
+        providerUsageExcludedRouteMeta[credential.id] = providerUsageRouteMeta.get(credential.id) as Record<string, unknown>;
+      }
       continue;
     }
 
@@ -957,7 +1063,8 @@ async function resolveEligibleTokenCredentials(input: {
   return {
     credentials: eligibleCredentials,
     providerUsageRouteMeta,
-    providerUsageExcludedReasonCounts
+    providerUsageExcludedReasonCounts,
+    providerUsageExcludedRouteMeta
   };
 }
 
@@ -2017,7 +2124,8 @@ async function executeTokenModeNonStreaming(input: {
   const {
     credentials,
     providerUsageRouteMeta,
-    providerUsageExcludedReasonCounts
+    providerUsageExcludedReasonCounts,
+    providerUsageExcludedRouteMeta
   } = await resolveEligibleTokenCredentials({
     orgId,
     provider,
@@ -2030,6 +2138,9 @@ async function executeTokenModeNonStreaming(input: {
       model,
       providerUsageExcludedReasonCounts: Object.keys(providerUsageExcludedReasonCounts).length > 0
         ? providerUsageExcludedReasonCounts
+        : undefined,
+      providerUsageExcludedRouteMeta: Object.keys(providerUsageExcludedRouteMeta).length > 0
+        ? providerUsageExcludedRouteMeta
         : undefined
     });
   }
@@ -2690,7 +2801,8 @@ async function executeTokenModeStreaming(input: {
   const {
     credentials,
     providerUsageRouteMeta,
-    providerUsageExcludedReasonCounts
+    providerUsageExcludedReasonCounts,
+    providerUsageExcludedRouteMeta
   } = await resolveEligibleTokenCredentials({
     orgId,
     provider,
@@ -2703,6 +2815,9 @@ async function executeTokenModeStreaming(input: {
       model,
       providerUsageExcludedReasonCounts: Object.keys(providerUsageExcludedReasonCounts).length > 0
         ? providerUsageExcludedReasonCounts
+        : undefined,
+      providerUsageExcludedRouteMeta: Object.keys(providerUsageExcludedRouteMeta).length > 0
+        ? providerUsageExcludedRouteMeta
         : undefined
     });
   }

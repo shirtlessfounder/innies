@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTokenCredentialProviderUsageJob } from '../src/jobs/tokenCredentialProviderUsageJob.js';
+import type { TokenCredential } from '../src/repos/tokenCredentialRepository.js';
 import { resetAnthropicUsageRetryStateForTests } from '../src/services/tokenCredentialProviderUsageRetryState.js';
 
 function createCtx() {
@@ -9,6 +10,57 @@ function createCtx() {
       info: vi.fn(),
       error: vi.fn()
     }
+  };
+}
+
+function createFakeOpenAiOauthToken(input?: {
+  accountId?: string;
+  clientId?: string;
+  exp?: number;
+}): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({
+    iss: 'https://auth.openai.com',
+    aud: ['https://api.openai.com/v1'],
+    client_id: input?.clientId ?? 'app_test_codex',
+    exp: input?.exp ?? Math.floor(Date.now() / 1000) + 3600,
+    'https://api.openai.com/auth': {
+      chatgpt_account_id: input?.accountId ?? 'acct_codex_usage'
+    }
+  })).toString('base64url');
+  return `${header}.${payload}.signature`;
+}
+
+function createOpenAiCredential(overrides?: Partial<TokenCredential>): TokenCredential {
+  return {
+    id: 'cred_openai_job',
+    orgId: 'org_1',
+    provider: 'openai',
+    authScheme: 'bearer',
+    accessToken: createFakeOpenAiOauthToken(),
+    refreshToken: null,
+    expiresAt: new Date('2026-03-10T00:00:00Z'),
+    status: 'active',
+    rotationVersion: 1,
+    createdAt: new Date('2026-03-01T00:00:00Z'),
+    updatedAt: new Date('2026-03-01T00:00:00Z'),
+    revokedAt: null,
+    monthlyContributionLimitUnits: null,
+    monthlyContributionUsedUnits: 0,
+    monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z'),
+    fiveHourReservePercent: 0,
+    sevenDayReservePercent: 0,
+    debugLabel: 'codex-oauth-main',
+    consecutiveFailureCount: 0,
+    consecutiveRateLimitCount: 0,
+    lastFailedStatus: null,
+    lastFailedAt: null,
+    lastRateLimitedAt: null,
+    maxedAt: null,
+    rateLimitedUntil: null,
+    nextProbeAt: null,
+    lastProbeAt: null,
+    ...overrides
   };
 }
 
@@ -355,6 +407,264 @@ describe('tokenCredentialProviderUsageJob', () => {
       })
     );
     expect(tokenRepo.setProviderUsageWarning).toHaveBeenCalledWith('cred_2', 'provider_usage_fetch_failed');
+  });
+
+  it('refreshes scheduled OpenAI session credentials alongside Anthropic ones', async () => {
+    const tokenRepo = {
+      listActiveOauthByProvider: vi.fn(async (provider: string) => {
+        if (provider === 'openai') {
+          return [createOpenAiCredential({
+            id: 'cred_openai_success',
+            debugLabel: 'codex-live-session'
+          })];
+        }
+        return [];
+      }),
+      clearRateLimitBackoff: vi.fn(async () => false),
+      setProviderUsageWarning: vi.fn(async () => false),
+      listMaxedForProbe: vi.fn(async () => []),
+      syncClaudeContributionCapLifecycle: vi.fn(async () => ({ fiveHourTransition: null, sevenDayTransition: null })),
+      reactivateFromMaxed: vi.fn(async () => false)
+    };
+    const usageRepo = {
+      upsertSnapshot: vi.fn(async (input: any) => ({
+        tokenCredentialId: input.tokenCredentialId,
+        orgId: input.orgId,
+        provider: input.provider,
+        usageSource: input.usageSource,
+        fiveHourUtilizationRatio: input.fiveHourUtilizationRatio,
+        fiveHourResetsAt: input.fiveHourResetsAt,
+        sevenDayUtilizationRatio: input.sevenDayUtilizationRatio,
+        sevenDayResetsAt: input.sevenDayResetsAt,
+        rawPayload: input.rawPayload,
+        fetchedAt: input.fetchedAt,
+        createdAt: input.fetchedAt,
+        updatedAt: input.fetchedAt
+      }))
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        rate_limit: {
+          primary_window: {
+            used_percent: 7,
+            reset_at: 1_773_888_569
+          },
+          secondary_window: {
+            used_percent: 12,
+            reset_at: 1_774_457_367
+          }
+        }
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const job = createTokenCredentialProviderUsageJob(tokenRepo as any, usageRepo as any);
+    const ctx = createCtx();
+
+    await job.run(ctx as any);
+
+    expect(tokenRepo.listActiveOauthByProvider).toHaveBeenCalledWith('anthropic', {
+      includeRecoverableExpired: true
+    });
+    expect(tokenRepo.listActiveOauthByProvider).toHaveBeenCalledWith('openai', {
+      includeRecoverableExpired: true
+    });
+    expect(tokenRepo.listActiveOauthByProvider).toHaveBeenCalledWith('codex', {
+      includeRecoverableExpired: true
+    });
+    expect(usageRepo.upsertSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      tokenCredentialId: 'cred_openai_success',
+      provider: 'openai',
+      usageSource: 'openai_wham_usage'
+    }));
+    expect(tokenRepo.syncClaudeContributionCapLifecycle).not.toHaveBeenCalled();
+    expect(ctx.logger.info).toHaveBeenCalledWith(
+      'token credential provider usage refresh complete',
+      expect.objectContaining({
+        checked: 1,
+        refreshed: 1,
+        failed: 0
+      })
+    );
+  });
+
+  it('parks active Codex credentials when provider usage refresh returns auth failure', async () => {
+    const tokenRepo = {
+      listActiveOauthByProvider: vi.fn(async (provider: string) => {
+        if (provider === 'codex') {
+          return [createOpenAiCredential({
+            id: 'cred_codex_auth_fail',
+            provider: 'codex',
+            debugLabel: 'codex-auth-fail'
+          })];
+        }
+        return [];
+      }),
+      recordFailureAndMaybeMax: vi.fn(async () => ({
+        status: 'maxed',
+        consecutiveFailures: 1,
+        newlyMaxed: true
+      })),
+      markProbeFailure: vi.fn(async () => false),
+      clearRateLimitBackoff: vi.fn(async () => false),
+      setProviderUsageWarning: vi.fn(async () => false),
+      listMaxedForProbe: vi.fn(async () => []),
+      syncClaudeContributionCapLifecycle: vi.fn(async () => ({ fiveHourTransition: null, sevenDayTransition: null })),
+      reactivateFromMaxed: vi.fn(async () => false)
+    };
+    const usageRepo = {
+      upsertSnapshot: vi.fn()
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'forbidden' }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const job = createTokenCredentialProviderUsageJob(tokenRepo as any, usageRepo as any);
+    const ctx = createCtx();
+
+    await job.run(ctx as any);
+
+    expect(tokenRepo.recordFailureAndMaybeMax).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'cred_codex_auth_fail',
+      statusCode: 403,
+      threshold: 1,
+      reason: 'upstream_403_provider_usage_refresh'
+    }));
+    expect(tokenRepo.markProbeFailure).not.toHaveBeenCalled();
+    expect(tokenRepo.setProviderUsageWarning).not.toHaveBeenCalled();
+    expect(tokenRepo.syncClaudeContributionCapLifecycle).not.toHaveBeenCalled();
+    expect(ctx.logger.info).toHaveBeenCalledWith(
+      'token credential provider usage auth failure parked',
+      expect.objectContaining({
+        credentialId: 'cred_codex_auth_fail',
+        credentialLabel: 'codex-auth-fail',
+        provider: 'codex',
+        statusCode: 403
+      })
+    );
+  });
+
+  it('refreshes expired Codex credentials before retrying provider usage', async () => {
+    const oldAccessToken = createFakeOpenAiOauthToken({
+      clientId: 'app_codex_old',
+      accountId: 'acct_codex_old',
+      exp: Math.floor(new Date('2026-03-03T23:00:00Z').getTime() / 1000)
+    });
+    const refreshedAccessToken = createFakeOpenAiOauthToken({
+      clientId: 'app_codex_old',
+      accountId: 'acct_codex_new',
+      exp: Math.floor(new Date('2026-03-10T01:00:00Z').getTime() / 1000)
+    });
+    const tokenRepo = {
+      listActiveOauthByProvider: vi.fn(async (provider: string) => {
+        if (provider === 'codex') {
+          return [createOpenAiCredential({
+            id: 'cred_codex_refresh',
+            provider: 'codex',
+            accessToken: oldAccessToken,
+            refreshToken: 'rt_codex_old',
+            expiresAt: new Date('2026-03-03T23:00:00Z'),
+            debugLabel: 'codex-expired-refresh'
+          })];
+        }
+        return [];
+      }),
+      refreshInPlace: vi.fn(async () => createOpenAiCredential({
+        id: 'cred_codex_refresh',
+        provider: 'codex',
+        accessToken: refreshedAccessToken,
+        refreshToken: 'rt_codex_new',
+        expiresAt: new Date('2026-03-10T01:00:00Z'),
+        debugLabel: 'codex-expired-refresh'
+      })),
+      markExpired: vi.fn(async () => true),
+      recordFailureAndMaybeMax: vi.fn(async () => ({
+        status: 'maxed',
+        consecutiveFailures: 1,
+        newlyMaxed: true
+      })),
+      markProbeFailure: vi.fn(async () => false),
+      clearRateLimitBackoff: vi.fn(async () => false),
+      setProviderUsageWarning: vi.fn(async () => false),
+      listMaxedForProbe: vi.fn(async () => []),
+      syncClaudeContributionCapLifecycle: vi.fn(async () => ({ fiveHourTransition: null, sevenDayTransition: null })),
+      reactivateFromMaxed: vi.fn(async () => false)
+    };
+    const usageRepo = {
+      upsertSnapshot: vi.fn(async (input: any) => ({
+        tokenCredentialId: input.tokenCredentialId,
+        orgId: input.orgId,
+        provider: input.provider,
+        usageSource: input.usageSource,
+        fiveHourUtilizationRatio: input.fiveHourUtilizationRatio,
+        fiveHourResetsAt: input.fiveHourResetsAt,
+        sevenDayUtilizationRatio: input.sevenDayUtilizationRatio,
+        sevenDayResetsAt: input.sevenDayResetsAt,
+        rawPayload: input.rawPayload,
+        fetchedAt: input.fetchedAt,
+        createdAt: input.fetchedAt,
+        updatedAt: input.fetchedAt
+      }))
+    };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://chatgpt.com/backend-api/wham/usage') {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        if (headers.authorization === `Bearer ${oldAccessToken}`) {
+          return new Response(JSON.stringify({ detail: 'token expired' }), {
+            status: 401,
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        expect(headers.authorization).toBe(`Bearer ${refreshedAccessToken}`);
+        return new Response(JSON.stringify({
+          rate_limit: {
+            primary_window: {
+              used_percent: 11,
+              reset_at: 1_773_888_569
+            },
+            secondary_window: {
+              used_percent: 13,
+              reset_at: 1_774_457_367
+            }
+          }
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      if (url === 'https://auth.openai.com/oauth/token') {
+        expect(String(init?.body)).toContain('grant_type=refresh_token');
+        expect(String(init?.body)).toContain('client_id=app_codex_old');
+        expect(String(init?.body)).toContain('refresh_token=rt_codex_old');
+        return new Response(JSON.stringify({
+          access_token: refreshedAccessToken,
+          refresh_token: 'rt_codex_new',
+          expires_in: 3600
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      throw new Error(`unexpected fetch target: ${url}`);
+    });
+    const job = createTokenCredentialProviderUsageJob(tokenRepo as any, usageRepo as any);
+    const ctx = createCtx();
+
+    await job.run(ctx as any);
+
+    expect(tokenRepo.refreshInPlace).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'cred_codex_refresh',
+      accessToken: refreshedAccessToken,
+      refreshToken: 'rt_codex_new'
+    }));
+    expect(tokenRepo.markExpired).not.toHaveBeenCalled();
+    expect(tokenRepo.recordFailureAndMaybeMax).not.toHaveBeenCalled();
+    expect(usageRepo.upsertSnapshot).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 
   it('parks active Claude credentials when provider usage refresh returns auth failure', async () => {

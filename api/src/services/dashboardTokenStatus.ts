@@ -10,7 +10,7 @@ export type DashboardCompactStatus =
   | 'expired'
   | 'revoked';
 
-export type DashboardStatusSource = 'backend_maxed' | 'cap_exhausted' | null;
+export type DashboardStatusSource = 'backend_maxed' | 'cap_exhausted' | 'usage_exhausted' | null;
 
 export type DashboardExclusionReason =
   | 'rate_limited'
@@ -94,6 +94,19 @@ function isActiveCooldown(rateLimitedUntil: Date | string | null | undefined, no
   return until !== null && until.getTime() > now.getTime();
 }
 
+function hasOpenAiUsageExhausted(input: Pick<
+  DashboardTokenStatusInput,
+  'provider' | 'fiveHourUtilizationRatio' | 'sevenDayUtilizationRatio'
+>): boolean {
+  const provider = input.provider.trim().toLowerCase();
+  if (provider !== 'openai') {
+    return false;
+  }
+
+  return (input.fiveHourUtilizationRatio ?? 0) >= 1
+    || (input.sevenDayUtilizationRatio ?? 0) >= 1;
+}
+
 export function deriveDashboardTokenStatusRow(
   input: DashboardTokenStatusInput
 ): DashboardTokenStatusOutput {
@@ -137,6 +150,15 @@ export function deriveDashboardTokenStatusRow(
       compactStatus: 'maxed',
       expandedStatus: 'maxed, source: cap_exhausted',
       statusSource: 'cap_exhausted'
+    });
+  }
+
+  if (rawStatus === 'active' && hasOpenAiUsageExhausted(input)) {
+    return buildStatusOutput({
+      rawStatus,
+      compactStatus: 'maxed',
+      expandedStatus: 'maxed, source: usage_exhausted',
+      statusSource: 'usage_exhausted'
     });
   }
 
