@@ -70,6 +70,22 @@ describe('AnalyticsRepository', () => {
     expect(usageLedgerQueries).toHaveLength(5);
   });
 
+  it('treats active OpenAI tokens with exhausted provider-usage windows as maxed in system summary counts', async () => {
+    const db = new MockSqlClient({ rows: [], rowCount: 0 });
+    const repo = new AnalyticsRepository(db);
+
+    await repo.getSystemSummary({ window: '24h', provider: 'openai' });
+
+    const tokenCountsQuery = db.queries.find((query) => query.sql.includes('token_inventory AS'));
+
+    expect(tokenCountsQuery?.sql).toContain('from in_token_credential_provider_usage pu');
+    expect(tokenCountsQuery?.sql).toContain('left join provider_usage pu on pu.token_credential_id = tc.id and pu.provider = tc.provider');
+    expect(tokenCountsQuery?.sql).toContain("when tc.provider = 'openai'");
+    expect(tokenCountsQuery?.sql).toContain('coalesce(pu.five_hour_utilization_ratio >= 1, false)');
+    expect(tokenCountsQuery?.sql).toContain('coalesce(pu.seven_day_utilization_ratio >= 1, false)');
+    expect(tokenCountsQuery?.sql).toContain("when tc.provider = 'anthropic'");
+  });
+
   it('uses routing metadata request_source in token routing filters, including 24h side counts', async () => {
     const db = new MockSqlClient({ rows: [], rowCount: 0 });
     const repo = new AnalyticsRepository(db);

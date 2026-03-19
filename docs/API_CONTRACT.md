@@ -448,7 +448,8 @@ Notes:
   - `claudeSevenDayCapExhaustionCyclesObserved`
   - `claudeSevenDayUsageUnitsBeforeCapExhaustionLastWindow`
   - `claudeSevenDayAvgUsageUnitsBeforeCapExhaustion`
-- those fields are Claude-only and stay `null` on non-Claude rows
+- reserve / contribution-cap fields stay Claude-only and remain `null` on non-Claude rows
+- OpenAI/Codex rows may populate the raw provider-usage snapshot fields (`fiveHourUtilizationRatio`, `fiveHourResetsAt`, `sevenDayUtilizationRatio`, `sevenDayResetsAt`, `providerUsageFetchedAt`) when a stored snapshot exists
 - Claude rows may also keep them `null` when a fresh provider-usage snapshot has not been fetched yet or analytics is reading against a pre-migration environment
 - analytics should treat rows with `expiresAt <= now` as `expired` for operator-facing status/counting even if the stored DB `status` has not been swept yet
 - rows may also include best-effort auth-diagnosis fields for operator visibility:
@@ -607,7 +608,7 @@ Notes:
 - `topBuyers[*].percentOfTotal` is a `0..1` ratio, not a `0..100` percentage
 - `maxedTokens` counts tokens currently at usage capacity, not broken credentials
 - for Claude, `maxedTokens` uses the latest provider-reported 5h / 7d utilization against each token's configured reserve
-- for non-Claude providers, `maxedTokens` continues to follow the current durable usage-maxed status until provider-usage telemetry exists there
+- for OpenAI/Codex, `maxedTokens` also treats active tokens as maxed when a stored provider-usage `5h` or `7d` window is exhausted
 
 ### `GET /v1/admin/analytics/timeseries`
 Admin-only chart-series endpoint.
@@ -843,14 +844,14 @@ Notes:
 - returns a best-effort merged snapshot for the UI so summary/tables/anomalies/events share one `snapshotAt`
 - `tokens[*]` merges usage, health, and routing metrics by `credentialId`
 - `tokens[*].attempts` is attempt-level volume; `tokens[*].requests` is distinct `request_id` count for the same window
-- `tokens[*]` also carries the same nullable Claude-only contribution-cap/provider-usage fields as `/v1/admin/analytics/tokens/health`
+- `tokens[*]` also carries the same provider-usage snapshot fields as `/v1/admin/analytics/tokens/health`; reserve / contribution-cap flags stay Claude-only
 - `tokens[*]` may also include best-effort auth-diagnosis fields from `/v1/admin/analytics/tokens/health`; the dashboard status text can fold those into backend-`maxed` visibility
-- `summary.maxedTokens` counts tokens currently at usage capacity; for Claude that means provider usage has hit the provider ceiling or the configured reserve threshold
+- `summary.maxedTokens` counts tokens currently at usage capacity; for Claude that means provider usage has hit the provider ceiling or the configured reserve threshold, and for OpenAI/Codex that means a stored provider-usage window is exhausted
 - the dashboard UI shows raw Claude provider utilization in `5H` / `7D`; reserve/exhausted fields only control whether those cells are highlighted as effectively exhausted
-- non-Claude rows keep those raw API fields `null` and the UI renders `--` in the CAP cells
+- OpenAI/Codex rows may carry raw provider-usage utilization/reset fields, but their reserve / contribution-cap fields stay `null` and the UI still renders `--` in the CAP cells
 - `buyers[*]` may include `latencyP50Ms` and `errorRate` when those buyer aggregates are available
 - snapshot `events` is currently capped to the 20 most recent lifecycle events
-- `warnings` is a free-form operator-facing list for Claude operator issues such as auth-failed parked tokens, missing snapshots, stale snapshots, and contribution-cap exhaustion when the backend emits them
+- `warnings` is a free-form operator-facing list for provider-usage freshness/exhaustion issues; Claude rows can emit auth-failed / cap warnings, and OpenAI/Codex rows can emit snapshot freshness or `usage_exhausted_*` warnings when the backend emits them
 
 Response example:
 ```json
