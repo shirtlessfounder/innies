@@ -204,6 +204,7 @@ describe('compat translation e2e', () => {
       rateLimitedUntil: null,
       newlyMaxed: false
     } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentialProviderUsage, 'listByTokenCredentialIds').mockResolvedValue([]);
     vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
       replay: false,
       input: {
