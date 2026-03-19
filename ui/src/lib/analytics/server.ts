@@ -306,7 +306,6 @@ function deriveContributionCapUsedRatio(input: {
   provider: string | null;
   utilizationRatio: number | null;
 }): number | null {
-  if ((input.provider ?? '').trim().toLowerCase() !== 'anthropic') return null;
   if (input.utilizationRatio === null) return null;
   return Math.min(1, Math.max(0, input.utilizationRatio));
 }
