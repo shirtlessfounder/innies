@@ -67,6 +67,45 @@ describe('tokenCredentialProviderUsageRepository', () => {
     expect(db.queries[0].sql).toContain('on conflict (token_credential_id)');
   });
 
+  it('persists openai provider-usage snapshots with a distinct usage source', async () => {
+    const db = new SequenceSqlClient([{
+      rows: [{
+        token_credential_id: 'cred_openai_1',
+        org_id: '00000000-0000-0000-0000-000000000001',
+        provider: 'openai',
+        usage_source: 'openai_wham_usage',
+        five_hour_utilization_ratio: '0.07',
+        five_hour_resets_at: '2026-03-18T04:49:29Z',
+        seven_day_utilization_ratio: '0.12',
+        seven_day_resets_at: '2026-03-24T18:49:27Z',
+        raw_payload: { rate_limit: { primary_window: { used_percent: 7 } } },
+        fetched_at: '2026-03-18T00:00:00Z',
+        created_at: '2026-03-18T00:00:00Z',
+        updated_at: '2026-03-18T00:00:00Z'
+      }],
+      rowCount: 1
+    }]);
+    const repo = new TokenCredentialProviderUsageRepository(db);
+
+    const snapshot = await repo.upsertSnapshot({
+      tokenCredentialId: 'cred_openai_1',
+      orgId: '00000000-0000-0000-0000-000000000001',
+      provider: 'openai',
+      usageSource: 'openai_wham_usage',
+      fiveHourUtilizationRatio: 0.07,
+      fiveHourResetsAt: new Date('2026-03-18T04:49:29Z'),
+      sevenDayUtilizationRatio: 0.12,
+      sevenDayResetsAt: new Date('2026-03-24T18:49:27Z'),
+      rawPayload: { rate_limit: { primary_window: { used_percent: 7 } } },
+      fetchedAt: new Date('2026-03-18T00:00:00Z')
+    });
+
+    expect(snapshot.provider).toBe('openai');
+    expect(snapshot.usageSource).toBe('openai_wham_usage');
+    expect(db.queries[0].params?.[2]).toBe('openai');
+    expect(db.queries[0].params?.[3]).toBe('openai_wham_usage');
+  });
+
   it('reads latest provider-usage snapshot by token credential id', async () => {
     const db = new SequenceSqlClient([{
       rows: [{
