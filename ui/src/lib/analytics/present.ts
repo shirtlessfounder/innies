@@ -115,7 +115,7 @@ export function formatContributionCapPercent(
   value: number | null | undefined,
   provider: string | null | undefined,
 ): string {
-  if (tokenProviderKey(provider) !== 'claude') return '--';
+  if (tokenProviderKey(provider) === null) return '--';
   return formatCapPercent(value);
 }
 
