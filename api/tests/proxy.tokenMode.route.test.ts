@@ -289,6 +289,33 @@ function createFakeOpenAiOauthToken(input?: {
   return `${header}.${payload}.signature`;
 }
 
+function createRoutingCredentialFixture(input: {
+  id: string;
+  provider: string;
+  authScheme: string;
+  accessToken: string;
+  refreshToken?: string | null;
+  rotationVersion?: number;
+}): any {
+  return {
+    id: input.id,
+    orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+    provider: input.provider,
+    authScheme: input.authScheme,
+    accessToken: input.accessToken,
+    refreshToken: input.refreshToken ?? null,
+    expiresAt: new Date('2026-03-02T00:00:00Z'),
+    status: 'active',
+    rotationVersion: input.rotationVersion ?? 1,
+    createdAt: new Date('2026-03-01T00:00:00Z'),
+    updatedAt: new Date('2026-03-01T00:00:00Z'),
+    revokedAt: null,
+    monthlyContributionLimitUnits: null,
+    monthlyContributionUsedUnits: 0,
+    monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+  } as any;
+}
+
 function applyError(err: unknown, res: MockRes): void {
   if (err instanceof z.ZodError) {
     res.status(400).json({ code: 'invalid_request', message: 'Invalid request', issues: err.issues });
@@ -3933,273 +3960,6 @@ describe('proxy token-mode route behavior', () => {
     delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
   });
 
-  it('falls back to the alternate provider after an upstream 400 on the preferred provider in non-stream token mode', async () => {
-    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
-    const openAiToken = createFakeOpenAiOauthToken({
-      accountId: 'acct_provider_400_fallback',
-      clientId: 'app_provider_400_fallback'
-    });
-
-    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
-      id: '11111111-1111-4111-8111-111111111111',
-      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
-      scope: 'buyer_proxy',
-      is_active: true,
-      expires_at: null,
-      preferred_provider: 'openai'
-    } as any);
-    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string) => {
-      if (provider === 'openai') {
-        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: false } as any;
-      }
-      if (provider === 'anthropic') {
-        return { provider: 'anthropic', model: 'gpt-5.4', supports_streaming: false } as any;
-      }
-      return null as any;
-    });
-    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
-      if (provider === 'openai') {
-        return [{
-          id: 'provider-400-openai-cred',
-          orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
-          provider: 'openai',
-          authScheme: 'bearer',
-          accessToken: openAiToken,
-          refreshToken: 'rt_provider_400_openai',
-          expiresAt: new Date('2026-03-02T00:00:00Z'),
-          status: 'active',
-          rotationVersion: 1,
-          createdAt: new Date('2026-03-01T00:00:00Z'),
-          updatedAt: new Date('2026-03-01T00:00:00Z'),
-          revokedAt: null,
-          monthlyContributionLimitUnits: null,
-          monthlyContributionUsedUnits: 0,
-          monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
-        } as any];
-      }
-
-      if (provider === 'anthropic') {
-        return [{
-          id: 'provider-400-anthropic-fallback',
-          orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
-          provider: 'anthropic',
-          authScheme: 'x_api_key',
-          accessToken: 'sk-ant-provider-400-fallback',
-          refreshToken: null,
-          expiresAt: new Date('2026-03-02T00:00:00Z'),
-          status: 'active',
-          rotationVersion: 1,
-          createdAt: new Date('2026-03-01T00:00:00Z'),
-          updatedAt: new Date('2026-03-01T00:00:00Z'),
-          revokedAt: null,
-          monthlyContributionLimitUnits: null,
-          monthlyContributionUsedUnits: 0,
-          monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
-        } as any];
-      }
-
-      return [];
-    });
-
-    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input: URL | RequestInfo, init?: RequestInit) => {
-      const headers = init?.headers as Record<string, string> | undefined;
-      if (headers?.authorization === `Bearer ${openAiToken}`) {
-        return new Response(JSON.stringify({
-          error: {
-            type: 'invalid_request_error',
-            message: 'provider rejected request'
-          }
-        }), {
-          status: 400,
-          headers: { 'content-type': 'application/json' }
-        });
-      }
-
-      if (headers?.['x-api-key'] === 'sk-ant-provider-400-fallback') {
-        return new Response(JSON.stringify({
-          id: 'resp_provider_400_fallback_ok',
-          usage: { input_tokens: 2, output_tokens: 1 }
-        }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' }
-        });
-      }
-
-      throw new Error(`unexpected credential headers: ${JSON.stringify(headers ?? {})}`);
-    });
-
-    const req = createMockReq({
-      method: 'POST',
-      path: '/v1/proxy/v1/messages',
-      headers: {
-        authorization: 'Bearer in_test_token',
-        'content-type': 'application/json',
-        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
-        'anthropic-version': '2023-06-01'
-      },
-      body: {
-        provider: 'anthropic',
-        model: 'gpt-5.4',
-        streaming: false,
-        payload: { model: 'gpt-5.4', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
-      }
-    });
-    const res = createMockRes();
-
-    await invoke(handlers[0], req, res);
-    await invoke(handlers[1], req, res);
-
-    expect(res.statusCode).toBe(200);
-    expect((res.body as any).id).toBe('resp_provider_400_fallback_ok');
-    expect(listSpy.mock.calls.map((call) => call[1])).toEqual(['openai', 'anthropic']);
-    expect(upstreamSpy).toHaveBeenCalledTimes(2);
-    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls.at(-1)?.[0]?.routeDecision;
-    expect(routeDecision?.reason).toBe('fallback_provider_selected');
-    expect(routeDecision?.provider_preferred).toBe('openai');
-    expect(routeDecision?.provider_effective).toBe('anthropic');
-    expect(routeDecision?.provider_fallback_from).toBe('openai');
-    expect(routeDecision?.provider_fallback_reason).toBe('capacity_unavailable');
-    upstreamSpy.mockRestore();
-  });
-
-  it('preserves the final upstream provider 400 after native non-stream fallback exhaustion', async () => {
-    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
-    const openAiToken = createFakeOpenAiOauthToken({
-      accountId: 'acct_provider_400_terminal',
-      clientId: 'app_provider_400_terminal'
-    });
-
-    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
-      id: '11111111-1111-4111-8111-111111111111',
-      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
-      scope: 'buyer_proxy',
-      is_active: true,
-      expires_at: null,
-      preferred_provider: 'openai'
-    } as any);
-    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string) => {
-      if (provider === 'openai') {
-        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: false } as any;
-      }
-      if (provider === 'anthropic') {
-        return { provider: 'anthropic', model: 'gpt-5.4', supports_streaming: false } as any;
-      }
-      return null as any;
-    });
-    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
-      if (provider === 'openai') {
-        return [{
-          id: 'provider-400-openai-terminal',
-          orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
-          provider: 'openai',
-          authScheme: 'bearer',
-          accessToken: openAiToken,
-          refreshToken: 'rt_provider_400_terminal',
-          expiresAt: new Date('2026-03-02T00:00:00Z'),
-          status: 'active',
-          rotationVersion: 1,
-          createdAt: new Date('2026-03-01T00:00:00Z'),
-          updatedAt: new Date('2026-03-01T00:00:00Z'),
-          revokedAt: null,
-          monthlyContributionLimitUnits: null,
-          monthlyContributionUsedUnits: 0,
-          monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
-        } as any];
-      }
-
-      if (provider === 'anthropic') {
-        return [{
-          id: 'provider-400-anthropic-terminal',
-          orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
-          provider: 'anthropic',
-          authScheme: 'x_api_key',
-          accessToken: 'sk-ant-provider-400-terminal',
-          refreshToken: null,
-          expiresAt: new Date('2026-03-02T00:00:00Z'),
-          status: 'active',
-          rotationVersion: 1,
-          createdAt: new Date('2026-03-01T00:00:00Z'),
-          updatedAt: new Date('2026-03-01T00:00:00Z'),
-          revokedAt: null,
-          monthlyContributionLimitUnits: null,
-          monthlyContributionUsedUnits: 0,
-          monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
-        } as any];
-      }
-
-      return [];
-    });
-
-    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input: URL | RequestInfo, init?: RequestInit) => {
-      const headers = init?.headers as Record<string, string> | undefined;
-      if (headers?.authorization === `Bearer ${openAiToken}`) {
-        return new Response(JSON.stringify({
-          error: {
-            type: 'invalid_request_error',
-            message: 'openai rejected request'
-          }
-        }), {
-          status: 400,
-          headers: { 'content-type': 'application/json' }
-        });
-      }
-
-      if (headers?.['x-api-key'] === 'sk-ant-provider-400-terminal') {
-        return new Response(JSON.stringify({
-          error: {
-            type: 'invalid_request_error',
-            message: 'anthropic rejected request',
-            source: 'anthropic'
-          }
-        }), {
-          status: 400,
-          headers: { 'content-type': 'application/json' }
-        });
-      }
-
-      throw new Error(`unexpected credential headers: ${JSON.stringify(headers ?? {})}`);
-    });
-
-    const req = createMockReq({
-      method: 'POST',
-      path: '/v1/proxy/v1/messages',
-      headers: {
-        authorization: 'Bearer in_test_token',
-        'content-type': 'application/json',
-        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
-        'anthropic-version': '2023-06-01'
-      },
-      body: {
-        provider: 'anthropic',
-        model: 'gpt-5.4',
-        streaming: false,
-        payload: { model: 'gpt-5.4', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
-      }
-    });
-    const res = createMockRes();
-
-    await invoke(handlers[0], req, res);
-    await invoke(handlers[1], req, res);
-
-    expect(res.statusCode).toBe(400);
-    expect(res.body).toEqual({
-      error: {
-        type: 'invalid_request_error',
-        message: 'anthropic rejected request',
-        source: 'anthropic'
-      }
-    });
-    expect(listSpy.mock.calls.map((call) => call[1])).toEqual(['openai', 'anthropic']);
-    expect(upstreamSpy).toHaveBeenCalledTimes(2);
-    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls.at(-1)?.[0]?.routeDecision;
-    expect(routeDecision?.reason).toBe('fallback_provider_selected');
-    expect(routeDecision?.provider_preferred).toBe('openai');
-    expect(routeDecision?.provider_effective).toBe('anthropic');
-    expect(routeDecision?.provider_fallback_from).toBe('openai');
-    expect(routeDecision?.provider_fallback_reason).toBe('capacity_unavailable');
-    upstreamSpy.mockRestore();
-  });
-
   it('applies stored buyer-key provider preference ahead of an unpinned request provider', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
@@ -4656,10 +4416,91 @@ describe('proxy token-mode route behavior', () => {
     upstreamSpy.mockRestore();
   });
 
-  it('keeps malformed local requests terminal before token-mode fallback routing begins', async () => {
-    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([]);
-    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
-      throw new Error('fetch should not be called for malformed local requests');
+  it('rescues a non-pinned non-stream request on one alternate credential before any provider hop', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const firstOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_same_provider_first',
+      clientId: 'app_same_provider_first'
+    });
+    const secondOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_same_provider_second',
+      clientId: 'app_same_provider_second'
+    });
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string) => {
+      if (provider === 'openai') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: false } as any;
+      }
+      if (provider === 'anthropic') {
+        return { provider: 'anthropic', model: 'gpt-5.4', supports_streaming: false } as any;
+      }
+      return null as any;
+    });
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider === 'openai') {
+        return [
+          createRoutingCredentialFixture({
+            id: 'same-provider-openai-first',
+            provider: 'openai',
+            authScheme: 'bearer',
+            accessToken: firstOpenAiToken,
+            refreshToken: 'rt_same_provider_first'
+          }),
+          createRoutingCredentialFixture({
+            id: 'same-provider-openai-second',
+            provider: 'openai',
+            authScheme: 'bearer',
+            accessToken: secondOpenAiToken,
+            refreshToken: 'rt_same_provider_second'
+          })
+        ];
+      }
+
+      if (provider === 'anthropic') {
+        return [createRoutingCredentialFixture({
+          id: 'same-provider-anthropic-fallback',
+          provider: 'anthropic',
+          authScheme: 'x_api_key',
+          accessToken: 'sk-ant-same-provider-fallback'
+        })];
+      }
+
+      return [];
+    });
+
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input: URL | RequestInfo, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      if (headers?.authorization === `Bearer ${firstOpenAiToken}`) {
+        return new Response(JSON.stringify({
+          error: {
+            type: 'invalid_request_error',
+            message: 'first same-provider credential rejected request'
+          }
+        }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+
+      if (headers?.authorization === `Bearer ${secondOpenAiToken}`) {
+        return new Response(JSON.stringify({
+          id: 'resp_same_provider_retry_ok',
+          usage: { input_tokens: 2, output_tokens: 1 }
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+
+      throw new Error(`unexpected credential headers: ${JSON.stringify(headers ?? {})}`);
     });
 
     const req = createMockReq({
@@ -4669,12 +4510,422 @@ describe('proxy token-mode route behavior', () => {
         authorization: 'Bearer in_test_token',
         'content-type': 'application/json',
         'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
-        'anthropic-version': '2023-06-01'
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'b'
       },
       body: {
         provider: 'anthropic',
         model: 'gpt-5.4',
-        streaming: 'false',
+        streaming: false,
+        payload: { model: 'gpt-5.4', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('resp_same_provider_retry_ok');
+    expect(listSpy.mock.calls.map((call) => call[1])).toEqual(['openai']);
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls.at(-1)?.[0]?.routeDecision;
+    expect(routeDecision?.reason).toBe('preferred_provider_selected');
+    expect(routeDecision?.provider_preferred).toBe('openai');
+    expect(routeDecision?.provider_effective).toBe('openai');
+    upstreamSpy.mockRestore();
+  });
+
+  it('hops to the alternate provider after exactly two same-provider non-stream failures', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const firstOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_two_failures_first',
+      clientId: 'app_two_failures_first'
+    });
+    const secondOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_two_failures_second',
+      clientId: 'app_two_failures_second'
+    });
+    const thirdOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_two_failures_third',
+      clientId: 'app_two_failures_third'
+    });
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string) => {
+      if (provider === 'openai') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: false } as any;
+      }
+      if (provider === 'anthropic') {
+        return { provider: 'anthropic', model: 'gpt-5.4', supports_streaming: false } as any;
+      }
+      return null as any;
+    });
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider === 'openai') {
+        return [
+          createRoutingCredentialFixture({
+            id: 'provider-hop-openai-first',
+            provider: 'openai',
+            authScheme: 'bearer',
+            accessToken: firstOpenAiToken,
+            refreshToken: 'rt_provider_hop_first'
+          }),
+          createRoutingCredentialFixture({
+            id: 'provider-hop-openai-second',
+            provider: 'openai',
+            authScheme: 'bearer',
+            accessToken: secondOpenAiToken,
+            refreshToken: 'rt_provider_hop_second'
+          }),
+          createRoutingCredentialFixture({
+            id: 'provider-hop-openai-third',
+            provider: 'openai',
+            authScheme: 'bearer',
+            accessToken: thirdOpenAiToken,
+            refreshToken: 'rt_provider_hop_third'
+          })
+        ];
+      }
+
+      if (provider === 'anthropic') {
+        return [createRoutingCredentialFixture({
+          id: 'provider-hop-anthropic-fallback',
+          provider: 'anthropic',
+          authScheme: 'x_api_key',
+          accessToken: 'sk-ant-provider-hop-fallback'
+        })];
+      }
+
+      return [];
+    });
+
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input: URL | RequestInfo, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      if (headers?.authorization === `Bearer ${firstOpenAiToken}` || headers?.authorization === `Bearer ${secondOpenAiToken}`) {
+        return new Response(JSON.stringify({
+          error: {
+            type: 'invalid_request_error',
+            message: 'preferred provider rejected request'
+          }
+        }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+
+      if (headers?.authorization === `Bearer ${thirdOpenAiToken}`) {
+        return new Response(JSON.stringify({
+          id: 'resp_should_not_use_third_same_provider'
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+
+      if (headers?.['x-api-key'] === 'sk-ant-provider-hop-fallback') {
+        return new Response(JSON.stringify({
+          id: 'resp_provider_hop_ok',
+          usage: { input_tokens: 2, output_tokens: 1 }
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+
+      throw new Error(`unexpected credential headers: ${JSON.stringify(headers ?? {})}`);
+    });
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'c'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'gpt-5.4',
+        streaming: false,
+        payload: { model: 'gpt-5.4', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('resp_provider_hop_ok');
+    expect(listSpy.mock.calls.map((call) => call[1])).toEqual(['openai', 'anthropic']);
+    expect(upstreamSpy).toHaveBeenCalledTimes(3);
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls.at(-1)?.[0]?.routeDecision;
+    expect(routeDecision?.reason).toBe('fallback_provider_selected');
+    expect(routeDecision?.provider_preferred).toBe('openai');
+    expect(routeDecision?.provider_effective).toBe('anthropic');
+    expect(routeDecision?.provider_fallback_from).toBe('openai');
+    expect(routeDecision?.provider_fallback_reason).toBe('capacity_unavailable');
+    upstreamSpy.mockRestore();
+  });
+
+  it('retries only one alternate credential on a pinned provider in non-stream mode', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string, model: string) => {
+      if (provider === 'anthropic' && model === 'claude-3-5-sonnet-latest') {
+        return { provider: 'anthropic', model: 'claude-3-5-sonnet-latest', supports_streaming: false } as any;
+      }
+      if (provider === 'openai' && model === 'claude-3-5-sonnet-latest') {
+        return { provider: 'openai', model: 'claude-3-5-sonnet-latest', supports_streaming: false } as any;
+      }
+      return null as any;
+    });
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider === 'anthropic') {
+        return [
+          createRoutingCredentialFixture({
+            id: 'pinned-anthropic-first',
+            provider: 'anthropic',
+            authScheme: 'bearer',
+            accessToken: 'sk-ant-pinned-first'
+          }),
+          createRoutingCredentialFixture({
+            id: 'pinned-anthropic-second',
+            provider: 'anthropic',
+            authScheme: 'bearer',
+            accessToken: 'sk-ant-pinned-second'
+          }),
+          createRoutingCredentialFixture({
+            id: 'pinned-anthropic-third',
+            provider: 'anthropic',
+            authScheme: 'bearer',
+            accessToken: 'sk-ant-pinned-third'
+          })
+        ];
+      }
+
+      throw new Error(`unexpected provider lookup: ${provider}`);
+    });
+
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input: URL | RequestInfo, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      if (headers?.authorization === 'Bearer sk-ant-pinned-first') {
+        return new Response(JSON.stringify({
+          error: {
+            type: 'invalid_request_error',
+            message: 'pinned primary rejected request'
+          }
+        }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+
+      if (headers?.authorization === 'Bearer sk-ant-pinned-second') {
+        return new Response(JSON.stringify({
+          error: {
+            type: 'invalid_request_error',
+            message: 'pinned alternate rejected request'
+          }
+        }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+
+      if (headers?.authorization === 'Bearer sk-ant-pinned-third') {
+        return new Response(JSON.stringify({
+          id: 'resp_should_not_use_third_pinned_credential'
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+
+      throw new Error(`unexpected credential headers: ${JSON.stringify(headers ?? {})}`);
+    });
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-innies-provider-pin': 'true',
+        'x-request-id': 'c'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-3-5-sonnet-latest',
+        streaming: false,
+        payload: { model: 'claude-3-5-sonnet-latest', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual({
+      error: {
+        type: 'invalid_request_error',
+        message: 'pinned alternate rejected request'
+      }
+    });
+    expect(listSpy.mock.calls.map((call) => call[1])).toEqual(['anthropic']);
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls.at(-1)?.[0]?.routeDecision;
+    expect(routeDecision?.reason).toBe('cli_provider_pinned');
+    expect(routeDecision?.provider_preferred).toBe('anthropic');
+    expect(routeDecision?.provider_effective).toBe('anthropic');
+    upstreamSpy.mockRestore();
+  });
+
+  it('surfaces the final native provider 400 after every eligible non-stream retry path fails', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const firstOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_terminal_first',
+      clientId: 'app_terminal_first'
+    });
+    const secondOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_terminal_second',
+      clientId: 'app_terminal_second'
+    });
+    const thirdOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_terminal_third',
+      clientId: 'app_terminal_third'
+    });
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string) => {
+      if (provider === 'openai') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: false } as any;
+      }
+      if (provider === 'anthropic') {
+        return { provider: 'anthropic', model: 'gpt-5.4', supports_streaming: false } as any;
+      }
+      return null as any;
+    });
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider === 'openai') {
+        return [
+          createRoutingCredentialFixture({
+            id: 'terminal-openai-first',
+            provider: 'openai',
+            authScheme: 'bearer',
+            accessToken: firstOpenAiToken,
+            refreshToken: 'rt_terminal_first'
+          }),
+          createRoutingCredentialFixture({
+            id: 'terminal-openai-second',
+            provider: 'openai',
+            authScheme: 'bearer',
+            accessToken: secondOpenAiToken,
+            refreshToken: 'rt_terminal_second'
+          }),
+          createRoutingCredentialFixture({
+            id: 'terminal-openai-third',
+            provider: 'openai',
+            authScheme: 'bearer',
+            accessToken: thirdOpenAiToken,
+            refreshToken: 'rt_terminal_third'
+          })
+        ];
+      }
+
+      if (provider === 'anthropic') {
+        return [createRoutingCredentialFixture({
+          id: 'terminal-anthropic-fallback',
+          provider: 'anthropic',
+          authScheme: 'x_api_key',
+          accessToken: 'sk-ant-terminal-fallback'
+        })];
+      }
+
+      return [];
+    });
+
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input: URL | RequestInfo, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      if (headers?.authorization === `Bearer ${firstOpenAiToken}` || headers?.authorization === `Bearer ${secondOpenAiToken}`) {
+        return new Response(JSON.stringify({
+          error: {
+            type: 'invalid_request_error',
+            message: 'preferred provider rejected request'
+          }
+        }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+
+      if (headers?.authorization === `Bearer ${thirdOpenAiToken}`) {
+        return new Response(JSON.stringify({
+          id: 'resp_should_not_use_third_terminal_credential'
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+
+      if (headers?.['x-api-key'] === 'sk-ant-terminal-fallback') {
+        return new Response(JSON.stringify({
+          error: {
+            type: 'invalid_request_error',
+            message: 'anthropic rejected request',
+            source: 'anthropic'
+          }
+        }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+
+      throw new Error(`unexpected credential headers: ${JSON.stringify(headers ?? {})}`);
+    });
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'c'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'gpt-5.4',
+        streaming: false,
         payload: { model: 'gpt-5.4', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
       }
     });
@@ -4684,9 +4935,21 @@ describe('proxy token-mode route behavior', () => {
     await invoke(handlers[1], req, res);
 
     expect(res.statusCode).toBe(400);
-    expect((res.body as any).code).toBe('invalid_request');
-    expect(listSpy).not.toHaveBeenCalled();
-    expect(upstreamSpy).not.toHaveBeenCalled();
+    expect(res.body).toEqual({
+      error: {
+        type: 'invalid_request_error',
+        message: 'anthropic rejected request',
+        source: 'anthropic'
+      }
+    });
+    expect(listSpy.mock.calls.map((call) => call[1])).toEqual(['openai', 'anthropic']);
+    expect(upstreamSpy).toHaveBeenCalledTimes(3);
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls.at(-1)?.[0]?.routeDecision;
+    expect(routeDecision?.reason).toBe('fallback_provider_selected');
+    expect(routeDecision?.provider_preferred).toBe('openai');
+    expect(routeDecision?.provider_effective).toBe('anthropic');
+    expect(routeDecision?.provider_fallback_from).toBe('openai');
+    expect(routeDecision?.provider_fallback_reason).toBe('capacity_unavailable');
     upstreamSpy.mockRestore();
   });
 });
