@@ -164,6 +164,20 @@ export function isAnthropicOauthTokenCredential(credential: Pick<TokenCredential
   return credential.provider === 'anthropic' && credential.accessToken.includes('sk-ant-oat');
 }
 
+export function isOpenAiProviderUsageRefreshCredential(
+  credential: Pick<TokenCredential, 'provider' | 'accessToken'>
+): boolean {
+  return (credential.provider === 'openai' || credential.provider === 'codex')
+    && isOpenAiOauthAccessToken(credential.accessToken);
+}
+
+export function isTokenCredentialProviderUsageRefreshSupported(
+  credential: Pick<TokenCredential, 'provider' | 'accessToken'>
+): boolean {
+  return isAnthropicOauthTokenCredential(credential)
+    || isOpenAiProviderUsageRefreshCredential(credential);
+}
+
 function readAnthropicOauthUsageUrl(): URL {
   const baseUrl = process.env.ANTHROPIC_OAUTH_USAGE_BASE_URL
     || process.env.ANTHROPIC_UPSTREAM_BASE_URL
@@ -444,10 +458,7 @@ async function fetchOpenAiOauthUsagePayload(
   credential: TokenCredential,
   timeoutMs: number
 ): Promise<OpenAiOauthUsageRefreshOutcome> {
-  if (
-    (credential.provider !== 'openai' && credential.provider !== 'codex')
-    || !isOpenAiOauthAccessToken(credential.accessToken)
-  ) {
+  if (!isOpenAiProviderUsageRefreshCredential(credential)) {
     return {
       ok: false,
       reason: 'unsupported_credential',
