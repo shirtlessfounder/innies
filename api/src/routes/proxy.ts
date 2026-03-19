@@ -342,6 +342,10 @@ function parseProviderPreferencePlan(input: {
   };
 }
 
+function selectSameProviderRetryCredentials(credentials: TokenCredential[]): TokenCredential[] {
+  return credentials.slice(0, 2);
+}
+
 function resolveProviderSelectionReason(input: {
   provider: string;
   preferredProvider: string;
@@ -2043,7 +2047,7 @@ async function executeTokenModeNonStreaming(input: {
   let terminalCompatAttemptNo = 0;
   let terminalNative400Result: ProxyRouteResult | null = null;
   let sawNonAuthNon400Failure = false;
-  for (const initialCredential of credentials) {
+  for (const initialCredential of selectSameProviderRetryCredentials(credentials)) {
     attemptNo += 1;
     let credential = initialCredential;
     let refreshed = false;
@@ -2125,7 +2129,7 @@ async function executeTokenModeNonStreaming(input: {
         headers: upstreamHeaders,
         body: upstreamBody,
         signal: controller.signal
-      })
+        })
         .catch(async (error: unknown) => {
           const message = error instanceof Error ? error.message : 'network error';
           await logAttemptFailure({ kind: 'network', message });
@@ -2481,25 +2485,22 @@ async function executeTokenModeNonStreaming(input: {
           model,
           upstreamStatus: status
         });
-        await logAttemptFailure({ statusCode: status, message: 'upstream provider rejected request' }, ttfbMs);
-        break;
-      }
-
-      if (status === 400) {
-        if (compatTranslation) {
-          const upstreamErrorData = await readUpstreamErrorPayload(upstreamResponse);
-          terminalCompatError = mapOpenAiErrorToAnthropic(status, upstreamErrorData);
-          terminalCompatCredentialId = credential.id;
-          terminalCompatAttemptNo = attemptNo;
+        if (strictUpstreamPassthrough) {
+          const { errorType, errorMessage } = extractUpstreamErrorDetails(upstreamErrorData);
+          logCompatAudit({
+            orgId,
+            provider,
+            model,
+            requestId,
+            credentialId: credential.id,
+            attemptNo,
+            upstreamStatus: status,
+            openclawRunId: correlation.openclawRunId,
+            openclawSessionId: correlation.openclawSessionId,
+            errorType,
+            errorMessage
+          });
         }
-        await recordTokenCredentialOutcome({
-          credential,
-          requestId,
-          attemptNo,
-          provider,
-          model,
-          upstreamStatus: status
-        });
         await logAttemptFailure({ statusCode: status, message: 'upstream provider rejected request' }, ttfbMs);
         break;
       }
