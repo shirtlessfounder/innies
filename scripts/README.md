@@ -96,8 +96,9 @@ Behavior:
 - `innies-token-probe-run` now prints a plain-English result summary (`REACTIVATED`, `PROBE OK, NO STATUS CHANGE`, or `PROBE FAILED, NO STATUS CHANGE`) before the raw JSON response
 - `innies-token-probe-run` also prints auth diagnosis details when the backend can derive them, including local OpenAI OAuth expiry and missing-refresh-token state
 - `innies-token-usage-refresh` accepts a credential number, UUID, or exact `debugLabel`; it needs `DATABASE_URL`
-- `innies-token-usage-refresh` lists unexpired Claude Code and Codex credentials in `active|paused|maxed`, plus expired OAuth credentials from either provider that still have a stored refresh token (shown as `expired`) so you can recover them manually
+- `innies-token-usage-refresh` lists only manual-refresh-eligible credentials: unexpired Claude Code and OpenAI/Codex OAuth/session credentials in `active|paused|maxed`, plus expired OAuth credentials from either provider that still have a stored refresh token (shown as `expired`)
 - `innies-token-usage-refresh` also needs `INNIES_ADMIN_API_KEY` (or prompts for it) because it calls the admin API provider-usage refresh endpoint directly
+- `innies-token-usage-refresh` uses local credential decryption to hide unsupported OpenAI/Codex rows from the numbered selector; it reads `SELLER_SECRET_ENC_KEY_B64` from the environment or `api/.env` when needed
 - `innies-token-usage-refresh` bypasses Anthropic in-memory usage-fetch backoff and prints both parsed 5h / 7d usage plus the raw upstream payload for either provider
 - `innies-token-usage-refresh` only prints contribution-cap exhaustion lines when the backend returns Claude-specific cap state; Codex/OpenAI refreshes leave those fields `null`
 - `label` maps to API field `debugLabel`
