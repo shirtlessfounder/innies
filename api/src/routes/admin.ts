@@ -6,12 +6,14 @@ import { requireApiKey } from '../middleware/auth.js';
 import { runtime } from '../services/runtime.js';
 import { readClaudeContributionCapSnapshotState } from '../services/claudeContributionCapState.js';
 import {
-  anthropicOauthUsageAuthFailureStatusCode,
   isAnthropicOauthTokenCredential,
   parkAnthropicOauthCredentialAfterUsageAuthFailure,
   providerUsageWarningReasonFromRefreshOutcome
 } from '../services/tokenCredentialProviderUsage.js';
-import { refreshAnthropicOauthUsageWithCredentialRefresh } from '../services/tokenCredentialOauthRefresh.js';
+import {
+  refreshAnthropicOauthUsageWithCredentialRefresh,
+  refreshTokenCredentialProviderUsageWithCredentialRefresh
+} from '../services/tokenCredentialOauthRefresh.js';
 import {
   probeAndUpdateTokenCredential,
   readTokenCredentialProbeIntervalMinutes,
@@ -1009,11 +1011,12 @@ router.post('/v1/admin/token-credentials/:id/provider-usage-refresh', requireApi
     if (existing.status === 'revoked') {
       throw new AppError('invalid_request', 409, 'Revoked token credential cannot refresh provider usage');
     }
-    if (!isAnthropicOauthTokenCredential(existing)) {
+    const isAnthropicOauthCredential = isAnthropicOauthTokenCredential(existing);
+    if (!isAnthropicOauthCredential && existing.provider !== 'openai' && existing.provider !== 'codex') {
       throw new AppError(
         'invalid_request',
         409,
-        'Claude provider usage refresh is only supported for Anthropic OAuth credentials',
+        'Provider usage refresh is only supported for Anthropic and OpenAI/Codex OAuth credentials',
         {
           provider: existing.provider,
           status: existing.status
@@ -1029,15 +1032,25 @@ router.post('/v1/admin/token-credentials/:id/provider-usage-refresh', requireApi
       );
     }
 
-    const refreshedUsage = await refreshAnthropicOauthUsageWithCredentialRefresh(
-      runtime.repos.tokenCredentialProviderUsage,
-      runtime.repos.tokenCredentials,
-      existing,
-      { ignoreRetryBackoff: true }
-    );
+    const refreshedUsage = isAnthropicOauthCredential
+      ? await refreshAnthropicOauthUsageWithCredentialRefresh(
+        runtime.repos.tokenCredentialProviderUsage,
+        runtime.repos.tokenCredentials,
+        existing,
+        { ignoreRetryBackoff: true }
+      )
+      : await refreshTokenCredentialProviderUsageWithCredentialRefresh(
+        runtime.repos.tokenCredentialProviderUsage,
+        runtime.repos.tokenCredentials,
+        existing,
+        { ignoreRetryBackoff: true }
+      );
     const effectiveCredential = refreshedUsage.credential;
     const refreshOutcome = refreshedUsage.outcome;
-    const authFailureStatusCode = anthropicOauthUsageAuthFailureStatusCode(refreshOutcome);
+    const authFailureStatusCode = !refreshOutcome.ok
+      && (refreshOutcome.statusCode === 401 || refreshOutcome.statusCode === 403)
+      ? refreshOutcome.statusCode
+      : null;
     const shouldParkAfterAuthFailure = authFailureStatusCode !== null && existing.status !== 'expired';
     const nextProbeAt = shouldParkAfterAuthFailure
       ? new Date(Date.now() + (readTokenCredentialProbeIntervalMinutes() * 60 * 1000))
@@ -1049,30 +1062,32 @@ router.post('/v1/admin/token-credentials/:id/provider-usage-refresh', requireApi
         reason: `upstream_${authFailureStatusCode}_provider_usage_refresh`
       })
       : null;
-    const warningReason = authFailureStatusCode === null
+    const warningReason = isAnthropicOauthCredential && authFailureStatusCode === null
       ? providerUsageWarningReasonFromRefreshOutcome(refreshOutcome)
       : null;
     const stateSyncErrors: string[] = [];
-    let lifecycle = {
-      fiveHourTransition: null as 'exhausted' | 'cleared' | null,
-      sevenDayTransition: null as 'exhausted' | 'cleared' | null
-    };
+    let lifecycle = isAnthropicOauthCredential
+      ? {
+        fiveHourTransition: null as 'exhausted' | 'cleared' | null,
+        sevenDayTransition: null as 'exhausted' | 'cleared' | null
+      }
+      : null;
     let snapshotSummary: {
       usageSource: string;
       fetchedAt: string;
       fiveHourUtilizationRatio: number;
       fiveHourUsedPercent: number;
       fiveHourResetsAt: string | null;
-      fiveHourContributionCapExhausted: boolean;
+      fiveHourContributionCapExhausted: boolean | null;
       fiveHourProviderUsageExhausted: boolean;
       sevenDayUtilizationRatio: number;
       sevenDayUsedPercent: number;
       sevenDayResetsAt: string | null;
-      sevenDayContributionCapExhausted: boolean;
+      sevenDayContributionCapExhausted: boolean | null;
       sevenDayProviderUsageExhausted: boolean;
     } | null = null;
 
-    if (refreshOutcome.ok || warningReason !== null) {
+    if (isAnthropicOauthCredential && (refreshOutcome.ok || warningReason !== null)) {
       try {
         await runtime.repos.tokenCredentials.setProviderUsageWarning(id, refreshOutcome.ok ? null : warningReason);
       } catch (error) {
@@ -1081,53 +1096,70 @@ router.post('/v1/admin/token-credentials/:id/provider-usage-refresh', requireApi
     }
 
     if (refreshOutcome.ok) {
-      const state = readClaudeContributionCapSnapshotState({
-        credential: effectiveCredential,
-        snapshot: refreshOutcome.snapshot
-      });
+      if (isAnthropicOauthCredential) {
+        const state = readClaudeContributionCapSnapshotState({
+          credential: effectiveCredential,
+          snapshot: refreshOutcome.snapshot
+        });
 
-      snapshotSummary = {
-        usageSource: refreshOutcome.snapshot.usageSource,
-        fetchedAt: refreshOutcome.snapshot.fetchedAt.toISOString(),
-        fiveHourUtilizationRatio: refreshOutcome.snapshot.fiveHourUtilizationRatio,
-        fiveHourUsedPercent: refreshOutcome.snapshot.fiveHourUtilizationRatio * 100,
-        fiveHourResetsAt: refreshOutcome.snapshot.fiveHourResetsAt?.toISOString() ?? null,
-        fiveHourContributionCapExhausted: state.fiveHourContributionCapExhausted,
-        fiveHourProviderUsageExhausted: refreshOutcome.snapshot.fiveHourUtilizationRatio >= 1,
-        sevenDayUtilizationRatio: refreshOutcome.snapshot.sevenDayUtilizationRatio,
-        sevenDayUsedPercent: refreshOutcome.snapshot.sevenDayUtilizationRatio * 100,
-        sevenDayResetsAt: refreshOutcome.snapshot.sevenDayResetsAt?.toISOString() ?? null,
-        sevenDayContributionCapExhausted: state.sevenDayContributionCapExhausted,
-        sevenDayProviderUsageExhausted: refreshOutcome.snapshot.sevenDayUtilizationRatio >= 1
-      };
+        snapshotSummary = {
+          usageSource: refreshOutcome.snapshot.usageSource,
+          fetchedAt: refreshOutcome.snapshot.fetchedAt.toISOString(),
+          fiveHourUtilizationRatio: refreshOutcome.snapshot.fiveHourUtilizationRatio,
+          fiveHourUsedPercent: refreshOutcome.snapshot.fiveHourUtilizationRatio * 100,
+          fiveHourResetsAt: refreshOutcome.snapshot.fiveHourResetsAt?.toISOString() ?? null,
+          fiveHourContributionCapExhausted: state.fiveHourContributionCapExhausted,
+          fiveHourProviderUsageExhausted: refreshOutcome.snapshot.fiveHourUtilizationRatio >= 1,
+          sevenDayUtilizationRatio: refreshOutcome.snapshot.sevenDayUtilizationRatio,
+          sevenDayUsedPercent: refreshOutcome.snapshot.sevenDayUtilizationRatio * 100,
+          sevenDayResetsAt: refreshOutcome.snapshot.sevenDayResetsAt?.toISOString() ?? null,
+          sevenDayContributionCapExhausted: state.sevenDayContributionCapExhausted,
+          sevenDayProviderUsageExhausted: refreshOutcome.snapshot.sevenDayUtilizationRatio >= 1
+        };
 
-      if (
-        state.fetchedAt !== null
-        && state.fiveHourUtilizationRatio !== null
-        && state.sevenDayUtilizationRatio !== null
-        && state.fiveHourSharedThresholdPercent !== null
-        && state.sevenDaySharedThresholdPercent !== null
-      ) {
-        try {
-          lifecycle = await runtime.repos.tokenCredentials.syncClaudeContributionCapLifecycle({
-            id: effectiveCredential.id,
-            orgId: effectiveCredential.orgId,
-            provider: effectiveCredential.provider,
-            snapshotFetchedAt: state.fetchedAt,
-            fiveHourReservePercent: state.fiveHourReservePercent,
-            fiveHourUtilizationRatio: state.fiveHourUtilizationRatio,
-            fiveHourResetsAt: state.fiveHourResetsAt,
-            fiveHourSharedThresholdPercent: state.fiveHourSharedThresholdPercent,
-            fiveHourContributionCapExhausted: state.fiveHourContributionCapExhausted,
-            sevenDayReservePercent: state.sevenDayReservePercent,
-            sevenDayUtilizationRatio: state.sevenDayUtilizationRatio,
-            sevenDayResetsAt: state.sevenDayResetsAt,
-            sevenDaySharedThresholdPercent: state.sevenDaySharedThresholdPercent,
-            sevenDayContributionCapExhausted: state.sevenDayContributionCapExhausted
-          });
-        } catch (error) {
-          stateSyncErrors.push(error instanceof Error ? error.message : 'contribution_cap_lifecycle_sync_failed');
+        if (
+          state.fetchedAt !== null
+          && state.fiveHourUtilizationRatio !== null
+          && state.sevenDayUtilizationRatio !== null
+          && state.fiveHourSharedThresholdPercent !== null
+          && state.sevenDaySharedThresholdPercent !== null
+        ) {
+          try {
+            lifecycle = await runtime.repos.tokenCredentials.syncClaudeContributionCapLifecycle({
+              id: effectiveCredential.id,
+              orgId: effectiveCredential.orgId,
+              provider: effectiveCredential.provider,
+              snapshotFetchedAt: state.fetchedAt,
+              fiveHourReservePercent: state.fiveHourReservePercent,
+              fiveHourUtilizationRatio: state.fiveHourUtilizationRatio,
+              fiveHourResetsAt: state.fiveHourResetsAt,
+              fiveHourSharedThresholdPercent: state.fiveHourSharedThresholdPercent,
+              fiveHourContributionCapExhausted: state.fiveHourContributionCapExhausted,
+              sevenDayReservePercent: state.sevenDayReservePercent,
+              sevenDayUtilizationRatio: state.sevenDayUtilizationRatio,
+              sevenDayResetsAt: state.sevenDayResetsAt,
+              sevenDaySharedThresholdPercent: state.sevenDaySharedThresholdPercent,
+              sevenDayContributionCapExhausted: state.sevenDayContributionCapExhausted
+            });
+          } catch (error) {
+            stateSyncErrors.push(error instanceof Error ? error.message : 'contribution_cap_lifecycle_sync_failed');
+          }
         }
+      } else {
+        snapshotSummary = {
+          usageSource: refreshOutcome.snapshot.usageSource,
+          fetchedAt: refreshOutcome.snapshot.fetchedAt.toISOString(),
+          fiveHourUtilizationRatio: refreshOutcome.snapshot.fiveHourUtilizationRatio,
+          fiveHourUsedPercent: refreshOutcome.snapshot.fiveHourUtilizationRatio * 100,
+          fiveHourResetsAt: refreshOutcome.snapshot.fiveHourResetsAt?.toISOString() ?? null,
+          fiveHourContributionCapExhausted: null,
+          fiveHourProviderUsageExhausted: refreshOutcome.snapshot.fiveHourUtilizationRatio >= 1,
+          sevenDayUtilizationRatio: refreshOutcome.snapshot.sevenDayUtilizationRatio,
+          sevenDayUsedPercent: refreshOutcome.snapshot.sevenDayUtilizationRatio * 100,
+          sevenDayResetsAt: refreshOutcome.snapshot.sevenDayResetsAt?.toISOString() ?? null,
+          sevenDayContributionCapExhausted: null,
+          sevenDayProviderUsageExhausted: refreshOutcome.snapshot.sevenDayUtilizationRatio >= 1
+        };
       }
     }
 
@@ -1145,10 +1177,12 @@ router.post('/v1/admin/token-credentials/:id/provider-usage-refresh', requireApi
       nextProbeAt: nextProbeAt?.toISOString() ?? null,
       retryAfterMs: refreshOutcome.ok ? null : (refreshOutcome.retryAfterMs ?? null),
       errorMessage: refreshOutcome.ok ? null : (refreshOutcome.errorMessage ?? null),
-      reserve: {
-        fiveHourReservePercent: effectiveCredential.fiveHourReservePercent,
-        sevenDayReservePercent: effectiveCredential.sevenDayReservePercent
-      },
+      reserve: isAnthropicOauthCredential
+        ? {
+          fiveHourReservePercent: effectiveCredential.fiveHourReservePercent,
+          sevenDayReservePercent: effectiveCredential.sevenDayReservePercent
+        }
+        : null,
       snapshot: snapshotSummary,
       lifecycle,
       rawPayload: refreshOutcome.rawPayload ?? null,
