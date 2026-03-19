@@ -340,7 +340,8 @@ Response shape:
 
 Notes:
 - intended operator use: compare the upstream raw quota payload with Innies' parsed 5h / 7d view for a specific Claude Code or Codex token
-- supported for Anthropic and OpenAI/Codex OAuth credentials; expired access tokens can still be refreshed here when Innies has a stored OAuth refresh token
+- supported for Anthropic OAuth credentials and OpenAI/Codex OAuth or session credentials; expired access tokens can still be refreshed here when Innies has a stored OAuth refresh token
+- unsupported non-OAuth or non-session OpenAI/Codex credentials fail early with `409 invalid_request` before any `ok: true` response envelope is built
 - route bypasses Anthropic in-memory usage-fetch backoff so operators can debug a Claude token immediately, and it uses the shared provider-usage-plus-token-refresh helper for both providers
 - successful refresh persists the latest snapshot locally; warning sync and contribution-cap lifecycle sync remain Anthropic-only follow-up state
 - upstream `401` / `403` from the usage endpoint is treated as an auth failure for active credentials: Innies parks the credential, schedules probe recovery, and stops treating the token like merely stale quota state
