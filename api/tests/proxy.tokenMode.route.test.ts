@@ -3933,6 +3933,135 @@ describe('proxy token-mode route behavior', () => {
     delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
   });
 
+  it('falls back to the alternate provider after an upstream 400 on the preferred provider in non-stream token mode', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const openAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_provider_400_fallback',
+      clientId: 'app_provider_400_fallback'
+    });
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string) => {
+      if (provider === 'openai') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: false } as any;
+      }
+      if (provider === 'anthropic') {
+        return { provider: 'anthropic', model: 'gpt-5.4', supports_streaming: false } as any;
+      }
+      return null as any;
+    });
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider === 'openai') {
+        return [{
+          id: 'provider-400-openai-cred',
+          orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+          provider: 'openai',
+          authScheme: 'bearer',
+          accessToken: openAiToken,
+          refreshToken: 'rt_provider_400_openai',
+          expiresAt: new Date('2026-03-02T00:00:00Z'),
+          status: 'active',
+          rotationVersion: 1,
+          createdAt: new Date('2026-03-01T00:00:00Z'),
+          updatedAt: new Date('2026-03-01T00:00:00Z'),
+          revokedAt: null,
+          monthlyContributionLimitUnits: null,
+          monthlyContributionUsedUnits: 0,
+          monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+        } as any];
+      }
+
+      if (provider === 'anthropic') {
+        return [{
+          id: 'provider-400-anthropic-fallback',
+          orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+          provider: 'anthropic',
+          authScheme: 'x_api_key',
+          accessToken: 'sk-ant-provider-400-fallback',
+          refreshToken: null,
+          expiresAt: new Date('2026-03-02T00:00:00Z'),
+          status: 'active',
+          rotationVersion: 1,
+          createdAt: new Date('2026-03-01T00:00:00Z'),
+          updatedAt: new Date('2026-03-01T00:00:00Z'),
+          revokedAt: null,
+          monthlyContributionLimitUnits: null,
+          monthlyContributionUsedUnits: 0,
+          monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+        } as any];
+      }
+
+      return [];
+    });
+
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input: URL | RequestInfo, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      if (headers?.authorization === `Bearer ${openAiToken}`) {
+        return new Response(JSON.stringify({
+          error: {
+            type: 'invalid_request_error',
+            message: 'provider rejected request'
+          }
+        }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+
+      if (headers?.['x-api-key'] === 'sk-ant-provider-400-fallback') {
+        return new Response(JSON.stringify({
+          id: 'resp_provider_400_fallback_ok',
+          usage: { input_tokens: 2, output_tokens: 1 }
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+
+      throw new Error(`unexpected credential headers: ${JSON.stringify(headers ?? {})}`);
+    });
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'gpt-5.4',
+        streaming: false,
+        payload: { model: 'gpt-5.4', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('resp_provider_400_fallback_ok');
+    expect(listSpy.mock.calls.map((call) => call[1])).toEqual(['openai', 'anthropic']);
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls.at(-1)?.[0]?.routeDecision;
+    expect(routeDecision?.reason).toBe('fallback_provider_selected');
+    expect(routeDecision?.provider_preferred).toBe('openai');
+    expect(routeDecision?.provider_effective).toBe('anthropic');
+    expect(routeDecision?.provider_fallback_from).toBe('openai');
+    expect(routeDecision?.provider_fallback_reason).toBe('capacity_unavailable');
+    upstreamSpy.mockRestore();
+  });
+
   it('applies stored buyer-key provider preference ahead of an unpinned request provider', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
@@ -4386,6 +4515,40 @@ describe('proxy token-mode route behavior', () => {
     expect(routeDecision?.provider_effective).toBe('openai');
     expect(routeDecision?.provider_fallback_from).toBe('anthropic');
     expect(routeDecision?.provider_fallback_reason).toBe('model_invalid');
+    upstreamSpy.mockRestore();
+  });
+
+  it('keeps malformed local requests terminal before token-mode fallback routing begins', async () => {
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([]);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      throw new Error('fetch should not be called for malformed local requests');
+    });
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'gpt-5.4',
+        streaming: 'false',
+        payload: { model: 'gpt-5.4', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any).code).toBe('invalid_request');
+    expect(listSpy).not.toHaveBeenCalled();
+    expect(upstreamSpy).not.toHaveBeenCalled();
     upstreamSpy.mockRestore();
   });
 });
