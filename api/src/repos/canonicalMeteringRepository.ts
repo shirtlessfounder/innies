@@ -190,6 +190,17 @@ export class CanonicalMeteringRepository {
     throw new Error('expected one canonical metering row');
   }
 
+  async findById(id: string): Promise<CanonicalMeteringEventRow | null> {
+    const sql = `
+      select *
+      from ${TABLES.canonicalMeteringEvents}
+      where id = $1
+      limit 1
+    `;
+    const result = await this.db.query<CanonicalMeteringEventRow>(sql, [id]);
+    return result.rowCount === 1 ? result.rows[0] : null;
+  }
+
   private async findExistingEvent(input: Pick<CanonicalMeteringEventInput, 'requestId' | 'attemptNo' | 'finalizationKind'>): Promise<CanonicalMeteringEventRow | null> {
     const sql = `
       select *
