@@ -20,6 +20,25 @@ export class MockSqlClient implements SqlClient {
   }
 }
 
+export class SequenceSqlClient implements SqlClient {
+  readonly queries: CapturedQuery[] = [];
+
+  constructor(private readonly results: Array<SqlQueryResult | Error>) {}
+
+  async query<T = Record<string, unknown>>(sql: string, params?: SqlValue[]): Promise<SqlQueryResult<T>> {
+    this.queries.push({ sql, params });
+    const next = this.results.shift() ?? { rows: [], rowCount: 0 };
+    if (next instanceof Error) {
+      throw next;
+    }
+    return next as SqlQueryResult<T>;
+  }
+
+  async transaction<T>(run: (tx: TransactionContext) => Promise<T>): Promise<T> {
+    return run(this);
+  }
+}
+
 export function createLoggerSpy() {
   const infoCalls: Array<{ message: string; fields?: Record<string, unknown> }> = [];
   const errorCalls: Array<{ message: string; fields?: Record<string, unknown> }> = [];
