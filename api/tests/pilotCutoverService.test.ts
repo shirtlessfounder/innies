@@ -7,6 +7,9 @@ function createService(overrides?: Partial<ConstructorParameters<typeof PilotCut
     releaseFreeze: vi.fn().mockResolvedValue(true),
     recordFailure: vi.fn().mockResolvedValue(true)
   };
+  const transactionalFreezeRepository = {
+    releaseFreeze: vi.fn().mockResolvedValue(true)
+  };
 
   const identityRepository = {
     ensureOrg: vi.fn().mockResolvedValue({ id: 'org_fnf', slug: 'fnf', name: 'Friends & Family' }),
@@ -42,6 +45,7 @@ function createService(overrides?: Partial<ConstructorParameters<typeof PilotCut
     createIdentityRepository: vi.fn().mockReturnValue(identityRepository),
     createFnfOwnershipRepository: vi.fn().mockReturnValue(fnfOwnershipRepository),
     createPilotCutoverRepository: vi.fn().mockReturnValue(cutoverRepository),
+    createFreezeRepository: vi.fn().mockReturnValue(transactionalFreezeRepository as any),
     ...overrides
   });
 
@@ -49,6 +53,7 @@ function createService(overrides?: Partial<ConstructorParameters<typeof PilotCut
     service,
     sql,
     freezeRepository,
+    transactionalFreezeRepository,
     identityRepository,
     fnfOwnershipRepository,
     cutoverRepository,
@@ -57,6 +62,50 @@ function createService(overrides?: Partial<ConstructorParameters<typeof PilotCut
 }
 
 describe('PilotCutoverService', () => {
+  it('does not release freezes through the global repository before commit succeeds', async () => {
+    const freezeRepository = {
+      activateFreeze: vi.fn().mockResolvedValue(undefined),
+      releaseFreeze: vi.fn().mockResolvedValue(true),
+      recordFailure: vi.fn().mockResolvedValue(true)
+    };
+    const txFreezeRepository = {
+      releaseFreeze: vi.fn().mockResolvedValue(true)
+    };
+    const reserveFloorMigration = {
+      migrateReserveFloors: vi.fn().mockResolvedValue(undefined)
+    };
+    const sql = {
+      query: vi.fn(),
+      transaction: vi.fn(async (run: (tx: object) => Promise<unknown>) => {
+        await run({ kind: 'tx' });
+        throw new Error('commit failed');
+      })
+    };
+
+    const { service } = createService({
+      sql: sql as any,
+      freezeRepository: freezeRepository as any,
+      reserveFloorMigration,
+      ...({
+        createFreezeRepository: vi.fn().mockReturnValue(txFreezeRepository)
+      } as any)
+    });
+
+    await expect(service.cutover({
+      sourceOrgId: 'org_innies',
+      targetOrgSlug: 'fnf',
+      targetOrgName: 'Friends & Family',
+      targetUserEmail: 'darryn@example.com',
+      targetUserDisplayName: 'Darryn',
+      buyerKeyIds: ['buyer_1'],
+      tokenCredentialIds: ['cred_1']
+    } as any)).rejects.toThrow('commit failed');
+
+    expect(freezeRepository.releaseFreeze).not.toHaveBeenCalled();
+    expect(txFreezeRepository.releaseFreeze).toHaveBeenCalledTimes(2);
+    expect(freezeRepository.recordFailure).toHaveBeenCalledTimes(2);
+  });
+
   it('releases freezes inside the cutover transaction and passes the transaction to reserve-floor migration', async () => {
     const tx = { kind: 'cutover-transaction' };
     const callOrder: string[] = [];
@@ -67,11 +116,14 @@ describe('PilotCutoverService', () => {
     };
     const freezeRepository = {
       activateFreeze: vi.fn().mockResolvedValue(undefined),
+      releaseFreeze: vi.fn().mockResolvedValue(true),
+      recordFailure: vi.fn().mockResolvedValue(true)
+    };
+    const txFreezeRepository = {
       releaseFreeze: vi.fn().mockImplementation(async () => {
         callOrder.push('freeze:release');
         return true;
       }),
-      recordFailure: vi.fn().mockResolvedValue(true)
     };
     const sql = {
       query: vi.fn(),
@@ -86,7 +138,13 @@ describe('PilotCutoverService', () => {
     const { service } = createService({
       sql: sql as any,
       freezeRepository: freezeRepository as any,
-      reserveFloorMigration
+      reserveFloorMigration,
+      ...({
+        createFreezeRepository: vi.fn().mockImplementation((input: object) => {
+          callOrder.push(input === tx ? 'freeze-repo:tx' : 'freeze-repo:other');
+          return txFreezeRepository;
+        })
+      } as any)
     });
 
     await service.cutover({
@@ -95,19 +153,21 @@ describe('PilotCutoverService', () => {
       targetOrgName: 'Friends & Family',
       targetUserEmail: 'darryn@example.com',
       targetUserDisplayName: 'Darryn',
-      targetGithubLogin: 'darryn',
       buyerKeyIds: ['buyer_1'],
       tokenCredentialIds: ['cred_1']
-    });
+    } as any);
 
+    expect(callOrder).toContain('freeze-repo:tx');
     expect(callOrder).toContain('migrate:tx');
     expect(callOrder.lastIndexOf('freeze:release')).toBeLessThan(callOrder.indexOf('tx:after-work'));
+    expect(freezeRepository.releaseFreeze).not.toHaveBeenCalled();
   });
 
   it('cuts over buyer keys and token credentials, then releases freezes after reserve-floor migration succeeds', async () => {
     const {
       service,
       freezeRepository,
+      transactionalFreezeRepository,
       identityRepository,
       fnfOwnershipRepository,
       cutoverRepository,
@@ -120,12 +180,11 @@ describe('PilotCutoverService', () => {
       targetOrgName: 'Friends & Family',
       targetUserEmail: 'darryn@example.com',
       targetUserDisplayName: 'Darryn',
-      targetGithubLogin: 'darryn',
       buyerKeyIds: ['buyer_1'],
       tokenCredentialIds: ['cred_1'],
       actorUserId: 'user_admin',
       effectiveAt: new Date('2026-03-20T00:00:00Z')
-    });
+    } as any);
 
     expect(freezeRepository.activateFreeze).toHaveBeenCalledTimes(2);
     expect(identityRepository.ensureOrg).toHaveBeenCalledWith({
@@ -174,7 +233,8 @@ describe('PilotCutoverService', () => {
       cutoverId: 'cut_1',
       actorUserId: 'user_admin'
     });
-    expect(freezeRepository.releaseFreeze).toHaveBeenCalledTimes(2);
+    expect(freezeRepository.releaseFreeze).not.toHaveBeenCalled();
+    expect(transactionalFreezeRepository.releaseFreeze).toHaveBeenCalledTimes(2);
     expect(result.cutoverRecord.id).toBe('cut_1');
   });
 
@@ -193,10 +253,9 @@ describe('PilotCutoverService', () => {
       targetOrgName: 'Friends & Family',
       targetUserEmail: 'darryn@example.com',
       targetUserDisplayName: 'Darryn',
-      targetGithubLogin: 'darryn',
       buyerKeyIds: ['buyer_1'],
       tokenCredentialIds: ['cred_1']
-    })).rejects.toThrow('reserve floor migration failed');
+    } as any)).rejects.toThrow('reserve floor migration failed');
 
     expect(freezeRepository.recordFailure).toHaveBeenCalledTimes(2);
     expect(freezeRepository.releaseFreeze).not.toHaveBeenCalled();
@@ -206,6 +265,7 @@ describe('PilotCutoverService', () => {
     const {
       service,
       freezeRepository,
+      transactionalFreezeRepository,
       identityRepository,
       fnfOwnershipRepository,
       cutoverRepository,
@@ -246,7 +306,8 @@ describe('PilotCutoverService', () => {
       revertedProviderCredentialTargetOrgId: 'org_innies',
       createdByUserId: 'user_admin'
     });
-    expect(freezeRepository.releaseFreeze).toHaveBeenCalledTimes(2);
+    expect(freezeRepository.releaseFreeze).not.toHaveBeenCalled();
+    expect(transactionalFreezeRepository.releaseFreeze).toHaveBeenCalledTimes(2);
     expect(reserveFloorMigration.migrateReserveFloors).not.toHaveBeenCalled();
     expect(result.rollbackRecord.id).toBe('rollback_1');
   });

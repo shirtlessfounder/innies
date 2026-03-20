@@ -16,6 +16,14 @@ const pilotAuthCallbackQuerySchema = z.object({
   state: z.string().min(1)
 });
 
+function normalizePilotReturnTo(value: string | undefined | null): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) return undefined;
+  if (!normalized.startsWith('/')) return undefined;
+  if (normalized.startsWith('//')) return undefined;
+  return normalized;
+}
+
 router.get('/v1/pilot/session', async (req, res, next) => {
   try {
     const token = runtime.services.pilotSessions.readTokenFromRequest(req);
@@ -41,7 +49,7 @@ router.get('/v1/pilot/auth/github/start', async (req, res, next) => {
   try {
     const query = pilotAuthStartQuerySchema.parse(req.query ?? {});
     const redirectUrl = runtime.services.pilotGithubAuth.buildAuthorizationUrl({
-      returnTo: query.returnTo
+      returnTo: normalizePilotReturnTo(query.returnTo)
     });
     res.redirect(302, redirectUrl);
   } catch (error) {
@@ -58,7 +66,7 @@ router.get('/v1/pilot/auth/github/callback', async (req, res, next) => {
     });
 
     res.setHeader('set-cookie', buildPilotSessionCookie(result.sessionToken));
-    res.redirect(302, result.returnTo ?? '/pilot');
+    res.redirect(302, normalizePilotReturnTo(result.returnTo) ?? '/pilot');
   } catch (error) {
     next(error);
   }

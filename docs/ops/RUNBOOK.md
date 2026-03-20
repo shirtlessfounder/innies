@@ -249,7 +249,6 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
     "targetOrgName": "Friends & Family",
     "targetUserEmail": "darryn@example.com",
     "targetUserDisplayName": "Darryn",
-    "targetGithubLogin": "darryn",
     "buyerKeyIds": ["BUYER_KEY_ID"],
     "tokenCredentialIds": ["TOKEN_CREDENTIAL_ID"]
   }'

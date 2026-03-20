@@ -100,16 +100,15 @@ export class PilotGithubAuthService {
     const accessToken = await this.exchangeCodeForAccessToken(input.code);
     const githubUser = await this.fetchGithubUser(accessToken);
     const githubEmails = await this.fetchGithubEmails(accessToken);
-    const verifiedPrimaryEmail = selectVerifiedPrimaryEmail(githubUser, githubEmails);
-    const fallbackEmail = normalizeOptionalEmail(githubUser.email);
+    const verifiedEmail = selectVerifiedEmail(githubEmails);
 
-    if (!this.isAllowlisted(githubUser.login, verifiedPrimaryEmail)) {
+    if (!this.isAllowlisted(githubUser.login, verifiedEmail)) {
       throw new AppError('forbidden', 403, 'GitHub user is not allowlisted for the pilot');
     }
-    const sessionEmail = verifiedPrimaryEmail ?? fallbackEmail;
-    if (!sessionEmail) {
+    if (!verifiedEmail) {
       throw new AppError('forbidden', 403, 'GitHub user does not have a verified email for the pilot');
     }
+    const sessionEmail = verifiedEmail;
 
     const org = await this.input.identityRepository.ensureOrg({
       slug: this.input.targetOrgSlug,
@@ -223,12 +222,13 @@ export class PilotGithubAuthService {
   }
 }
 
-function selectVerifiedPrimaryEmail(user: GithubUser, emails: GithubEmail[]): string | null {
+function selectVerifiedEmail(emails: GithubEmail[]): string | null {
   const primaryVerified = emails.find((email) => email.primary && email.verified);
   if (primaryVerified?.email) {
     return primaryVerified.email;
   }
-  return null;
+  const anyVerified = emails.find((email) => email.verified);
+  return anyVerified?.email ?? null;
 }
 
 function normalizeLogin(value: string): string {
@@ -237,10 +237,4 @@ function normalizeLogin(value: string): string {
 
 function normalizeEmail(value: string): string {
   return value.trim().toLowerCase();
-}
-
-function normalizeOptionalEmail(value: string | null): string | null {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 }

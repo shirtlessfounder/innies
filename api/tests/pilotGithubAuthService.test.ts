@@ -166,4 +166,49 @@ describe('PilotGithubAuthService', () => {
       state
     })).rejects.toThrow('GitHub user is not allowlisted for the pilot');
   });
+
+  it('rejects login-allowlisted users that do not have a verified GitHub email for provisioning', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: 'gho_123' })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ login: 'darryn', email: 'darryn@example.com', name: 'Darryn' })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ([{ email: 'darryn@example.com', primary: true, verified: false }])
+      });
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    const service = new PilotGithubAuthService({
+      clientId: 'github-client-id',
+      clientSecret: 'github-client-secret',
+      callbackUrl: 'https://innies.example.com/v1/pilot/auth/github/callback',
+      allowlistedLogins: ['darryn'],
+      allowlistedEmails: [],
+      identityRepository: {
+        ensureOrg: vi.fn(),
+        ensureUser: vi.fn(),
+        ensureMembership: vi.fn()
+      } as any,
+      sessionService: {
+        issueSession: vi.fn()
+      } as any,
+      targetOrgSlug: 'fnf',
+      targetOrgName: 'Friends & Family',
+      stateSecret: 'pilot-oauth-state-secret',
+      now: () => new Date('2026-03-20T00:00:00Z')
+    });
+
+    const state = service.createOauthState({ returnTo: '/pilot' });
+
+    await expect(service.finishOauthCallback({
+      code: 'oauth-code',
+      state
+    })).rejects.toThrow('GitHub user does not have a verified email for the pilot');
+  });
 });

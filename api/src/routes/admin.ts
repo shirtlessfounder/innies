@@ -166,7 +166,6 @@ const adminPilotCutoverSchema = z.object({
   targetOrgName: z.string().min(1),
   targetUserEmail: z.string().email(),
   targetUserDisplayName: z.string().min(1).optional(),
-  targetGithubLogin: z.string().min(1),
   buyerKeyIds: z.array(z.string().min(1)),
   tokenCredentialIds: z.array(z.string().min(1)),
   effectiveAt: z.string().datetime({ offset: true }).optional()
@@ -281,7 +280,6 @@ router.post('/v1/admin/pilot/cutover', requireApiKey(runtime.repos.apiKeys, ['ad
       targetOrgName: parsed.targetOrgName,
       targetUserEmail: parsed.targetUserEmail,
       targetUserDisplayName: parsed.targetUserDisplayName,
-      targetGithubLogin: parsed.targetGithubLogin,
       buyerKeyIds: parsed.buyerKeyIds,
       tokenCredentialIds: parsed.tokenCredentialIds,
       actorUserId: null,

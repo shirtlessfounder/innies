@@ -46,6 +46,7 @@ export class PilotCutoverService {
   private readonly createIdentityRepository: (db: object) => IdentityRepositoryLike;
   private readonly createFnfOwnershipRepository: (db: object) => FnfOwnershipRepositoryLike;
   private readonly createPilotCutoverRepository: (db: object) => PilotCutoverRepositoryLike;
+  private readonly createFreezeRepository: (db: object) => PilotAdmissionFreezeRepositoryLike;
 
   constructor(input: {
     sql: SqlClient;
@@ -54,6 +55,7 @@ export class PilotCutoverService {
     createIdentityRepository?: (db: object) => IdentityRepositoryLike;
     createFnfOwnershipRepository?: (db: object) => FnfOwnershipRepositoryLike;
     createPilotCutoverRepository?: (db: object) => PilotCutoverRepositoryLike;
+    createFreezeRepository?: (db: object) => PilotAdmissionFreezeRepositoryLike;
   }) {
     this.sql = input.sql;
     this.freezeRepository = input.freezeRepository ?? new PilotAdmissionFreezeRepository(input.sql);
@@ -64,6 +66,8 @@ export class PilotCutoverService {
       ?? ((db) => new FnfOwnershipRepository(db as any));
     this.createPilotCutoverRepository = input.createPilotCutoverRepository
       ?? ((db) => new PilotCutoverRepository(db as any));
+    this.createFreezeRepository = input.createFreezeRepository
+      ?? ((db) => new PilotAdmissionFreezeRepository(db as any));
   }
 
   private readonly sql: SqlClient;
@@ -74,7 +78,6 @@ export class PilotCutoverService {
     targetOrgName: string;
     targetUserEmail: string;
     targetUserDisplayName?: string | null;
-    targetGithubLogin: string;
     buyerKeyIds: string[];
     tokenCredentialIds: string[];
     actorUserId?: string | null;
@@ -98,6 +101,7 @@ export class PilotCutoverService {
         const identityRepository = this.createIdentityRepository(tx);
         const fnfOwnershipRepository = this.createFnfOwnershipRepository(tx);
         const pilotCutoverRepository = this.createPilotCutoverRepository(tx);
+        const transactionalFreezeRepository = this.createFreezeRepository(tx);
 
         const org = await identityRepository.ensureOrg({
           slug: input.targetOrgSlug,
@@ -154,6 +158,7 @@ export class PilotCutoverService {
         });
 
         await this.releaseFreezes({
+          freezeRepository: transactionalFreezeRepository,
           freezes,
           releaseReason: 'cutover_committed',
           releasedByUserId: input.actorUserId ?? null
@@ -197,6 +202,7 @@ export class PilotCutoverService {
         const identityRepository = this.createIdentityRepository(tx);
         const fnfOwnershipRepository = this.createFnfOwnershipRepository(tx);
         const pilotCutoverRepository = this.createPilotCutoverRepository(tx);
+        const transactionalFreezeRepository = this.createFreezeRepository(tx);
 
         await identityRepository.reassignBuyerKeysToOrg({
           apiKeyIds: input.buyerKeyIds,
@@ -228,6 +234,7 @@ export class PilotCutoverService {
         });
 
         await this.releaseFreezes({
+          freezeRepository: transactionalFreezeRepository,
           freezes,
           releaseReason: 'rollback_committed',
           releasedByUserId: input.actorUserId ?? null
@@ -268,11 +275,12 @@ export class PilotCutoverService {
   }
 
   private async releaseFreezes(input: {
+    freezeRepository: PilotAdmissionFreezeRepositoryLike;
     freezes: FreezeTarget[];
     releaseReason: string;
     releasedByUserId: string | null;
   }): Promise<void> {
-    await Promise.all(input.freezes.map((freeze) => this.freezeRepository.releaseFreeze({
+    await Promise.all(input.freezes.map((freeze) => input.freezeRepository.releaseFreeze({
       resourceType: freeze.resourceType,
       resourceId: freeze.resourceId,
       releaseReason: input.releaseReason,

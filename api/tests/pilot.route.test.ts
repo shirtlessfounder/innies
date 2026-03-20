@@ -191,7 +191,7 @@ describe('pilot routes', () => {
   });
 
   it('redirects to GitHub auth with a signed state token', async () => {
-    vi.spyOn(runtimeModule.runtime.services.pilotGithubAuth, 'buildAuthorizationUrl')
+    const buildAuthorizationUrl = vi.spyOn(runtimeModule.runtime.services.pilotGithubAuth, 'buildAuthorizationUrl')
       .mockReturnValue('https://github.com/login/oauth/authorize?state=signed');
 
     const req = createMockReq({
@@ -205,6 +205,24 @@ describe('pilot routes', () => {
 
     expect(res.statusCode).toBe(302);
     expect(res.headers.location).toBe('https://github.com/login/oauth/authorize?state=signed');
+    expect(buildAuthorizationUrl).toHaveBeenCalledWith({ returnTo: '/pilot' });
+  });
+
+  it('drops unsafe external returnTo values before starting GitHub auth', async () => {
+    const buildAuthorizationUrl = vi.spyOn(runtimeModule.runtime.services.pilotGithubAuth, 'buildAuthorizationUrl')
+      .mockReturnValue('https://github.com/login/oauth/authorize?state=signed');
+
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/pilot/auth/github/start',
+      query: { returnTo: 'https://evil.example.com/phish' }
+    });
+    const res = createMockRes();
+
+    await invoke(authStartHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(302);
+    expect(buildAuthorizationUrl).toHaveBeenCalledWith({ returnTo: undefined });
   });
 
   it('handles the GitHub callback by setting the pilot session cookie and redirecting', async () => {
@@ -233,6 +251,32 @@ describe('pilot routes', () => {
     expect(res.headers.location).toBe('/pilot');
     expect(res.headers['set-cookie']).toContain('innies_pilot_session=signed-session-token');
     expect(res.headers['set-cookie']).toContain('HttpOnly');
+  });
+
+  it('falls back to /pilot when the callback returnTo is unsafe', async () => {
+    vi.spyOn(runtimeModule.runtime.services.pilotGithubAuth, 'finishOauthCallback').mockResolvedValue({
+      sessionToken: 'signed-session-token',
+      returnTo: 'https://evil.example.com/phish',
+      session: {
+        sessionKind: 'darryn_self',
+        actorUserId: 'user_darryn',
+        effectiveOrgId: 'org_fnf',
+        githubLogin: 'darryn',
+        userEmail: 'darryn@example.com'
+      }
+    } as any);
+
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/pilot/auth/github/callback',
+      query: { code: 'oauth-code', state: 'oauth-state' }
+    });
+    const res = createMockRes();
+
+    await invoke(authCallbackHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe('/pilot');
   });
 
   it('clears the pilot session cookie on logout', async () => {
