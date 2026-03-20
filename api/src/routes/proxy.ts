@@ -194,6 +194,7 @@ function evaluateOpenAiProviderUsageEligibility(input: {
     | 'usage_exhausted_5h'
     | 'usage_exhausted_7d'
     | 'provider_usage_snapshot_missing'
+    | 'provider_usage_snapshot_soft_stale'
     | 'provider_usage_snapshot_hard_stale'
     | 'contribution_cap_exhausted_5h'
     | 'contribution_cap_exhausted_7d'
@@ -299,6 +300,15 @@ function evaluateOpenAiProviderUsageEligibility(input: {
       inScope,
       eligible: !reserveFloorConfigured,
       exclusionReason: reserveFloorConfigured ? 'provider_usage_snapshot_hard_stale' : null,
+      routeDecisionMeta
+    };
+  }
+
+  if (isSoftStale) {
+    return {
+      inScope,
+      eligible: !reserveFloorConfigured,
+      exclusionReason: reserveFloorConfigured ? 'provider_usage_snapshot_soft_stale' : null,
       routeDecisionMeta
     };
   }
