@@ -297,11 +297,11 @@ export class TokenCredentialService {
     if (!existing) {
       return null;
     }
-    if (existing.provider !== 'anthropic') {
+    if (existing.provider !== 'anthropic' && existing.provider !== 'openai') {
       throw new AppError(
         'invalid_request',
         400,
-        'Contribution caps are only supported for Claude token credentials',
+        'Contribution caps are only supported for Claude and OpenAI token credentials',
         { credentialId: id, provider: existing.provider }
       );
     }
