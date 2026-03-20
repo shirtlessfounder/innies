@@ -21,6 +21,13 @@ class SequenceSqlClient implements SqlClient {
   }
 }
 
+function createMissingFreezeTableError(): Record<string, string> {
+  return {
+    code: '42P01',
+    message: 'relation "in_pilot_admission_freezes" does not exist'
+  };
+}
+
 describe('apiKeyRepository', () => {
   it('loads preferred provider when migration is present', async () => {
     const db = new SequenceSqlClient([{
@@ -82,7 +89,43 @@ describe('apiKeyRepository', () => {
     expect(db.queries).toHaveLength(2);
     expect(db.queries[1]?.sql).toContain('name');
     expect(db.queries[0]?.sql).toContain('preferred_provider');
-    expect(db.queries[1]?.sql).not.toContain('preferred_provider');
+    expect(db.queries[1]?.sql).toContain('null::text as preferred_provider');
+  });
+
+  it('falls back cleanly before migration 018 creates the freeze table', async () => {
+    const db = new SequenceSqlClient([
+      { error: createMissingFreezeTableError() },
+      {
+        rows: [{
+          id: 'key_1',
+          org_id: '00000000-0000-0000-0000-000000000001',
+          scope: 'buyer_proxy',
+          name: 'shirtless',
+          is_active: true,
+          expires_at: null,
+          preferred_provider: 'openai',
+          is_frozen: false
+        }],
+        rowCount: 1
+      }
+    ]);
+    const repo = new ApiKeyRepository(db);
+
+    const record = await repo.findActiveByHash('hash_live');
+
+    expect(record).toEqual({
+      id: 'key_1',
+      org_id: '00000000-0000-0000-0000-000000000001',
+      scope: 'buyer_proxy',
+      name: 'shirtless',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai',
+      is_frozen: false
+    });
+    expect(db.queries).toHaveLength(2);
+    expect(db.queries[0]?.sql).toContain('in_pilot_admission_freezes');
+    expect(db.queries[1]?.sql).not.toContain('in_pilot_admission_freezes');
   });
 
   it('loads buyer provider preference via legacy read path before migration 009 is applied', async () => {

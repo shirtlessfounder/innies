@@ -41,6 +41,13 @@ export function requireApiKey(repo: ApiKeyRepository, allowedScopes: ApiKeyScope
         res.status(403).json({ code: 'forbidden', message: 'Invalid API key scope' });
         return;
       }
+      if (record.scope === 'buyer_proxy' && record.is_frozen) {
+        res.status(423).json({
+          code: 'cutover_in_progress',
+          message: 'Buyer key is temporarily unavailable during cutover'
+        });
+        return;
+      }
 
       req.auth = {
         apiKeyId: record.id,

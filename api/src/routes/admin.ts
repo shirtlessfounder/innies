@@ -142,6 +142,44 @@ const buyerProviderPreferenceUpdateSchema = z.object({
   preferredProvider: buyerProviderPreferenceSchema.nullable()
 });
 
+const adminPilotSessionSchema = z.discriminatedUnion('mode', [
+  z.object({
+    mode: z.literal('self'),
+    effectiveOrgId: z.string().min(1).optional(),
+    effectiveOrgSlug: z.string().min(1).optional(),
+    effectiveOrgName: z.string().min(1).optional()
+  }),
+  z.object({
+    mode: z.literal('impersonation'),
+    targetUserId: z.string().min(1),
+    targetOrgId: z.string().min(1),
+    targetOrgSlug: z.string().min(1).optional(),
+    targetOrgName: z.string().min(1).optional(),
+    githubLogin: z.string().min(1).optional(),
+    userEmail: z.string().email().optional()
+  })
+]);
+
+const adminPilotCutoverSchema = z.object({
+  sourceOrgId: z.string().min(1),
+  targetOrgSlug: z.string().min(1),
+  targetOrgName: z.string().min(1),
+  targetUserEmail: z.string().email(),
+  targetUserDisplayName: z.string().min(1).optional(),
+  targetGithubLogin: z.string().min(1),
+  buyerKeyIds: z.array(z.string().min(1)),
+  tokenCredentialIds: z.array(z.string().min(1)),
+  effectiveAt: z.string().datetime({ offset: true }).optional()
+});
+
+const adminPilotRollbackSchema = z.object({
+  sourceCutoverId: z.string().min(1).optional(),
+  targetOrgId: z.string().min(1),
+  buyerKeyIds: z.array(z.string().min(1)),
+  tokenCredentialIds: z.array(z.string().min(1)),
+  effectiveAt: z.string().datetime({ offset: true }).optional()
+});
+
 function isUniqueViolation(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   return (error as { code?: string }).code === '23505';
@@ -187,6 +225,95 @@ router.get('/v1/admin/pool-health', requireApiKey(runtime.repos.apiKeys, ['admin
       byStatus,
       totalQueueDepth: 0,
       orgQueues: {}
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/admin/pilot/session', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const parsed = adminPilotSessionSchema.parse(req.body);
+    const session = parsed.mode === 'self'
+      ? {
+        sessionKind: 'admin_self' as const,
+        actorUserId: null,
+        actorApiKeyId: req.auth?.apiKeyId ?? null,
+        actorOrgId: req.auth?.orgId ?? null,
+        effectiveOrgId: parsed.effectiveOrgId ?? req.auth?.orgId ?? '',
+        effectiveOrgSlug: parsed.effectiveOrgSlug ?? null,
+        effectiveOrgName: parsed.effectiveOrgName ?? null,
+        githubLogin: null,
+        userEmail: null,
+        impersonatedUserId: null
+      }
+      : {
+        sessionKind: 'admin_impersonation' as const,
+        actorUserId: null,
+        actorApiKeyId: req.auth?.apiKeyId ?? null,
+        actorOrgId: req.auth?.orgId ?? null,
+        effectiveOrgId: parsed.targetOrgId,
+        effectiveOrgSlug: parsed.targetOrgSlug ?? null,
+        effectiveOrgName: parsed.targetOrgName ?? null,
+        githubLogin: parsed.githubLogin ?? null,
+        userEmail: parsed.userEmail ?? null,
+        impersonatedUserId: parsed.targetUserId
+      };
+
+    const sessionToken = runtime.services.pilotSessions.issueSession(session);
+    res.setHeader('set-cookie', `innies_pilot_session=${sessionToken}; Path=/; HttpOnly; SameSite=Lax`);
+    res.status(200).json({
+      ok: true,
+      sessionToken,
+      session
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/admin/pilot/cutover', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const parsed = adminPilotCutoverSchema.parse(req.body);
+    const result = await runtime.services.pilotCutovers.cutover({
+      sourceOrgId: parsed.sourceOrgId,
+      targetOrgSlug: parsed.targetOrgSlug,
+      targetOrgName: parsed.targetOrgName,
+      targetUserEmail: parsed.targetUserEmail,
+      targetUserDisplayName: parsed.targetUserDisplayName,
+      targetGithubLogin: parsed.targetGithubLogin,
+      buyerKeyIds: parsed.buyerKeyIds,
+      tokenCredentialIds: parsed.tokenCredentialIds,
+      actorUserId: null,
+      effectiveAt: parsed.effectiveAt ? new Date(parsed.effectiveAt) : undefined
+    });
+
+    res.status(200).json({
+      ok: true,
+      cutoverId: result.cutoverRecord.id,
+      targetOrgId: result.targetOrgId,
+      targetUserId: result.targetUserId
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/admin/pilot/rollback', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const parsed = adminPilotRollbackSchema.parse(req.body);
+    const result = await runtime.services.pilotCutovers.rollback({
+      sourceCutoverId: parsed.sourceCutoverId,
+      targetOrgId: parsed.targetOrgId,
+      buyerKeyIds: parsed.buyerKeyIds,
+      tokenCredentialIds: parsed.tokenCredentialIds,
+      actorUserId: null,
+      effectiveAt: parsed.effectiveAt ? new Date(parsed.effectiveAt) : undefined
+    });
+
+    res.status(200).json({
+      ok: true,
+      rollbackId: result.rollbackRecord.id
     });
   } catch (error) {
     next(error);

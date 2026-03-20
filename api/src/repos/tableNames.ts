@@ -9,6 +9,7 @@ export const TABLES = {
   idempotencyKeys: 'in_idempotency_keys',
   meteringProjectorStates: 'in_metering_projector_states',
   orgs: 'in_orgs',
+  pilotAdmissionFreezes: 'in_pilot_admission_freezes',
   rateCardVersions: 'in_rate_card_versions',
   requestLog: 'in_request_log',
   rollbackRecords: 'in_rollback_records',
