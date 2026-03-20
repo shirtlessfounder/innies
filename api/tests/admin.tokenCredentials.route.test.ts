@@ -135,8 +135,8 @@ async function invoke(handle: (req: any, res: any, next: (error?: unknown) => vo
   });
 }
 
-function getRouteHandlers(router: any, routePath: string): Array<(req: any, res: any, next: (error?: unknown) => void) => unknown> {
-  const layer = router.stack.find((entry: any) => entry?.route?.path === routePath);
+function getRouteHandlers(router: any, routePath: string, method: 'get' | 'patch' | 'post'): Array<(req: any, res: any, next: (error?: unknown) => void) => unknown> {
+  const layer = router.stack.find((entry: any) => entry?.route?.path === routePath && entry?.route?.methods?.[method]);
   if (!layer) throw new Error(`route not found: ${routePath}`);
   return layer.route.stack.map((s: any) => s.handle);
 }
@@ -153,6 +153,7 @@ describe('admin token credential routes idempotent replay', () => {
   let unpauseHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let labelHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let refreshTokenHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let contributionCapReadHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let contributionCapHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let probeHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let providerUsageRefreshHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
@@ -165,16 +166,17 @@ describe('admin token credential routes idempotent replay', () => {
     providerUsageModule = await import('../src/services/tokenCredentialProviderUsage.js');
     oauthRefreshModule = await import('../src/services/tokenCredentialOauthRefresh.js');
     const mod = await import('../src/routes/admin.js') as AdminRouteModule;
-    createHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials');
-    rotateHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/rotate');
-    revokeHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/revoke');
-    pauseHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/pause');
-    unpauseHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/unpause');
-    labelHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/label');
-    refreshTokenHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/refresh-token');
-    contributionCapHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/contribution-cap');
-    probeHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/probe');
-    providerUsageRefreshHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/provider-usage-refresh');
+    createHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials', 'post');
+    rotateHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/rotate', 'post');
+    revokeHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/revoke', 'post');
+    pauseHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/pause', 'post');
+    unpauseHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/unpause', 'post');
+    labelHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/label', 'patch');
+    refreshTokenHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/refresh-token', 'patch');
+    contributionCapReadHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/contribution-cap', 'get');
+    contributionCapHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/contribution-cap', 'patch');
+    probeHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/probe', 'post');
+    providerUsageRefreshHandlers = getRouteHandlers(mod.default as any, '/v1/admin/token-credentials/:id/provider-usage-refresh', 'post');
   });
 
   beforeEach(() => {
@@ -1213,6 +1215,39 @@ describe('admin token credential routes idempotent replay', () => {
       expect.any(Object)
     );
     expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads contribution-cap values for a token credential', async () => {
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      fiveHourReservePercent: 35,
+      sevenDayReservePercent: 15
+    } as any);
+
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/contribution-cap',
+      headers: {
+        authorization: 'Bearer in_admin_token'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' }
+    });
+    const res = createMockRes();
+
+    await invoke(contributionCapReadHandlers[0], req, res);
+    await invoke(contributionCapReadHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      provider: 'anthropic',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      fiveHourReservePercent: 35,
+      sevenDayReservePercent: 15
+    });
   });
 
   it('rejects contribution-cap updates for non-Claude credentials', async () => {

@@ -3,6 +3,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { requireApiKey } from '../middleware/auth.js';
+import type { RequestHistoryCursor } from '../repos/routingAttributionRepository.js';
 import { runtime } from '../services/runtime.js';
 import {
   readClaudeContributionCapProviderExhaustionHold,
@@ -77,11 +78,25 @@ const meteringEventSchema = z.object({
   outputTokens: z.number().int().nonnegative(),
   usageUnits: z.number().int().nonnegative(),
   retailEquivalentMinor: z.number().int().nonnegative(),
-  currency: z.string().length(3).optional()
+  currency: z.string().length(3).optional(),
+  sessionId: z.string().min(1).optional(),
+  admissionOrgId: z.string().uuid().optional(),
+  admissionCutoverId: z.string().uuid().nullable().optional(),
+  admissionRoutingMode: z.enum(['self-free', 'paid-team-capacity', 'team-overflow-on-contributor-capacity']).optional(),
+  consumerUserId: z.string().uuid().nullable().optional(),
+  teamConsumerId: z.string().min(1).nullable().optional(),
+  servingOrgId: z.string().uuid().optional(),
+  providerAccountId: z.string().min(1).nullable().optional(),
+  tokenCredentialId: z.string().uuid().nullable().optional(),
+  capacityOwnerUserId: z.string().uuid().nullable().optional(),
+  rateCardVersionId: z.string().uuid().nullable().optional(),
+  buyerDebitMinor: z.number().int().optional(),
+  contributorEarningsMinor: z.number().int().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional()
 });
 
 const replayMeteringSchema = z.object({
-  action: z.enum(['usage', 'correction', 'reversal']),
+  action: z.enum(['usage', 'served_request_retry', 'correction', 'reversal']),
   sourceEventId: z.string().uuid().optional(),
   note: z.string().min(1).max(500).optional(),
   event: meteringEventSchema
@@ -179,6 +194,38 @@ const adminPilotRollbackSchema = z.object({
   effectiveAt: z.string().datetime({ offset: true }).optional()
 });
 
+const adminRequestHistoryQuerySchema = z.object({
+  consumerOrgId: z.string().uuid().optional(),
+  historyScope: z.enum(['post_cutover', 'all']).optional().default('all'),
+  limit: z.coerce.number().int().min(1).max(100).optional().default(20),
+  cursor: z.string().min(1).optional()
+});
+
+const adminUnfinalizedRequestsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional().default(20)
+});
+
+const requestHistoryCursorSchema = z.object({
+  createdAt: z.string().min(1),
+  requestId: z.string().min(1),
+  attemptNo: z.number().int().min(1)
+});
+
+const rateCardLineItemSchema = z.object({
+  provider: tokenCredentialProviderSchema,
+  modelPattern: z.string().min(1),
+  routingMode: z.enum(['self-free', 'paid-team-capacity', 'team-overflow-on-contributor-capacity']),
+  buyerDebitMinorPerUnit: z.number().int(),
+  contributorEarningsMinorPerUnit: z.number().int(),
+  currency: z.string().length(3).optional()
+});
+
+const createRateCardVersionSchema = z.object({
+  versionKey: z.string().min(1).max(128),
+  effectiveAt: z.string().datetime({ offset: true }),
+  lineItems: z.array(rateCardLineItemSchema).min(1)
+});
+
 function isUniqueViolation(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   return (error as { code?: string }).code === '23505';
@@ -196,6 +243,20 @@ function canAccessBuyerKey(input: {
 
 function isAnthropicOauthAccessToken(provider: string, accessToken: string): boolean {
   return provider === 'anthropic' && accessToken.includes('sk-ant-oat');
+}
+
+function encodeHistoryCursor(cursor: RequestHistoryCursor): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+}
+
+function decodeHistoryCursor(cursor: string | undefined): RequestHistoryCursor | null {
+  if (!cursor) return null;
+  try {
+    const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
+    return requestHistoryCursorSchema.parse(JSON.parse(decoded));
+  } catch {
+    throw new AppError('invalid_request', 400, 'Invalid request-history cursor');
+  }
 }
 
 function resolveTokenCredentialAuthScheme(input: {
@@ -493,7 +554,7 @@ router.post('/v1/admin/kill-switch', requireApiKey(runtime.repos.apiKeys, ['admi
   }
 });
 
-router.post('/v1/admin/replay-metering', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+async function handleAdminReplayMetering(req: any, res: any, next: (error?: unknown) => void): Promise<void> {
   try {
     const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
 
@@ -518,7 +579,7 @@ router.post('/v1/admin/replay-metering', requireApiKey(runtime.repos.apiKeys, ['
     }
 
     let saved;
-    if (parsed.action === 'usage') {
+    if (parsed.action === 'usage' || parsed.action === 'served_request_retry') {
       saved = await runtime.services.metering.recordUsage(parsed.event);
     } else if (parsed.action === 'correction') {
       saved = await runtime.services.metering.recordCorrection(parsed.sourceEventId!, parsed.event, parsed.note ?? 'manual replay correction');
@@ -549,6 +610,120 @@ router.post('/v1/admin/replay-metering', requireApiKey(runtime.repos.apiKeys, ['
       responseBody,
       responseDigest: sha256Hex(stableJson(responseBody)),
       responseRef: saved.id
+    });
+
+    res.status(200).json(responseBody);
+  } catch (error) {
+    next(error);
+  }
+}
+
+router.post('/v1/admin/replay-metering', requireApiKey(runtime.repos.apiKeys, ['admin']), handleAdminReplayMetering);
+
+router.post('/v1/admin/metering/corrections', requireApiKey(runtime.repos.apiKeys, ['admin']), handleAdminReplayMetering);
+
+router.get('/v1/admin/requests', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const query = adminRequestHistoryQuerySchema.parse(req.query);
+    const cursor = decodeHistoryCursor(query.cursor);
+    const rows = await runtime.repos.routingAttribution.listAdminRequestHistory({
+      consumerOrgId: query.consumerOrgId,
+      limit: query.limit,
+      cursor,
+      historyScope: query.historyScope
+    });
+    const last = rows[rows.length - 1];
+    res.json({
+      requests: rows,
+      nextCursor: rows.length === query.limit && last ? encodeHistoryCursor({
+        createdAt: last.created_at,
+        requestId: last.request_id,
+        attemptNo: last.attempt_no
+      }) : null
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/admin/requests/:requestId/explanation', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const requestId = z.string().min(1).parse(req.params.requestId);
+    const explanation = await runtime.repos.routingAttribution.getRequestExplanation(requestId);
+    if (!explanation) {
+      throw new AppError('not_found', 404, 'Request explanation not found');
+    }
+    res.json({
+      ok: true,
+      request: explanation
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/admin/requests/unfinalized', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const query = adminUnfinalizedRequestsQuerySchema.parse(req.query);
+    const requests = await runtime.repos.routingAttribution.listFinanciallyUnfinalizedRequests(query.limit);
+    res.json({
+      requests
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/admin/rate-cards', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const versions = await runtime.repos.rateCards.listVersions(20);
+    res.json({
+      versions
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/admin/rate-cards', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
+    const parsed = createRateCardVersionSchema.parse(req.body);
+    const requestHash = sha256Hex(stableJson({ body: parsed, apiKeyId: req.auth?.apiKeyId }));
+    const tenantScope = req.auth?.orgId ?? `admin:${req.auth?.apiKeyId}`;
+    const idemStart = await runtime.services.idempotency.start({
+      scope: 'admin_rate_cards_create_v1',
+      tenantScope,
+      idempotencyKey,
+      requestHash
+    });
+
+    if (idemStart.replay) {
+      if (!idemStart.responseBody) {
+        throw new AppError('idempotency_replay_unavailable', 409, 'Idempotent replay not available for this request');
+      }
+      res.setHeader('x-idempotent-replay', 'true');
+      res.status(idemStart.responseCode).json(idemStart.responseBody);
+      return;
+    }
+
+    const { version, lineItems } = await runtime.repos.rateCards.createVersionWithLineItems({
+      versionKey: parsed.versionKey,
+      effectiveAt: new Date(parsed.effectiveAt),
+      lineItems: parsed.lineItems
+    });
+
+    const responseBody = {
+      ok: true,
+      version,
+      lineItems
+    };
+
+    await runtime.services.idempotency.commit(idemStart, {
+      responseCode: 200,
+      responseBody,
+      responseDigest: sha256Hex(stableJson(responseBody)),
+      responseRef: version.id
     });
 
     res.status(200).json(responseBody);
@@ -945,6 +1120,27 @@ router.patch('/v1/admin/token-credentials/:id/refresh-token', requireApiKey(runt
     });
 
     res.status(200).json(responseBody);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/admin/token-credentials/:id/contribution-cap', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const id = z.string().uuid().parse(req.params.id);
+    const credential = await runtime.repos.tokenCredentials.getById(id);
+    if (!credential) {
+      throw new AppError('invalid_request', 404, 'Token credential not found');
+    }
+
+    res.json({
+      ok: true,
+      id,
+      provider: credential.provider,
+      orgId: credential.orgId,
+      fiveHourReservePercent: credential.fiveHourReservePercent,
+      sevenDayReservePercent: credential.sevenDayReservePercent
+    });
   } catch (error) {
     next(error);
   }

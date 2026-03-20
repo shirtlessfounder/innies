@@ -10,6 +10,7 @@ export const TABLES = {
   meteringProjectorStates: 'in_metering_projector_states',
   orgs: 'in_orgs',
   pilotAdmissionFreezes: 'in_pilot_admission_freezes',
+  rateCardLineItems: 'in_rate_card_line_items',
   rateCardVersions: 'in_rate_card_versions',
   requestLog: 'in_request_log',
   rollbackRecords: 'in_rollback_records',

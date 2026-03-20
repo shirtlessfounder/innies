@@ -320,4 +320,82 @@ describe('proxy seller-mode route behavior', () => {
       })
     }));
   });
+
+  it('does not meter seller-mode streaming upstream 400 responses', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad request\"}}\n\n",
+      {
+        status: 400,
+        headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+      }
+    ));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: true,
+        payload: {
+          model: 'claude-opus-4-6',
+          stream: true,
+          max_tokens: 16,
+          messages: [{ role: 'user', content: 'hello' }]
+        }
+      }
+    });
+    const res = createStreamingMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(runtimeModule.runtime.services.metering.recordUsage).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.repos.sellerKeys.addCapacityUsage).not.toHaveBeenCalled();
+  });
+
+  it('does not meter seller-mode non-stream upstream 400 responses', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      type: 'error',
+      error: { type: 'invalid_request_error', message: 'bad request' }
+    }), {
+      status: 400,
+      headers: { 'content-type': 'application/json' }
+    }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: false,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 16,
+          messages: [{ role: 'user', content: 'hello' }]
+        }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(runtimeModule.runtime.services.metering.recordUsage).not.toHaveBeenCalled();
+  });
 });

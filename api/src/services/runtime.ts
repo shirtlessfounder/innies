@@ -1,9 +1,14 @@
 import { buildPgClient } from '../repos/pgClient.js';
 import { ApiKeyRepository } from '../repos/apiKeyRepository.js';
 import { AuditLogRepository } from '../repos/auditLogRepository.js';
+import { CanonicalMeteringRepository } from '../repos/canonicalMeteringRepository.js';
+import { FnfOwnershipRepository } from '../repos/fnfOwnershipRepository.js';
 import { IdempotencyRepository } from '../repos/idempotencyRepository.js';
 import { KillSwitchRepository } from '../repos/killSwitchRepository.js';
+import { MeteringProjectorStateRepository } from '../repos/meteringProjectorStateRepository.js';
 import { ModelCompatibilityRepository } from '../repos/modelCompatibilityRepository.js';
+import { RateCardRepository } from '../repos/rateCardRepository.js';
+import { RoutingAttributionRepository } from '../repos/routingAttributionRepository.js';
 import { RoutingEventsRepository } from '../repos/routingEventsRepository.js';
 import { SellerKeyRepository } from '../repos/sellerKeyRepository.js';
 import { UsageLedgerRepository } from '../repos/usageLedgerRepository.js';
@@ -37,10 +42,15 @@ export const runtime = {
   repos: {
     apiKeys: new ApiKeyRepository(sql),
     auditLogs: new AuditLogRepository(sql),
+    canonicalMetering: new CanonicalMeteringRepository(sql),
+    fnfOwnership: new FnfOwnershipRepository(sql),
     idempotency: new IdempotencyRepository(sql),
     killSwitch: new KillSwitchRepository(sql),
+    meteringProjectorStates: new MeteringProjectorStateRepository(sql),
     modelCompatibility: new ModelCompatibilityRepository(sql),
+    rateCards: new RateCardRepository(sql),
     routingEvents: new RoutingEventsRepository(sql),
+    routingAttribution: new RoutingAttributionRepository(sql),
     sellerKeys: new SellerKeyRepository(sql),
     usageLedger: new UsageLedgerRepository(sql),
     usageQuery: new UsageQueryRepository(sql),
@@ -77,7 +87,13 @@ runtime.services.jobs = new JobScheduler({
     console.error(`[jobs] ${message}`, fields ?? {});
   }
 });
-runtime.services.metering = new UsageMeteringWriter(runtime.repos.usageLedger);
+runtime.services.metering = new UsageMeteringWriter({
+  usageLedgerRepo: runtime.repos.usageLedger,
+  canonicalMeteringRepo: runtime.repos.canonicalMetering,
+  meteringProjectorStateRepo: runtime.repos.meteringProjectorStates,
+  rateCardRepo: runtime.repos.rateCards,
+  ownershipRepo: runtime.repos.fnfOwnership
+});
 runtime.services.pilotSessions = new PilotSessionService({
   secret: process.env.PILOT_SESSION_SECRET || 'dev-insecure-pilot-session-secret'
 });
@@ -96,12 +112,8 @@ runtime.services.pilotGithubAuth = new PilotGithubAuthService({
 runtime.services.pilotCutovers = new PilotCutoverService({
   sql: runtime.sql,
   reserveFloorMigration: {
-    async migrateReserveFloors() {
-      throw new AppError(
-        'service_unavailable',
-        503,
-        'Pilot cutover unavailable until reserve-floor migration adapter is configured'
-      );
+    async migrateReserveFloors(input) {
+      await runtime.repos.tokenCredentials.migrateReserveFloors(input);
     }
   }
 });
