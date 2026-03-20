@@ -27,7 +27,7 @@ import {
 } from '../services/tokenCredentialProbe.js';
 import { deriveTokenCredentialAuthDiagnosis } from '../services/tokenCredentialAuthDiagnosis.js';
 import { AppError } from '../utils/errors.js';
-import { sha256Hex, stableJson } from '../utils/hash.js';
+import { sha256Hex, stableJson, stableUuid } from '../utils/hash.js';
 import { readAndValidateIdempotencyKey } from '../utils/idempotencyKey.js';
 import { logSensitiveAction } from '../utils/audit.js';
 import { resolveDefaultBuyerProvider } from '../utils/providerPreference.js';
@@ -205,6 +205,27 @@ const adminUnfinalizedRequestsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional().default(20)
 });
 
+const walletLedgerQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional().default(20),
+  cursor: z.string().min(1).optional()
+});
+
+const walletLedgerCursorSchema = z.object({
+  createdAt: z.string().min(1),
+  id: z.string().uuid()
+});
+
+const walletAdjustmentSchema = z.object({
+  effectType: z.enum(['manual_credit', 'manual_debit']),
+  amountMinor: z.number().int().positive(),
+  reason: z.string().trim().min(3).max(500),
+  metadata: z.record(z.string(), z.unknown()).optional()
+});
+
+const walletProjectorQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).optional().default(100)
+});
+
 const requestHistoryCursorSchema = z.object({
   createdAt: z.string().min(1),
   requestId: z.string().min(1),
@@ -287,6 +308,20 @@ function decodeHistoryCursor(cursor: string | undefined): RequestHistoryCursor |
     return requestHistoryCursorSchema.parse(JSON.parse(decoded));
   } catch {
     throw new AppError('invalid_request', 400, 'Invalid request-history cursor');
+  }
+}
+
+function encodeWalletLedgerCursor(cursor: { createdAt: string; id: string }): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+}
+
+function decodeWalletLedgerCursor(cursor: string | undefined): { createdAt: string; id: string } | null {
+  if (!cursor) return null;
+  try {
+    const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
+    return walletLedgerCursorSchema.parse(JSON.parse(decoded));
+  } catch {
+    throw new AppError('invalid_request', 400, 'Invalid wallet-ledger cursor');
   }
 }
 
@@ -795,6 +830,162 @@ router.get('/v1/admin/requests/unfinalized', requireApiKey(runtime.repos.apiKeys
     res.json({
       requests
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/admin/wallets/:walletId', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const walletId = z.string().min(1).parse(req.params.walletId);
+    const wallet = await runtime.services.wallets.getWalletSnapshot(walletId);
+    res.json({
+      ok: true,
+      wallet
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/admin/wallets/:walletId/ledger', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const walletId = z.string().min(1).parse(req.params.walletId);
+    const query = walletLedgerQuerySchema.parse(req.query);
+    const result = await runtime.services.wallets.listWalletLedger({
+      walletId,
+      limit: query.limit,
+      cursor: decodeWalletLedgerCursor(query.cursor)
+    });
+    res.json({
+      ok: true,
+      ledger: result.entries,
+      nextCursor: result.nextCursor ? encodeWalletLedgerCursor(result.nextCursor) : null
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/admin/wallets/:walletId/adjustments', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const walletId = z.string().min(1).parse(req.params.walletId);
+    const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
+    const parsed = walletAdjustmentSchema.parse(req.body);
+    const requestHash = sha256Hex(stableJson({
+      walletId,
+      body: parsed,
+      apiKeyId: req.auth?.apiKeyId
+    }));
+    const tenantScope = req.auth?.orgId ?? `admin:${req.auth?.apiKeyId}`;
+    const idemStart = await runtime.services.idempotency.start({
+      scope: 'admin_wallet_adjustment_v1',
+      tenantScope,
+      idempotencyKey,
+      requestHash
+    });
+
+    if (idemStart.replay) {
+      if (!idemStart.responseBody) {
+        throw new AppError('idempotency_replay_unavailable', 409, 'Idempotent replay not available for this request');
+      }
+      res.setHeader('x-idempotent-replay', 'true');
+      res.status(idemStart.responseCode).json(idemStart.responseBody);
+      return;
+    }
+
+    const saved = await runtime.services.wallets.recordManualAdjustment({
+      entryId: stableUuid(`admin_wallet_adjustment_v1:${tenantScope}:${idempotencyKey}`),
+      walletId,
+      ownerOrgId: walletId,
+      actorApiKeyId: req.auth?.apiKeyId ?? null,
+      effectType: parsed.effectType,
+      amountMinor: parsed.amountMinor,
+      reason: parsed.reason,
+      metadata: parsed.metadata
+    });
+
+    await logSensitiveAction(runtime.repos.auditLogs, req.auth, {
+      action: 'admin.wallet_adjustment.create',
+      targetType: 'wallet',
+      targetId: walletId,
+      metadata: {
+        walletLedgerEntryId: saved.id,
+        effectType: parsed.effectType,
+        amountMinor: parsed.amountMinor,
+        reason: parsed.reason
+      }
+    });
+
+    const responseBody = {
+      ok: true,
+      entry: saved
+    };
+
+    await runtime.services.idempotency.commit(idemStart, {
+      responseCode: 200,
+      responseBody,
+      responseDigest: sha256Hex(stableJson(responseBody)),
+      responseRef: saved.id
+    });
+
+    res.status(200).json(responseBody);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/admin/metering/projectors/wallet', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const query = walletProjectorQuerySchema.parse(req.query);
+    const rows = await runtime.services.wallets.listWalletProjectionBacklog(query.limit);
+    res.json({
+      rows
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/admin/metering/projectors/wallet/:meteringEventId/retry', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const meteringEventId = z.string().min(1).parse(req.params.meteringEventId);
+    const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
+    const requestHash = sha256Hex(stableJson({
+      meteringEventId,
+      apiKeyId: req.auth?.apiKeyId
+    }));
+    const tenantScope = req.auth?.orgId ?? `admin:${req.auth?.apiKeyId}`;
+    const idemStart = await runtime.services.idempotency.start({
+      scope: 'admin_wallet_projector_retry_v1',
+      tenantScope,
+      idempotencyKey,
+      requestHash
+    });
+
+    if (idemStart.replay) {
+      if (!idemStart.responseBody) {
+        throw new AppError('idempotency_replay_unavailable', 409, 'Idempotent replay not available for this request');
+      }
+      res.setHeader('x-idempotent-replay', 'true');
+      res.status(idemStart.responseCode).json(idemStart.responseBody);
+      return;
+    }
+
+    const row = await runtime.services.wallets.retryWalletProjection(meteringEventId);
+    const responseBody = {
+      ok: true,
+      row
+    };
+
+    await runtime.services.idempotency.commit(idemStart, {
+      responseCode: 200,
+      responseBody,
+      responseDigest: sha256Hex(stableJson(responseBody)),
+      responseRef: meteringEventId
+    });
+
+    res.status(200).json(responseBody);
   } catch (error) {
     next(error);
   }

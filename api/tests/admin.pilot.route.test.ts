@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { AppError } from '../src/utils/errors.js';
+import { stableUuid } from '../src/utils/hash.js';
 
 type RuntimeModule = typeof import('../src/services/runtime.js');
 type AdminRouteModule = typeof import('../src/routes/admin.js');
@@ -127,6 +128,11 @@ describe('admin pilot routes', () => {
   let requestHistoryHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let requestExplanationHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let unfinalizedRequestHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let walletHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let walletLedgerHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let walletAdjustmentHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let walletProjectorHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let walletProjectorRetryHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let rateCardListHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let rateCardCreateHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let meteringCorrectionHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
@@ -146,6 +152,11 @@ describe('admin pilot routes', () => {
     requestHistoryHandlers = getRouteHandlers(mod.default as any, '/v1/admin/requests', 'get');
     requestExplanationHandlers = getRouteHandlers(mod.default as any, '/v1/admin/requests/:requestId/explanation', 'get');
     unfinalizedRequestHandlers = getRouteHandlers(mod.default as any, '/v1/admin/requests/unfinalized', 'get');
+    walletHandlers = getRouteHandlers(mod.default as any, '/v1/admin/wallets/:walletId', 'get');
+    walletLedgerHandlers = getRouteHandlers(mod.default as any, '/v1/admin/wallets/:walletId/ledger', 'get');
+    walletAdjustmentHandlers = getRouteHandlers(mod.default as any, '/v1/admin/wallets/:walletId/adjustments', 'post');
+    walletProjectorHandlers = getRouteHandlers(mod.default as any, '/v1/admin/metering/projectors/wallet', 'get');
+    walletProjectorRetryHandlers = getRouteHandlers(mod.default as any, '/v1/admin/metering/projectors/wallet/:meteringEventId/retry', 'post');
     rateCardListHandlers = getRouteHandlers(mod.default as any, '/v1/admin/rate-cards', 'get');
     rateCardCreateHandlers = getRouteHandlers(mod.default as any, '/v1/admin/rate-cards', 'post');
     meteringCorrectionHandlers = getRouteHandlers(mod.default as any, '/v1/admin/metering/corrections', 'post');
@@ -170,6 +181,25 @@ describe('admin pilot routes', () => {
     vi.spyOn(runtimeModule.runtime.repos.routingAttribution, 'listAdminRequestHistory').mockResolvedValue([]);
     vi.spyOn(runtimeModule.runtime.repos.routingAttribution, 'getRequestExplanation').mockResolvedValue(null);
     vi.spyOn(runtimeModule.runtime.repos.routingAttribution, 'listFinanciallyUnfinalizedRequests').mockResolvedValue([]);
+    vi.spyOn(runtimeModule.runtime.services.wallets, 'getWalletSnapshot').mockResolvedValue({
+      walletId: 'org_fnf',
+      ownerOrgId: 'org_fnf',
+      balanceMinor: 0,
+      currency: 'USD'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.services.wallets, 'listWalletLedger').mockResolvedValue({
+      entries: [],
+      nextCursor: null
+    } as any);
+    vi.spyOn(runtimeModule.runtime.services.wallets, 'recordManualAdjustment').mockResolvedValue({
+      id: 'wallet_entry_manual'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.services.wallets, 'listWalletProjectionBacklog').mockResolvedValue([]);
+    vi.spyOn(runtimeModule.runtime.services.wallets, 'retryWalletProjection').mockResolvedValue({
+      metering_event_id: 'meter_1',
+      projector: 'wallet',
+      state: 'pending_projection'
+    } as any);
     vi.spyOn(runtimeModule.runtime.repos.rateCards, 'listVersions').mockResolvedValue([]);
     vi.spyOn(runtimeModule.runtime.repos.rateCards, 'createVersionWithLineItems').mockResolvedValue({
       version: {
@@ -521,6 +551,162 @@ describe('admin pilot routes', () => {
     expect(res.body).toEqual({
       requests: [expect.objectContaining({ request_id: 'req_missing' })]
     });
+  });
+
+  it('returns an admin wallet snapshot', async () => {
+    vi.spyOn(runtimeModule.runtime.services.wallets, 'getWalletSnapshot').mockResolvedValue({
+      walletId: 'org_fnf',
+      ownerOrgId: 'org_fnf',
+      balanceMinor: 1250,
+      currency: 'USD'
+    } as any);
+
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/wallets/org_fnf',
+      headers: {
+        authorization: 'Bearer in_admin_token'
+      },
+      params: {
+        walletId: 'org_fnf'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(walletHandlers[0], req, res);
+    await invoke(walletHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({
+      ok: true,
+      wallet: expect.objectContaining({
+        walletId: 'org_fnf',
+        balanceMinor: 1250
+      })
+    }));
+  });
+
+  it('returns admin wallet ledger history', async () => {
+    vi.spyOn(runtimeModule.runtime.services.wallets, 'listWalletLedger').mockResolvedValue({
+      entries: [{
+        id: 'wallet_entry_1',
+        wallet_id: 'org_fnf',
+        effect_type: 'manual_credit',
+        amount_minor: 5000
+      }],
+      nextCursor: null
+    } as any);
+
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/wallets/org_fnf/ledger',
+      headers: {
+        authorization: 'Bearer in_admin_token'
+      },
+      params: {
+        walletId: 'org_fnf'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(walletLedgerHandlers[0], req, res);
+    await invoke(walletLedgerHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({
+      ok: true,
+      ledger: [expect.objectContaining({ id: 'wallet_entry_1' })],
+      nextCursor: null
+    }));
+  });
+
+  it('records manual admin wallet adjustments with explicit reasons', async () => {
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/wallets/org_fnf/adjustments',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz765432'
+      },
+      params: {
+        walletId: 'org_fnf'
+      },
+      body: {
+        actorUserId: '11111111-1111-4111-8111-111111111111',
+        effectType: 'manual_credit',
+        amountMinor: 5000,
+        reason: 'usdc top-up',
+        metadata: {
+          source: 'admin_console'
+        }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(walletAdjustmentHandlers[0], req, res);
+    await invoke(walletAdjustmentHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    const adjustmentCall = vi.mocked(runtimeModule.runtime.services.wallets.recordManualAdjustment).mock.calls[0]?.[0];
+    expect(adjustmentCall).toEqual(expect.objectContaining({
+      entryId: stableUuid('admin_wallet_adjustment_v1:org_innies:abcdefghijklmnopqrstuvwxyz765432'),
+      walletId: 'org_fnf',
+      ownerOrgId: 'org_fnf',
+      actorApiKeyId: '99999999-9999-4999-8999-999999999999',
+      effectType: 'manual_credit',
+      amountMinor: 5000,
+      reason: 'usdc top-up'
+    }));
+    expect(adjustmentCall?.actorUserId).toBeUndefined();
+  });
+
+  it('lists wallet projector backlog rows for operators', async () => {
+    vi.spyOn(runtimeModule.runtime.services.wallets, 'listWalletProjectionBacklog').mockResolvedValue([{
+      metering_event_id: 'meter_7',
+      projector: 'wallet',
+      state: 'needs_operator_correction'
+    }] as any);
+
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/metering/projectors/wallet',
+      headers: {
+        authorization: 'Bearer in_admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(walletProjectorHandlers[0], req, res);
+    await invoke(walletProjectorHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      rows: [expect.objectContaining({ metering_event_id: 'meter_7' })]
+    });
+  });
+
+  it('requeues a stuck wallet projector row', async () => {
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/metering/projectors/wallet/meter_7/retry',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz765431'
+      },
+      params: {
+        meteringEventId: 'meter_7'
+      },
+      body: {}
+    });
+    const res = createMockRes();
+
+    await invoke(walletProjectorRetryHandlers[0], req, res);
+    await invoke(walletProjectorRetryHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(runtimeModule.runtime.services.wallets.retryWalletProjection).toHaveBeenCalledWith('meter_7');
   });
 
   it('lists rate-card versions', async () => {

@@ -19,7 +19,17 @@ const pilotAuthCallbackQuerySchema = z.object({
 const createWithdrawalSchema = z.object({
   amountMinor: z.number().int().positive(),
   destination: z.record(z.string(), z.unknown()),
-  note: z.string().trim().min(1).max(500).optional()
+  note: z.string().trim().min(1).max(500).optional(),
+});
+
+const walletLedgerQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional().default(20),
+  cursor: z.string().min(1).optional()
+});
+
+const walletLedgerCursorSchema = z.object({
+  createdAt: z.string().min(1),
+  id: z.string().uuid()
 });
 
 function normalizePilotReturnTo(value: string | undefined | null): string | undefined {
@@ -30,12 +40,9 @@ function normalizePilotReturnTo(value: string | undefined | null): string | unde
   return normalized;
 }
 
-function readPilotSessionContext(req: {
+function readPilotSession(req: {
   header(name: string): string | undefined;
-}): {
-  ownerOrgId: string;
-  contributorUserId: string;
-} {
+}) {
   const token = runtime.services.pilotSessions.readTokenFromRequest(req);
   if (!token) {
     throw new AppError('unauthorized', 401, 'Missing pilot session');
@@ -46,6 +53,16 @@ function readPilotSessionContext(req: {
     throw new AppError('unauthorized', 401, 'Invalid pilot session');
   }
 
+  return session;
+}
+
+function readPilotSessionContext(req: {
+  header(name: string): string | undefined;
+}): {
+  ownerOrgId: string;
+  contributorUserId: string;
+} {
+  const session = readPilotSession(req);
   const contributorUserId = session.impersonatedUserId ?? session.actorUserId;
   if (!contributorUserId) {
     throw new AppError('forbidden', 403, 'Pilot session is not scoped to a contributor');
@@ -57,21 +74,61 @@ function readPilotSessionContext(req: {
   };
 }
 
+function decodeWalletLedgerCursor(cursor: string | undefined) {
+  if (!cursor) return null;
+  try {
+    const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
+    return walletLedgerCursorSchema.parse(JSON.parse(decoded));
+  } catch {
+    throw new AppError('invalid_request', 400, 'Invalid wallet-ledger cursor');
+  }
+}
+
+function encodeWalletLedgerCursor(cursor: { createdAt: string; id: string }): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+}
+
 router.get('/v1/pilot/session', async (req, res, next) => {
   try {
-    const token = runtime.services.pilotSessions.readTokenFromRequest(req);
-    if (!token) {
-      throw new AppError('unauthorized', 401, 'Missing pilot session');
-    }
-
-    const session = runtime.services.pilotSessions.readSession(token);
-    if (!session) {
-      throw new AppError('unauthorized', 401, 'Invalid pilot session');
-    }
+    const session = readPilotSession(req);
 
     res.status(200).json({
       ok: true,
       session
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/pilot/wallet', async (req, res, next) => {
+  try {
+    const session = readPilotSession(req);
+    const wallet = await runtime.services.wallets.getWalletSnapshot(
+      runtime.services.wallets.walletIdForOrgId(session.effectiveOrgId)
+    );
+    res.status(200).json({
+      ok: true,
+      wallet
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/pilot/wallet/ledger', async (req, res, next) => {
+  try {
+    const session = readPilotSession(req);
+    const query = walletLedgerQuerySchema.parse(req.query ?? {});
+    const result = await runtime.services.wallets.listWalletLedger({
+      walletId: runtime.services.wallets.walletIdForOrgId(session.effectiveOrgId),
+      limit: query.limit,
+      cursor: decodeWalletLedgerCursor(query.cursor)
+    });
+    res.status(200).json({
+      ok: true,
+      ledger: result.entries,
+      nextCursor: result.nextCursor ? encodeWalletLedgerCursor(result.nextCursor) : null
     });
   } catch (error) {
     next(error);
