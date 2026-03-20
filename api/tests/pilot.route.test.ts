@@ -128,6 +128,8 @@ function getRouteHandlers(router: any, routePath: string, method: 'get' | 'post'
 describe('pilot routes', () => {
   let runtimeModule: RuntimeModule;
   let sessionHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let walletHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let walletLedgerHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let authStartHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let authCallbackHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let logoutHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
@@ -138,6 +140,8 @@ describe('pilot routes', () => {
     runtimeModule = await import('../src/services/runtime.js');
     const mod = await import('../src/routes/pilot.js') as PilotRouteModule;
     sessionHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/session', 'get');
+    walletHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/wallet', 'get');
+    walletLedgerHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/wallet/ledger', 'get');
     authStartHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/auth/github/start', 'get');
     authCallbackHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/auth/github/callback', 'get');
     logoutHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/session/logout', 'post');
@@ -187,6 +191,97 @@ describe('pilot routes', () => {
         effectiveOrgId: 'org_fnf',
         githubLogin: 'darryn'
       })
+    }));
+  });
+
+  it('returns the pilot wallet balance for the effective org', async () => {
+    vi.spyOn(runtimeModule.runtime.services.pilotSessions, 'readTokenFromRequest').mockReturnValue('pilot-token');
+    vi.spyOn(runtimeModule.runtime.services.pilotSessions, 'readSession').mockReturnValue({
+      sessionKind: 'darryn_self',
+      actorUserId: 'user_darryn',
+      actorApiKeyId: null,
+      actorOrgId: 'org_fnf',
+      effectiveOrgId: 'org_fnf',
+      effectiveOrgSlug: 'fnf',
+      effectiveOrgName: 'Friends & Family',
+      githubLogin: 'darryn',
+      userEmail: 'darryn@example.com',
+      impersonatedUserId: null,
+      issuedAt: '2026-03-20T00:00:00Z',
+      expiresAt: '2026-03-20T01:00:00Z'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.services.wallets, 'getWalletSnapshot').mockResolvedValue({
+      walletId: 'org_fnf',
+      ownerOrgId: 'org_fnf',
+      balanceMinor: 1250,
+      currency: 'USD'
+    } as any);
+
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/pilot/wallet',
+      headers: {
+        authorization: 'Bearer pilot-token'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(walletHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({
+      ok: true,
+      wallet: expect.objectContaining({
+        walletId: 'org_fnf',
+        balanceMinor: 1250
+      })
+    }));
+  });
+
+  it('returns pilot wallet ledger history for the effective org', async () => {
+    vi.spyOn(runtimeModule.runtime.services.pilotSessions, 'readTokenFromRequest').mockReturnValue('pilot-token');
+    vi.spyOn(runtimeModule.runtime.services.pilotSessions, 'readSession').mockReturnValue({
+      sessionKind: 'darryn_self',
+      actorUserId: 'user_darryn',
+      actorApiKeyId: null,
+      actorOrgId: 'org_fnf',
+      effectiveOrgId: 'org_fnf',
+      effectiveOrgSlug: 'fnf',
+      effectiveOrgName: 'Friends & Family',
+      githubLogin: 'darryn',
+      userEmail: 'darryn@example.com',
+      impersonatedUserId: null,
+      issuedAt: '2026-03-20T00:00:00Z',
+      expiresAt: '2026-03-20T01:00:00Z'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.services.wallets, 'listWalletLedger').mockResolvedValue({
+      entries: [{
+        id: 'wallet_entry_1',
+        wallet_id: 'org_fnf',
+        effect_type: 'manual_credit',
+        amount_minor: 5000
+      }],
+      nextCursor: null
+    } as any);
+
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/pilot/wallet/ledger',
+      headers: {
+        authorization: 'Bearer pilot-token'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(walletLedgerHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({
+      ok: true,
+      ledger: [expect.objectContaining({
+        id: 'wallet_entry_1'
+      })],
+      nextCursor: null
     }));
   });
 
