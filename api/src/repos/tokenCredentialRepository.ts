@@ -113,6 +113,16 @@ function isMissingTokenCredentialContributionCapColumns(error: unknown): boolean
     || details.message?.includes('seven_day_reserve_percent') === true;
 }
 
+function isMissingPilotCutoverFreezeTables(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const details = error as { code?: string; table?: string; message?: string };
+  if (details.code !== '42P01') return false;
+  return details.table === TABLES.pilotCutoverFreezes
+    || details.table === TABLES.pilotCutoverFreezeCredentials
+    || details.message?.includes(TABLES.pilotCutoverFreezes) === true
+    || details.message?.includes(TABLES.pilotCutoverFreezeCredentials) === true;
+}
+
 function tokenCredentialSelectColumns(includeContributionCapColumns: boolean): string {
   const contributionCapColumns = includeContributionCapColumns
     ? `five_hour_reserve_percent,
@@ -152,17 +162,29 @@ function tokenCredentialSelectColumns(includeContributionCapColumns: boolean): s
 
 async function queryTokenCredentialRowsWithContributionCapFallback(
   client: TransactionContext,
-  sqlFor: (includeContributionCapColumns: boolean) => string,
+  sqlFor: (input: { includeContributionCapColumns: boolean; includeCutoverFreezeFilter: boolean }) => string,
   params: SqlValue[]
 ): Promise<SqlQueryResult<TokenCredentialRow>> {
-  try {
-    return await client.query<TokenCredentialRow>(sqlFor(true), params);
-  } catch (error) {
-    if (!isMissingTokenCredentialContributionCapColumns(error)) {
+  let includeContributionCapColumns = true;
+  let includeCutoverFreezeFilter = true;
+
+  for (;;) {
+    try {
+      return await client.query<TokenCredentialRow>(sqlFor({
+        includeContributionCapColumns,
+        includeCutoverFreezeFilter
+      }), params);
+    } catch (error) {
+      if (includeContributionCapColumns && isMissingTokenCredentialContributionCapColumns(error)) {
+        includeContributionCapColumns = false;
+        continue;
+      }
+      if (includeCutoverFreezeFilter && isMissingPilotCutoverFreezeTables(error)) {
+        includeCutoverFreezeFilter = false;
+        continue;
+      }
       throw error;
     }
-
-    return client.query<TokenCredentialRow>(sqlFor(false), params);
   }
 }
 
@@ -297,9 +319,9 @@ export class TokenCredentialRepository {
 
   async listActiveForRouting(orgId: string, provider: string): Promise<TokenCredential[]> {
     const routingProviders = routingProvidersForLookup(provider);
-    const sql = (includeContributionCapColumns: boolean) => `
+    const sql = (input: { includeContributionCapColumns: boolean; includeCutoverFreezeFilter: boolean }) => `
       select
-        ${tokenCredentialSelectColumns(includeContributionCapColumns)}
+        ${tokenCredentialSelectColumns(input.includeContributionCapColumns)}
       from ${TABLES.tokenCredentials}
       where org_id = $1
         and provider = ANY($2::text[])
@@ -316,6 +338,15 @@ export class TokenCredentialRepository {
             end
           ) < monthly_contribution_limit_units
         )
+        ${input.includeCutoverFreezeFilter ? `
+        and not exists (
+          select 1
+          from ${TABLES.pilotCutoverFreezeCredentials} frozen
+          join ${TABLES.pilotCutoverFreezes} freeze
+            on freeze.id = frozen.freeze_id
+          where frozen.token_credential_id = ${TABLES.tokenCredentials}.id
+            and freeze.released_at is null
+        )` : ''}
       order by rotation_version desc, updated_at desc
     `;
 
@@ -324,9 +355,9 @@ export class TokenCredentialRepository {
   }
 
   async getById(id: string): Promise<TokenCredential | null> {
-    const sql = (includeContributionCapColumns: boolean) => `
+    const sql = (input: { includeContributionCapColumns: boolean; includeCutoverFreezeFilter: boolean }) => `
       select
-        ${tokenCredentialSelectColumns(includeContributionCapColumns)}
+        ${tokenCredentialSelectColumns(input.includeContributionCapColumns)}
       from ${TABLES.tokenCredentials}
       where id = $1
       limit 1
@@ -334,6 +365,18 @@ export class TokenCredentialRepository {
     const result = await queryTokenCredentialRowsWithContributionCapFallback(this.db, sql, [id]);
     if (result.rowCount !== 1) return null;
     return mapRow(result.rows[0]);
+  }
+
+  async reassignOrg(id: string, orgId: string): Promise<boolean> {
+    const sql = `
+      update ${TABLES.tokenCredentials}
+      set
+        org_id = $2,
+        updated_at = now()
+      where id = $1
+    `;
+    const result = await this.db.query(sql, [id, orgId]);
+    return result.rowCount === 1;
   }
 
   async markExpired(id: string, errorMessage?: string): Promise<boolean> {
@@ -355,7 +398,7 @@ export class TokenCredentialRepository {
     expiresAt: Date | null;
     preserveStatus?: boolean;
   }): Promise<TokenCredential | null> {
-    const sql = (includeContributionCapColumns: boolean) => `
+    const sql = (input: { includeContributionCapColumns: boolean; includeCutoverFreezeFilter: boolean }) => `
       update ${TABLES.tokenCredentials}
       set
         encrypted_access_token = $2,
@@ -406,7 +449,7 @@ export class TokenCredentialRepository {
         monthly_contribution_limit_units,
         monthly_contribution_used_units,
         monthly_window_start_at,
-        ${includeContributionCapColumns
+        ${input.includeContributionCapColumns
     ? `five_hour_reserve_percent,
         seven_day_reserve_percent`
     : `0::integer as five_hour_reserve_percent,
@@ -679,9 +722,9 @@ export class TokenCredentialRepository {
       includeRecoverableExpired?: boolean;
     }
   ): Promise<TokenCredential[]> {
-    const sql = (includeContributionCapColumns: boolean) => `
+    const sql = (input: { includeContributionCapColumns: boolean; includeCutoverFreezeFilter: boolean }) => `
       select
-        ${tokenCredentialSelectColumns(includeContributionCapColumns)}
+        ${tokenCredentialSelectColumns(input.includeContributionCapColumns)}
       from ${TABLES.tokenCredentials}
       where provider = $1
         and (
@@ -1311,9 +1354,9 @@ export class TokenCredentialRepository {
   }
 
   async listMaxedForProbe(limit: number): Promise<TokenCredential[]> {
-    const sql = (includeContributionCapColumns: boolean) => `
+    const sql = (input: { includeContributionCapColumns: boolean; includeCutoverFreezeFilter: boolean }) => `
       select
-        ${tokenCredentialSelectColumns(includeContributionCapColumns)}
+        ${tokenCredentialSelectColumns(input.includeContributionCapColumns)}
       from ${TABLES.tokenCredentials}
       where status = 'maxed'
         and expires_at > now()

@@ -219,7 +219,7 @@ describe('tokenCredentialService', () => {
         provider: 'anthropic',
         debugLabel: 'main-1',
         status: id === 'cred_pause' ? 'active' : 'paused',
-        expiresAt: new Date('2026-03-20T00:00:00Z'),
+        expiresAt: new Date('2099-01-01T00:00:00Z'),
       })),
       pause: vi.fn(async () => true),
       unpause: vi.fn(async () => true),
@@ -271,7 +271,7 @@ describe('tokenCredentialService', () => {
             provider: 'anthropic',
             debugLabel: 'main-1',
             status: 'maxed',
-            expiresAt: new Date('2026-03-20T00:00:00Z'),
+            expiresAt: new Date('2099-01-01T00:00:00Z'),
           };
         }
         return {

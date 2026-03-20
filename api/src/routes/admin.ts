@@ -142,6 +142,21 @@ const buyerProviderPreferenceUpdateSchema = z.object({
   preferredProvider: buyerProviderPreferenceSchema.nullable()
 });
 
+const pilotCutoverSchema = z.object({
+  buyerKeyId: z.string().uuid(),
+  tokenCredentialIds: z.array(z.string().uuid()).min(1),
+  darrynEmail: z.string().email(),
+  darrynDisplayName: z.string().trim().min(1).max(120).optional(),
+  darrynGithubLogin: z.string().trim().min(1).max(120).optional(),
+  darrynGithubUserId: z.string().trim().min(1).max(120).optional()
+});
+
+const pilotRollbackSchema = z.object({
+  buyerKeyId: z.string().uuid(),
+  tokenCredentialIds: z.array(z.string().uuid()).min(1),
+  sourceCutoverId: z.string().uuid().optional()
+});
+
 function isUniqueViolation(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   return (error as { code?: string }).code === '23505';
@@ -1303,6 +1318,130 @@ router.post('/v1/admin/token-credentials/:id/provider-usage-refresh', requireApi
       responseBody,
       responseDigest: sha256Hex(stableJson(responseBody)),
       responseRef: id
+    });
+
+    res.status(200).json(responseBody);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/admin/pilot/darryn/cutover', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
+    const parsed = pilotCutoverSchema.parse(req.body);
+    const requestHash = sha256Hex(stableJson({ body: parsed, apiKeyId: req.auth?.apiKeyId }));
+    const tenantScope = req.auth?.orgId ?? `admin:${req.auth?.apiKeyId}`;
+
+    const idemStart = await runtime.services.idempotency.start({
+      scope: 'admin_pilot_cutover_v1',
+      tenantScope,
+      idempotencyKey,
+      requestHash
+    });
+
+    if (idemStart.replay) {
+      if (!idemStart.responseBody) {
+        throw new AppError('idempotency_replay_unavailable', 409, 'Idempotent replay not available for this request');
+      }
+      res.setHeader('x-idempotent-replay', 'true');
+      res.status(idemStart.responseCode).json(idemStart.responseBody);
+      return;
+    }
+
+    const result = await runtime.services.pilotAccess.performCutover({
+      buyerKeyId: parsed.buyerKeyId,
+      tokenCredentialIds: parsed.tokenCredentialIds,
+      darrynEmail: parsed.darrynEmail,
+      darrynDisplayName: parsed.darrynDisplayName,
+      darrynGithubLogin: parsed.darrynGithubLogin,
+      darrynGithubUserId: parsed.darrynGithubUserId
+    });
+
+    const responseBody = {
+      ok: true,
+      ...result
+    } as const;
+
+    await logSensitiveAction(runtime.repos.auditLogs, req.auth, {
+      action: 'pilot.cutover.commit',
+      targetType: 'api_key',
+      targetId: parsed.buyerKeyId,
+      orgId: result.targetOrgId,
+      metadata: {
+        cutoverId: result.cutoverId,
+        sourceOrgId: result.sourceOrgId,
+        targetOrgId: result.targetOrgId,
+        tokenCredentialIds: parsed.tokenCredentialIds
+      }
+    });
+
+    await runtime.services.idempotency.commit(idemStart, {
+      responseCode: 200,
+      responseBody,
+      responseDigest: sha256Hex(stableJson(responseBody)),
+      responseRef: result.cutoverId
+    });
+
+    res.status(200).json(responseBody);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/admin/pilot/darryn/rollback', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
+    const parsed = pilotRollbackSchema.parse(req.body);
+    const requestHash = sha256Hex(stableJson({ body: parsed, apiKeyId: req.auth?.apiKeyId }));
+    const tenantScope = req.auth?.orgId ?? `admin:${req.auth?.apiKeyId}`;
+
+    const idemStart = await runtime.services.idempotency.start({
+      scope: 'admin_pilot_rollback_v1',
+      tenantScope,
+      idempotencyKey,
+      requestHash
+    });
+
+    if (idemStart.replay) {
+      if (!idemStart.responseBody) {
+        throw new AppError('idempotency_replay_unavailable', 409, 'Idempotent replay not available for this request');
+      }
+      res.setHeader('x-idempotent-replay', 'true');
+      res.status(idemStart.responseCode).json(idemStart.responseBody);
+      return;
+    }
+
+    const result = await runtime.services.pilotAccess.performRollback({
+      buyerKeyId: parsed.buyerKeyId,
+      tokenCredentialIds: parsed.tokenCredentialIds,
+      sourceCutoverId: parsed.sourceCutoverId,
+      createdByUserId: null
+    });
+
+    const responseBody = {
+      ok: true,
+      ...result
+    } as const;
+
+    await logSensitiveAction(runtime.repos.auditLogs, req.auth, {
+      action: 'pilot.cutover.rollback',
+      targetType: 'api_key',
+      targetId: parsed.buyerKeyId,
+      orgId: result.revertedOrgId,
+      metadata: {
+        rollbackId: result.rollbackId,
+        sourceCutoverId: result.sourceCutoverId,
+        revertedOrgId: result.revertedOrgId,
+        tokenCredentialIds: parsed.tokenCredentialIds
+      }
+    });
+
+    await runtime.services.idempotency.commit(idemStart, {
+      responseCode: 200,
+      responseBody,
+      responseDigest: sha256Hex(stableJson(responseBody)),
+      responseRef: result.rollbackId
     });
 
     res.status(200).json(responseBody);

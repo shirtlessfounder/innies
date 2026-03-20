@@ -29,6 +29,13 @@ function createMissingContributionCapColumnError(column: 'five_hour_reserve_perc
   });
 }
 
+function createMissingFreezeTableError(table: 'in_pilot_cutover_freezes' | 'in_pilot_cutover_freeze_credentials'): Error {
+  return Object.assign(new Error(`relation "${table}" does not exist`), {
+    code: '42P01',
+    table
+  });
+}
+
 describe('tokenCredentialRepository', () => {
   it('creates encrypted token credential row', async () => {
     process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 7).toString('base64');
@@ -123,6 +130,36 @@ describe('tokenCredentialRepository', () => {
     ]);
   });
 
+  it('excludes token credentials that are frozen during cutover migration', async () => {
+    process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 24).toString('base64');
+    const db = new SequenceSqlClient([{
+      rows: [{
+        id: 'cred_live_1',
+        org_id: '00000000-0000-0000-0000-000000000001',
+        provider: 'anthropic',
+        auth_scheme: 'bearer',
+        encrypted_access_token: encryptSecret('access-live'),
+        encrypted_refresh_token: null,
+        expires_at: '2026-03-02T00:00:00Z',
+        status: 'active',
+        rotation_version: 1,
+        created_at: '2026-03-01T00:00:00Z',
+        updated_at: '2026-03-01T00:00:00Z',
+        revoked_at: null,
+        monthly_contribution_limit_units: null,
+        monthly_contribution_used_units: 0,
+        monthly_window_start_at: '2026-03-01T00:00:00Z'
+      }],
+      rowCount: 1
+    }]);
+    const repo = new TokenCredentialRepository(db);
+
+    await repo.listActiveForRouting('00000000-0000-0000-0000-000000000001', 'anthropic');
+
+    expect(db.queries[0].sql).toContain('in_pilot_cutover_freeze_credentials');
+    expect(db.queries[0].sql).toContain('released_at is null');
+  });
+
   it('falls back cleanly when contribution-cap columns are missing from routing reads', async () => {
     process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 10).toString('base64');
     const db = new SequenceSqlClient([
@@ -171,6 +208,53 @@ describe('tokenCredentialRepository', () => {
     expect(db.queries[0].sql).toContain('five_hour_reserve_percent');
     expect(db.queries[1].sql).toContain('0::integer as five_hour_reserve_percent');
     expect(db.queries[1].sql).toContain('0::integer as seven_day_reserve_percent');
+  });
+
+  it('falls back cleanly when cutover-freeze tables are missing from routing reads', async () => {
+    process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 26).toString('base64');
+    const db = new SequenceSqlClient([
+      createMissingFreezeTableError('in_pilot_cutover_freeze_credentials'),
+      {
+        rows: [{
+          id: 'cred_legacy_freeze_1',
+          org_id: '00000000-0000-0000-0000-000000000001',
+          provider: 'anthropic',
+          auth_scheme: 'x_api_key',
+          encrypted_access_token: encryptSecret('access-legacy-freeze'),
+          encrypted_refresh_token: encryptSecret('refresh-legacy-freeze'),
+          expires_at: '2026-03-02T00:00:00Z',
+          status: 'active',
+          rotation_version: 1,
+          created_at: '2026-03-01T00:00:00Z',
+          updated_at: '2026-03-01T00:00:00Z',
+          revoked_at: null,
+          monthly_contribution_limit_units: null,
+          monthly_contribution_used_units: 0,
+          monthly_window_start_at: '2026-03-01T00:00:00Z',
+          five_hour_reserve_percent: 0,
+          seven_day_reserve_percent: 0,
+          debug_label: null,
+          consecutive_failure_count: 0,
+          consecutive_rate_limit_count: 0,
+          last_failed_status: null,
+          last_failed_at: null,
+          last_rate_limited_at: null,
+          maxed_at: null,
+          rate_limited_until: null,
+          next_probe_at: null,
+          last_probe_at: null
+        }],
+        rowCount: 1
+      }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    const [found] = await repo.listActiveForRouting('00000000-0000-0000-0000-000000000001', 'anthropic');
+
+    expect(found?.accessToken).toBe('access-legacy-freeze');
+    expect(db.queries).toHaveLength(2);
+    expect(db.queries[0].sql).toContain('in_pilot_cutover_freeze_credentials');
+    expect(db.queries[1].sql).not.toContain('in_pilot_cutover_freeze_credentials');
   });
 
   it('rotates active credential with deterministic status updates', async () => {

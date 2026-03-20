@@ -41,6 +41,13 @@ export function requireApiKey(repo: ApiKeyRepository, allowedScopes: ApiKeyScope
         res.status(403).json({ code: 'forbidden', message: 'Invalid API key scope' });
         return;
       }
+      if (record.scope === 'buyer_proxy' && record.active_freeze_operation_kind) {
+        res.status(423).json({
+          code: 'pilot_migration_locked',
+          message: `Buyer key is temporarily unavailable during pilot ${record.active_freeze_operation_kind} migration`
+        });
+        return;
+      }
 
       req.auth = {
         apiKeyId: record.id,
