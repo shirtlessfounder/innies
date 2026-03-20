@@ -11,6 +11,7 @@ export type ApiKeyRecord = {
   is_active: boolean;
   expires_at: string | null;
   preferred_provider: ProviderPreference | null;
+  is_frozen?: boolean;
 };
 
 export type BuyerProviderPreferenceRecord = {
@@ -34,6 +35,13 @@ export function isMissingBuyerProviderPreferenceColumn(error: unknown): boolean 
     || details.message?.includes('provider_preference_updated_at') === true;
 }
 
+function isMissingPilotAdmissionFreezeTable(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const details = error as { code?: string; message?: string };
+  return details.code === '42P01'
+    && details.message?.includes('in_pilot_admission_freezes') === true;
+}
+
 function normalizeActiveApiKeyRecord(row: ApiKeyRecord | LegacyApiKeyRecord | undefined): ApiKeyRecord | null {
   if (!row) return null;
   if (!row.is_active) return null;
@@ -48,29 +56,74 @@ export class ApiKeyRepository {
   constructor(private readonly db: SqlClient) {}
 
   async findActiveByHash(keyHash: string): Promise<ApiKeyRecord | null> {
-    const sql = `
-      select id, org_id, scope, name, is_active, expires_at, preferred_provider
-      from in_api_keys
-      where key_hash = $1
-      limit 1
-    `;
-    try {
-      const result = await this.db.query<ApiKeyRecord>(sql, [keyHash]);
-      if (result.rowCount !== 1) return null;
-      return normalizeActiveApiKeyRecord(result.rows[0]);
-    } catch (error) {
-      if (!isMissingBuyerProviderPreferenceColumn(error)) throw error;
-
-      // Roll app code before migration 009 without breaking API-key auth.
-      const fallbackSql = `
-        select id, org_id, scope, name, is_active, expires_at
+    const runQuery = async (input: {
+      includePreferredProvider: boolean;
+      includeFreezeLookup: boolean;
+    }): Promise<ApiKeyRecord | null> => {
+      const sql = `
+        select
+          id,
+          org_id,
+          scope,
+          name,
+          is_active,
+          expires_at,
+          ${input.includePreferredProvider ? 'preferred_provider' : 'null::text as preferred_provider'},
+          ${input.includeFreezeLookup ? `exists(
+            select 1
+            from in_pilot_admission_freezes paf
+            where paf.resource_type = 'buyer_key'
+              and paf.resource_id = in_api_keys.id
+              and paf.released_at is null
+          )` : 'false'} as is_frozen
         from in_api_keys
         where key_hash = $1
         limit 1
       `;
-      const fallback = await this.db.query<LegacyApiKeyRecord>(fallbackSql, [keyHash]);
-      if (fallback.rowCount !== 1) return null;
-      return normalizeActiveApiKeyRecord(fallback.rows[0]);
+      const result = await this.db.query<ApiKeyRecord>(sql, [keyHash]);
+      if (result.rowCount !== 1) return null;
+      return result.rows[0];
+    };
+
+    try {
+      const record = await runQuery({
+        includePreferredProvider: true,
+        includeFreezeLookup: true
+      });
+      return normalizeActiveApiKeyRecord(record ?? undefined);
+    } catch (error) {
+      if (isMissingBuyerProviderPreferenceColumn(error)) {
+        try {
+          const record = await runQuery({
+            includePreferredProvider: false,
+            includeFreezeLookup: true
+          });
+          return normalizeActiveApiKeyRecord(record ?? undefined);
+        } catch (fallbackError) {
+          if (!isMissingPilotAdmissionFreezeTable(fallbackError)) throw fallbackError;
+          const record = await runQuery({
+            includePreferredProvider: false,
+            includeFreezeLookup: false
+          });
+          return normalizeActiveApiKeyRecord(record ?? undefined);
+        }
+      }
+
+      if (!isMissingPilotAdmissionFreezeTable(error)) throw error;
+      try {
+        const record = await runQuery({
+          includePreferredProvider: true,
+          includeFreezeLookup: false
+        });
+        return normalizeActiveApiKeyRecord(record ?? undefined);
+      } catch (fallbackError) {
+        if (!isMissingBuyerProviderPreferenceColumn(fallbackError)) throw fallbackError;
+        const record = await runQuery({
+          includePreferredProvider: false,
+          includeFreezeLookup: false
+        });
+        return normalizeActiveApiKeyRecord(record ?? undefined);
+      }
     }
   }
 

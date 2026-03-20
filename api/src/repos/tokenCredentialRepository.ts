@@ -113,6 +113,13 @@ function isMissingTokenCredentialContributionCapColumns(error: unknown): boolean
     || details.message?.includes('seven_day_reserve_percent') === true;
 }
 
+function isMissingPilotAdmissionFreezeTable(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const details = error as { code?: string; message?: string };
+  return details.code === '42P01'
+    && details.message?.includes('in_pilot_admission_freezes') === true;
+}
+
 function tokenCredentialSelectColumns(includeContributionCapColumns: boolean): string {
   const contributionCapColumns = includeContributionCapColumns
     ? `five_hour_reserve_percent,
@@ -150,19 +157,61 @@ function tokenCredentialSelectColumns(includeContributionCapColumns: boolean): s
   `;
 }
 
-async function queryTokenCredentialRowsWithContributionCapFallback(
+async function queryTokenCredentialRowsWithSchemaFallback(
   client: TransactionContext,
-  sqlFor: (includeContributionCapColumns: boolean) => string,
-  params: SqlValue[]
+  sqlFor: (input: {
+    includeContributionCapColumns: boolean;
+    includeFreezeJoin: boolean;
+  }) => string,
+  params: SqlValue[],
+  input?: {
+    includeContributionCapColumns?: boolean;
+    includeFreezeJoin?: boolean;
+  }
 ): Promise<SqlQueryResult<TokenCredentialRow>> {
+  const settings = {
+    includeContributionCapColumns: input?.includeContributionCapColumns ?? true,
+    includeFreezeJoin: input?.includeFreezeJoin ?? false
+  };
+
   try {
-    return await client.query<TokenCredentialRow>(sqlFor(true), params);
+    return await client.query<TokenCredentialRow>(sqlFor(settings), params);
   } catch (error) {
-    if (!isMissingTokenCredentialContributionCapColumns(error)) {
+    if (settings.includeContributionCapColumns && isMissingTokenCredentialContributionCapColumns(error)) {
+      try {
+        return await client.query<TokenCredentialRow>(sqlFor({
+          ...settings,
+          includeContributionCapColumns: false
+        }), params);
+      } catch (fallbackError) {
+        if (!settings.includeFreezeJoin || !isMissingPilotAdmissionFreezeTable(fallbackError)) {
+          throw fallbackError;
+        }
+        return client.query<TokenCredentialRow>(sqlFor({
+          includeContributionCapColumns: false,
+          includeFreezeJoin: false
+        }), params);
+      }
+    }
+
+    if (!settings.includeFreezeJoin || !isMissingPilotAdmissionFreezeTable(error)) {
       throw error;
     }
 
-    return client.query<TokenCredentialRow>(sqlFor(false), params);
+    try {
+      return await client.query<TokenCredentialRow>(sqlFor({
+        ...settings,
+        includeFreezeJoin: false
+      }), params);
+    } catch (fallbackError) {
+      if (!settings.includeContributionCapColumns || !isMissingTokenCredentialContributionCapColumns(fallbackError)) {
+        throw fallbackError;
+      }
+      return client.query<TokenCredentialRow>(sqlFor({
+        includeContributionCapColumns: false,
+        includeFreezeJoin: false
+      }), params);
+    }
   }
 }
 
@@ -297,12 +346,20 @@ export class TokenCredentialRepository {
 
   async listActiveForRouting(orgId: string, provider: string): Promise<TokenCredential[]> {
     const routingProviders = routingProvidersForLookup(provider);
-    const sql = (includeContributionCapColumns: boolean) => `
+    const sql = (input: {
+      includeContributionCapColumns: boolean;
+      includeFreezeJoin: boolean;
+    }) => `
       select
-        ${tokenCredentialSelectColumns(includeContributionCapColumns)}
+        ${tokenCredentialSelectColumns(input.includeContributionCapColumns)}
       from ${TABLES.tokenCredentials}
+      ${input.includeFreezeJoin ? `left join ${TABLES.pilotAdmissionFreezes} paf
+        on paf.resource_type = 'token_credential'
+        and paf.resource_id = ${TABLES.tokenCredentials}.id
+        and paf.released_at is null` : ''}
       where org_id = $1
         and provider = ANY($2::text[])
+        ${input.includeFreezeJoin ? 'and paf.id is null' : ''}
         and status = 'active'
         and expires_at > now()
         and (rate_limited_until is null or rate_limited_until <= now())
@@ -319,19 +376,25 @@ export class TokenCredentialRepository {
       order by rotation_version desc, updated_at desc
     `;
 
-    const result = await queryTokenCredentialRowsWithContributionCapFallback(this.db, sql, [orgId, routingProviders]);
+    const result = await queryTokenCredentialRowsWithSchemaFallback(this.db, sql, [orgId, routingProviders], {
+      includeContributionCapColumns: true,
+      includeFreezeJoin: true
+    });
     return result.rows.map(mapRow);
   }
 
   async getById(id: string): Promise<TokenCredential | null> {
-    const sql = (includeContributionCapColumns: boolean) => `
+    const sql = (input: {
+      includeContributionCapColumns: boolean;
+      includeFreezeJoin: boolean;
+    }) => `
       select
-        ${tokenCredentialSelectColumns(includeContributionCapColumns)}
+        ${tokenCredentialSelectColumns(input.includeContributionCapColumns)}
       from ${TABLES.tokenCredentials}
       where id = $1
       limit 1
     `;
-    const result = await queryTokenCredentialRowsWithContributionCapFallback(this.db, sql, [id]);
+    const result = await queryTokenCredentialRowsWithSchemaFallback(this.db, sql, [id]);
     if (result.rowCount !== 1) return null;
     return mapRow(result.rows[0]);
   }
@@ -355,7 +418,10 @@ export class TokenCredentialRepository {
     expiresAt: Date | null;
     preserveStatus?: boolean;
   }): Promise<TokenCredential | null> {
-    const sql = (includeContributionCapColumns: boolean) => `
+    const sql = (query: {
+      includeContributionCapColumns: boolean;
+      includeFreezeJoin: boolean;
+    }) => `
       update ${TABLES.tokenCredentials}
       set
         encrypted_access_token = $2,
@@ -406,7 +472,7 @@ export class TokenCredentialRepository {
         monthly_contribution_limit_units,
         monthly_contribution_used_units,
         monthly_window_start_at,
-        ${includeContributionCapColumns
+        ${query.includeContributionCapColumns
     ? `five_hour_reserve_percent,
         seven_day_reserve_percent`
     : `0::integer as five_hour_reserve_percent,
@@ -431,7 +497,7 @@ export class TokenCredentialRepository {
       input.preserveStatus === true
     ];
 
-    const result = await queryTokenCredentialRowsWithContributionCapFallback(this.db, sql, params);
+    const result = await queryTokenCredentialRowsWithSchemaFallback(this.db, sql, params);
     if (result.rowCount !== 1) return null;
     return mapRow(result.rows[0]);
   }
@@ -679,9 +745,12 @@ export class TokenCredentialRepository {
       includeRecoverableExpired?: boolean;
     }
   ): Promise<TokenCredential[]> {
-    const sql = (includeContributionCapColumns: boolean) => `
+    const sql = (query: {
+      includeContributionCapColumns: boolean;
+      includeFreezeJoin: boolean;
+    }) => `
       select
-        ${tokenCredentialSelectColumns(includeContributionCapColumns)}
+        ${tokenCredentialSelectColumns(query.includeContributionCapColumns)}
       from ${TABLES.tokenCredentials}
       where provider = $1
         and (
@@ -705,7 +774,7 @@ export class TokenCredentialRepository {
         rotation_version desc
     `;
 
-    const result = await queryTokenCredentialRowsWithContributionCapFallback(this.db, sql, [
+    const result = await queryTokenCredentialRowsWithSchemaFallback(this.db, sql, [
       provider,
       options?.includeRecoverableExpired === true
     ]);
@@ -1311,9 +1380,12 @@ export class TokenCredentialRepository {
   }
 
   async listMaxedForProbe(limit: number): Promise<TokenCredential[]> {
-    const sql = (includeContributionCapColumns: boolean) => `
+    const sql = (query: {
+      includeContributionCapColumns: boolean;
+      includeFreezeJoin: boolean;
+    }) => `
       select
-        ${tokenCredentialSelectColumns(includeContributionCapColumns)}
+        ${tokenCredentialSelectColumns(query.includeContributionCapColumns)}
       from ${TABLES.tokenCredentials}
       where status = 'maxed'
         and expires_at > now()
@@ -1321,7 +1393,7 @@ export class TokenCredentialRepository {
       order by coalesce(next_probe_at, maxed_at, updated_at) asc
       limit $1
     `;
-    const result = await queryTokenCredentialRowsWithContributionCapFallback(this.db, sql, [limit]);
+    const result = await queryTokenCredentialRowsWithSchemaFallback(this.db, sql, [limit]);
     return result.rows.map(mapRow);
   }
 
