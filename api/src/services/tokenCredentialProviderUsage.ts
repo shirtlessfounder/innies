@@ -121,6 +121,7 @@ export type ClaudeContributionCapEvaluation = {
   eligible: boolean;
   exclusionReason:
     | 'provider_usage_snapshot_missing'
+    | 'provider_usage_snapshot_soft_stale'
     | 'provider_usage_snapshot_hard_stale'
     | 'contribution_cap_exhausted_5h'
     | 'contribution_cap_exhausted_7d'
@@ -776,12 +777,26 @@ export function evaluateClaudeContributionCap(input: {
       routeDecisionMeta
     };
   }
+  if (isSoftStale) {
+    return {
+      inScope: true,
+      eligible: fiveHourReservePercent <= 0 && sevenDayReservePercent <= 0,
+      exclusionReason: fiveHourReservePercent > 0 || sevenDayReservePercent > 0
+        ? 'provider_usage_snapshot_soft_stale'
+        : null,
+      warningReason: null,
+      isFresh,
+      isSoftStale,
+      isHardStale,
+      routeDecisionMeta
+    };
+  }
   if (state.fiveHourContributionCapExhausted) {
     return {
       inScope: true,
       eligible: false,
       exclusionReason: 'contribution_cap_exhausted_5h',
-      warningReason: isSoftStale ? 'provider_usage_snapshot_soft_stale' : null,
+      warningReason: null,
       isFresh,
       isSoftStale,
       isHardStale,
@@ -793,7 +808,7 @@ export function evaluateClaudeContributionCap(input: {
       inScope: true,
       eligible: false,
       exclusionReason: 'contribution_cap_exhausted_7d',
-      warningReason: isSoftStale ? 'provider_usage_snapshot_soft_stale' : null,
+      warningReason: null,
       isFresh,
       isSoftStale,
       isHardStale,
@@ -805,7 +820,7 @@ export function evaluateClaudeContributionCap(input: {
     inScope: true,
     eligible: true,
     exclusionReason: null,
-    warningReason: isSoftStale ? 'provider_usage_snapshot_soft_stale' : null,
+    warningReason: null,
     isFresh,
     isSoftStale,
     isHardStale,

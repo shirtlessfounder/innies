@@ -649,6 +649,73 @@ describe('proxy token-mode route behavior', () => {
     expect(upstreamSpy).not.toHaveBeenCalled();
   });
 
+  it('excludes reserve-enabled Claude oauth tokens when the provider-usage snapshot is soft stale', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: '11113335-3333-4333-8333-333333333335',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'sk-ant-oat01-reserved-soft-stale',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z'),
+      fiveHourReservePercent: 20,
+      sevenDayReservePercent: 0
+    } as any]);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentialProviderUsage, 'listByTokenCredentialIds').mockResolvedValue([{
+      tokenCredentialId: '11113335-3333-4333-8333-333333333335',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      usageSource: 'anthropic_oauth_usage',
+      fiveHourUtilizationRatio: 0.2,
+      fiveHourResetsAt: new Date('2026-03-01T05:00:00Z'),
+      sevenDayUtilizationRatio: 0.1,
+      sevenDayResetsAt: new Date('2026-03-08T00:00:00Z'),
+      rawPayload: {},
+      fetchedAt: new Date(Date.now() - (3 * 60 * 1000)),
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-innies-provider-pin': 'true'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-3-5-sonnet-latest',
+        streaming: false,
+        payload: { model: 'claude-3-5-sonnet-latest', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(429);
+    expect((res.body as any).code).toBe('capacity_unavailable');
+    expect((res.body as any).details?.providerUsageExcludedReasonCounts).toEqual({
+      provider_usage_snapshot_soft_stale: 1
+    });
+    expect(upstreamSpy).not.toHaveBeenCalled();
+  });
+
   it('keeps truly 100%-exhausted Claude oauth tokens excluded until reset even when the snapshot is hard stale', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
@@ -2374,6 +2441,89 @@ describe('proxy token-mode route behavior', () => {
     expect((res.body as any).code).toBe('capacity_unavailable');
     expect((res.body as any).details?.providerUsageExcludedReasonCounts).toEqual({
       provider_usage_snapshot_hard_stale: 1
+    });
+    expect(upstreamSpy).not.toHaveBeenCalled();
+  });
+
+  it('excludes reserve-enabled Codex credentials when the provider-usage snapshot is soft stale', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const oauthToken = createFakeOpenAiOauthToken({ accountId: 'acct_codex_reserved_soft_stale' });
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      supports_streaming: false
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'dddd2225-0000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: oauthToken,
+      refreshToken: 'rt_codex_reserved_soft_stale',
+      expiresAt: new Date('2026-03-20T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z'),
+      fiveHourReservePercent: 20,
+      sevenDayReservePercent: 0
+    } as any]);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentialProviderUsage, 'listByTokenCredentialIds').mockResolvedValue([{
+      tokenCredentialId: 'dddd2225-0000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      usageSource: 'openai_chatgpt_usage',
+      fiveHourUtilizationRatio: 0.2,
+      fiveHourResetsAt: new Date('2026-03-19T01:00:00.000Z'),
+      sevenDayUtilizationRatio: 0.1,
+      sevenDayResetsAt: new Date('2026-03-22T00:00:00.000Z'),
+      rawPayload: {
+        five_hour: { utilization: 0.2, resets_at: '2026-03-19T01:00:00.000Z' },
+        seven_day: { utilization: 0.1, resets_at: '2026-03-22T00:00:00.000Z' }
+      },
+      fetchedAt: new Date(Date.now() - (3 * 60 * 1000)),
+      createdAt: new Date('2026-03-18T22:31:00.000Z'),
+      updatedAt: new Date('2026-03-18T22:31:00.000Z')
+    } as any]);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/responses',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-innies-provider-pin': 'true'
+      },
+      body: {
+        provider: 'codex',
+        model: 'gpt-5.4',
+        streaming: false,
+        payload: { model: 'gpt-5.4', input: 'hello' }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(429);
+    expect((res.body as any).code).toBe('capacity_unavailable');
+    expect((res.body as any).details?.providerUsageExcludedReasonCounts).toEqual({
+      provider_usage_snapshot_soft_stale: 1
     });
     expect(upstreamSpy).not.toHaveBeenCalled();
   });
