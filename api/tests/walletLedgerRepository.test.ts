@@ -38,7 +38,7 @@ describe('WalletLedgerRepository', () => {
       ownerOrgId: 'org_fnf',
       effectType: 'manual_credit',
       amountMinor: 1000
-    })).rejects.toThrow('manual wallet entries require actorUserId and reason');
+    })).rejects.toThrow('manual wallet entries require actor metadata and reason');
   });
 
   it('accepts processor effect ids for payment-backed wallet rows without manual actor metadata', async () => {
@@ -131,5 +131,107 @@ describe('WalletLedgerRepository', () => {
       effectType: 'buyer_debit',
       amountMinor: 450
     })).rejects.toThrow('wallet ledger idempotent replay mismatch');
+  });
+
+  it('returns the existing manual row on duplicate deterministic entry ids', async () => {
+    const db = new SequenceSqlClient([
+      { rows: [], rowCount: 0 },
+      {
+        rows: [{
+          id: 'wallet_entry_manual',
+          wallet_id: 'wallet_1',
+          owner_org_id: 'org_fnf',
+          buyer_key_id: null,
+          metering_event_id: null,
+          effect_type: 'manual_credit',
+          amount_minor: 5000,
+          currency: 'USD',
+          actor_user_id: null,
+          reason: 'usdc top-up',
+          processor_effect_id: null,
+          metadata: { actorApiKeyId: 'admin_key_1', source: 'admin_console' },
+          created_at: '2026-03-20T03:00:00Z'
+        }],
+        rowCount: 1
+      }
+    ]);
+    const repo = new WalletLedgerRepository(db, () => 'wallet_entry_new');
+
+    const row = await repo.appendEntry({
+      entryId: 'wallet_entry_manual',
+      walletId: 'wallet_1',
+      ownerOrgId: 'org_fnf',
+      actorApiKeyId: 'admin_key_1',
+      effectType: 'manual_credit',
+      amountMinor: 5000,
+      reason: 'usdc top-up',
+      metadata: {
+        source: 'admin_console'
+      }
+    });
+
+    expect(row.id).toBe('wallet_entry_manual');
+    expect(db.queries[1].sql).toContain('where id = $1');
+  });
+
+  it('computes wallet balance from append-only ledger effects', async () => {
+    const db = new MockSqlClient({
+      rows: [{
+        wallet_id: 'wallet_1',
+        balance_minor: 725
+      }],
+      rowCount: 1
+    });
+    const repo = new WalletLedgerRepository(db, () => 'wallet_entry_balance');
+
+    const snapshot = await repo.readBalance('wallet_1');
+
+    expect(snapshot).toEqual({
+      walletId: 'wallet_1',
+      balanceMinor: 725
+    });
+    expect(db.queries[0].sql).toContain('sum(');
+    expect(db.queries[0].sql).toContain('from in_wallet_ledger');
+    expect(db.queries[0].params).toEqual(['wallet_1']);
+  });
+
+  it('lists wallet history pages in reverse chronological order', async () => {
+    const db = new MockSqlClient({
+      rows: [{
+        id: 'wallet_entry_9',
+        wallet_id: 'wallet_1',
+        owner_org_id: 'org_fnf',
+        buyer_key_id: 'buyer_1',
+        metering_event_id: 'meter_9',
+        effect_type: 'buyer_debit',
+        amount_minor: 450,
+        currency: 'USD',
+        actor_user_id: null,
+        reason: null,
+        processor_effect_id: null,
+        metadata: null,
+        created_at: '2026-03-20T03:00:00Z'
+      }],
+      rowCount: 1
+    });
+    const repo = new WalletLedgerRepository(db, () => 'wallet_entry_page');
+
+    const rows = await repo.listPageByWalletId({
+      walletId: 'wallet_1',
+      limit: 10,
+      cursor: {
+        createdAt: '2026-03-20T04:00:00Z',
+        id: 'wallet_entry_10'
+      }
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(db.queries[0].sql).toContain('order by created_at desc, id desc');
+    expect(db.queries[0].params).toEqual([
+      'wallet_1',
+      '2026-03-20T04:00:00Z',
+      'wallet_entry_10',
+      10
+    ]);
   });
 });
