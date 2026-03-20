@@ -17,6 +17,7 @@ import { UsageQueryRepository } from '../repos/usageQueryRepository.js';
 import { WithdrawalRequestRepository } from '../repos/withdrawalRequestRepository.js';
 import { TokenCredentialRepository } from '../repos/tokenCredentialRepository.js';
 import { TokenCredentialProviderUsageRepository } from '../repos/tokenCredentialProviderUsageRepository.js';
+import { WalletLedgerRepository } from '../repos/walletLedgerRepository.js';
 import { AnalyticsRepository } from '../repos/analyticsRepository.js';
 import { AnalyticsDashboardSnapshotRepository } from '../repos/analyticsDashboardSnapshotRepository.js';
 import { RequestLogRepository } from '../repos/requestLogRepository.js';
@@ -35,6 +36,7 @@ import { TokenCredentialService } from './tokenCredentialService.js';
 import { PilotSessionService } from './pilot/pilotSessionService.js';
 import { PilotGithubAuthService } from './pilot/pilotGithubAuthService.js';
 import { PilotCutoverService } from './pilot/pilotCutoverService.js';
+import { WalletService } from './wallet/walletService.js';
 import { assertRequiredEnv, readRequiredEnv } from '../utils/env.js';
 import { AppError } from '../utils/errors.js';
 
@@ -60,6 +62,7 @@ export const runtime = {
     usageQuery: new UsageQueryRepository(sql),
     tokenCredentials: new TokenCredentialRepository(sql),
     tokenCredentialProviderUsage: new TokenCredentialProviderUsageRepository(sql),
+    walletLedger: new WalletLedgerRepository(sql),
     analytics: new AnalyticsRepository(sql),
     analyticsDashboardSnapshots: new AnalyticsDashboardSnapshotRepository(sql),
     earningsLedger: new EarningsLedgerRepository(sql),
@@ -80,6 +83,7 @@ export const runtime = {
     routerEngine: new RouterEngine(),
     routingService: undefined as unknown as RoutingService,
     tokenCredentials: undefined as unknown as TokenCredentialService,
+    wallets: undefined as unknown as WalletService,
     withdrawals: undefined as unknown as WithdrawalService
   }
 };
@@ -138,6 +142,12 @@ runtime.services.tokenCredentials = new TokenCredentialService(
   runtime.repos.tokenCredentials,
   runtime.repos.auditLogs
 );
+runtime.services.wallets = new WalletService({
+  sql: runtime.sql,
+  walletLedgerRepo: runtime.repos.walletLedger,
+  canonicalMeteringRepo: runtime.repos.canonicalMetering,
+  meteringProjectorStateRepo: runtime.repos.meteringProjectorStates
+});
 runtime.services.withdrawals = new WithdrawalService({
   sql: runtime.sql,
   earningsLedgerRepo: runtime.repos.earningsLedger,
