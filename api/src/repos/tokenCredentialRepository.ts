@@ -583,7 +583,7 @@ export class TokenCredentialRepository {
         end,
         updated_at = now()
       where id = $1
-        and provider in ('anthropic', 'openai')
+        and provider in ('anthropic', 'openai', 'codex')
       returning
         id,
         org_id,

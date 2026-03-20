@@ -1250,6 +1250,39 @@ describe('admin token credential routes idempotent replay', () => {
     });
   });
 
+  it('reads contribution-cap values for a Codex token credential', async () => {
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'getById').mockResolvedValue({
+      id: '22222222-2222-4222-8222-222222222222',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'codex',
+      fiveHourReservePercent: 20,
+      sevenDayReservePercent: 10
+    } as any);
+
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/token-credentials/22222222-2222-4222-8222-222222222222/contribution-cap',
+      headers: {
+        authorization: 'Bearer in_admin_token'
+      },
+      params: { id: '22222222-2222-4222-8222-222222222222' }
+    });
+    const res = createMockRes();
+
+    await invoke(contributionCapReadHandlers[0], req, res);
+    await invoke(contributionCapReadHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      id: '22222222-2222-4222-8222-222222222222',
+      provider: 'codex',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      fiveHourReservePercent: 20,
+      sevenDayReservePercent: 10
+    });
+  });
+
   it('rejects contribution-cap updates for unsupported credentials', async () => {
     vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
       replay: false,
@@ -1265,7 +1298,7 @@ describe('admin token credential routes idempotent replay', () => {
       new AppError(
         'invalid_request',
         400,
-        'Contribution caps are only supported for Claude and OpenAI token credentials',
+        'Contribution caps are only supported for Claude, OpenAI, and Codex token credentials',
         { credentialId: '11111111-1111-4111-8111-111111111111', provider: 'google' }
       )
     );
@@ -1292,7 +1325,7 @@ describe('admin token credential routes idempotent replay', () => {
     expect(res.statusCode).toBe(400);
     expect((res.body as any)).toMatchObject({
       code: 'invalid_request',
-      message: 'Contribution caps are only supported for Claude and OpenAI token credentials'
+      message: 'Contribution caps are only supported for Claude, OpenAI, and Codex token credentials'
     });
     expect(commitSpy).not.toHaveBeenCalled();
   });
@@ -1350,6 +1383,65 @@ describe('admin token credential routes idempotent replay', () => {
       {
         fiveHourReservePercent: 35,
         sevenDayReservePercent: 15
+      },
+      expect.any(Object)
+    );
+    expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('updates contribution-cap values for Codex token credentials', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_contribution_cap_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123460y',
+        requestHash: 'contribution_cap_h_codex'
+      }
+    } as any);
+
+    const updateSpy = vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'updateContributionCap').mockResolvedValue({
+      id: '22222222-2222-4222-8222-222222222222',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'codex',
+      fiveHourReservePercent: 20,
+      sevenDayReservePercent: 10
+    } as any);
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'PATCH',
+      path: '/v1/admin/token-credentials/22222222-2222-4222-8222-222222222222/contribution-cap',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123460y'
+      },
+      params: { id: '22222222-2222-4222-8222-222222222222' },
+      body: {
+        fiveHourReservePercent: 20,
+        sevenDayReservePercent: 10
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(contributionCapHandlers[0], req, res);
+    await invoke(contributionCapHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any)).toEqual({
+      ok: true,
+      id: '22222222-2222-4222-8222-222222222222',
+      provider: 'codex',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      fiveHourReservePercent: 20,
+      sevenDayReservePercent: 10
+    });
+    expect(updateSpy).toHaveBeenCalledWith(
+      '22222222-2222-4222-8222-222222222222',
+      {
+        fiveHourReservePercent: 20,
+        sevenDayReservePercent: 10
       },
       expect.any(Object)
     );

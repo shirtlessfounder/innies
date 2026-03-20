@@ -475,7 +475,7 @@ describe('tokenCredentialRepository', () => {
     expect(db.queries[0].sql).toContain('five_hour_reserve_percent');
     expect(db.queries[0].sql).toContain('seven_day_reserve_percent');
     expect(db.queries[0].sql).toContain('updated_at = now()');
-    expect(db.queries[0].sql).toContain("and provider in ('anthropic', 'openai')");
+    expect(db.queries[0].sql).toContain("and provider in ('anthropic', 'openai', 'codex')");
   });
 
   it('updates reserve fields for OpenAI token credentials without touching other token state', async () => {
@@ -506,7 +506,38 @@ describe('tokenCredentialRepository', () => {
     expect(db.queries[0].sql).toContain('five_hour_reserve_percent');
     expect(db.queries[0].sql).toContain('seven_day_reserve_percent');
     expect(db.queries[0].sql).toContain('updated_at = now()');
-    expect(db.queries[0].sql).toContain("and provider in ('anthropic', 'openai')");
+    expect(db.queries[0].sql).toContain("and provider in ('anthropic', 'openai', 'codex')");
+  });
+
+  it('updates reserve fields for Codex token credentials without touching other token state', async () => {
+    const db = new SequenceSqlClient([{
+      rows: [{
+        id: 'cred_codex_1',
+        org_id: '00000000-0000-0000-0000-000000000001',
+        provider: 'codex',
+        five_hour_reserve_percent: 15,
+        seven_day_reserve_percent: 5
+      }],
+      rowCount: 1
+    }]);
+    const repo = new TokenCredentialRepository(db);
+
+    const updated = await repo.updateContributionCap('cred_codex_1', {
+      fiveHourReservePercent: 15,
+      sevenDayReservePercent: 5
+    });
+
+    expect(updated).toEqual({
+      id: 'cred_codex_1',
+      orgId: '00000000-0000-0000-0000-000000000001',
+      provider: 'codex',
+      fiveHourReservePercent: 15,
+      sevenDayReservePercent: 5
+    });
+    expect(db.queries[0].sql).toContain('five_hour_reserve_percent');
+    expect(db.queries[0].sql).toContain('seven_day_reserve_percent');
+    expect(db.queries[0].sql).toContain('updated_at = now()');
+    expect(db.queries[0].sql).toContain("and provider in ('anthropic', 'openai', 'codex')");
   });
 
   it('updates debug_label without rotating or reviving revoked credentials', async () => {

@@ -122,7 +122,7 @@ describe('tokenCredentialService', () => {
     })).rejects.toMatchObject<AppError>({
       code: 'invalid_request',
       status: 400,
-      message: 'Contribution caps are only supported for Claude and OpenAI token credentials'
+      message: 'Contribution caps are only supported for Claude, OpenAI, and Codex token credentials'
     });
     expect(repo.updateContributionCap).not.toHaveBeenCalled();
     expect(createEvent).not.toHaveBeenCalled();
@@ -166,6 +166,48 @@ describe('tokenCredentialService', () => {
     expect(createEvent).toHaveBeenCalledWith(expect.objectContaining({
       action: 'token_credential.update_contribution_cap',
       targetId: 'cred_openai_1',
+      orgId: 'org_1'
+    }));
+  });
+
+  it('writes an audit event for Codex reserve-floor updates', async () => {
+    const repo = {
+      getById: vi.fn(async () => ({
+        id: 'cred_codex_1',
+        orgId: 'org_1',
+        provider: 'codex'
+      })),
+      updateContributionCap: vi.fn(async () => ({
+        id: 'cred_codex_1',
+        orgId: 'org_1',
+        provider: 'codex',
+        fiveHourReservePercent: 15,
+        sevenDayReservePercent: 5
+      }))
+    };
+    const createEvent = vi.fn(async () => ({ id: 'audit_1' }));
+    const service = new TokenCredentialService(repo as any, { createEvent } as any);
+
+    const updated = await service.updateContributionCap('cred_codex_1', {
+      fiveHourReservePercent: 15,
+      sevenDayReservePercent: 5
+    });
+
+    expect(updated).toEqual({
+      id: 'cred_codex_1',
+      orgId: 'org_1',
+      provider: 'codex',
+      fiveHourReservePercent: 15,
+      sevenDayReservePercent: 5
+    });
+    expect(repo.getById).toHaveBeenCalledWith('cred_codex_1');
+    expect(repo.updateContributionCap).toHaveBeenCalledWith('cred_codex_1', {
+      fiveHourReservePercent: 15,
+      sevenDayReservePercent: 5
+    });
+    expect(createEvent).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'token_credential.update_contribution_cap',
+      targetId: 'cred_codex_1',
       orgId: 'org_1'
     }));
   });
