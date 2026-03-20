@@ -105,12 +105,12 @@ describe('tokenCredentialService', () => {
     }));
   });
 
-  it('rejects contribution-cap updates for non-Claude credentials', async () => {
+  it('rejects contribution-cap updates for unsupported credentials', async () => {
     const repo = {
       getById: vi.fn(async () => ({
         id: 'cred_1',
         orgId: 'org_1',
-        provider: 'openai'
+        provider: 'google'
       })),
       updateContributionCap: vi.fn()
     };
@@ -122,10 +122,52 @@ describe('tokenCredentialService', () => {
     })).rejects.toMatchObject<AppError>({
       code: 'invalid_request',
       status: 400,
-      message: 'Contribution caps are only supported for Claude token credentials'
+      message: 'Contribution caps are only supported for Claude and OpenAI token credentials'
     });
     expect(repo.updateContributionCap).not.toHaveBeenCalled();
     expect(createEvent).not.toHaveBeenCalled();
+  });
+
+  it('writes an audit event for OpenAI reserve-floor updates', async () => {
+    const repo = {
+      getById: vi.fn(async () => ({
+        id: 'cred_openai_1',
+        orgId: 'org_1',
+        provider: 'openai'
+      })),
+      updateContributionCap: vi.fn(async () => ({
+        id: 'cred_openai_1',
+        orgId: 'org_1',
+        provider: 'openai',
+        fiveHourReservePercent: 20,
+        sevenDayReservePercent: 5
+      }))
+    };
+    const createEvent = vi.fn(async () => ({ id: 'audit_1' }));
+    const service = new TokenCredentialService(repo as any, { createEvent } as any);
+
+    const updated = await service.updateContributionCap('cred_openai_1', {
+      fiveHourReservePercent: 20,
+      sevenDayReservePercent: 5
+    });
+
+    expect(updated).toEqual({
+      id: 'cred_openai_1',
+      orgId: 'org_1',
+      provider: 'openai',
+      fiveHourReservePercent: 20,
+      sevenDayReservePercent: 5
+    });
+    expect(repo.getById).toHaveBeenCalledWith('cred_openai_1');
+    expect(repo.updateContributionCap).toHaveBeenCalledWith('cred_openai_1', {
+      fiveHourReservePercent: 20,
+      sevenDayReservePercent: 5
+    });
+    expect(createEvent).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'token_credential.update_contribution_cap',
+      targetId: 'cred_openai_1',
+      orgId: 'org_1'
+    }));
   });
 
   it('updates a token credential debug label and writes an audit event', async () => {

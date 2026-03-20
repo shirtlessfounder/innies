@@ -475,7 +475,38 @@ describe('tokenCredentialRepository', () => {
     expect(db.queries[0].sql).toContain('five_hour_reserve_percent');
     expect(db.queries[0].sql).toContain('seven_day_reserve_percent');
     expect(db.queries[0].sql).toContain('updated_at = now()');
-    expect(db.queries[0].sql).toContain("and provider = 'anthropic'");
+    expect(db.queries[0].sql).toContain("and provider in ('anthropic', 'openai')");
+  });
+
+  it('updates reserve fields for OpenAI token credentials without touching other token state', async () => {
+    const db = new SequenceSqlClient([{
+      rows: [{
+        id: 'cred_openai_1',
+        org_id: '00000000-0000-0000-0000-000000000001',
+        provider: 'openai',
+        five_hour_reserve_percent: 20,
+        seven_day_reserve_percent: 5
+      }],
+      rowCount: 1
+    }]);
+    const repo = new TokenCredentialRepository(db);
+
+    const updated = await repo.updateContributionCap('cred_openai_1', {
+      fiveHourReservePercent: 20,
+      sevenDayReservePercent: 5
+    });
+
+    expect(updated).toEqual({
+      id: 'cred_openai_1',
+      orgId: '00000000-0000-0000-0000-000000000001',
+      provider: 'openai',
+      fiveHourReservePercent: 20,
+      sevenDayReservePercent: 5
+    });
+    expect(db.queries[0].sql).toContain('five_hour_reserve_percent');
+    expect(db.queries[0].sql).toContain('seven_day_reserve_percent');
+    expect(db.queries[0].sql).toContain('updated_at = now()');
+    expect(db.queries[0].sql).toContain("and provider in ('anthropic', 'openai')");
   });
 
   it('updates debug_label without rotating or reviving revoked credentials', async () => {

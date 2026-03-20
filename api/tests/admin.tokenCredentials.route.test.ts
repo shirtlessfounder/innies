@@ -1250,7 +1250,7 @@ describe('admin token credential routes idempotent replay', () => {
     });
   });
 
-  it('rejects contribution-cap updates for non-Claude credentials', async () => {
+  it('rejects contribution-cap updates for unsupported credentials', async () => {
     vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
       replay: false,
       input: {
@@ -1265,8 +1265,8 @@ describe('admin token credential routes idempotent replay', () => {
       new AppError(
         'invalid_request',
         400,
-        'Contribution caps are only supported for Claude token credentials',
-        { credentialId: '11111111-1111-4111-8111-111111111111', provider: 'openai' }
+        'Contribution caps are only supported for Claude and OpenAI token credentials',
+        { credentialId: '11111111-1111-4111-8111-111111111111', provider: 'google' }
       )
     );
     const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
@@ -1292,9 +1292,68 @@ describe('admin token credential routes idempotent replay', () => {
     expect(res.statusCode).toBe(400);
     expect((res.body as any)).toMatchObject({
       code: 'invalid_request',
-      message: 'Contribution caps are only supported for Claude token credentials'
+      message: 'Contribution caps are only supported for Claude and OpenAI token credentials'
     });
     expect(commitSpy).not.toHaveBeenCalled();
+  });
+
+  it('updates contribution-cap values for OpenAI token credentials', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_contribution_cap_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123460x',
+        requestHash: 'contribution_cap_h_openai'
+      }
+    } as any);
+
+    const updateSpy = vi.spyOn(runtimeModule.runtime.services.tokenCredentials, 'updateContributionCap').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      fiveHourReservePercent: 35,
+      sevenDayReservePercent: 15
+    } as any);
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'PATCH',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/contribution-cap',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123460x'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' },
+      body: {
+        fiveHourReservePercent: 35,
+        sevenDayReservePercent: 15
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(contributionCapHandlers[0], req, res);
+    await invoke(contributionCapHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any)).toEqual({
+      ok: true,
+      id: '11111111-1111-4111-8111-111111111111',
+      provider: 'openai',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      fiveHourReservePercent: 35,
+      sevenDayReservePercent: 15
+    });
+    expect(updateSpy).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111',
+      {
+        fiveHourReservePercent: 35,
+        sevenDayReservePercent: 15
+      },
+      expect.any(Object)
+    );
+    expect(commitSpy).toHaveBeenCalledTimes(1);
   });
 
   it('probes a maxed credential immediately and returns active on success', async () => {
