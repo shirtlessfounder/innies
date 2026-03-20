@@ -2882,28 +2882,33 @@ async function executeTokenModeNonStreaming(input: {
         latencyMs: Date.now() - startedAt,
         ttfbMs
       });
-      await runtime.services.metering.recordUsage({
-        requestId,
-        attemptNo,
-        orgId,
-        apiKeyId,
-        sellerKeyId: undefined,
-        provider,
-        model,
-        inputTokens,
-        outputTokens,
-        usageUnits,
-        retailEquivalentMinor: usageUnits
-      });
-      const monthlyUsageRecorded = await runtime.repos.tokenCredentials.addMonthlyContributionUsage(
-        credential.id,
-        usageUnits
-      );
-      if (!monthlyUsageRecorded) {
-        await logAttemptFailure({
-          kind: 'metering_degraded',
-          message: 'monthly contribution increment could not be recorded after successful upstream response'
+      if (status >= 200 && status < 300 && !extractedFailed) {
+        await runtime.services.metering.recordUsage({
+          requestId,
+          attemptNo,
+          orgId,
+          apiKeyId,
+          sellerKeyId: undefined,
+          tokenCredentialId: credential.id,
+          providerAccountId: credential.id,
+          servingOrgId: credential.orgId,
+          provider,
+          model,
+          inputTokens,
+          outputTokens,
+          usageUnits,
+          retailEquivalentMinor: usageUnits
         });
+        const monthlyUsageRecorded = await runtime.repos.tokenCredentials.addMonthlyContributionUsage(
+          credential.id,
+          usageUnits
+        );
+        if (!monthlyUsageRecorded) {
+          await logAttemptFailure({
+            kind: 'metering_degraded',
+            message: 'monthly contribution increment could not be recorded after successful upstream response'
+          });
+        }
       }
 
       if (status >= 200 && status < 300) {
@@ -3694,6 +3699,9 @@ async function executeTokenModeStreaming(input: {
                   orgId,
                   apiKeyId,
                   sellerKeyId: undefined,
+                  tokenCredentialId: credential.id,
+                  providerAccountId: credential.id,
+                  servingOrgId: credential.orgId,
                   provider,
                   model,
                   inputTokens,
@@ -3836,6 +3844,9 @@ async function executeTokenModeStreaming(input: {
                 orgId,
                 apiKeyId,
                 sellerKeyId: undefined,
+                tokenCredentialId: credential.id,
+                providerAccountId: credential.id,
+                servingOrgId: credential.orgId,
                 provider,
                 model,
                 inputTokens,
@@ -4223,6 +4234,9 @@ async function executeTokenModeStreaming(input: {
             orgId,
             apiKeyId,
             sellerKeyId: undefined,
+            tokenCredentialId: credential.id,
+            providerAccountId: credential.id,
+            servingOrgId: credential.orgId,
             provider,
             model,
             inputTokens,
@@ -4665,6 +4679,10 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
             const inputTokens = parsedInputTokens ?? Math.floor(usageUnits * 0.4);
             const outputTokens = parsedOutputTokens ?? Math.max(0, usageUnits - inputTokens);
             const usedEstimate = parsedInputTokens === null || parsedOutputTokens === null;
+            const shouldRecordServedStream = (
+              upstreamResponse.status >= 200
+              && upstreamResponse.status < 300
+            );
 
             if (idemStart && !idemStart.replay) {
               await commitProxyMetadataIdempotency(
@@ -4674,7 +4692,9 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               );
             }
 
-            await runtime.repos.sellerKeys.addCapacityUsage(decision.sellerKeyId, usageUnits);
+            if (shouldRecordServedStream) {
+              await runtime.repos.sellerKeys.addCapacityUsage(decision.sellerKeyId, usageUnits);
+            }
             await runtime.repos.routingEvents.insert({
               requestId,
               attemptNo: decision.attemptNo,
@@ -4689,22 +4709,24 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               latencyMs: Date.now() - startedAt,
               ttfbMs
             });
-            await runtime.services.metering.recordUsage({
-              requestId,
-              attemptNo: decision.attemptNo,
-              orgId,
-              apiKeyId: auth.apiKeyId,
-              sellerKeyId: decision.sellerKeyId,
-              provider: requestProvider,
-              model: parsed.model,
-              inputTokens,
-              outputTokens,
-              usageUnits,
-              retailEquivalentMinor: usageUnits,
-              note: usedEstimate
-                ? `estimate=stream_bytes_v1 bytes=${totalBytes} chunks=${totalChunks} reconcile_pending=true`
-                : `source=stream_usage_payload bytes=${totalBytes} chunks=${totalChunks}`
-            });
+            if (shouldRecordServedStream) {
+              await runtime.services.metering.recordUsage({
+                requestId,
+                attemptNo: decision.attemptNo,
+                orgId,
+                apiKeyId: auth.apiKeyId,
+                sellerKeyId: decision.sellerKeyId,
+                provider: requestProvider,
+                model: parsed.model,
+                inputTokens,
+                outputTokens,
+                usageUnits,
+                retailEquivalentMinor: usageUnits,
+                note: usedEstimate
+                  ? `estimate=stream_bytes_v1 bytes=${totalBytes} chunks=${totalChunks} reconcile_pending=true`
+                  : `source=stream_usage_payload bytes=${totalBytes} chunks=${totalChunks}`
+              });
+            }
 
             return {
               upstreamStatus: upstreamResponse.status,
@@ -4777,19 +4799,21 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
         latencyMs,
         ttfbMs: result.ttfbMs ?? null
       });
-      await runtime.services.metering.recordUsage({
-        requestId,
-        attemptNo: result.attemptNo,
-        orgId,
-        apiKeyId: auth.apiKeyId,
-        sellerKeyId: result.keyId ?? undefined,
-        provider: requestProvider,
-        model: parsed.model,
-        inputTokens: observedInputTokens,
-        outputTokens: observedOutputTokens,
-        usageUnits: result.usageUnits ?? 0,
-        retailEquivalentMinor: result.usageUnits ?? 0
-      });
+      if (result.upstreamStatus >= 200 && result.upstreamStatus < 300) {
+        await runtime.services.metering.recordUsage({
+          requestId,
+          attemptNo: result.attemptNo,
+          orgId,
+          apiKeyId: auth.apiKeyId,
+          sellerKeyId: result.keyId ?? undefined,
+          provider: requestProvider,
+          model: parsed.model,
+          inputTokens: observedInputTokens,
+          outputTokens: observedOutputTokens,
+          usageUnits: result.usageUnits ?? 0,
+          retailEquivalentMinor: result.usageUnits ?? 0
+        });
+      }
     }
 
     if (idemStart && !idemStart.replay) {

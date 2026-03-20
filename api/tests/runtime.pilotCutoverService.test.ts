@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 type RuntimeModule = typeof import('../src/services/runtime.js');
 
@@ -11,20 +11,32 @@ describe('runtime pilot cutover service', () => {
     runtimeModule = await import('../src/services/runtime.js');
   });
 
-  it('fails closed when reserve-floor migration is not configured yet', async () => {
-    const adapter = (runtimeModule.runtime.services.pilotCutovers as any).reserveFloorMigration;
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
 
-    await expect(adapter.migrateReserveFloors({
+  it('routes reserve-floor migration through the token credential repository adapter', async () => {
+    const adapter = (runtimeModule.runtime.services.pilotCutovers as any).reserveFloorMigration;
+    const migrate = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'migrateReserveFloors').mockResolvedValue({
+      migratedCount: 1
+    });
+
+    await adapter.migrateReserveFloors({
       db: {},
       fromOrgId: 'org_innies',
       toOrgId: 'org_fnf',
       targetUserId: 'user_darryn',
       cutoverId: 'cut_1',
       actorUserId: null
-    })).rejects.toMatchObject({
-      code: 'service_unavailable',
-      status: 503,
-      message: 'Pilot cutover unavailable until reserve-floor migration adapter is configured'
+    });
+
+    expect(migrate).toHaveBeenCalledWith({
+      db: {},
+      fromOrgId: 'org_innies',
+      toOrgId: 'org_fnf',
+      targetUserId: 'user_darryn',
+      cutoverId: 'cut_1',
+      actorUserId: null
     });
   });
 });

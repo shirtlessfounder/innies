@@ -481,6 +481,53 @@ describe('proxy token-mode route behavior', () => {
     expect(listSpy).not.toHaveBeenCalled();
   });
 
+  it('does not meter token-mode non-stream upstream 400 responses', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([
+      createRoutingCredentialFixture({
+        id: 'cred_token_400',
+        provider: 'anthropic',
+        authScheme: 'x_api_key',
+        accessToken: 'sk-ant-token-400'
+      })
+    ]);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      type: 'error',
+      error: { type: 'invalid_request_error', message: 'bad request' }
+    }), {
+      status: 400,
+      headers: { 'content-type': 'application/json' }
+    }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        model: 'claude-3-5-sonnet-latest',
+        streaming: false,
+        payload: {
+          model: 'claude-3-5-sonnet-latest',
+          max_tokens: 16,
+          messages: [{ role: 'user', content: 'hello' }]
+        }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(runtimeModule.runtime.services.metering.recordUsage).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.repos.tokenCredentials.addMonthlyContributionUsage).not.toHaveBeenCalled();
+  });
+
   it('excludes reserve-enabled Claude oauth tokens until the first provider-usage snapshot lands', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
@@ -1712,6 +1759,61 @@ describe('proxy token-mode route behavior', () => {
       escalationThreshold: 10,
       reason: 'upstream_429_consecutive_rate_limit'
     }));
+    expect(runtimeModule.runtime.services.metering.recordUsage).not.toHaveBeenCalled();
+    upstreamSpy.mockRestore();
+  });
+
+  it('does not meter token-mode non-stream upstream 400 responses', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'dddd0000-0000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'sk-ant-oat01-test-token',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z'),
+      fiveHourReservePercent: 0,
+      sevenDayReservePercent: 0
+    } as any]);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: { type: 'invalid_request_error', message: 'bad request' } }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-3-5-sonnet-latest',
+        streaming: false,
+        payload: { model: 'claude-3-5-sonnet-latest', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(runtimeModule.runtime.services.metering.recordUsage).not.toHaveBeenCalled();
     upstreamSpy.mockRestore();
   });
 
@@ -2921,6 +3023,82 @@ describe('proxy token-mode route behavior', () => {
     upstreamSpy.mockRestore();
   });
 
+  it('does not meter native codex streaming requests when upstream returns 400', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const oauthToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_codex_stream_400',
+      clientId: 'app_codex_stream_400'
+    });
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      supports_streaming: true
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'dddd1113-4000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: oauthToken,
+      refreshToken: 'rt_codex_stream_400',
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        error: {
+          type: 'invalid_request_error',
+          message: 'bad request'
+        }
+      }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/responses',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-innies-provider-pin': 'true'
+      },
+      body: {
+        model: 'gpt-5.4',
+        stream: true,
+        instructions: 'Reply with one word only.',
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] }]
+      }
+    });
+    const res = createStreamingMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
+    expect(runtimeModule.runtime.services.metering.recordUsage).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.repos.tokenCredentials.addMonthlyContributionUsage).not.toHaveBeenCalled();
+    upstreamSpy.mockRestore();
+  });
+
   it('translates mislabelled upstream codex SSE bodies into anthropic SSE for compat streaming requests', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     const oauthToken = createFakeOpenAiOauthToken({
@@ -3031,6 +3209,96 @@ describe('proxy token-mode route behavior', () => {
 
     upstreamSpy.mockRestore();
     streamLatencySpy.mockRestore();
+  });
+
+  it('does not meter translated compat streaming requests when upstream returns 400', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.COMPAT_CODEX_DEFAULT_MODEL = 'gpt-5.4';
+    const oauthToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_codex_stream_compat_400',
+      clientId: 'app_codex_stream_compat_400'
+    });
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string, model: string) => {
+      if (provider === 'openai' && model === 'gpt-5.4') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: true } as any;
+      }
+      if (provider === 'anthropic' && model === 'claude-opus-4-6') {
+        return { provider: 'anthropic', model: 'claude-opus-4-6', supports_streaming: true } as any;
+      }
+      return null as any;
+    });
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider !== 'openai') return [];
+      return [{
+        id: 'dddd1113-compat-4000-8000-000000000000',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: oauthToken,
+        refreshToken: 'rt_codex_stream_compat_400',
+        expiresAt: new Date('2026-03-02T00:00:00Z'),
+        status: 'active',
+        rotationVersion: 1,
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+        updatedAt: new Date('2026-03-01T00:00:00Z'),
+        revokedAt: null,
+        monthlyContributionLimitUnits: null,
+        monthlyContributionUsedUnits: 0,
+        monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+      } as any];
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        error: {
+          message: 'bad request',
+          type: 'invalid_request_error'
+        }
+      }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: true,
+        payload: {
+          model: 'claude-opus-4-6',
+          stream: true,
+          max_tokens: 64,
+          messages: [{ role: 'user', content: 'hi' }]
+        }
+      }
+    });
+    (req as any).inniesCompatMode = true;
+    const res = createStreamingMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(runtimeModule.runtime.services.metering.recordUsage).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.repos.tokenCredentials.addMonthlyContributionUsage).not.toHaveBeenCalled();
+    upstreamSpy.mockRestore();
   });
 
   it('falls back to anthropic when translated openai compat non-stream responses report response.failed inside a 200 SSE body', async () => {

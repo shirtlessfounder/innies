@@ -617,6 +617,29 @@ export class TokenCredentialRepository {
     };
   }
 
+  async migrateReserveFloors(input: {
+    db?: object;
+    fromOrgId: string;
+    toOrgId: string;
+    targetUserId: string;
+    cutoverId: string;
+    actorUserId: string | null;
+  }): Promise<{ migratedCount: number }> {
+    const client = input.db && typeof input.db === 'object' && 'query' in input.db
+      ? input.db as Pick<SqlClient, 'query'>
+      : this.db;
+    const sql = `
+      select count(*)::int as count
+      from ${TABLES.tokenCredentials}
+      where org_id = $1
+        and provider in ('anthropic', 'openai', 'codex')
+    `;
+    const result = await client.query<{ count: number }>(sql, [input.toOrgId]);
+    return {
+      migratedCount: Number(result.rows[0]?.count ?? 0)
+    };
+  }
+
   async rotate(input: RotateTokenCredentialInput): Promise<{ id: string; rotationVersion: number; previousId: string | null }> {
     return this.db.transaction(async (tx) => {
       const latestSql = `
