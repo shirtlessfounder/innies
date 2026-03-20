@@ -1,4 +1,4 @@
-import type { SqlClient, SqlValue } from './sqlClient.js';
+import type { TransactionContext, SqlValue } from './sqlClient.js';
 import { type IdFactory, uuidV4 } from './idFactory.js';
 import { TABLES } from './tableNames.js';
 
@@ -23,7 +23,7 @@ export type PilotAdmissionFreezeRow = {
 
 export class PilotAdmissionFreezeRepository {
   constructor(
-    private readonly db: SqlClient,
+    private readonly db: TransactionContext,
     private readonly createId: IdFactory = uuidV4
   ) {}
 

@@ -40,7 +40,6 @@
     - `targetOrgName`
     - `targetUserEmail`
     - `targetUserDisplayName`
-    - `targetGithubLogin`
     - `buyerKeyIds[]`
     - `tokenCredentialIds[]`
     - optional `effectiveAt`
@@ -322,4 +321,3 @@ Confirm:
 - committed cutover and rollback rows are created explicitly
 - Darryn GitHub auth and admin impersonation session seams exist
 - reserve-floor migration is an explicit dependency seam, not hidden routing logic in this branch
-

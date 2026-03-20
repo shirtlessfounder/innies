@@ -189,7 +189,7 @@ describe('admin pilot routes', () => {
   });
 
   it('starts a cutover through the cutover service', async () => {
-    vi.spyOn(runtimeModule.runtime.services.pilotCutovers, 'cutover').mockResolvedValue({
+    const cutover = vi.spyOn(runtimeModule.runtime.services.pilotCutovers, 'cutover').mockResolvedValue({
       targetOrgId: 'org_fnf',
       targetUserId: 'user_darryn',
       cutoverRecord: { id: 'cut_1', effective_at: '2026-03-20T00:00:00Z' }
@@ -208,7 +208,6 @@ describe('admin pilot routes', () => {
         targetOrgName: 'Friends & Family',
         targetUserEmail: 'darryn@example.com',
         targetUserDisplayName: 'Darryn',
-        targetGithubLogin: 'darryn',
         buyerKeyIds: ['buyer_1'],
         tokenCredentialIds: ['cred_1']
       }
@@ -225,6 +224,17 @@ describe('admin pilot routes', () => {
       targetOrgId: 'org_fnf',
       targetUserId: 'user_darryn'
     }));
+    expect(cutover).toHaveBeenCalledWith({
+      sourceOrgId: 'org_innies',
+      targetOrgSlug: 'fnf',
+      targetOrgName: 'Friends & Family',
+      targetUserEmail: 'darryn@example.com',
+      targetUserDisplayName: 'Darryn',
+      buyerKeyIds: ['buyer_1'],
+      tokenCredentialIds: ['cred_1'],
+      actorUserId: null,
+      effectiveAt: undefined
+    });
   });
 
   it('starts a rollback through the cutover service', async () => {
