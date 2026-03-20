@@ -31,7 +31,8 @@ describe('apiKeyRepository', () => {
         name: 'shirtless',
         is_active: true,
         expires_at: null,
-        preferred_provider: 'openai'
+        preferred_provider: 'openai',
+        active_freeze_operation_kind: null
       }],
       rowCount: 1
     }]);
@@ -41,6 +42,7 @@ describe('apiKeyRepository', () => {
 
     expect(record?.name).toBe('shirtless');
     expect(record?.preferred_provider).toBe('openai');
+    expect(record?.active_freeze_operation_kind).toBeNull();
     expect(db.queries[0]?.sql).toContain('name');
     expect(db.queries[0]?.sql).toContain('preferred_provider');
   });
@@ -77,7 +79,8 @@ describe('apiKeyRepository', () => {
       name: 'shirtless',
       is_active: true,
       expires_at: null,
-      preferred_provider: null
+      preferred_provider: null,
+      active_freeze_operation_kind: null
     });
     expect(db.queries).toHaveLength(2);
     expect(db.queries[1]?.sql).toContain('name');
@@ -117,5 +120,27 @@ describe('apiKeyRepository', () => {
     expect(db.queries).toHaveLength(2);
     expect(db.queries[0]?.sql).toContain('provider_preference_updated_at');
     expect(db.queries[1]?.sql).not.toContain('preferred_provider');
+  });
+
+  it('loads active cutover freeze metadata when the migration is present', async () => {
+    const db = new SequenceSqlClient([{
+      rows: [{
+        id: 'key_1',
+        org_id: '00000000-0000-0000-0000-000000000001',
+        scope: 'buyer_proxy',
+        name: 'shirtless',
+        is_active: true,
+        expires_at: null,
+        preferred_provider: null,
+        active_freeze_operation_kind: 'cutover'
+      }],
+      rowCount: 1
+    }]);
+    const repo = new ApiKeyRepository(db);
+
+    const record = await repo.findActiveByHash('hash_live');
+
+    expect(record?.active_freeze_operation_kind).toBe('cutover');
+    expect(db.queries[0]?.sql).toContain('in_pilot_cutover_freezes');
   });
 });

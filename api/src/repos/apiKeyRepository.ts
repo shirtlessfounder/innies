@@ -11,6 +11,7 @@ export type ApiKeyRecord = {
   is_active: boolean;
   expires_at: string | null;
   preferred_provider: ProviderPreference | null;
+  active_freeze_operation_kind?: 'cutover' | 'rollback' | null;
 };
 
 export type BuyerProviderPreferenceRecord = {
@@ -40,8 +41,19 @@ function normalizeActiveApiKeyRecord(row: ApiKeyRecord | LegacyApiKeyRecord | un
   if (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) return null;
   return {
     ...row,
-    preferred_provider: 'preferred_provider' in row ? row.preferred_provider ?? null : null
+    preferred_provider: 'preferred_provider' in row ? row.preferred_provider ?? null : null,
+    active_freeze_operation_kind: 'active_freeze_operation_kind' in row ? row.active_freeze_operation_kind ?? null : null
   };
+}
+
+function isMissingPilotCutoverFreezeTables(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const details = error as { code?: string; table?: string; message?: string };
+  if (details.code !== '42P01') return false;
+  return details.table === 'in_pilot_cutover_freezes'
+    || details.table === 'in_pilot_cutover_freeze_credentials'
+    || details.message?.includes('in_pilot_cutover_freezes') === true
+    || details.message?.includes('in_pilot_cutover_freeze_credentials') === true;
 }
 
 export class ApiKeyRepository {
@@ -49,7 +61,22 @@ export class ApiKeyRepository {
 
   async findActiveByHash(keyHash: string): Promise<ApiKeyRecord | null> {
     const sql = `
-      select id, org_id, scope, name, is_active, expires_at, preferred_provider
+      select
+        id,
+        org_id,
+        scope,
+        name,
+        is_active,
+        expires_at,
+        preferred_provider,
+        (
+          select operation_kind
+          from in_pilot_cutover_freezes freeze
+          where freeze.buyer_key_id = in_api_keys.id
+            and freeze.released_at is null
+          order by freeze.frozen_at desc
+          limit 1
+        ) as active_freeze_operation_kind
       from in_api_keys
       where key_hash = $1
       limit 1
@@ -59,7 +86,7 @@ export class ApiKeyRepository {
       if (result.rowCount !== 1) return null;
       return normalizeActiveApiKeyRecord(result.rows[0]);
     } catch (error) {
-      if (!isMissingBuyerProviderPreferenceColumn(error)) throw error;
+      if (!isMissingBuyerProviderPreferenceColumn(error) && !isMissingPilotCutoverFreezeTables(error)) throw error;
 
       // Roll app code before migration 009 without breaking API-key auth.
       const fallbackSql = `
@@ -72,6 +99,43 @@ export class ApiKeyRepository {
       if (fallback.rowCount !== 1) return null;
       return normalizeActiveApiKeyRecord(fallback.rows[0]);
     }
+  }
+
+  async getById(id: string): Promise<ApiKeyRecord | null> {
+    const sql = `
+      select id, org_id, scope, name, is_active, expires_at, preferred_provider
+      from in_api_keys
+      where id = $1
+      limit 1
+    `;
+    try {
+      const result = await this.db.query<ApiKeyRecord>(sql, [id]);
+      if (result.rowCount !== 1) return null;
+      return normalizeActiveApiKeyRecord(result.rows[0]);
+    } catch (error) {
+      if (!isMissingBuyerProviderPreferenceColumn(error)) throw error;
+      const fallback = await this.db.query<LegacyApiKeyRecord>(
+        `
+          select id, org_id, scope, name, is_active, expires_at
+          from in_api_keys
+          where id = $1
+          limit 1
+        `,
+        [id]
+      );
+      if (fallback.rowCount !== 1) return null;
+      return normalizeActiveApiKeyRecord(fallback.rows[0]);
+    }
+  }
+
+  async reassignOrg(id: string, orgId: string): Promise<boolean> {
+    const sql = `
+      update in_api_keys
+      set org_id = $2
+      where id = $1
+    `;
+    const result = await this.db.query(sql, [id, orgId]);
+    return result.rowCount === 1;
   }
 
   async touchLastUsed(id: string): Promise<void> {

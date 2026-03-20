@@ -31,6 +31,7 @@ export class PilotCutoverRepository {
   ) {}
 
   async createCutoverRecord(input: {
+    id?: string;
     sourceOrgId: string;
     targetOrgId: string;
     effectiveAt: Date;
@@ -57,7 +58,7 @@ export class PilotCutoverRepository {
     `;
 
     return this.expectOne<CutoverRecordRow>(sql, [
-      this.createId(),
+      input.id ?? this.createId(),
       input.sourceOrgId,
       input.targetOrgId,
       input.effectiveAt,
@@ -69,6 +70,7 @@ export class PilotCutoverRepository {
   }
 
   async createRollbackRecord(input: {
+    id?: string;
     sourceCutoverId?: string | null;
     effectiveAt: Date;
     revertedBuyerKeyTargetOrgId: string;
@@ -91,7 +93,7 @@ export class PilotCutoverRepository {
     `;
 
     return this.expectOne<RollbackRecordRow>(sql, [
-      this.createId(),
+      input.id ?? this.createId(),
       input.sourceCutoverId ?? null,
       input.effectiveAt,
       input.revertedBuyerKeyTargetOrgId,
