@@ -234,9 +234,10 @@ describe('WithdrawalService', () => {
         amount_minor: 500,
         status: 'approved'
       });
+    const transaction = vi.fn(async (run) => run({ query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }));
 
     const service = new WithdrawalService({
-      sql: { transaction: vi.fn() } as any,
+      sql: { transaction } as any,
       earningsLedgerRepo: {
         listByOwnerOrgAndContributorUserId: vi.fn().mockResolvedValue([]),
         appendEntry
@@ -246,6 +247,16 @@ describe('WithdrawalService', () => {
         transitionStatus,
         listByOwnerOrgAndContributorUserId: vi.fn().mockResolvedValue([])
       } as any,
+      repoFactory: {
+        earningsLedger: vi.fn().mockReturnValue({
+          listByOwnerOrgAndContributorUserId: vi.fn().mockResolvedValue([]),
+          appendEntry
+        }),
+        withdrawalRequests: vi.fn().mockReturnValue({
+          findById,
+          transitionStatus
+        })
+      },
       canonicalMeteringRepo: { findById: vi.fn() } as any,
       meteringProjectorStateRepo: {
         listByProjectorAndState: vi.fn().mockResolvedValue([])
@@ -299,6 +310,7 @@ describe('WithdrawalService', () => {
       withdrawalRequestId: 'withdraw_4',
       reason: 'network fee'
     }));
+    expect(transaction).toHaveBeenCalledTimes(3);
   });
 
   it('propagates admin api-key attribution through review transitions and payout ledger rows', async () => {
@@ -314,9 +326,10 @@ describe('WithdrawalService', () => {
       currency: 'USD',
       status: 'requested'
     });
+    const transaction = vi.fn(async (run) => run({ query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }));
 
     const service = new WithdrawalService({
-      sql: { transaction: vi.fn() } as any,
+      sql: { transaction } as any,
       earningsLedgerRepo: {
         listByOwnerOrgAndContributorUserId: vi.fn().mockResolvedValue([]),
         appendEntry
@@ -326,6 +339,16 @@ describe('WithdrawalService', () => {
         transitionStatus,
         listByOwnerOrgAndContributorUserId: vi.fn().mockResolvedValue([])
       } as any,
+      repoFactory: {
+        earningsLedger: vi.fn().mockReturnValue({
+          listByOwnerOrgAndContributorUserId: vi.fn().mockResolvedValue([]),
+          appendEntry
+        }),
+        withdrawalRequests: vi.fn().mockReturnValue({
+          findById,
+          transitionStatus
+        })
+      },
       canonicalMeteringRepo: { findById: vi.fn() } as any,
       meteringProjectorStateRepo: {
         listByProjectorAndState: vi.fn().mockResolvedValue([])
@@ -352,6 +375,203 @@ describe('WithdrawalService', () => {
       actedByApiKeyId: 'key_admin_1'
     }));
     expect(appendEntry).not.toHaveBeenCalled();
+    expect(transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('rolls back rejection status when the release ledger write fails inside the transaction path', async () => {
+    const committed = {
+      status: 'requested',
+      ledgerEffects: [] as string[]
+    };
+    const transaction = vi.fn(async (run) => {
+      const staged = {
+        status: committed.status,
+        ledgerEffects: [...committed.ledgerEffects]
+      };
+      const tx = {
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }),
+        __state: staged
+      };
+
+      try {
+        const result = await run(tx as any);
+        committed.status = staged.status;
+        committed.ledgerEffects = [...staged.ledgerEffects];
+        return result;
+      } catch (error) {
+        throw error;
+      }
+    });
+
+    const transitionStatus = vi.fn(async ({ nextStatus }) => {
+      throw new Error(`transitionStatus called outside tx: ${nextStatus}`);
+    });
+    const appendEntry = vi.fn(async () => {
+      throw new Error('appendEntry called outside tx');
+    });
+
+    const service = new WithdrawalService({
+      sql: { transaction } as any,
+      earningsLedgerRepo: {
+        listByOwnerOrgAndContributorUserId: vi.fn().mockResolvedValue([]),
+        appendEntry
+      } as any,
+      withdrawalRequestRepo: {
+        findById: vi.fn().mockResolvedValue(null),
+        transitionStatus,
+        listByOwnerOrgAndContributorUserId: vi.fn().mockResolvedValue([])
+      } as any,
+      repoFactory: {
+        earningsLedger: vi.fn((tx: any) => ({
+          listByOwnerOrgAndContributorUserId: vi.fn().mockResolvedValue([]),
+          appendEntry: vi.fn(async () => {
+            throw new Error('release write failed');
+          })
+        })),
+        withdrawalRequests: vi.fn((tx: any) => ({
+          findById: vi.fn(async () => ({
+            id: 'withdraw_10',
+            owner_org_id: 'org_fnf',
+            contributor_user_id: 'user_darryn',
+            amount_minor: 250,
+            currency: 'USD',
+            status: tx.__state.status,
+            settlement_reference: null,
+            settlement_failure_reason: null
+          })),
+          transitionStatus: vi.fn(async ({ nextStatus }) => {
+            tx.__state.status = nextStatus;
+            return {
+              id: 'withdraw_10',
+              owner_org_id: 'org_fnf',
+              contributor_user_id: 'user_darryn',
+              amount_minor: 250,
+              currency: 'USD',
+              status: nextStatus,
+              settlement_reference: null,
+              settlement_failure_reason: null
+            };
+          })
+        }))
+      },
+      canonicalMeteringRepo: { findById: vi.fn() } as any,
+      meteringProjectorStateRepo: {
+        listByProjectorAndState: vi.fn().mockResolvedValue([])
+      } as any
+    });
+
+    await expect(service.rejectWithdrawal({
+      withdrawalRequestId: 'withdraw_10',
+      actorUserId: 'admin_1',
+      actorApiKeyId: null,
+      reason: 'duplicate request'
+    })).rejects.toThrow('release write failed');
+
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(committed.status).toBe('requested');
+    expect(committed.ledgerEffects).toEqual([]);
+    expect(transitionStatus).not.toHaveBeenCalled();
+    expect(appendEntry).not.toHaveBeenCalled();
+  });
+
+  it('rolls back settlement status and settlement ledger effects when the adjustment write fails inside the transaction path', async () => {
+    const committed = {
+      status: 'approved',
+      settlementReference: null as string | null,
+      ledgerEffects: [] as string[]
+    };
+    const transaction = vi.fn(async (run) => {
+      const staged = {
+        status: committed.status,
+        settlementReference: committed.settlementReference,
+        ledgerEffects: [...committed.ledgerEffects]
+      };
+      const tx = {
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }),
+        __state: staged
+      };
+
+      try {
+        const result = await run(tx as any);
+        committed.status = staged.status;
+        committed.settlementReference = staged.settlementReference;
+        committed.ledgerEffects = [...staged.ledgerEffects];
+        return result;
+      } catch (error) {
+        throw error;
+      }
+    });
+
+    const service = new WithdrawalService({
+      sql: { transaction } as any,
+      earningsLedgerRepo: {
+        listByOwnerOrgAndContributorUserId: vi.fn().mockResolvedValue([]),
+        appendEntry: vi.fn()
+      } as any,
+      withdrawalRequestRepo: {
+        findById: vi.fn().mockResolvedValue(null),
+        transitionStatus: vi.fn(),
+        listByOwnerOrgAndContributorUserId: vi.fn().mockResolvedValue([])
+      } as any,
+      repoFactory: {
+        earningsLedger: vi.fn((tx: any) => ({
+          listByOwnerOrgAndContributorUserId: vi.fn().mockResolvedValue([]),
+          appendEntry: vi.fn(async (entry) => {
+            if (entry.effectType === 'payout_adjustment') {
+              throw new Error('adjustment write failed');
+            }
+            tx.__state.ledgerEffects.push(entry.effectType);
+            return { id: `entry_${tx.__state.ledgerEffects.length}` };
+          })
+        })),
+        withdrawalRequests: vi.fn((tx: any) => ({
+          findById: vi.fn(async () => ({
+            id: 'withdraw_11',
+            owner_org_id: 'org_fnf',
+            contributor_user_id: 'user_darryn',
+            amount_minor: 500,
+            currency: 'USD',
+            status: tx.__state.status,
+            settlement_reference: tx.__state.settlementReference,
+            settlement_failure_reason: null
+          })),
+          transitionStatus: vi.fn(async ({ nextStatus, settlementReference }) => {
+            tx.__state.status = nextStatus;
+            if (settlementReference !== undefined) {
+              tx.__state.settlementReference = settlementReference;
+            }
+            return {
+              id: 'withdraw_11',
+              owner_org_id: 'org_fnf',
+              contributor_user_id: 'user_darryn',
+              amount_minor: 500,
+              currency: 'USD',
+              status: nextStatus,
+              settlement_reference: tx.__state.settlementReference,
+              settlement_failure_reason: null
+            };
+          })
+        }))
+      },
+      canonicalMeteringRepo: { findById: vi.fn() } as any,
+      meteringProjectorStateRepo: {
+        listByProjectorAndState: vi.fn().mockResolvedValue([])
+      } as any
+    });
+
+    await expect(service.markSettled({
+      withdrawalRequestId: 'withdraw_11',
+      actorUserId: 'admin_1',
+      actorApiKeyId: null,
+      settlementReference: 'wire_456',
+      adjustmentMinor: -15,
+      adjustmentReason: 'network fee'
+    })).rejects.toThrow('adjustment write failed');
+
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(committed.status).toBe('approved');
+    expect(committed.settlementReference).toBeNull();
+    expect(committed.ledgerEffects).toEqual([]);
   });
 
   it('bubbles reserve-write failures from the transaction path so the request insert can roll back', async () => {

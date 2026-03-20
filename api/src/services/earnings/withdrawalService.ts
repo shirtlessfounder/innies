@@ -27,7 +27,7 @@ type WithdrawalServiceDeps = {
   meteringProjectorStateRepo: Pick<MeteringProjectorStateRepository, 'listByProjectorAndState'>;
   repoFactory?: {
     earningsLedger?: (tx: TransactionContext) => Pick<EarningsLedgerRepository, 'appendEntry' | 'listByOwnerOrgAndContributorUserId'>;
-    withdrawalRequests?: (tx: TransactionContext) => Pick<WithdrawalRequestRepository, 'create'>;
+    withdrawalRequests?: (tx: TransactionContext) => Pick<WithdrawalRequestRepository, 'create' | 'findById' | 'transitionStatus'>;
   };
 };
 
@@ -80,10 +80,7 @@ export class WithdrawalService {
         [input.ownerOrgId, input.contributorUserId]
       );
 
-      const txEarningsLedgerRepo = this.deps.repoFactory?.earningsLedger?.(tx)
-        ?? new EarningsLedgerRepositoryImpl(tx as unknown as SqlClient);
-      const txWithdrawalRequestRepo = this.deps.repoFactory?.withdrawalRequests?.(tx)
-        ?? new WithdrawalRequestRepositoryImpl(tx as unknown as SqlClient);
+      const { earningsLedgerRepo: txEarningsLedgerRepo, withdrawalRequestRepo: txWithdrawalRequestRepo } = this.buildTxRepos(tx);
 
       const ledgerEntries = await txEarningsLedgerRepo.listByOwnerOrgAndContributorUserId({
         ownerOrgId: input.ownerOrgId,
@@ -120,43 +117,46 @@ export class WithdrawalService {
     actorApiKeyId: string | null;
     reason?: string | null;
   }): Promise<WithdrawalRequestRow> {
-    const request = await this.requireWithdrawal(input.withdrawalRequestId);
+    return this.deps.sql.transaction(async (tx) => {
+      const { earningsLedgerRepo, withdrawalRequestRepo } = this.buildTxRepos(tx);
+      const request = await this.requireWithdrawal(withdrawalRequestRepo, input.withdrawalRequestId);
 
-    if (request.status === 'requested') {
-      await this.deps.withdrawalRequestRepo.transitionStatus({
-        id: request.id,
-        nextStatus: 'under_review',
-        actedByUserId: input.actorUserId,
-        actedByApiKeyId: input.actorApiKeyId
-      });
-      return this.deps.withdrawalRequestRepo.transitionStatus({
+      if (request.status === 'requested') {
+        await withdrawalRequestRepo.transitionStatus({
+          id: request.id,
+          nextStatus: 'under_review',
+          actedByUserId: input.actorUserId,
+          actedByApiKeyId: input.actorApiKeyId
+        });
+        return withdrawalRequestRepo.transitionStatus({
+          id: request.id,
+          nextStatus: 'approved',
+          actedByUserId: input.actorUserId,
+          actedByApiKeyId: input.actorApiKeyId
+        });
+      }
+
+      if (request.status === 'settlement_failed') {
+        await earningsLedgerRepo.appendEntry({
+          ownerOrgId: request.owner_org_id,
+          contributorUserId: request.contributor_user_id,
+          effectType: 'withdrawal_reserve',
+          balanceBucket: 'reserved_for_payout',
+          amountMinor: request.amount_minor,
+          currency: request.currency,
+          actorUserId: input.actorUserId,
+          actorApiKeyId: input.actorApiKeyId,
+          reason: input.reason ?? 'withdrawal re-approved after settlement failure',
+          withdrawalRequestId: request.id
+        });
+      }
+
+      return withdrawalRequestRepo.transitionStatus({
         id: request.id,
         nextStatus: 'approved',
         actedByUserId: input.actorUserId,
         actedByApiKeyId: input.actorApiKeyId
       });
-    }
-
-    if (request.status === 'settlement_failed') {
-      await this.deps.earningsLedgerRepo.appendEntry({
-        ownerOrgId: request.owner_org_id,
-        contributorUserId: request.contributor_user_id,
-        effectType: 'withdrawal_reserve',
-        balanceBucket: 'reserved_for_payout',
-        amountMinor: request.amount_minor,
-        currency: request.currency,
-        actorUserId: input.actorUserId,
-        actorApiKeyId: input.actorApiKeyId,
-        reason: input.reason ?? 'withdrawal re-approved after settlement failure',
-        withdrawalRequestId: request.id
-      });
-    }
-
-    return this.deps.withdrawalRequestRepo.transitionStatus({
-      id: request.id,
-      nextStatus: 'approved',
-      actedByUserId: input.actorUserId,
-      actedByApiKeyId: input.actorApiKeyId
     });
   }
 
@@ -166,40 +166,43 @@ export class WithdrawalService {
     actorApiKeyId: string | null;
     reason: string;
   }): Promise<WithdrawalRequestRow> {
-    const request = await this.requireWithdrawal(input.withdrawalRequestId);
+    return this.deps.sql.transaction(async (tx) => {
+      const { earningsLedgerRepo, withdrawalRequestRepo } = this.buildTxRepos(tx);
+      const request = await this.requireWithdrawal(withdrawalRequestRepo, input.withdrawalRequestId);
 
-    if (request.status === 'requested') {
-      await this.deps.withdrawalRequestRepo.transitionStatus({
+      if (request.status === 'requested') {
+        await withdrawalRequestRepo.transitionStatus({
+          id: request.id,
+          nextStatus: 'under_review',
+          actedByUserId: input.actorUserId,
+          actedByApiKeyId: input.actorApiKeyId
+        });
+      }
+
+      const rejected = await withdrawalRequestRepo.transitionStatus({
         id: request.id,
-        nextStatus: 'under_review',
+        nextStatus: 'rejected',
         actedByUserId: input.actorUserId,
         actedByApiKeyId: input.actorApiKeyId
       });
-    }
 
-    const rejected = await this.deps.withdrawalRequestRepo.transitionStatus({
-      id: request.id,
-      nextStatus: 'rejected',
-      actedByUserId: input.actorUserId,
-      actedByApiKeyId: input.actorApiKeyId
+      if (request.status !== 'settlement_failed') {
+        await earningsLedgerRepo.appendEntry({
+          ownerOrgId: request.owner_org_id,
+          contributorUserId: request.contributor_user_id,
+          effectType: 'withdrawal_release',
+          balanceBucket: 'withdrawable',
+          amountMinor: request.amount_minor,
+          currency: request.currency,
+          actorUserId: input.actorUserId,
+          actorApiKeyId: input.actorApiKeyId,
+          reason: input.reason,
+          withdrawalRequestId: request.id
+        });
+      }
+
+      return rejected;
     });
-
-    if (request.status !== 'settlement_failed') {
-      await this.deps.earningsLedgerRepo.appendEntry({
-        ownerOrgId: request.owner_org_id,
-        contributorUserId: request.contributor_user_id,
-        effectType: 'withdrawal_release',
-        balanceBucket: 'withdrawable',
-        amountMinor: request.amount_minor,
-        currency: request.currency,
-        actorUserId: input.actorUserId,
-        actorApiKeyId: input.actorApiKeyId,
-        reason: input.reason,
-        withdrawalRequestId: request.id
-      });
-    }
-
-    return rejected;
   }
 
   async markSettlementFailed(input: {
@@ -210,36 +213,39 @@ export class WithdrawalService {
     adjustmentMinor?: number;
     adjustmentReason?: string | null;
   }): Promise<WithdrawalRequestRow> {
-    const request = await this.requireWithdrawal(input.withdrawalRequestId);
-    const updated = await this.deps.withdrawalRequestRepo.transitionStatus({
-      id: request.id,
-      nextStatus: 'settlement_failed',
-      actedByUserId: input.actorUserId,
-      actedByApiKeyId: input.actorApiKeyId,
-      settlementFailureReason: input.settlementFailureReason
-    });
+    return this.deps.sql.transaction(async (tx) => {
+      const { earningsLedgerRepo, withdrawalRequestRepo } = this.buildTxRepos(tx);
+      const request = await this.requireWithdrawal(withdrawalRequestRepo, input.withdrawalRequestId);
+      const updated = await withdrawalRequestRepo.transitionStatus({
+        id: request.id,
+        nextStatus: 'settlement_failed',
+        actedByUserId: input.actorUserId,
+        actedByApiKeyId: input.actorApiKeyId,
+        settlementFailureReason: input.settlementFailureReason
+      });
 
-    await this.deps.earningsLedgerRepo.appendEntry({
-      ownerOrgId: request.owner_org_id,
-      contributorUserId: request.contributor_user_id,
-      effectType: 'withdrawal_release',
-      balanceBucket: 'withdrawable',
-      amountMinor: request.amount_minor,
-      currency: request.currency,
-      actorUserId: input.actorUserId,
-      actorApiKeyId: input.actorApiKeyId,
-      reason: input.settlementFailureReason,
-      withdrawalRequestId: request.id
-    });
+      await earningsLedgerRepo.appendEntry({
+        ownerOrgId: request.owner_org_id,
+        contributorUserId: request.contributor_user_id,
+        effectType: 'withdrawal_release',
+        balanceBucket: 'withdrawable',
+        amountMinor: request.amount_minor,
+        currency: request.currency,
+        actorUserId: input.actorUserId,
+        actorApiKeyId: input.actorApiKeyId,
+        reason: input.settlementFailureReason,
+        withdrawalRequestId: request.id
+      });
 
-    await this.appendAdjustmentIfNeeded(request, {
-      actorUserId: input.actorUserId,
-      actorApiKeyId: input.actorApiKeyId,
-      adjustmentMinor: input.adjustmentMinor,
-      adjustmentReason: input.adjustmentReason ?? input.settlementFailureReason
-    });
+      await this.appendAdjustmentIfNeeded(earningsLedgerRepo, request, {
+        actorUserId: input.actorUserId,
+        actorApiKeyId: input.actorApiKeyId,
+        adjustmentMinor: input.adjustmentMinor,
+        adjustmentReason: input.adjustmentReason ?? input.settlementFailureReason
+      });
 
-    return updated;
+      return updated;
+    });
   }
 
   async markSettled(input: {
@@ -250,37 +256,40 @@ export class WithdrawalService {
     adjustmentMinor?: number;
     adjustmentReason?: string | null;
   }): Promise<WithdrawalRequestRow> {
-    const request = await this.requireWithdrawal(input.withdrawalRequestId);
-    const updated = await this.deps.withdrawalRequestRepo.transitionStatus({
-      id: request.id,
-      nextStatus: 'settled',
-      actedByUserId: input.actorUserId,
-      actedByApiKeyId: input.actorApiKeyId,
-      settlementReference: input.settlementReference
-    });
+    return this.deps.sql.transaction(async (tx) => {
+      const { earningsLedgerRepo, withdrawalRequestRepo } = this.buildTxRepos(tx);
+      const request = await this.requireWithdrawal(withdrawalRequestRepo, input.withdrawalRequestId);
+      const updated = await withdrawalRequestRepo.transitionStatus({
+        id: request.id,
+        nextStatus: 'settled',
+        actedByUserId: input.actorUserId,
+        actedByApiKeyId: input.actorApiKeyId,
+        settlementReference: input.settlementReference
+      });
 
-    await this.deps.earningsLedgerRepo.appendEntry({
-      ownerOrgId: request.owner_org_id,
-      contributorUserId: request.contributor_user_id,
-      effectType: 'payout_settlement',
-      balanceBucket: 'settled',
-      amountMinor: request.amount_minor,
-      currency: request.currency,
-      actorUserId: input.actorUserId,
-      actorApiKeyId: input.actorApiKeyId,
-      reason: 'withdrawal settled',
-      withdrawalRequestId: request.id,
-      payoutReference: input.settlementReference
-    });
+      await earningsLedgerRepo.appendEntry({
+        ownerOrgId: request.owner_org_id,
+        contributorUserId: request.contributor_user_id,
+        effectType: 'payout_settlement',
+        balanceBucket: 'settled',
+        amountMinor: request.amount_minor,
+        currency: request.currency,
+        actorUserId: input.actorUserId,
+        actorApiKeyId: input.actorApiKeyId,
+        reason: 'withdrawal settled',
+        withdrawalRequestId: request.id,
+        payoutReference: input.settlementReference
+      });
 
-    await this.appendAdjustmentIfNeeded(request, {
-      actorUserId: input.actorUserId,
-      actorApiKeyId: input.actorApiKeyId,
-      adjustmentMinor: input.adjustmentMinor,
-      adjustmentReason: input.adjustmentReason ?? 'payout adjustment'
-    });
+      await this.appendAdjustmentIfNeeded(earningsLedgerRepo, request, {
+        actorUserId: input.actorUserId,
+        actorApiKeyId: input.actorApiKeyId,
+        adjustmentMinor: input.adjustmentMinor,
+        adjustmentReason: input.adjustmentReason ?? 'payout adjustment'
+      });
 
-    return updated;
+      return updated;
+    });
   }
 
   async listAdminWithdrawals(ownerOrgId: string): Promise<WithdrawalRequestRow[]> {
@@ -328,7 +337,20 @@ export class WithdrawalService {
     return event.contributor_earnings_minor;
   }
 
+  private buildTxRepos(tx: TransactionContext): {
+    earningsLedgerRepo: Pick<EarningsLedgerRepository, 'appendEntry' | 'listByOwnerOrgAndContributorUserId'>;
+    withdrawalRequestRepo: Pick<WithdrawalRequestRepository, 'create' | 'findById' | 'transitionStatus'>;
+  } {
+    return {
+      earningsLedgerRepo: this.deps.repoFactory?.earningsLedger?.(tx)
+        ?? new EarningsLedgerRepositoryImpl(tx as unknown as SqlClient),
+      withdrawalRequestRepo: this.deps.repoFactory?.withdrawalRequests?.(tx)
+        ?? new WithdrawalRequestRepositoryImpl(tx as unknown as SqlClient)
+    };
+  }
+
   private async appendAdjustmentIfNeeded(
+    earningsLedgerRepo: Pick<EarningsLedgerRepository, 'appendEntry'>,
     request: WithdrawalRequestRow,
     input: {
       actorUserId: string | null;
@@ -341,7 +363,7 @@ export class WithdrawalService {
       return;
     }
 
-    await this.deps.earningsLedgerRepo.appendEntry({
+    await earningsLedgerRepo.appendEntry({
       ownerOrgId: request.owner_org_id,
       contributorUserId: request.contributor_user_id,
       effectType: 'payout_adjustment',
@@ -356,8 +378,11 @@ export class WithdrawalService {
     });
   }
 
-  private async requireWithdrawal(id: string): Promise<WithdrawalRequestRow> {
-    const request = await this.deps.withdrawalRequestRepo.findById(id);
+  private async requireWithdrawal(
+    withdrawalRequestRepo: Pick<WithdrawalRequestRepository, 'findById'>,
+    id: string
+  ): Promise<WithdrawalRequestRow> {
+    const request = await withdrawalRequestRepo.findById(id);
     if (!request) {
       throw new Error(`withdrawal request not found: ${id}`);
     }
