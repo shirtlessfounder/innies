@@ -226,6 +226,37 @@ const createRateCardVersionSchema = z.object({
   lineItems: z.array(rateCardLineItemSchema).min(1)
 });
 
+const earningsProjectionListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional().default(20)
+});
+
+const adminWithdrawalListQuerySchema = z.object({
+  ownerOrgId: z.string().min(1)
+});
+
+const adminWithdrawalActionSchema = z.discriminatedUnion('action', [
+  z.object({
+    action: z.literal('approve'),
+    reason: z.string().min(1).max(500).optional()
+  }),
+  z.object({
+    action: z.literal('reject'),
+    reason: z.string().min(1).max(500)
+  }),
+  z.object({
+    action: z.literal('mark_settled'),
+    settlementReference: z.string().min(1).max(500),
+    adjustmentMinor: z.number().int().optional(),
+    adjustmentReason: z.string().min(1).max(500).optional()
+  }),
+  z.object({
+    action: z.literal('mark_settlement_failed'),
+    settlementFailureReason: z.string().min(1).max(500),
+    adjustmentMinor: z.number().int().optional(),
+    adjustmentReason: z.string().min(1).max(500).optional()
+  })
+]);
+
 function isUniqueViolation(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   return (error as { code?: string }).code === '23505';
@@ -373,6 +404,101 @@ router.post('/v1/admin/pilot/rollback', requireApiKey(runtime.repos.apiKeys, ['a
     res.status(200).json({
       ok: true,
       rollbackId: result.rollbackRecord.id
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/admin/pilot/earnings/projections', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const query = earningsProjectionListQuerySchema.parse(req.query ?? {});
+    const projections = await runtime.services.earningsProjector.listProjectionBacklog({
+      limit: query.limit
+    });
+    res.status(200).json({
+      projections
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/admin/pilot/earnings/projections/:meteringEventId/retry', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const meteringEventId = z.string().min(1).parse(req.params.meteringEventId);
+    await runtime.services.earningsProjector.projectMeteringEvent(meteringEventId);
+    res.status(200).json({
+      ok: true,
+      meteringEventId
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/admin/pilot/withdrawals', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const query = adminWithdrawalListQuerySchema.parse(req.query ?? {});
+    const withdrawals = await runtime.services.withdrawals.listAdminWithdrawals(query.ownerOrgId);
+    res.status(200).json({
+      withdrawals
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/admin/pilot/withdrawals/:withdrawalRequestId/actions', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const withdrawalRequestId = z.string().min(1).parse(req.params.withdrawalRequestId);
+    const parsed = adminWithdrawalActionSchema.parse(req.body);
+    const actorUserId = null;
+    const actorApiKeyId = req.auth?.apiKeyId ?? null;
+
+    let withdrawal;
+    switch (parsed.action) {
+      case 'approve':
+        withdrawal = await runtime.services.withdrawals.approveWithdrawal({
+          withdrawalRequestId,
+          actorUserId,
+          actorApiKeyId,
+          reason: parsed.reason
+        });
+        break;
+      case 'reject':
+        withdrawal = await runtime.services.withdrawals.rejectWithdrawal({
+          withdrawalRequestId,
+          actorUserId,
+          actorApiKeyId,
+          reason: parsed.reason
+        });
+        break;
+      case 'mark_settled':
+        withdrawal = await runtime.services.withdrawals.markSettled({
+          withdrawalRequestId,
+          actorUserId,
+          actorApiKeyId,
+          settlementReference: parsed.settlementReference,
+          adjustmentMinor: parsed.adjustmentMinor,
+          adjustmentReason: parsed.adjustmentReason
+        });
+        break;
+      case 'mark_settlement_failed':
+        withdrawal = await runtime.services.withdrawals.markSettlementFailed({
+          withdrawalRequestId,
+          actorUserId,
+          actorApiKeyId,
+          settlementFailureReason: parsed.settlementFailureReason,
+          adjustmentMinor: parsed.adjustmentMinor,
+          adjustmentReason: parsed.adjustmentReason
+        });
+        break;
+    }
+
+    res.status(200).json({
+      ok: true,
+      withdrawal
     });
   } catch (error) {
     next(error);

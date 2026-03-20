@@ -27,7 +27,7 @@ describe('EarningsLedgerRepository', () => {
     expect(db.queries[0].params).toContain('pending');
   });
 
-  it('requires actor and reason metadata for non-metering earnings actions', async () => {
+  it('requires reason metadata for non-metering earnings actions', async () => {
     const db = new MockSqlClient();
     const repo = new EarningsLedgerRepository(db, () => 'earnings_entry_2');
 
@@ -37,7 +37,60 @@ describe('EarningsLedgerRepository', () => {
       effectType: 'payout_adjustment',
       balanceBucket: 'adjusted',
       amountMinor: -50
-    })).rejects.toThrow('manual earnings entries require actorUserId and reason');
+    })).rejects.toThrow('manual earnings entries require reason');
+  });
+
+  it('requires actor attribution for manual earnings actions', async () => {
+    const db = new MockSqlClient();
+    const repo = new EarningsLedgerRepository(db, () => 'earnings_entry_2a');
+
+    await expect(repo.appendEntry({
+      ownerOrgId: 'org_fnf',
+      contributorUserId: 'user_darryn',
+      effectType: 'payout_adjustment',
+      balanceBucket: 'adjusted',
+      amountMinor: -50,
+      reason: 'network fee'
+    })).rejects.toThrow('manual earnings entries require actor attribution');
+  });
+
+  it('writes api-key attribution for manual earnings actions', async () => {
+    const db = new MockSqlClient({
+      rows: [{ id: 'earnings_entry_2b', effect_type: 'payout_adjustment', actor_api_key_id: 'key_admin_1' }],
+      rowCount: 1
+    });
+    const repo = new EarningsLedgerRepository(db, () => 'earnings_entry_2b');
+
+    const row = await repo.appendEntry({
+      ownerOrgId: 'org_fnf',
+      contributorUserId: 'user_darryn',
+      effectType: 'payout_adjustment',
+      balanceBucket: 'adjusted',
+      amountMinor: -50,
+      actorApiKeyId: 'key_admin_1',
+      reason: 'network fee'
+    });
+
+    expect(row).toEqual(expect.objectContaining({ id: 'earnings_entry_2b' }));
+    expect(db.queries[0].sql).toContain('actor_api_key_id');
+    expect(db.queries[0].params).toContain('key_admin_1');
+  });
+
+  it('lists earnings rows scoped to owner org and contributor user', async () => {
+    const db = new MockSqlClient({
+      rows: [{ id: 'earnings_entry_5', owner_org_id: 'org_fnf', contributor_user_id: 'user_darryn' }],
+      rowCount: 1
+    });
+    const repo = new EarningsLedgerRepository(db, () => 'earnings_entry_5');
+
+    const rows = await repo.listByOwnerOrgAndContributorUserId({
+      ownerOrgId: 'org_fnf',
+      contributorUserId: 'user_darryn'
+    });
+
+    expect(rows).toEqual([expect.objectContaining({ id: 'earnings_entry_5' })]);
+    expect(db.queries[0].sql).toContain('where owner_org_id = $1');
+    expect(db.queries[0].sql).toContain('and contributor_user_id = $2');
   });
 
   it('returns the existing metering-derived earnings row on duplicate projection keys', async () => {
@@ -54,6 +107,7 @@ describe('EarningsLedgerRepository', () => {
           amount_minor: 180,
           currency: 'USD',
           actor_user_id: null,
+          actor_api_key_id: null,
           reason: null,
           withdrawal_request_id: null,
           payout_reference: null,
@@ -93,6 +147,7 @@ describe('EarningsLedgerRepository', () => {
           amount_minor: 180,
           currency: 'USD',
           actor_user_id: null,
+          actor_api_key_id: null,
           reason: null,
           withdrawal_request_id: null,
           payout_reference: null,

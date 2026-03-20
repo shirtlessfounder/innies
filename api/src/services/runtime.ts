@@ -2,6 +2,7 @@ import { buildPgClient } from '../repos/pgClient.js';
 import { ApiKeyRepository } from '../repos/apiKeyRepository.js';
 import { AuditLogRepository } from '../repos/auditLogRepository.js';
 import { CanonicalMeteringRepository } from '../repos/canonicalMeteringRepository.js';
+import { EarningsLedgerRepository } from '../repos/earningsLedgerRepository.js';
 import { FnfOwnershipRepository } from '../repos/fnfOwnershipRepository.js';
 import { IdempotencyRepository } from '../repos/idempotencyRepository.js';
 import { KillSwitchRepository } from '../repos/killSwitchRepository.js';
@@ -13,6 +14,7 @@ import { RoutingEventsRepository } from '../repos/routingEventsRepository.js';
 import { SellerKeyRepository } from '../repos/sellerKeyRepository.js';
 import { UsageLedgerRepository } from '../repos/usageLedgerRepository.js';
 import { UsageQueryRepository } from '../repos/usageQueryRepository.js';
+import { WithdrawalRequestRepository } from '../repos/withdrawalRequestRepository.js';
 import { TokenCredentialRepository } from '../repos/tokenCredentialRepository.js';
 import { TokenCredentialProviderUsageRepository } from '../repos/tokenCredentialProviderUsageRepository.js';
 import { AnalyticsRepository } from '../repos/analyticsRepository.js';
@@ -27,6 +29,8 @@ import { RouterEngine } from './routerEngine.js';
 import { RoutingService } from './routingService.js';
 import { IdempotencyService } from './idempotencyService.js';
 import { UsageMeteringWriter } from './metering/usageMeteringWriter.js';
+import { EarningsProjectorService } from './earnings/earningsProjectorService.js';
+import { WithdrawalService } from './earnings/withdrawalService.js';
 import { TokenCredentialService } from './tokenCredentialService.js';
 import { PilotSessionService } from './pilot/pilotSessionService.js';
 import { PilotGithubAuthService } from './pilot/pilotGithubAuthService.js';
@@ -58,11 +62,14 @@ export const runtime = {
     tokenCredentialProviderUsage: new TokenCredentialProviderUsageRepository(sql),
     analytics: new AnalyticsRepository(sql),
     analyticsDashboardSnapshots: new AnalyticsDashboardSnapshotRepository(sql),
+    earningsLedger: new EarningsLedgerRepository(sql),
     requestLog: new RequestLogRepository(sql),
     pilotIdentity: new PilotIdentityRepository(sql),
-    pilotAdmissionFreezes: new PilotAdmissionFreezeRepository(sql)
+    pilotAdmissionFreezes: new PilotAdmissionFreezeRepository(sql),
+    withdrawalRequests: new WithdrawalRequestRepository(sql)
   },
   services: {
+    earningsProjector: undefined as unknown as EarningsProjectorService,
     idempotency: undefined as unknown as IdempotencyService,
     jobs: undefined as unknown as JobScheduler,
     keyPool: new KeyPool(),
@@ -72,7 +79,8 @@ export const runtime = {
     pilotSessions: undefined as unknown as PilotSessionService,
     routerEngine: new RouterEngine(),
     routingService: undefined as unknown as RoutingService,
-    tokenCredentials: undefined as unknown as TokenCredentialService
+    tokenCredentials: undefined as unknown as TokenCredentialService,
+    withdrawals: undefined as unknown as WithdrawalService
   }
 };
 
@@ -117,6 +125,11 @@ runtime.services.pilotCutovers = new PilotCutoverService({
     }
   }
 });
+runtime.services.earningsProjector = new EarningsProjectorService({
+  canonicalMeteringRepo: runtime.repos.canonicalMetering,
+  earningsLedgerRepo: runtime.repos.earningsLedger,
+  meteringProjectorStateRepo: runtime.repos.meteringProjectorStates
+});
 runtime.services.routingService = new RoutingService(
   runtime.services.keyPool,
   runtime.services.routerEngine
@@ -125,6 +138,13 @@ runtime.services.tokenCredentials = new TokenCredentialService(
   runtime.repos.tokenCredentials,
   runtime.repos.auditLogs
 );
+runtime.services.withdrawals = new WithdrawalService({
+  sql: runtime.sql,
+  earningsLedgerRepo: runtime.repos.earningsLedger,
+  withdrawalRequestRepo: runtime.repos.withdrawalRequests,
+  canonicalMeteringRepo: runtime.repos.canonicalMetering,
+  meteringProjectorStateRepo: runtime.repos.meteringProjectorStates
+});
 
 export function startBackgroundJobs(): void {
   runtime.services.jobs.start(buildDefaultJobs(runtime.sql));

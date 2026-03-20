@@ -130,6 +130,10 @@ describe('admin pilot routes', () => {
   let rateCardListHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let rateCardCreateHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let meteringCorrectionHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let earningsProjectionListHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let earningsProjectionRetryHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let adminWithdrawalListHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let adminWithdrawalActionHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
 
   beforeAll(async () => {
     process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@127.0.0.1:5432/innies_test';
@@ -145,6 +149,10 @@ describe('admin pilot routes', () => {
     rateCardListHandlers = getRouteHandlers(mod.default as any, '/v1/admin/rate-cards', 'get');
     rateCardCreateHandlers = getRouteHandlers(mod.default as any, '/v1/admin/rate-cards', 'post');
     meteringCorrectionHandlers = getRouteHandlers(mod.default as any, '/v1/admin/metering/corrections', 'post');
+    earningsProjectionListHandlers = getRouteHandlers(mod.default as any, '/v1/admin/pilot/earnings/projections', 'get');
+    earningsProjectionRetryHandlers = getRouteHandlers(mod.default as any, '/v1/admin/pilot/earnings/projections/:meteringEventId/retry', 'post');
+    adminWithdrawalListHandlers = getRouteHandlers(mod.default as any, '/v1/admin/pilot/withdrawals', 'get');
+    adminWithdrawalActionHandlers = getRouteHandlers(mod.default as any, '/v1/admin/pilot/withdrawals/:withdrawalRequestId/actions', 'post');
   });
 
   beforeEach(() => {
@@ -190,6 +198,29 @@ describe('admin pilot routes', () => {
     vi.spyOn(runtimeModule.runtime.services.metering, 'recordUsage').mockResolvedValue({
       id: 'usage_1',
       entry_type: 'usage'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.services.earningsProjector, 'listProjectionBacklog').mockResolvedValue([]);
+    vi.spyOn(runtimeModule.runtime.services.earningsProjector, 'retryBacklog').mockResolvedValue({
+      processed: 1,
+      projected: 1,
+      failed: 0
+    });
+    vi.spyOn(runtimeModule.runtime.services.withdrawals, 'listAdminWithdrawals').mockResolvedValue([]);
+    vi.spyOn(runtimeModule.runtime.services.withdrawals, 'approveWithdrawal').mockResolvedValue({
+      id: 'withdraw_1',
+      status: 'approved'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.services.withdrawals, 'rejectWithdrawal').mockResolvedValue({
+      id: 'withdraw_1',
+      status: 'rejected'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.services.withdrawals, 'markSettled').mockResolvedValue({
+      id: 'withdraw_1',
+      status: 'settled'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.services.withdrawals, 'markSettlementFailed').mockResolvedValue({
+      id: 'withdraw_1',
+      status: 'settlement_failed'
     } as any);
   });
 
@@ -591,5 +622,102 @@ describe('admin pilot routes', () => {
       requestId: 'req_1',
       admissionRoutingMode: 'paid-team-capacity'
     }));
+  });
+
+  it('lists stuck earnings projection backlog for operators', async () => {
+    vi.spyOn(runtimeModule.runtime.services.earningsProjector, 'listProjectionBacklog').mockResolvedValue([{
+      meteringEventId: 'meter_1',
+      requestId: 'req_1',
+      state: 'needs_operator_correction',
+      retryCount: 3
+    }] as any);
+
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/pilot/earnings/projections',
+      headers: {
+        authorization: 'Bearer in_admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(earningsProjectionListHandlers[0], req, res);
+    await invoke(earningsProjectionListHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      projections: [expect.objectContaining({
+        meteringEventId: 'meter_1',
+        state: 'needs_operator_correction'
+      })]
+    });
+  });
+
+  it('retries one earnings projection from the admin operator route', async () => {
+    const retry = vi.spyOn(runtimeModule.runtime.services.earningsProjector, 'projectMeteringEvent').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/pilot/earnings/projections/meter_1/retry',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json'
+      },
+      params: {
+        meteringEventId: 'meter_1'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(earningsProjectionRetryHandlers[0], req, res);
+    await invoke(earningsProjectionRetryHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      meteringEventId: 'meter_1'
+    });
+    expect(retry).toHaveBeenCalledWith('meter_1');
+  });
+
+  it('routes admin withdrawal actions into the withdrawal service', async () => {
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/admin/pilot/withdrawals/withdraw_1/actions',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json'
+      },
+      params: {
+        withdrawalRequestId: 'withdraw_1'
+      },
+      body: {
+        action: 'mark_settled',
+        settlementReference: 'wire_123',
+        adjustmentMinor: -10,
+        adjustmentReason: 'network fee'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(adminWithdrawalActionHandlers[0], req, res);
+    await invoke(adminWithdrawalActionHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(runtimeModule.runtime.services.withdrawals.markSettled).toHaveBeenCalledWith({
+      withdrawalRequestId: 'withdraw_1',
+      actorUserId: null,
+      actorApiKeyId: '99999999-9999-4999-8999-999999999999',
+      settlementReference: 'wire_123',
+      adjustmentMinor: -10,
+      adjustmentReason: 'network fee'
+    });
+    expect(res.body).toEqual({
+      ok: true,
+      withdrawal: expect.objectContaining({
+        id: 'withdraw_1',
+        status: 'settled'
+      })
+    });
   });
 });
