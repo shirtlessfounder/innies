@@ -182,6 +182,11 @@ describe('proxy seller-mode route behavior', () => {
       preferred_provider: null
     } as any);
     vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'touchLastUsed').mockResolvedValue(undefined);
+    vi.spyOn(runtimeModule.runtime.repos.fnfOwnership, 'findBuyerKeyOwnership').mockResolvedValue({
+      api_key_id: '11111111-1111-4111-8111-111111111111',
+      owner_org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      owner_user_id: '22222222-2222-4222-8222-222222222222'
+    } as any);
     vi.spyOn(runtimeModule.runtime.repos.killSwitch, 'isDisabled').mockResolvedValue(false);
     vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
       provider: 'anthropic',
@@ -217,6 +222,11 @@ describe('proxy seller-mode route behavior', () => {
     vi.spyOn(runtimeModule.runtime.services.metering, 'recordUsage').mockResolvedValue({
       id: 'usage_1',
       entry_type: 'usage'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.services.wallets, 'ensurePaidAdmissionEligible').mockResolvedValue({
+      walletId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      balanceMinor: 100,
+      eligible: true
     } as any);
   });
 
@@ -271,6 +281,88 @@ describe('proxy seller-mode route behavior', () => {
         openclaw_run_id: 'oc_run_123'
       })
     }));
+  });
+
+  it('checks wallet admission before paid-team-capacity routing', async () => {
+    vi.spyOn(runtimeModule.runtime.services.routingService, 'execute').mockResolvedValue({
+      requestId: 'req_wallet_ok',
+      keyId: 'seller-key-1',
+      attemptNo: 1,
+      upstreamStatus: 200,
+      usageUnits: 0,
+      contentType: 'application/json',
+      data: { ok: true },
+      routeDecision: { reason: 'weighted_round_robin' }
+    } as any);
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123450',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: false,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 16,
+          messages: [{ role: 'user', content: 'hello' }]
+        }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(runtimeModule.runtime.services.wallets.ensurePaidAdmissionEligible).toHaveBeenCalledWith({
+      walletId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      trigger: 'paid_team_capacity'
+    });
+    expect(runtimeModule.runtime.services.routingService.execute).toHaveBeenCalled();
+  });
+
+  it('fails clearly when wallet admission denies paid-team-capacity routing', async () => {
+    vi.spyOn(runtimeModule.runtime.services.wallets, 'ensurePaidAdmissionEligible').mockRejectedValue(
+      new AppError('wallet_admission_denied', 402, 'Paid admission requires a positive wallet balance')
+    );
+    const executeSpy = vi.spyOn(runtimeModule.runtime.services.routingService, 'execute');
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123451',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: false,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 16,
+          messages: [{ role: 'user', content: 'hello' }]
+        }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(402);
+    expect(res.body).toEqual(expect.objectContaining({
+      code: 'wallet_admission_denied'
+    }));
+    expect(executeSpy).not.toHaveBeenCalled();
   });
 
   it('records seller-mode streaming cli requests with pinned source metadata and ttfb', async () => {

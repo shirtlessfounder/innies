@@ -4638,6 +4638,13 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
       }
       const keys = await runtime.repos.sellerKeys.listActiveForRouting(requestProvider, parsed.model, parsed.streaming);
       runtime.services.keyPool.setKeys(keys);
+      const buyerOwnership = await runtime.repos.fnfOwnership.findBuyerKeyOwnership(auth.apiKeyId);
+      if (buyerOwnership?.owner_org_id === orgId) {
+        await runtime.services.wallets.ensurePaidAdmissionEligible({
+          walletId: runtime.services.wallets.walletIdForOrgId(orgId),
+          trigger: 'paid_team_capacity'
+        });
+      }
 
       const sellerResult = await runtime.services.routingService.execute({
         request: {

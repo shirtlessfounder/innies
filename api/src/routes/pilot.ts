@@ -16,6 +16,16 @@ const pilotAuthCallbackQuerySchema = z.object({
   state: z.string().min(1)
 });
 
+const walletLedgerQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional().default(20),
+  cursor: z.string().min(1).optional()
+});
+
+const walletLedgerCursorSchema = z.object({
+  createdAt: z.string().min(1),
+  id: z.string().uuid()
+});
+
 function normalizePilotReturnTo(value: string | undefined | null): string | undefined {
   const normalized = value?.trim();
   if (!normalized) return undefined;
@@ -24,21 +34,77 @@ function normalizePilotReturnTo(value: string | undefined | null): string | unde
   return normalized;
 }
 
+function readPilotSession(req: {
+  header(name: string): string | undefined;
+}) {
+  const token = runtime.services.pilotSessions.readTokenFromRequest(req);
+  if (!token) {
+    throw new AppError('unauthorized', 401, 'Missing pilot session');
+  }
+
+  const session = runtime.services.pilotSessions.readSession(token);
+  if (!session) {
+    throw new AppError('unauthorized', 401, 'Invalid pilot session');
+  }
+
+  return session;
+}
+
+function decodeWalletLedgerCursor(cursor: string | undefined) {
+  if (!cursor) return null;
+  try {
+    const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
+    return walletLedgerCursorSchema.parse(JSON.parse(decoded));
+  } catch {
+    throw new AppError('invalid_request', 400, 'Invalid wallet-ledger cursor');
+  }
+}
+
+function encodeWalletLedgerCursor(cursor: { createdAt: string; id: string }): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+}
+
 router.get('/v1/pilot/session', async (req, res, next) => {
   try {
-    const token = runtime.services.pilotSessions.readTokenFromRequest(req);
-    if (!token) {
-      throw new AppError('unauthorized', 401, 'Missing pilot session');
-    }
-
-    const session = runtime.services.pilotSessions.readSession(token);
-    if (!session) {
-      throw new AppError('unauthorized', 401, 'Invalid pilot session');
-    }
+    const session = readPilotSession(req);
 
     res.status(200).json({
       ok: true,
       session
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/pilot/wallet', async (req, res, next) => {
+  try {
+    const session = readPilotSession(req);
+    const wallet = await runtime.services.wallets.getWalletSnapshot(
+      runtime.services.wallets.walletIdForOrgId(session.effectiveOrgId)
+    );
+    res.status(200).json({
+      ok: true,
+      wallet
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/pilot/wallet/ledger', async (req, res, next) => {
+  try {
+    const session = readPilotSession(req);
+    const query = walletLedgerQuerySchema.parse(req.query ?? {});
+    const result = await runtime.services.wallets.listWalletLedger({
+      walletId: runtime.services.wallets.walletIdForOrgId(session.effectiveOrgId),
+      limit: query.limit,
+      cursor: decodeWalletLedgerCursor(query.cursor)
+    });
+    res.status(200).json({
+      ok: true,
+      ledger: result.entries,
+      nextCursor: result.nextCursor ? encodeWalletLedgerCursor(result.nextCursor) : null
     });
   } catch (error) {
     next(error);
