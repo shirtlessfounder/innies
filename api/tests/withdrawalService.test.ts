@@ -211,7 +211,15 @@ describe('WithdrawalService', () => {
       .mockResolvedValueOnce({ id: 'withdraw_2', status: 'under_review', amount_minor: 250 })
       .mockResolvedValueOnce({ id: 'withdraw_2', status: 'rejected', amount_minor: 250 })
       .mockResolvedValueOnce({ id: 'withdraw_3', status: 'settlement_failed', amount_minor: 300 })
-      .mockResolvedValueOnce({ id: 'withdraw_4', status: 'settled', amount_minor: 500 });
+      .mockResolvedValueOnce({
+        id: 'withdraw_4',
+        owner_org_id: 'org_fnf',
+        contributor_user_id: 'user_darryn',
+        amount_minor: 500,
+        currency: 'USD',
+        settlement_reference: 'wire_123',
+        status: 'settled'
+      });
     const findById = vi.fn()
       .mockResolvedValueOnce({
         id: 'withdraw_2',
@@ -308,6 +316,7 @@ describe('WithdrawalService', () => {
       balanceBucket: 'adjusted',
       amountMinor: -15,
       withdrawalRequestId: 'withdraw_4',
+      payoutReference: 'wire_123',
       reason: 'network fee'
     }));
     expect(transaction).toHaveBeenCalledTimes(3);

@@ -237,7 +237,7 @@ export class WithdrawalService {
         withdrawalRequestId: request.id
       });
 
-      await this.appendAdjustmentIfNeeded(earningsLedgerRepo, request, {
+      await this.appendAdjustmentIfNeeded(earningsLedgerRepo, updated, {
         actorUserId: input.actorUserId,
         actorApiKeyId: input.actorApiKeyId,
         adjustmentMinor: input.adjustmentMinor,
@@ -281,7 +281,7 @@ export class WithdrawalService {
         payoutReference: input.settlementReference
       });
 
-      await this.appendAdjustmentIfNeeded(earningsLedgerRepo, request, {
+      await this.appendAdjustmentIfNeeded(earningsLedgerRepo, updated, {
         actorUserId: input.actorUserId,
         actorApiKeyId: input.actorApiKeyId,
         adjustmentMinor: input.adjustmentMinor,
