@@ -35,6 +35,7 @@ import {
   anthropicOauthUsageAuthFailureStatusCode,
   evaluateClaudeContributionCap,
   isAnthropicOauthTokenCredential,
+  isOpenAiProviderUsageRefreshCredential,
   parkAnthropicOauthCredentialAfterUsageAuthFailure,
   providerUsageWarningReasonFromRefreshOutcome,
   readTokenCredentialProviderUsageSoftStaleMs,
@@ -201,7 +202,7 @@ function evaluateOpenAiProviderUsageEligibility(input: {
     | null;
   routeDecisionMeta: Record<string, unknown>;
 } {
-  const inScope = canonicalizeProvider(input.credential.provider) === 'openai';
+  const inScope = isOpenAiProviderUsageRefreshCredential(input.credential);
   const fiveHourReservePercent = input.credential.fiveHourReservePercent ?? 0;
   const sevenDayReservePercent = input.credential.sevenDayReservePercent ?? 0;
   const fiveHourSharedThresholdPercent = 100 - fiveHourReservePercent;
@@ -223,11 +224,10 @@ function evaluateOpenAiProviderUsageEligibility(input: {
   }
 
   if (!input.snapshot) {
-    const reserveFloorConfigured = fiveHourReservePercent > 0 || sevenDayReservePercent > 0;
     return {
       inScope,
-      eligible: !reserveFloorConfigured,
-      exclusionReason: reserveFloorConfigured ? 'provider_usage_snapshot_missing' : null,
+      eligible: false,
+      exclusionReason: 'provider_usage_snapshot_missing',
       routeDecisionMeta: {
         ...baseMeta,
         providerUsageSnapshotState: 'missing',
@@ -268,7 +268,6 @@ function evaluateOpenAiProviderUsageEligibility(input: {
   const sevenDayContributionCapExhausted = sevenDayReservePercent > 0
     && typeof input.snapshot.sevenDayUtilizationRatio === 'number'
     && (input.snapshot.sevenDayUtilizationRatio * 100) >= sevenDaySharedThresholdPercent;
-  const reserveFloorConfigured = fiveHourReservePercent > 0 || sevenDayReservePercent > 0;
   const routeDecisionMeta = {
     ...baseMeta,
     providerUsageSnapshotState: isHardStale ? 'hard_stale' : isSoftStale ? 'soft_stale' : 'fresh',
@@ -298,8 +297,8 @@ function evaluateOpenAiProviderUsageEligibility(input: {
   if (isHardStale) {
     return {
       inScope,
-      eligible: !reserveFloorConfigured,
-      exclusionReason: reserveFloorConfigured ? 'provider_usage_snapshot_hard_stale' : null,
+      eligible: false,
+      exclusionReason: 'provider_usage_snapshot_hard_stale',
       routeDecisionMeta
     };
   }
@@ -307,8 +306,8 @@ function evaluateOpenAiProviderUsageEligibility(input: {
   if (isSoftStale) {
     return {
       inScope,
-      eligible: !reserveFloorConfigured,
-      exclusionReason: reserveFloorConfigured ? 'provider_usage_snapshot_soft_stale' : null,
+      eligible: false,
+      exclusionReason: 'provider_usage_snapshot_soft_stale',
       routeDecisionMeta
     };
   }
