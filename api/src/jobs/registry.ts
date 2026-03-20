@@ -11,6 +11,7 @@ import {
   createDailyAggregatesCompactionJob,
   createDailyAggregatesIncrementalJob
 } from './dailyAggregatesJob.js';
+import { createEarningsProjectorJob } from './earningsProjectorJob.js';
 import { createIdempotencyPurgeJob } from './idempotencyPurgeJob.js';
 import { createKeyHealthCheckJob } from './keyHealthJob.js';
 import { createRequestLogRetentionJob } from './requestLogRetentionJob.js';
@@ -18,18 +19,31 @@ import { createTokenCredentialHealthJob } from './tokenCredentialHealthJob.js';
 import { createTokenCredentialProviderUsageJob } from './tokenCredentialProviderUsageJob.js';
 import { createReconciliationJob, type ReconciliationDataSource } from './reconciliationJob.js';
 import type { JobDefinition } from './types.js';
+import { CanonicalMeteringRepository } from '../repos/canonicalMeteringRepository.js';
+import { EarningsLedgerRepository } from '../repos/earningsLedgerRepository.js';
+import { MeteringProjectorStateRepository } from '../repos/meteringProjectorStateRepository.js';
+import { EarningsProjectorService } from '../services/earnings/earningsProjectorService.js';
 
 export function buildDefaultJobs(db: SqlClient, source: ReconciliationDataSource = new C1ReconciliationDataSource(db)): JobDefinition[] {
   const idempotencyRepo = new IdempotencyRepository(db);
   const aggregatesRepo = new AggregatesRepository(db);
+  const canonicalMeteringRepo = new CanonicalMeteringRepository(db);
+  const earningsLedgerRepo = new EarningsLedgerRepository(db);
+  const meteringProjectorStateRepo = new MeteringProjectorStateRepository(db);
   const reconciliationRepo = new ReconciliationRepository(db);
   const requestLogRepo = new RequestLogRepository(db);
   const sellerKeysRepo = new SellerKeyRepository(db);
   const tokenCredentialsRepo = new TokenCredentialRepository(db);
   const tokenCredentialProviderUsageRepo = new TokenCredentialProviderUsageRepository(db);
+  const earningsProjector = new EarningsProjectorService({
+    canonicalMeteringRepo,
+    earningsLedgerRepo,
+    meteringProjectorStateRepo
+  });
 
   return [
     createIdempotencyPurgeJob(idempotencyRepo),
+    createEarningsProjectorJob(earningsProjector),
     createKeyHealthCheckJob(sellerKeysRepo),
     createTokenCredentialProviderUsageJob(tokenCredentialsRepo, tokenCredentialProviderUsageRepo),
     createTokenCredentialHealthJob(tokenCredentialsRepo),

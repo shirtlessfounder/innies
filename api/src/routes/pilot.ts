@@ -16,12 +16,45 @@ const pilotAuthCallbackQuerySchema = z.object({
   state: z.string().min(1)
 });
 
+const createWithdrawalSchema = z.object({
+  amountMinor: z.number().int().positive(),
+  destination: z.record(z.string(), z.unknown()),
+  note: z.string().trim().min(1).max(500).optional()
+});
+
 function normalizePilotReturnTo(value: string | undefined | null): string | undefined {
   const normalized = value?.trim();
   if (!normalized) return undefined;
   if (!normalized.startsWith('/')) return undefined;
   if (normalized.startsWith('//')) return undefined;
   return normalized;
+}
+
+function readPilotSessionContext(req: {
+  header(name: string): string | undefined;
+}): {
+  ownerOrgId: string;
+  contributorUserId: string;
+} {
+  const token = runtime.services.pilotSessions.readTokenFromRequest(req);
+  if (!token) {
+    throw new AppError('unauthorized', 401, 'Missing pilot session');
+  }
+
+  const session = runtime.services.pilotSessions.readSession(token);
+  if (!session) {
+    throw new AppError('unauthorized', 401, 'Invalid pilot session');
+  }
+
+  const contributorUserId = session.impersonatedUserId ?? session.actorUserId;
+  if (!contributorUserId) {
+    throw new AppError('forbidden', 403, 'Pilot session is not scoped to a contributor');
+  }
+
+  return {
+    ownerOrgId: session.effectiveOrgId,
+    contributorUserId
+  };
 }
 
 router.get('/v1/pilot/session', async (req, res, next) => {
@@ -76,6 +109,67 @@ router.post('/v1/pilot/session/logout', async (_req, res, next) => {
   try {
     res.setHeader('set-cookie', buildClearedPilotSessionCookie());
     res.status(200).json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/pilot/earnings/summary', async (req, res, next) => {
+  try {
+    const context = readPilotSessionContext(req);
+    const summary = await runtime.services.withdrawals.getContributorSummary(context);
+    res.status(200).json({
+      ok: true,
+      summary
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/pilot/earnings/history', async (req, res, next) => {
+  try {
+    const context = readPilotSessionContext(req);
+    const entries = await runtime.services.withdrawals.listContributorHistory(context);
+    res.status(200).json({
+      ok: true,
+      entries
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/pilot/withdrawals', async (req, res, next) => {
+  try {
+    const context = readPilotSessionContext(req);
+    const withdrawals = await runtime.services.withdrawals.listContributorWithdrawals(context);
+    res.status(200).json({
+      ok: true,
+      withdrawals
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/pilot/withdrawals', async (req, res, next) => {
+  try {
+    const context = readPilotSessionContext(req);
+    const parsed = createWithdrawalSchema.parse(req.body);
+    const withdrawal = await runtime.services.withdrawals.createWithdrawalRequest({
+      ownerOrgId: context.ownerOrgId,
+      contributorUserId: context.contributorUserId,
+      requestedByUserId: context.contributorUserId,
+      amountMinor: parsed.amountMinor,
+      destination: parsed.destination,
+      note: parsed.note
+    });
+
+    res.status(200).json({
+      ok: true,
+      withdrawal
+    });
   } catch (error) {
     next(error);
   }

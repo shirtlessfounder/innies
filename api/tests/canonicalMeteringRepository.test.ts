@@ -117,4 +117,21 @@ describe('CanonicalMeteringRepository', () => {
       'canonical metering idempotent replay mismatch'
     );
   });
+
+  it('finds canonical metering rows by id for downstream projectors', async () => {
+    const db = new MockSqlClient({
+      rows: [{
+        id: 'meter_1',
+        request_id: 'req_1'
+      }],
+      rowCount: 1
+    });
+    const repo = new CanonicalMeteringRepository(db, () => 'meter_1');
+
+    const row = await repo.findById('meter_1');
+
+    expect(row).toEqual(expect.objectContaining({ id: 'meter_1' }));
+    expect(db.queries[0].sql).toContain('where id = $1');
+    expect(db.queries[0].params).toEqual(['meter_1']);
+  });
 });

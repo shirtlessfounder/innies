@@ -131,6 +131,10 @@ describe('pilot routes', () => {
   let authStartHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let authCallbackHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let logoutHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let earningsSummaryHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let earningsHistoryHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let withdrawalsListHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let withdrawalsCreateHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
 
   beforeAll(async () => {
     process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@127.0.0.1:5432/innies_test';
@@ -141,10 +145,43 @@ describe('pilot routes', () => {
     authStartHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/auth/github/start', 'get');
     authCallbackHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/auth/github/callback', 'get');
     logoutHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/session/logout', 'post');
+    earningsSummaryHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/earnings/summary', 'get');
+    earningsHistoryHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/earnings/history', 'get');
+    withdrawalsListHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/withdrawals', 'get');
+    withdrawalsCreateHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/withdrawals', 'post');
   });
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.spyOn(runtimeModule.runtime.services.pilotSessions, 'readTokenFromRequest').mockReturnValue('pilot-token');
+    vi.spyOn(runtimeModule.runtime.services.pilotSessions, 'readSession').mockReturnValue({
+      sessionKind: 'darryn_self',
+      actorUserId: 'user_darryn',
+      actorApiKeyId: null,
+      actorOrgId: 'org_fnf',
+      effectiveOrgId: 'org_fnf',
+      effectiveOrgSlug: 'fnf',
+      effectiveOrgName: 'Friends & Family',
+      githubLogin: 'darryn',
+      userEmail: 'darryn@example.com',
+      impersonatedUserId: null,
+      issuedAt: '2026-03-20T00:00:00Z',
+      expiresAt: '2026-03-20T01:00:00Z'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.services.withdrawals, 'getContributorSummary').mockResolvedValue({
+      pendingMinor: 50,
+      withdrawableMinor: 700,
+      reservedForPayoutMinor: 0,
+      settledMinor: 120,
+      adjustedMinor: -10
+    });
+    vi.spyOn(runtimeModule.runtime.services.withdrawals, 'listContributorHistory').mockResolvedValue([]);
+    vi.spyOn(runtimeModule.runtime.services.withdrawals, 'listContributorWithdrawals').mockResolvedValue([]);
+    vi.spyOn(runtimeModule.runtime.services.withdrawals, 'createWithdrawalRequest').mockResolvedValue({
+      id: 'withdraw_1',
+      status: 'requested',
+      amount_minor: 250
+    } as any);
   });
 
   afterEach(() => {
@@ -291,5 +328,111 @@ describe('pilot routes', () => {
     expect(res.statusCode).toBe(200);
     expect(res.headers['set-cookie']).toContain('innies_pilot_session=');
     expect(res.headers['set-cookie']).toContain('Max-Age=0');
+  });
+
+  it('returns contributor earnings summary in the effective pilot session context', async () => {
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/pilot/earnings/summary',
+      headers: {
+        authorization: 'Bearer pilot-token'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(earningsSummaryHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      summary: {
+        pendingMinor: 50,
+        withdrawableMinor: 700,
+        reservedForPayoutMinor: 0,
+        settledMinor: 120,
+        adjustedMinor: -10
+      }
+    });
+    expect(runtimeModule.runtime.services.withdrawals.getContributorSummary).toHaveBeenCalledWith({
+      ownerOrgId: 'org_fnf',
+      contributorUserId: 'user_darryn'
+    });
+  });
+
+  it('passes the effective org boundary into earnings history and withdrawal list reads', async () => {
+    const historyReq = createMockReq({
+      method: 'GET',
+      path: '/v1/pilot/earnings/history',
+      headers: {
+        authorization: 'Bearer pilot-token'
+      }
+    });
+    const historyRes = createMockRes();
+
+    await invoke(earningsHistoryHandlers[0], historyReq, historyRes);
+
+    expect(runtimeModule.runtime.services.withdrawals.listContributorHistory).toHaveBeenCalledWith({
+      ownerOrgId: 'org_fnf',
+      contributorUserId: 'user_darryn'
+    });
+
+    const withdrawalsReq = createMockReq({
+      method: 'GET',
+      path: '/v1/pilot/withdrawals',
+      headers: {
+        authorization: 'Bearer pilot-token'
+      }
+    });
+    const withdrawalsRes = createMockRes();
+
+    await invoke(withdrawalsListHandlers[0], withdrawalsReq, withdrawalsRes);
+
+    expect(runtimeModule.runtime.services.withdrawals.listContributorWithdrawals).toHaveBeenCalledWith({
+      ownerOrgId: 'org_fnf',
+      contributorUserId: 'user_darryn'
+    });
+  });
+
+  it('creates contributor withdrawal requests against the pilot session user and org', async () => {
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/pilot/withdrawals',
+      headers: {
+        authorization: 'Bearer pilot-token',
+        'content-type': 'application/json'
+      }
+    });
+    req.body = {
+      amountMinor: 250,
+      destination: {
+        rail: 'manual_usdc',
+        address: '0xabc'
+      },
+      note: 'pilot payout'
+    };
+    const res = createMockRes();
+
+    await invoke(withdrawalsCreateHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      withdrawal: expect.objectContaining({
+        id: 'withdraw_1',
+        status: 'requested',
+        amount_minor: 250
+      })
+    });
+    expect(runtimeModule.runtime.services.withdrawals.createWithdrawalRequest).toHaveBeenCalledWith({
+      ownerOrgId: 'org_fnf',
+      contributorUserId: 'user_darryn',
+      requestedByUserId: 'user_darryn',
+      amountMinor: 250,
+      destination: {
+        rail: 'manual_usdc',
+        address: '0xabc'
+      },
+      note: 'pilot payout'
+    });
   });
 });

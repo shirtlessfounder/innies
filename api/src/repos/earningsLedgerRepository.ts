@@ -13,6 +13,7 @@ export type EarningsLedgerEntryInput = {
   amountMinor: number;
   currency?: string;
   actorUserId?: string | null;
+  actorApiKeyId?: string | null;
   reason?: string | null;
   withdrawalRequestId?: string | null;
   payoutReference?: string | null;
@@ -29,6 +30,7 @@ export type EarningsLedgerRow = {
   amount_minor: number;
   currency: string;
   actor_user_id: string | null;
+  actor_api_key_id: string | null;
   reason: string | null;
   withdrawal_request_id: string | null;
   payout_reference: string | null;
@@ -50,8 +52,16 @@ export class EarningsLedgerRepository {
   ) {}
 
   async appendEntry(input: EarningsLedgerEntryInput): Promise<EarningsLedgerRow> {
-    if (MANUAL_EARNINGS_EFFECT_TYPES.has(input.effectType) && (!input.actorUserId || !input.reason)) {
-      throw new Error('manual earnings entries require actorUserId and reason');
+    if (MANUAL_EARNINGS_EFFECT_TYPES.has(input.effectType) && !input.reason) {
+      throw new Error('manual earnings entries require reason');
+    }
+
+    if (
+      MANUAL_EARNINGS_EFFECT_TYPES.has(input.effectType)
+      && !input.actorUserId
+      && !input.actorApiKeyId
+    ) {
+      throw new Error('manual earnings entries require actor attribution');
     }
 
     if (!MANUAL_EARNINGS_EFFECT_TYPES.has(input.effectType) && !input.meteringEventId) {
@@ -69,12 +79,13 @@ export class EarningsLedgerRepository {
         amount_minor,
         currency,
         actor_user_id,
+        actor_api_key_id,
         reason,
         withdrawal_request_id,
         payout_reference,
         metadata
       ) values (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14
       )
       on conflict do nothing
       returning *
@@ -90,6 +101,7 @@ export class EarningsLedgerRepository {
       input.amountMinor,
       input.currency ?? 'USD',
       input.actorUserId ?? null,
+      input.actorApiKeyId ?? null,
       input.reason ?? null,
       input.withdrawalRequestId ?? null,
       input.payoutReference ?? null,
@@ -120,6 +132,20 @@ export class EarningsLedgerRepository {
       order by created_at asc, id asc
     `;
     return this.db.query<EarningsLedgerRow>(sql, [contributorUserId]).then((result) => result.rows);
+  }
+
+  listByOwnerOrgAndContributorUserId(input: {
+    ownerOrgId: string;
+    contributorUserId: string;
+  }): Promise<EarningsLedgerRow[]> {
+    const sql = `
+      select *
+      from ${TABLES.earningsLedger}
+      where owner_org_id = $1
+        and contributor_user_id = $2
+      order by created_at asc, id asc
+    `;
+    return this.db.query<EarningsLedgerRow>(sql, [input.ownerOrgId, input.contributorUserId]).then((result) => result.rows);
   }
 
   listByMeteringEventId(meteringEventId: string): Promise<EarningsLedgerRow[]> {
@@ -158,6 +184,7 @@ function assertEarningsLedgerReplayMatches(input: EarningsLedgerEntryInput, row:
     { field: 'amountMinor', expected: input.amountMinor, actual: row.amount_minor },
     { field: 'currency', expected: input.currency ?? 'USD', actual: row.currency },
     { field: 'actorUserId', expected: input.actorUserId ?? null, actual: row.actor_user_id },
+    { field: 'actorApiKeyId', expected: input.actorApiKeyId ?? null, actual: row.actor_api_key_id },
     { field: 'reason', expected: input.reason ?? null, actual: row.reason },
     { field: 'withdrawalRequestId', expected: input.withdrawalRequestId ?? null, actual: row.withdrawal_request_id },
     { field: 'payoutReference', expected: input.payoutReference ?? null, actual: row.payout_reference },
