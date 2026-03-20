@@ -697,10 +697,8 @@ export function evaluateClaudeContributionCap(input: {
   if (!snapshot) {
     return {
       inScope: true,
-      eligible: fiveHourReservePercent <= 0 && sevenDayReservePercent <= 0,
-      exclusionReason: fiveHourReservePercent > 0 || sevenDayReservePercent > 0
-        ? 'provider_usage_snapshot_missing'
-        : null,
+      eligible: false,
+      exclusionReason: 'provider_usage_snapshot_missing',
       warningReason: null,
       isFresh: false,
       isSoftStale: false,
@@ -766,10 +764,8 @@ export function evaluateClaudeContributionCap(input: {
     }
     return {
       inScope: true,
-      eligible: fiveHourReservePercent <= 0 && sevenDayReservePercent <= 0,
-      exclusionReason: fiveHourReservePercent > 0 || sevenDayReservePercent > 0
-        ? 'provider_usage_snapshot_hard_stale'
-        : null,
+      eligible: false,
+      exclusionReason: 'provider_usage_snapshot_hard_stale',
       warningReason: null,
       isFresh,
       isSoftStale,
@@ -780,10 +776,8 @@ export function evaluateClaudeContributionCap(input: {
   if (isSoftStale) {
     return {
       inScope: true,
-      eligible: fiveHourReservePercent <= 0 && sevenDayReservePercent <= 0,
-      exclusionReason: fiveHourReservePercent > 0 || sevenDayReservePercent > 0
-        ? 'provider_usage_snapshot_soft_stale'
-        : null,
+      eligible: false,
+      exclusionReason: 'provider_usage_snapshot_soft_stale',
       warningReason: null,
       isFresh,
       isSoftStale,
