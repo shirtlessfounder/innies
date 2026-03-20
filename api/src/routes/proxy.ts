@@ -37,6 +37,8 @@ import {
   isAnthropicOauthTokenCredential,
   parkAnthropicOauthCredentialAfterUsageAuthFailure,
   providerUsageWarningReasonFromRefreshOutcome,
+  readTokenCredentialProviderUsageSoftStaleMs,
+  readTokenCredentialProviderUsageHardStaleMs,
   readTokenCredentialRateLimitLongBackoffMinutes
 } from '../services/tokenCredentialProviderUsage.js';
 import {
@@ -188,35 +190,56 @@ function evaluateOpenAiProviderUsageEligibility(input: {
 }): {
   inScope: boolean;
   eligible: boolean;
-  exclusionReason: 'usage_exhausted_5h' | 'usage_exhausted_7d' | null;
+  exclusionReason:
+    | 'usage_exhausted_5h'
+    | 'usage_exhausted_7d'
+    | 'provider_usage_snapshot_missing'
+    | 'provider_usage_snapshot_hard_stale'
+    | 'contribution_cap_exhausted_5h'
+    | 'contribution_cap_exhausted_7d'
+    | null;
   routeDecisionMeta: Record<string, unknown>;
 } {
   const inScope = canonicalizeProvider(input.credential.provider) === 'openai';
+  const fiveHourReservePercent = input.credential.fiveHourReservePercent ?? 0;
+  const sevenDayReservePercent = input.credential.sevenDayReservePercent ?? 0;
+  const fiveHourSharedThresholdPercent = 100 - fiveHourReservePercent;
+  const sevenDaySharedThresholdPercent = 100 - sevenDayReservePercent;
+  const baseMeta: Record<string, unknown> = {
+    openaiProviderUsageInScope: inScope,
+    fiveHourReservePercent,
+    sevenDayReservePercent,
+    fiveHourSharedThresholdPercent,
+    sevenDaySharedThresholdPercent
+  };
   if (!inScope) {
     return {
       inScope,
       eligible: true,
       exclusionReason: null,
-      routeDecisionMeta: {
-        openaiProviderUsageInScope: false
-      }
+      routeDecisionMeta: baseMeta
     };
   }
 
   if (!input.snapshot) {
+    const reserveFloorConfigured = fiveHourReservePercent > 0 || sevenDayReservePercent > 0;
     return {
       inScope,
-      eligible: true,
-      exclusionReason: null,
+      eligible: !reserveFloorConfigured,
+      exclusionReason: reserveFloorConfigured ? 'provider_usage_snapshot_missing' : null,
       routeDecisionMeta: {
-        openaiProviderUsageInScope: true,
+        ...baseMeta,
         providerUsageSnapshotState: 'missing',
         providerUsageFetchedAt: null,
         fiveHourUtilizationRatio: null,
         fiveHourResetsAt: null,
+        fiveHourSharedThresholdPercent,
+        fiveHourContributionCapExhausted: false,
         fiveHourProviderUsageExhausted: false,
         sevenDayUtilizationRatio: null,
         sevenDayResetsAt: null,
+        sevenDaySharedThresholdPercent,
+        sevenDayContributionCapExhausted: false,
         sevenDayProviderUsageExhausted: false,
         providerUsageExhaustionReason: null,
         providerUsageExhaustionHoldActive: false,
@@ -225,32 +248,84 @@ function evaluateOpenAiProviderUsageEligibility(input: {
     };
   }
 
+  const now = input.now ?? new Date();
+  const ageMs = Math.max(0, now.getTime() - input.snapshot.fetchedAt.getTime());
+  const softStaleMs = readTokenCredentialProviderUsageSoftStaleMs();
+  const hardStaleMs = readTokenCredentialProviderUsageHardStaleMs();
+  const isHardStale = ageMs > hardStaleMs;
+  const isSoftStale = !isHardStale && ageMs > softStaleMs;
   const exhaustionHold = readClaudeProviderUsageExhaustionHoldState({
     fiveHourUtilizationRatio: input.snapshot.fiveHourUtilizationRatio,
     fiveHourResetsAt: input.snapshot.fiveHourResetsAt,
     sevenDayUtilizationRatio: input.snapshot.sevenDayUtilizationRatio,
     sevenDayResetsAt: input.snapshot.sevenDayResetsAt,
-    now: input.now
+    now
   });
+  const fiveHourContributionCapExhausted = fiveHourReservePercent > 0
+    && typeof input.snapshot.fiveHourUtilizationRatio === 'number'
+    && (input.snapshot.fiveHourUtilizationRatio * 100) >= fiveHourSharedThresholdPercent;
+  const sevenDayContributionCapExhausted = sevenDayReservePercent > 0
+    && typeof input.snapshot.sevenDayUtilizationRatio === 'number'
+    && (input.snapshot.sevenDayUtilizationRatio * 100) >= sevenDaySharedThresholdPercent;
+  const reserveFloorConfigured = fiveHourReservePercent > 0 || sevenDayReservePercent > 0;
+  const routeDecisionMeta = {
+    ...baseMeta,
+    providerUsageSnapshotState: isHardStale ? 'hard_stale' : isSoftStale ? 'soft_stale' : 'fresh',
+    providerUsageFetchedAt: input.snapshot.fetchedAt.toISOString(),
+    fiveHourUtilizationRatio: input.snapshot.fiveHourUtilizationRatio,
+    fiveHourResetsAt: input.snapshot.fiveHourResetsAt?.toISOString() ?? null,
+    fiveHourContributionCapExhausted,
+    fiveHourProviderUsageExhausted: exhaustionHold.fiveHourProviderUsageExhausted,
+    sevenDayUtilizationRatio: input.snapshot.sevenDayUtilizationRatio,
+    sevenDayResetsAt: input.snapshot.sevenDayResetsAt?.toISOString() ?? null,
+    sevenDayContributionCapExhausted,
+    sevenDayProviderUsageExhausted: exhaustionHold.sevenDayProviderUsageExhausted,
+    providerUsageExhaustionReason: exhaustionHold.reason,
+    providerUsageExhaustionHoldActive: exhaustionHold.hasActiveHold,
+    providerUsageExhaustionHoldUntil: exhaustionHold.nextRefreshAt?.toISOString() ?? null
+  };
+
+  if (exhaustionHold.hasActiveHold) {
+    return {
+      inScope,
+      eligible: false,
+      exclusionReason: exhaustionHold.reason,
+      routeDecisionMeta
+    };
+  }
+
+  if (isHardStale) {
+    return {
+      inScope,
+      eligible: !reserveFloorConfigured,
+      exclusionReason: reserveFloorConfigured ? 'provider_usage_snapshot_hard_stale' : null,
+      routeDecisionMeta
+    };
+  }
+
+  if (fiveHourContributionCapExhausted) {
+    return {
+      inScope,
+      eligible: false,
+      exclusionReason: 'contribution_cap_exhausted_5h',
+      routeDecisionMeta
+    };
+  }
+
+  if (sevenDayContributionCapExhausted) {
+    return {
+      inScope,
+      eligible: false,
+      exclusionReason: 'contribution_cap_exhausted_7d',
+      routeDecisionMeta
+    };
+  }
 
   return {
     inScope,
-    eligible: !exhaustionHold.hasActiveHold,
-    exclusionReason: exhaustionHold.reason,
-    routeDecisionMeta: {
-      openaiProviderUsageInScope: true,
-      providerUsageSnapshotState: 'fresh',
-      providerUsageFetchedAt: input.snapshot.fetchedAt.toISOString(),
-      fiveHourUtilizationRatio: input.snapshot.fiveHourUtilizationRatio,
-      fiveHourResetsAt: input.snapshot.fiveHourResetsAt?.toISOString() ?? null,
-      fiveHourProviderUsageExhausted: exhaustionHold.fiveHourProviderUsageExhausted,
-      sevenDayUtilizationRatio: input.snapshot.sevenDayUtilizationRatio,
-      sevenDayResetsAt: input.snapshot.sevenDayResetsAt?.toISOString() ?? null,
-      sevenDayProviderUsageExhausted: exhaustionHold.sevenDayProviderUsageExhausted,
-      providerUsageExhaustionReason: exhaustionHold.reason,
-      providerUsageExhaustionHoldActive: exhaustionHold.hasActiveHold,
-      providerUsageExhaustionHoldUntil: exhaustionHold.nextRefreshAt?.toISOString() ?? null
-    }
+    eligible: true,
+    exclusionReason: null,
+    routeDecisionMeta
   };
 }
 
