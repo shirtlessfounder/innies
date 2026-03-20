@@ -29,6 +29,12 @@ function createMissingContributionCapColumnError(column: 'five_hour_reserve_perc
   });
 }
 
+function createMissingFreezeTableError(): Error {
+  return Object.assign(new Error('relation "in_pilot_admission_freezes" does not exist'), {
+    code: '42P01'
+  });
+}
+
 describe('tokenCredentialRepository', () => {
   it('creates encrypted token credential row', async () => {
     process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 7).toString('base64');
@@ -86,6 +92,38 @@ describe('tokenCredentialRepository', () => {
     expect(found?.refreshToken).toBe('refresh-live');
     expect(db.queries[0].sql).toContain("and expires_at > now()");
     expect(db.queries[0].sql).toContain('rate_limited_until is null or rate_limited_until <= now()');
+  });
+
+  it('excludes token credentials that are actively frozen for cutover admissions', async () => {
+    process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 21).toString('base64');
+    const db = new SequenceSqlClient([{
+      rows: [{
+        id: 'cred_1',
+        org_id: '00000000-0000-0000-0000-000000000001',
+        provider: 'anthropic',
+        auth_scheme: 'x_api_key',
+        encrypted_access_token: encryptSecret('access-live'),
+        encrypted_refresh_token: encryptSecret('refresh-live'),
+        expires_at: '2026-03-02T00:00:00Z',
+        status: 'active',
+        rotation_version: 1,
+        created_at: '2026-03-01T00:00:00Z',
+        updated_at: '2026-03-01T00:00:00Z',
+        revoked_at: null,
+        monthly_contribution_limit_units: null,
+        monthly_contribution_used_units: 0,
+        monthly_window_start_at: '2026-03-01T00:00:00Z'
+      }],
+      rowCount: 1
+    }]);
+    const repo = new TokenCredentialRepository(db);
+
+    await repo.listActiveForRouting('00000000-0000-0000-0000-000000000001', 'anthropic');
+
+    expect(db.queries[0].sql).toContain('left join in_pilot_admission_freezes paf');
+    expect(db.queries[0].sql).toContain("paf.resource_type = 'token_credential'");
+    expect(db.queries[0].sql).toContain('paf.released_at is null');
+    expect(db.queries[0].sql).toContain('and paf.id is null');
   });
 
   it('treats canonical openai routing reads as including legacy codex credentials', async () => {
@@ -171,6 +209,53 @@ describe('tokenCredentialRepository', () => {
     expect(db.queries[0].sql).toContain('five_hour_reserve_percent');
     expect(db.queries[1].sql).toContain('0::integer as five_hour_reserve_percent');
     expect(db.queries[1].sql).toContain('0::integer as seven_day_reserve_percent');
+  });
+
+  it('falls back cleanly when the freeze table is missing from routing reads', async () => {
+    process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 24).toString('base64');
+    const db = new SequenceSqlClient([
+      createMissingFreezeTableError(),
+      {
+        rows: [{
+          id: 'cred_legacy_1',
+          org_id: '00000000-0000-0000-0000-000000000001',
+          provider: 'anthropic',
+          auth_scheme: 'x_api_key',
+          encrypted_access_token: encryptSecret('access-legacy'),
+          encrypted_refresh_token: encryptSecret('refresh-legacy'),
+          expires_at: '2026-03-02T00:00:00Z',
+          status: 'active',
+          rotation_version: 1,
+          created_at: '2026-03-01T00:00:00Z',
+          updated_at: '2026-03-01T00:00:00Z',
+          revoked_at: null,
+          monthly_contribution_limit_units: null,
+          monthly_contribution_used_units: 0,
+          monthly_window_start_at: '2026-03-01T00:00:00Z',
+          five_hour_reserve_percent: 0,
+          seven_day_reserve_percent: 0,
+          debug_label: null,
+          consecutive_failure_count: 0,
+          consecutive_rate_limit_count: 0,
+          last_failed_status: null,
+          last_failed_at: null,
+          last_rate_limited_at: null,
+          maxed_at: null,
+          rate_limited_until: null,
+          next_probe_at: null,
+          last_probe_at: null
+        }],
+        rowCount: 1
+      }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    const [found] = await repo.listActiveForRouting('00000000-0000-0000-0000-000000000001', 'anthropic');
+
+    expect(found?.accessToken).toBe('access-legacy');
+    expect(db.queries).toHaveLength(2);
+    expect(db.queries[0].sql).toContain('in_pilot_admission_freezes');
+    expect(db.queries[1].sql).not.toContain('in_pilot_admission_freezes');
   });
 
   it('rotates active credential with deterministic status updates', async () => {

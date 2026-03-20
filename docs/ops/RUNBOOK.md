@@ -224,3 +224,87 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
 ```
 
 You should see a `paused` event for the token you just paused. If `probe_failed` events continue on other tokens, investigate those too.
+
+---
+
+## 4. Darryn Pilot Cutover / Rollback
+
+Goal: move Darryn between `innies` and `fnf` without admitting new traffic during the ownership swap, and recover cleanly if the cutover fails before commit.
+
+### Preconditions
+
+- `PILOT_GITHUB_ALLOWLIST_LOGINS` and / or `PILOT_GITHUB_ALLOWLIST_EMAILS` include Darryn.
+- The routing reserve-floor migration adapter is configured. If it is not, `/v1/admin/pilot/cutover` fails closed and records freeze errors instead of committing the cutover.
+- The buyer keys and token credentials you plan to move are identified up front.
+
+### Step 1 — Start the cutover
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  "$BASE_URL/v1/admin/pilot/cutover" \
+  -d '{
+    "sourceOrgId": "org_innies",
+    "targetOrgSlug": "fnf",
+    "targetOrgName": "Friends & Family",
+    "targetUserEmail": "darryn@example.com",
+    "targetUserDisplayName": "Darryn",
+    "targetGithubLogin": "darryn",
+    "buyerKeyIds": ["BUYER_KEY_ID"],
+    "tokenCredentialIds": ["TOKEN_CREDENTIAL_ID"]
+  }'
+```
+
+Expected result:
+- `200`
+- `cutoverId`
+- `targetOrgId`
+- `targetUserId`
+
+What happens:
+- active buyer-key and token-credential freezes are written first
+- base-table `org_id` ownership and F&F ownership mappings move inside one transaction
+- reserve-floor migration runs before the cutover transaction commits
+
+### Step 2 — Verify admissions are no longer frozen
+
+Successful cutover releases the active freezes automatically. New buyer-key auth should stop returning `423 cutover_in_progress`, and token routing should stop excluding the moved credentials for freeze reasons.
+
+### Step 3 — If cutover fails before commit
+
+Symptoms:
+- the API returns an error instead of `200`
+- buyer-key auth stays fail-closed with `423 cutover_in_progress`
+- token routing keeps excluding the migrating credentials
+
+Operator action:
+- inspect the error returned by `/v1/admin/pilot/cutover`
+- fix the underlying issue, most commonly the missing reserve-floor adapter
+- re-run the same cutover request once the dependency is healthy
+
+Cutover-access records the failure message on the active freeze rows; it does not silently reopen admissions after a failed pre-commit cutover.
+
+### Step 4 — Roll back to `innies`
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  "$BASE_URL/v1/admin/pilot/rollback" \
+  -d '{
+    "sourceCutoverId": "CUTOVER_ID",
+    "targetOrgId": "org_innies",
+    "buyerKeyIds": ["BUYER_KEY_ID"],
+    "tokenCredentialIds": ["TOKEN_CREDENTIAL_ID"]
+  }'
+```
+
+Expected result:
+- `200`
+- `rollbackId`
+
+What happens:
+- the same admission surfaces freeze first
+- buyer-key and token-credential base ownership moves back to the reverted target org
+- F&F ownership rows are updated to match the reverted state
+- the rollback marker is written
+- the active freezes are released only after the rollback commits
