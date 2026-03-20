@@ -278,7 +278,7 @@ describe('admin token credential routes idempotent replay', () => {
       sevenDayReservePercent: 0,
       debugLabel: 'oauth-main-1',
       status: 'maxed',
-      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+      expiresAt: new Date('2026-04-20T00:00:00.000Z')
     } as any);
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'setProviderUsageWarning').mockResolvedValue(false);
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'syncClaudeContributionCapLifecycle').mockResolvedValue({
@@ -1281,7 +1281,7 @@ describe('admin token credential routes idempotent replay', () => {
       refreshToken: null,
       debugLabel: 'niyant-codex',
       status: 'maxed',
-      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+      expiresAt: new Date('2026-04-20T00:00:00.000Z')
     } as any);
     const probeSpy = vi.spyOn(probeModule, 'probeAndUpdateTokenCredential').mockResolvedValue({
       ok: true,
@@ -1341,7 +1341,7 @@ describe('admin token credential routes idempotent replay', () => {
       provider: 'openai',
       debugLabel: 'niyant-codex',
       status: 'active',
-      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+      expiresAt: new Date('2026-04-20T00:00:00.000Z')
     } as any);
     const probeSpy = vi.spyOn(probeModule, 'probeAndUpdateTokenCredential').mockResolvedValue({
       ok: true,
@@ -1403,7 +1403,7 @@ describe('admin token credential routes idempotent replay', () => {
       refreshToken: null,
       debugLabel: 'niyant-codex',
       status: 'maxed',
-      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+      expiresAt: new Date('2026-04-20T00:00:00.000Z')
     } as any);
     const probeSpy = vi.spyOn(probeModule, 'probeAndUpdateTokenCredential').mockResolvedValue({
       ok: false,
@@ -1548,7 +1548,7 @@ describe('admin token credential routes idempotent replay', () => {
       provider: 'openai',
       debugLabel: 'niyant-codex',
       status: 'paused',
-      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+      expiresAt: new Date('2026-04-20T00:00:00.000Z')
     } as any);
 
     const req = createMockReq({
@@ -1592,7 +1592,7 @@ describe('admin token credential routes idempotent replay', () => {
       sevenDayReservePercent: 0,
       debugLabel: 'shirtless',
       status: 'active',
-      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+      expiresAt: new Date('2026-04-20T00:00:00.000Z')
     } as any);
     const refreshSpy = vi.spyOn(providerUsageModule, 'refreshAnthropicOauthUsageNow').mockResolvedValue({
       ok: true,
@@ -1726,7 +1726,7 @@ describe('admin token credential routes idempotent replay', () => {
       sevenDayReservePercent: 15,
       debugLabel: 'shirtless',
       status: 'active',
-      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+      expiresAt: new Date('2026-04-20T00:00:00.000Z')
     } as any);
     vi.spyOn(providerUsageModule, 'refreshAnthropicOauthUsageNow').mockResolvedValue({
       ok: false,
@@ -1988,7 +1988,7 @@ describe('admin token credential routes idempotent replay', () => {
       refreshToken: 'rt_codex_live',
       debugLabel: 'niyant-codex',
       status: 'active',
-      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+      expiresAt: new Date('2026-04-20T00:00:00.000Z')
     } as any);
     const refreshSpy = vi.spyOn(oauthRefreshModule, 'refreshTokenCredentialProviderUsageWithCredentialRefresh').mockResolvedValue({
       credential: {
@@ -2000,7 +2000,7 @@ describe('admin token credential routes idempotent replay', () => {
         refreshToken: 'rt_codex_live',
         debugLabel: 'niyant-codex',
         status: 'active',
-        expiresAt: new Date('2026-03-20T00:00:00.000Z')
+        expiresAt: new Date('2026-04-20T00:00:00.000Z')
       },
       refreshedCredential: null,
       outcome: {
@@ -2133,7 +2133,7 @@ describe('admin token credential routes idempotent replay', () => {
       refreshToken: 'rt_codex_live',
       debugLabel: 'unsupported-openai',
       status: 'active',
-      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+      expiresAt: new Date('2026-04-20T00:00:00.000Z')
     } as any);
     const refreshSpy = vi.spyOn(oauthRefreshModule, 'refreshTokenCredentialProviderUsageWithCredentialRefresh');
 
@@ -2184,7 +2184,7 @@ describe('admin token credential routes idempotent replay', () => {
       refreshToken: 'rt_codex_live',
       debugLabel: 'niyant-codex',
       status: 'active',
-      expiresAt: new Date('2026-03-20T00:00:00.000Z')
+      expiresAt: new Date('2026-04-20T00:00:00.000Z')
     } as any);
     vi.spyOn(oauthRefreshModule, 'refreshTokenCredentialProviderUsageWithCredentialRefresh').mockResolvedValue({
       credential: {
@@ -2196,7 +2196,7 @@ describe('admin token credential routes idempotent replay', () => {
         refreshToken: 'rt_codex_live',
         debugLabel: 'niyant-codex',
         status: 'active',
-        expiresAt: new Date('2026-03-20T00:00:00.000Z')
+        expiresAt: new Date('2026-04-20T00:00:00.000Z')
       },
       refreshedCredential: null,
       outcome: {

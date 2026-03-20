@@ -13,6 +13,8 @@ import { TokenCredentialProviderUsageRepository } from '../repos/tokenCredential
 import { AnalyticsRepository } from '../repos/analyticsRepository.js';
 import { AnalyticsDashboardSnapshotRepository } from '../repos/analyticsDashboardSnapshotRepository.js';
 import { RequestLogRepository } from '../repos/requestLogRepository.js';
+import { PilotIdentityRepository } from '../repos/pilotIdentityRepository.js';
+import { PilotAdmissionFreezeRepository } from '../repos/pilotAdmissionFreezeRepository.js';
 import { buildDefaultJobs } from '../jobs/registry.js';
 import { JobScheduler } from '../jobs/scheduler.js';
 import { KeyPool } from './keyPool.js';
@@ -21,7 +23,11 @@ import { RoutingService } from './routingService.js';
 import { IdempotencyService } from './idempotencyService.js';
 import { UsageMeteringWriter } from './metering/usageMeteringWriter.js';
 import { TokenCredentialService } from './tokenCredentialService.js';
+import { PilotSessionService } from './pilot/pilotSessionService.js';
+import { PilotGithubAuthService } from './pilot/pilotGithubAuthService.js';
+import { PilotCutoverService } from './pilot/pilotCutoverService.js';
 import { assertRequiredEnv, readRequiredEnv } from '../utils/env.js';
+import { AppError } from '../utils/errors.js';
 
 assertRequiredEnv(['DATABASE_URL', 'SELLER_SECRET_ENC_KEY_B64']);
 const sql = buildPgClient(readRequiredEnv('DATABASE_URL'));
@@ -42,13 +48,18 @@ export const runtime = {
     tokenCredentialProviderUsage: new TokenCredentialProviderUsageRepository(sql),
     analytics: new AnalyticsRepository(sql),
     analyticsDashboardSnapshots: new AnalyticsDashboardSnapshotRepository(sql),
-    requestLog: new RequestLogRepository(sql)
+    requestLog: new RequestLogRepository(sql),
+    pilotIdentity: new PilotIdentityRepository(sql),
+    pilotAdmissionFreezes: new PilotAdmissionFreezeRepository(sql)
   },
   services: {
     idempotency: undefined as unknown as IdempotencyService,
     jobs: undefined as unknown as JobScheduler,
     keyPool: new KeyPool(),
     metering: undefined as unknown as UsageMeteringWriter,
+    pilotCutovers: undefined as unknown as PilotCutoverService,
+    pilotGithubAuth: undefined as unknown as PilotGithubAuthService,
+    pilotSessions: undefined as unknown as PilotSessionService,
     routerEngine: new RouterEngine(),
     routingService: undefined as unknown as RoutingService,
     tokenCredentials: undefined as unknown as TokenCredentialService
@@ -67,6 +78,33 @@ runtime.services.jobs = new JobScheduler({
   }
 });
 runtime.services.metering = new UsageMeteringWriter(runtime.repos.usageLedger);
+runtime.services.pilotSessions = new PilotSessionService({
+  secret: process.env.PILOT_SESSION_SECRET || 'dev-insecure-pilot-session-secret'
+});
+runtime.services.pilotGithubAuth = new PilotGithubAuthService({
+  clientId: process.env.PILOT_GITHUB_CLIENT_ID || '',
+  clientSecret: process.env.PILOT_GITHUB_CLIENT_SECRET || '',
+  callbackUrl: process.env.PILOT_GITHUB_CALLBACK_URL || 'http://localhost:4010/v1/pilot/auth/github/callback',
+  allowlistedLogins: (process.env.PILOT_GITHUB_ALLOWLIST_LOGINS || '').split(',').map((value) => value.trim()).filter(Boolean),
+  allowlistedEmails: (process.env.PILOT_GITHUB_ALLOWLIST_EMAILS || '').split(',').map((value) => value.trim()).filter(Boolean),
+  identityRepository: runtime.repos.pilotIdentity,
+  sessionService: runtime.services.pilotSessions,
+  targetOrgSlug: process.env.PILOT_TARGET_ORG_SLUG || 'fnf',
+  targetOrgName: process.env.PILOT_TARGET_ORG_NAME || 'Friends & Family',
+  stateSecret: process.env.PILOT_GITHUB_STATE_SECRET || 'dev-insecure-pilot-oauth-state-secret'
+});
+runtime.services.pilotCutovers = new PilotCutoverService({
+  sql: runtime.sql,
+  reserveFloorMigration: {
+    async migrateReserveFloors() {
+      throw new AppError(
+        'service_unavailable',
+        503,
+        'Pilot cutover unavailable until reserve-floor migration adapter is configured'
+      );
+    }
+  }
+});
 runtime.services.routingService = new RoutingService(
   runtime.services.keyPool,
   runtime.services.routerEngine

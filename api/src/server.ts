@@ -5,6 +5,7 @@ import { z } from 'zod';
 import adminRoutes from './routes/admin.js';
 import analyticsRoutes from './routes/analytics.js';
 import anthropicCompatRoutes from './routes/anthropicCompat.js';
+import pilotRoutes from './routes/pilot.js';
 import proxyRoutes from './routes/proxy.js';
 import sellerKeysRoutes from './routes/sellerKeys.js';
 import usageRoutes from './routes/usage.js';
@@ -135,6 +136,7 @@ export function createApp(): express.Express {
   app.use(adminRoutes);
   app.use(analyticsRoutes);
   app.use(anthropicCompatRoutes);
+  app.use(pilotRoutes);
   app.use(sellerKeysRoutes);
   app.use(usageRoutes);
   app.use(proxyRoutes);
