@@ -5,6 +5,7 @@ import {
   getPilotConnectedAccounts,
   getPilotSession
 } from '../../../../lib/pilot/server';
+import { normalizePilotReturnTo } from '../../../../lib/pilot/returnTo';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,7 +16,7 @@ function readFormString(formData: FormData, key: string): string {
 
 export async function POST(request: NextRequest) {
   const formData = await request.formData();
-  const returnTo = readFormString(formData, 'returnTo') || '/pilot';
+  const returnTo = normalizePilotReturnTo(readFormString(formData, 'returnTo')) ?? '/pilot';
   const credentialId = readFormString(formData, 'credentialId');
   const fiveHourReservePercent = Number(readFormString(formData, 'fiveHourReservePercent'));
   const sevenDayReservePercent = Number(readFormString(formData, 'sevenDayReservePercent'));
@@ -24,7 +25,7 @@ export async function POST(request: NextRequest) {
   try {
     const session = await getPilotSession(cookieHeader);
     if (!session) {
-      return NextResponse.redirect(new URL('/pilot', request.url));
+      return NextResponse.redirect(new URL('/pilot', request.url), { status: 303 });
     }
 
     const accounts = await getPilotConnectedAccounts(cookieHeader);
@@ -45,7 +46,7 @@ export async function POST(request: NextRequest) {
       }
     });
 
-    return NextResponse.redirect(new URL(returnTo, request.url));
+    return NextResponse.redirect(new URL(returnTo, request.url), { status: 303 });
   } catch (error) {
     if (error instanceof PilotServerError) {
       return NextResponse.json({

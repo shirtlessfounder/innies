@@ -6,6 +6,7 @@ import type {
   ConnectedAccount,
   EarningsHistoryEntry,
   EarningsSummary,
+  PilotFundingState,
   PilotDashboardData,
   PilotIdentityDiscoveryEntry,
   PilotSession,
@@ -149,6 +150,7 @@ export async function fetchPilotJson<T>(input: {
   method?: string;
   body?: unknown;
   query?: Record<string, string | undefined>;
+  headers?: Record<string, string>;
 }): Promise<T> {
   const config = readBaseApiConfig();
   const cookieHeader = input.cookieHeader ?? await readCurrentCookieHeader();
@@ -160,7 +162,8 @@ export async function fetchPilotJson<T>(input: {
     query: input.query,
     headers: {
       ...(cookieHeader ? { cookie: cookieHeader } : {}),
-      ...(input.sessionToken ? { authorization: `Bearer ${input.sessionToken}` } : {})
+      ...(input.sessionToken ? { authorization: `Bearer ${input.sessionToken}` } : {}),
+      ...(input.headers ?? {})
     }
   });
 }
@@ -242,7 +245,7 @@ export async function getPilotDashboardData(cookieHeader?: string | null): Promi
   const session = await getPilotSession(cookieHeader);
   if (!session) return null;
 
-  const [wallet, walletLedger, accounts, earningsSummary, earningsHistory, withdrawals, requests] = await Promise.all([
+  const [wallet, walletLedger, funding, accounts, earningsSummary, earningsHistory, withdrawals, requests] = await Promise.all([
     fetchPilotJson<{ ok: true; wallet: WalletSnapshot }>({
       path: '/v1/pilot/wallet',
       cookieHeader
@@ -252,6 +255,10 @@ export async function getPilotDashboardData(cookieHeader?: string | null): Promi
       cookieHeader,
       query: { limit: '50' }
     }).then((response) => response.ledger),
+    fetchPilotJson<{ ok: true; funding: PilotFundingState }>({
+      path: '/v1/pilot/payments',
+      cookieHeader
+    }).then((response) => response.funding),
     getPilotConnectedAccounts(cookieHeader),
     fetchPilotJson<{ ok: true; summary: EarningsSummary }>({
       path: '/v1/pilot/earnings/summary',
@@ -278,6 +285,7 @@ export async function getPilotDashboardData(cookieHeader?: string | null): Promi
     session,
     wallet,
     walletLedger,
+    funding,
     requests,
     accounts,
     earningsSummary,

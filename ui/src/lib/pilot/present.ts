@@ -1,5 +1,7 @@
 import type {
   ConnectedAccount,
+  PaymentAttempt,
+  StoredPaymentMethod,
   RequestHistoryRow,
   WalletLedgerEntry,
   Withdrawal,
@@ -129,4 +131,40 @@ export function formatAccountHealth(account: ConnectedAccount): string {
     account.providerUsageWarning ? formatProviderUsageWarning(account) : null
   ].filter((value): value is string => Boolean(value) && value !== '--');
   return pieces.join(' · ') || '--';
+}
+
+export function formatStoredPaymentMethod(paymentMethod: StoredPaymentMethod | null | undefined): string {
+  if (!paymentMethod) return '--';
+  const brand = paymentMethod.brand.trim().length > 0 ? paymentMethod.brand.toUpperCase() : 'Card';
+  return `${brand} •••• ${paymentMethod.last4}`;
+}
+
+export function formatPaymentAttemptKind(attempt: PaymentAttempt): string {
+  return attempt.kind === 'auto_recharge' ? 'Auto-recharge' : 'Manual top-up';
+}
+
+export function formatPaymentAttemptStatus(attempt: PaymentAttempt): string {
+  switch (attempt.status) {
+    case 'pending':
+      return 'Pending';
+    case 'processing':
+      return 'Processing';
+    case 'succeeded':
+      return 'Succeeded';
+    case 'failed':
+      return 'Failed';
+    default:
+      return attempt.status;
+  }
+}
+
+export function formatPaymentTrigger(attempt: PaymentAttempt): string {
+  switch (attempt.trigger) {
+    case 'admission_blocked':
+      return 'Admission blocked';
+    case 'post_finalization_negative':
+      return 'Post-finalization negative';
+    default:
+      return '--';
+  }
 }

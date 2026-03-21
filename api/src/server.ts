@@ -5,6 +5,7 @@ import { z } from 'zod';
 import adminRoutes from './routes/admin.js';
 import analyticsRoutes from './routes/analytics.js';
 import anthropicCompatRoutes from './routes/anthropicCompat.js';
+import paymentsRoutes from './routes/payments.js';
 import pilotRoutes from './routes/pilot.js';
 import proxyRoutes from './routes/proxy.js';
 import sellerKeysRoutes from './routes/sellerKeys.js';
@@ -30,6 +31,13 @@ export function createApp(): express.Express {
         path: typeof req.url === 'string' ? req.url.split('?')[0] : undefined,
         body: Buffer.from(buf)
       });
+      const requestPath = typeof req.url === 'string' ? req.url.split('?')[0] : undefined;
+      if (
+        req.method === 'POST'
+        && (requestPath === '/v1/messages' || requestPath === '/v1/payments/webhooks/stripe')
+      ) {
+        (req as express.Request & { inniesRawBodyText?: string }).inniesRawBodyText = Buffer.from(buf).toString('utf8');
+      }
     }
   }));
 
@@ -136,6 +144,7 @@ export function createApp(): express.Express {
   app.use(adminRoutes);
   app.use(analyticsRoutes);
   app.use(anthropicCompatRoutes);
+  app.use(paymentsRoutes);
   app.use(pilotRoutes);
   app.use(sellerKeysRoutes);
   app.use(usageRoutes);

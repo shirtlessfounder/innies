@@ -61,6 +61,43 @@ describe('WalletLedgerRepository', () => {
     expect(db.queries[0].params).toContain('processor_evt_1');
   });
 
+  it('builds the insert when appendEntryWithDb receives only a transaction handle', async () => {
+    const tx = new MockSqlClient({
+      rows: [{
+        id: 'wallet_entry_tx',
+        wallet_id: 'wallet_1',
+        owner_org_id: 'org_fnf',
+        buyer_key_id: 'buyer_1',
+        metering_event_id: 'meter_tx',
+        effect_type: 'buyer_debit',
+        amount_minor: 450,
+        currency: 'USD',
+        actor_user_id: null,
+        reason: null,
+        processor_effect_id: null,
+        metadata: null,
+        created_at: '2026-03-21T12:00:00.000Z'
+      }],
+      rowCount: 1
+    });
+    const repo = new WalletLedgerRepository(new MockSqlClient(), () => 'wallet_entry_tx');
+
+    const row = await repo.appendEntryWithDb({
+      walletId: 'wallet_1',
+      ownerOrgId: 'org_fnf',
+      buyerKeyId: 'buyer_1',
+      meteringEventId: 'meter_tx',
+      effectType: 'buyer_debit',
+      amountMinor: 450,
+      currency: 'USD'
+    }, tx);
+
+    expect(row.id).toBe('wallet_entry_tx');
+    expect(tx.queries[0].sql).toContain('insert into in_wallet_ledger');
+    expect(tx.queries[0].params).toContain('wallet_1');
+    expect(tx.queries[0].params).toContain('meter_tx');
+  });
+
   it('returns the existing metering-derived row on duplicate projection keys', async () => {
     const db = new SequenceSqlClient([
       { rows: [], rowCount: 0 },

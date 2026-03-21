@@ -131,6 +131,42 @@ export type Withdrawal = {
   settlement_failure_reason?: string | null;
 };
 
+export type StoredPaymentMethod = {
+  id: string;
+  processor: 'stripe';
+  brand: string;
+  last4: string;
+  expMonth: number;
+  expYear: number;
+  funding: string | null;
+  status: 'active' | 'detached';
+};
+
+export type AutoRechargeSettings = {
+  enabled: boolean;
+  amountMinor: number;
+  currency: string;
+};
+
+export type PaymentAttempt = {
+  id: string;
+  kind: 'manual_topup' | 'auto_recharge';
+  trigger: 'admission_blocked' | 'post_finalization_negative' | null;
+  status: 'pending' | 'processing' | 'succeeded' | 'failed';
+  amountMinor: number;
+  currency: string;
+  createdAt: string;
+  updatedAt: string;
+  lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+};
+
+export type PilotFundingState = {
+  paymentMethod: StoredPaymentMethod | null;
+  autoRecharge: AutoRechargeSettings;
+  attempts: PaymentAttempt[];
+};
+
 export type PilotIdentityDiscoveryEntry = {
   targetUserId: string;
   targetOrgId: string;
@@ -145,6 +181,7 @@ export type PilotDashboardData = {
   session: PilotSession;
   wallet: WalletSnapshot;
   walletLedger: WalletLedgerEntry[];
+  funding: PilotFundingState;
   requests: RequestHistoryRow[];
   accounts: ConnectedAccount[];
   earningsSummary: EarningsSummary;

@@ -5,6 +5,8 @@ import { z } from 'zod';
 import { runtime } from '../services/runtime.js';
 import { buildConnectedAccountInventory } from '../services/pilot/pilotConnectedAccountInventory.js';
 import { AppError } from '../utils/errors.js';
+import { sha256Hex, stableJson } from '../utils/hash.js';
+import { readAndValidateIdempotencyKey } from '../utils/idempotencyKey.js';
 import {
   decodeRequestHistoryCursor,
   encodeRequestHistoryCursor,
@@ -38,11 +40,26 @@ const walletLedgerCursorSchema = z.object({
   id: z.string().uuid()
 });
 
+const paymentSetupSchema = z.object({
+  returnTo: z.string().min(1).optional()
+});
+
+const paymentTopUpSchema = z.object({
+  amountMinor: z.number().int().positive(),
+  returnTo: z.string().min(1).optional()
+});
+
+const autoRechargeSettingsSchema = z.object({
+  enabled: z.boolean(),
+  amountMinor: z.number().int().positive()
+});
+
 function normalizePilotReturnTo(value: string | undefined | null): string | undefined {
   const normalized = value?.trim();
   if (!normalized) return undefined;
   if (!normalized.startsWith('/')) return undefined;
   if (normalized.startsWith('//')) return undefined;
+  if (normalized.includes('\\')) return undefined;
   return normalized;
 }
 
@@ -182,6 +199,132 @@ router.get('/v1/pilot/wallet/ledger', async (req, res, next) => {
       ok: true,
       ledger: result.entries,
       nextCursor: result.nextCursor ? encodeWalletLedgerCursor(result.nextCursor) : null
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/pilot/payments', async (req, res, next) => {
+  try {
+    const session = readPilotSession(req);
+    const funding = await runtime.services.payments.getFundingState({
+      walletId: runtime.services.wallets.walletIdForOrgId(session.effectiveOrgId),
+      ownerOrgId: session.effectiveOrgId
+    });
+    res.status(200).json({
+      ok: true,
+      funding
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/pilot/payments/setup-session', async (req, res, next) => {
+  try {
+    const session = readPilotSession(req);
+    const parsed = paymentSetupSchema.parse(req.body ?? {});
+    const result = await runtime.services.payments.createSetupSession({
+      walletId: runtime.services.wallets.walletIdForOrgId(session.effectiveOrgId),
+      ownerOrgId: session.effectiveOrgId,
+      requestedByUserId: session.impersonatedUserId ?? session.actorUserId,
+      returnTo: normalizePilotReturnTo(parsed.returnTo)
+    });
+    res.status(200).json({
+      ok: true,
+      checkoutUrl: result.checkoutUrl
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/pilot/payments/top-up-session', async (req, res, next) => {
+  try {
+    const context = readPilotSessionContext(req);
+    const walletId = runtime.services.wallets.walletIdForOrgId(context.ownerOrgId);
+    const parsed = paymentTopUpSchema.parse(req.body ?? {});
+    const returnTo = normalizePilotReturnTo(parsed.returnTo);
+    const idempotencyKey = readAndValidateIdempotencyKey(req.header('idempotency-key') ?? undefined);
+    const requestHash = sha256Hex(stableJson({
+      effectiveOrgId: context.ownerOrgId,
+      requestedByUserId: context.contributorUserId,
+      amountMinor: parsed.amountMinor,
+      returnTo: returnTo ?? null
+    }));
+    const idemStart = await runtime.services.idempotency.start({
+      scope: 'pilot_payment_topup_session_v1',
+      tenantScope: walletId,
+      idempotencyKey,
+      requestHash
+    });
+
+    if (idemStart.replay) {
+      if (!idemStart.responseBody) {
+        throw new AppError('idempotency_replay_unavailable', 409, 'Idempotent replay not available for this request');
+      }
+      res.setHeader('x-idempotent-replay', 'true');
+      res.status(idemStart.responseCode).json(idemStart.responseBody);
+      return;
+    }
+
+    const result = await runtime.services.payments.createTopUpSession({
+      walletId,
+      ownerOrgId: context.ownerOrgId,
+      requestedByUserId: context.contributorUserId,
+      amountMinor: parsed.amountMinor,
+      returnTo,
+      idempotencyKey
+    });
+    const responseBody = {
+      ok: true,
+      checkoutUrl: result.checkoutUrl
+    } as const;
+
+    await runtime.services.idempotency.commit(idemStart, {
+      responseCode: 200,
+      responseBody,
+      responseDigest: sha256Hex(stableJson(responseBody)),
+      responseRef: walletId
+    });
+
+    res.status(200).json(responseBody);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/pilot/payments/payment-method/remove', async (req, res, next) => {
+  try {
+    const session = readPilotSession(req);
+    const result = await runtime.services.payments.removeStoredPaymentMethod({
+      walletId: runtime.services.wallets.walletIdForOrgId(session.effectiveOrgId),
+      ownerOrgId: session.effectiveOrgId
+    });
+    res.status(200).json({
+      ok: true,
+      removed: result.removed
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/v1/pilot/payments/auto-recharge', async (req, res, next) => {
+  try {
+    const session = readPilotSession(req);
+    const parsed = autoRechargeSettingsSchema.parse(req.body ?? {});
+    const autoRecharge = await runtime.services.payments.updateAutoRechargeSettings({
+      walletId: runtime.services.wallets.walletIdForOrgId(session.effectiveOrgId),
+      ownerOrgId: session.effectiveOrgId,
+      enabled: parsed.enabled,
+      amountMinor: parsed.amountMinor,
+      updatedByUserId: session.impersonatedUserId ?? session.actorUserId
+    });
+    res.status(200).json({
+      ok: true,
+      autoRecharge
     });
   } catch (error) {
     next(error);

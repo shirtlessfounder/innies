@@ -23,6 +23,12 @@ import { AnalyticsDashboardSnapshotRepository } from '../repos/analyticsDashboar
 import { RequestLogRepository } from '../repos/requestLogRepository.js';
 import { PilotIdentityRepository } from '../repos/pilotIdentityRepository.js';
 import { PilotAdmissionFreezeRepository } from '../repos/pilotAdmissionFreezeRepository.js';
+import { PaymentProfileRepository } from '../repos/paymentProfileRepository.js';
+import { PaymentMethodRepository } from '../repos/paymentMethodRepository.js';
+import { AutoRechargeSettingsRepository } from '../repos/autoRechargeSettingsRepository.js';
+import { PaymentAttemptRepository } from '../repos/paymentAttemptRepository.js';
+import { PaymentWebhookEventRepository } from '../repos/paymentWebhookEventRepository.js';
+import { PaymentOutcomeRepository } from '../repos/paymentOutcomeRepository.js';
 import { buildDefaultJobs } from '../jobs/registry.js';
 import { JobScheduler } from '../jobs/scheduler.js';
 import { KeyPool } from './keyPool.js';
@@ -37,6 +43,8 @@ import { PilotSessionService } from './pilot/pilotSessionService.js';
 import { PilotGithubAuthService } from './pilot/pilotGithubAuthService.js';
 import { PilotCutoverService } from './pilot/pilotCutoverService.js';
 import { WalletService } from './wallet/walletService.js';
+import { PaymentService } from './payments/paymentService.js';
+import { StripeClient } from './payments/stripeClient.js';
 import { assertRequiredEnv, readRequiredEnv } from '../utils/env.js';
 import { AppError } from '../utils/errors.js';
 
@@ -69,7 +77,13 @@ export const runtime = {
     requestLog: new RequestLogRepository(sql),
     pilotIdentity: new PilotIdentityRepository(sql),
     pilotAdmissionFreezes: new PilotAdmissionFreezeRepository(sql),
-    withdrawalRequests: new WithdrawalRequestRepository(sql)
+    withdrawalRequests: new WithdrawalRequestRepository(sql),
+    paymentProfiles: new PaymentProfileRepository(sql),
+    paymentMethods: new PaymentMethodRepository(sql),
+    autoRechargeSettings: new AutoRechargeSettingsRepository(sql),
+    paymentAttempts: new PaymentAttemptRepository(sql),
+    paymentWebhookEvents: new PaymentWebhookEventRepository(sql),
+    paymentOutcomes: new PaymentOutcomeRepository(sql)
   },
   services: {
     earningsProjector: undefined as unknown as EarningsProjectorService,
@@ -80,6 +94,7 @@ export const runtime = {
     pilotCutovers: undefined as unknown as PilotCutoverService,
     pilotGithubAuth: undefined as unknown as PilotGithubAuthService,
     pilotSessions: undefined as unknown as PilotSessionService,
+    payments: undefined as unknown as PaymentService,
     routerEngine: new RouterEngine(),
     routingService: undefined as unknown as RoutingService,
     tokenCredentials: undefined as unknown as TokenCredentialService,
@@ -142,11 +157,24 @@ runtime.services.tokenCredentials = new TokenCredentialService(
   runtime.repos.tokenCredentials,
   runtime.repos.auditLogs
 );
+runtime.services.payments = new PaymentService({
+  paymentProfiles: runtime.repos.paymentProfiles,
+  paymentMethods: runtime.repos.paymentMethods,
+  autoRechargeSettings: runtime.repos.autoRechargeSettings,
+  paymentAttempts: runtime.repos.paymentAttempts,
+  paymentOutcomes: runtime.repos.paymentOutcomes,
+  paymentWebhooks: runtime.repos.paymentWebhookEvents,
+  stripeClient: new StripeClient({
+    secretKey: process.env.STRIPE_SECRET_KEY || '',
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || ''
+  })
+});
 runtime.services.wallets = new WalletService({
   sql: runtime.sql,
   walletLedgerRepo: runtime.repos.walletLedger,
   canonicalMeteringRepo: runtime.repos.canonicalMetering,
-  meteringProjectorStateRepo: runtime.repos.meteringProjectorStates
+  meteringProjectorStateRepo: runtime.repos.meteringProjectorStates,
+  paymentsAdapter: runtime.services.payments
 });
 runtime.services.withdrawals = new WithdrawalService({
   sql: runtime.sql,

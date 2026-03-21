@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { PilotServerError, fetchAdminJson } from '../../../../../../lib/pilot/server';
+import { normalizePilotReturnTo } from '../../../../../../lib/pilot/returnTo';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,7 +22,7 @@ export async function POST(
   const { withdrawalRequestId } = await context.params;
   const formData = await request.formData();
   const action = readFormString(formData, 'action');
-  const returnTo = readFormString(formData, 'returnTo') || '/admin/pilot';
+  const returnTo = normalizePilotReturnTo(readFormString(formData, 'returnTo')) ?? '/admin/pilot';
   const reason = readFormString(formData, 'reason');
   const settlementReference = readFormString(formData, 'settlementReference');
   const adjustmentMinor = readOptionalInt(readFormString(formData, 'adjustmentMinor'));
@@ -70,7 +71,7 @@ export async function POST(
       method: 'POST',
       body
     });
-    return NextResponse.redirect(new URL(returnTo, request.url));
+    return NextResponse.redirect(new URL(returnTo, request.url), { status: 303 });
   } catch (error) {
     if (error instanceof PilotServerError) {
       return NextResponse.json({
