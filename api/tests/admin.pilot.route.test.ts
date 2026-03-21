@@ -123,6 +123,8 @@ function getRouteHandlers(router: any, routePath: string, method: 'get' | 'post'
 describe('admin pilot routes', () => {
   let runtimeModule: RuntimeModule;
   let sessionHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let pilotIdentityHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let connectedAccountsHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let cutoverHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let rollbackHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let requestHistoryHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
@@ -147,6 +149,8 @@ describe('admin pilot routes', () => {
     runtimeModule = await import('../src/services/runtime.js');
     const mod = await import('../src/routes/admin.js') as AdminRouteModule;
     sessionHandlers = getRouteHandlers(mod.default as any, '/v1/admin/pilot/session', 'post');
+    pilotIdentityHandlers = getRouteHandlers(mod.default as any, '/v1/admin/pilot/identities', 'get');
+    connectedAccountsHandlers = getRouteHandlers(mod.default as any, '/v1/admin/pilot/connected-accounts', 'get');
     cutoverHandlers = getRouteHandlers(mod.default as any, '/v1/admin/pilot/cutover', 'post');
     rollbackHandlers = getRouteHandlers(mod.default as any, '/v1/admin/pilot/rollback', 'post');
     requestHistoryHandlers = getRouteHandlers(mod.default as any, '/v1/admin/requests', 'get');
@@ -252,6 +256,57 @@ describe('admin pilot routes', () => {
       id: 'withdraw_1',
       status: 'settlement_failed'
     } as any);
+    (runtimeModule.runtime.repos.pilotIdentity as any).listOrgUserDirectoryBySlug = vi.fn().mockResolvedValue([{
+      orgId: 'org_fnf',
+      orgSlug: 'fnf',
+      orgName: 'Friends & Family',
+      userId: 'user_darryn',
+      userEmail: 'darryn@example.com',
+      displayName: 'Darryn'
+    }]);
+    (runtimeModule.runtime.repos.tokenCredentials as any).listByOrg = vi.fn().mockResolvedValue([{
+      id: 'cred_2',
+      orgId: 'org_fnf',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: 'header.payload.sig',
+      refreshToken: 'refresh_2',
+      expiresAt: new Date('2026-03-22T00:00:00.000Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-19T00:00:00.000Z'),
+      updatedAt: new Date('2026-03-20T00:00:00.000Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00.000Z'),
+      fiveHourReservePercent: 10,
+      sevenDayReservePercent: 20,
+      debugLabel: 'darryn-codex',
+      consecutiveFailureCount: 0,
+      consecutiveRateLimitCount: 0,
+      lastFailedStatus: null,
+      lastFailedAt: null,
+      lastRateLimitedAt: null,
+      maxedAt: null,
+      rateLimitedUntil: null,
+      nextProbeAt: null,
+      lastProbeAt: null
+    }]);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentialProviderUsage, 'listByTokenCredentialIds').mockResolvedValue([{
+      tokenCredentialId: 'cred_2',
+      orgId: 'org_fnf',
+      provider: 'openai',
+      usageSource: 'openai_wham_usage',
+      fiveHourUtilizationRatio: 0.18,
+      fiveHourResetsAt: new Date('2026-03-20T15:00:00.000Z'),
+      sevenDayUtilizationRatio: 0.34,
+      sevenDayResetsAt: new Date('2026-03-27T00:00:00.000Z'),
+      rawPayload: {},
+      fetchedAt: new Date('2026-03-20T12:30:00.000Z'),
+      createdAt: new Date('2026-03-20T12:30:00.000Z'),
+      updatedAt: new Date('2026-03-20T12:30:00.000Z')
+    }]);
   });
 
   afterEach(() => {
@@ -294,6 +349,72 @@ describe('admin pilot routes', () => {
       })
     }));
     expect(res.headers['set-cookie']).toContain('innies_pilot_session=admin-session-token');
+  });
+
+  it('lists pilot identity discovery entries for admin impersonation', async () => {
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/pilot/identities',
+      headers: {
+        authorization: 'Bearer in_admin_token'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(pilotIdentityHandlers[0], req, res);
+    await invoke(pilotIdentityHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      identities: [{
+        targetUserId: 'user_darryn',
+        targetOrgId: 'org_fnf',
+        targetOrgSlug: 'fnf',
+        targetOrgName: 'Friends & Family',
+        githubLogin: null,
+        userEmail: 'darryn@example.com',
+        displayName: 'Darryn'
+      }]
+    });
+    expect((runtimeModule.runtime.repos.pilotIdentity as any).listOrgUserDirectoryBySlug).toHaveBeenCalledWith('fnf');
+  });
+
+  it('returns admin pilot connected-account inventory for an owner org', async () => {
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/pilot/connected-accounts',
+      headers: {
+        authorization: 'Bearer in_admin_token'
+      },
+      query: {
+        ownerOrgId: 'org_fnf'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(connectedAccountsHandlers[0], req, res);
+    await invoke(connectedAccountsHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      accounts: [expect.objectContaining({
+        credentialId: 'cred_2',
+        orgId: 'org_fnf',
+        provider: 'openai',
+        debugLabel: 'darryn-codex',
+        status: 'active',
+        rawStatus: 'active',
+        fiveHourReservePercent: 10,
+        sevenDayReservePercent: 20,
+        providerUsageFetchedAt: '2026-03-20T12:30:00.000Z',
+        fiveHourUtilizationRatio: 0.18,
+        sevenDayUtilizationRatio: 0.34
+      })]
+    });
+    expect((runtimeModule.runtime.repos.tokenCredentials as any).listByOrg).toHaveBeenCalledWith('org_fnf');
+    expect(runtimeModule.runtime.repos.tokenCredentialProviderUsage.listByTokenCredentialIds).toHaveBeenCalledWith(['cred_2']);
   });
 
   it('starts a cutover through the cutover service', async () => {
