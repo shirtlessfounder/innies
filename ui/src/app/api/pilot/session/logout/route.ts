@@ -16,7 +16,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const response = NextResponse.redirect(new URL('/pilot', request.url));
+  const response = NextResponse.redirect(new URL('/pilot', request.url), { status: 303 });
   response.cookies.set('innies_pilot_session', '', {
     httpOnly: true,
     sameSite: 'lax',

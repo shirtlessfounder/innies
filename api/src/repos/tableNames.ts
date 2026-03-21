@@ -1,5 +1,6 @@
 export const TABLES = {
   analyticsDashboardSnapshots: 'in_analytics_dashboard_snapshots',
+  autoRechargeSettings: 'in_auto_recharge_settings',
   auditLogEvents: 'in_audit_log_events',
   canonicalMeteringEvents: 'in_canonical_metering_events',
   cutoverRecords: 'in_cutover_records',
@@ -9,6 +10,11 @@ export const TABLES = {
   idempotencyKeys: 'in_idempotency_keys',
   meteringProjectorStates: 'in_metering_projector_states',
   orgs: 'in_orgs',
+  paymentAttempts: 'in_payment_attempts',
+  paymentMethods: 'in_payment_methods',
+  paymentOutcomes: 'in_payment_outcomes',
+  paymentProfiles: 'in_payment_profiles',
+  paymentWebhookEvents: 'in_payment_webhook_events',
   pilotAdmissionFreezes: 'in_pilot_admission_freezes',
   rateCardLineItems: 'in_rate_card_line_items',
   rateCardVersions: 'in_rate_card_versions',

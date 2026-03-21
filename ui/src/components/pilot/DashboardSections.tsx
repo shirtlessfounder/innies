@@ -1,10 +1,15 @@
+import { randomBytes } from 'node:crypto';
 import Link from 'next/link';
 import styles from './dashboard.module.css';
 import {
   formatAccountHealth,
   formatCount,
+  formatPaymentAttemptKind,
+  formatPaymentAttemptStatus,
+  formatPaymentTrigger,
   formatPercentRatio,
   formatProvider,
+  formatStoredPaymentMethod,
   formatProviderUsageWarning,
   formatRoutingMode,
   formatTimestamp,
@@ -18,6 +23,7 @@ import type {
   ConnectedAccount,
   EarningsHistoryEntry,
   EarningsSummary,
+  PilotFundingState,
   PilotDashboardData,
   PilotIdentityDiscoveryEntry,
   RequestHistoryRow,
@@ -140,6 +146,146 @@ export function WalletSection(input: {
         </table>
       </div>
       {input.ledger.length === 0 ? <div className={styles.emptyState}>No wallet history yet.</div> : null}
+    </Section>
+  );
+}
+
+export function PaymentFundingSection(input: {
+  funding: PilotFundingState;
+  returnTo: string;
+}) {
+  const manualTopUpIdempotencyKey = randomBytes(24).toString('hex');
+
+  return (
+    <Section
+      title="Payments & Auto-Recharge"
+      hint="Stored card metadata, wallet top-up sessions, and auto-recharge controls stay aligned with processor state while wallet remains the single ledger writer."
+    >
+      <div className={styles.cardGrid}>
+        <article className={styles.identityCard}>
+          <div className={styles.cardTitleRow}>
+            <div>
+              <h3 className={styles.cardTitle}>Stored payment method</h3>
+              <p className={styles.cardMeta}>
+                {input.funding.paymentMethod
+                  ? `${formatStoredPaymentMethod(input.funding.paymentMethod)} · exp ${String(input.funding.paymentMethod.expMonth).padStart(2, '0')}/${input.funding.paymentMethod.expYear}`
+                  : 'No stored card on file yet.'}
+              </p>
+            </div>
+            <span className={input.funding.paymentMethod ? styles.goodPill : styles.pill}>
+              {input.funding.paymentMethod?.status || 'not_configured'}
+            </span>
+          </div>
+          <div className={styles.pillRow}>
+            <span className={styles.pill}>Processor Stripe</span>
+            <span className={styles.pill}>Funding {input.funding.paymentMethod?.funding || '--'}</span>
+          </div>
+          <div className={styles.formActions}>
+            <form action="/api/pilot/payments/setup" method="post">
+              <input name="returnTo" type="hidden" value={input.returnTo} />
+              <button className={styles.actionButton} type="submit">
+                {input.funding.paymentMethod ? 'Replace Card' : 'Add Card'}
+              </button>
+            </form>
+            {input.funding.paymentMethod ? (
+              <form action="/api/pilot/payments/remove" method="post">
+                <input name="returnTo" type="hidden" value={input.returnTo} />
+                <button className={styles.ghostButton} type="submit">Remove Card</button>
+              </form>
+            ) : null}
+          </div>
+          <form action="/api/pilot/payments/top-up" method="post">
+            <input name="idempotencyKey" type="hidden" value={manualTopUpIdempotencyKey} />
+            <input name="returnTo" type="hidden" value={input.returnTo} />
+            <div className={styles.formGrid}>
+              <label className={styles.fieldLabel}>
+                Manual top-up (minor units)
+                <input
+                  className={styles.input}
+                  defaultValue="5000"
+                  min="1"
+                  name="amountMinor"
+                  step="1"
+                  type="number"
+                />
+              </label>
+            </div>
+            <div className={styles.formActions}>
+              <button className={styles.actionButton} disabled={!input.funding.paymentMethod} type="submit">
+                Create Top-Up Session
+              </button>
+            </div>
+          </form>
+        </article>
+
+        <article className={styles.identityCard}>
+          <div className={styles.cardTitleRow}>
+            <div>
+              <h3 className={styles.cardTitle}>Auto-recharge</h3>
+              <p className={styles.cardMeta}>
+                Admission-time and post-finalization recharge attempts use the stored card only when this wallet setting is enabled.
+              </p>
+            </div>
+            <span className={input.funding.autoRecharge.enabled ? styles.goodPill : styles.warnPill}>
+              {input.funding.autoRecharge.enabled ? 'enabled' : 'disabled'}
+            </span>
+          </div>
+          <form action="/api/pilot/payments/auto-recharge" method="post">
+            <div className={styles.formGrid}>
+              <label className={styles.fieldLabel}>
+                Auto-recharge state
+                <select className={styles.select} defaultValue={input.funding.autoRecharge.enabled ? 'true' : 'false'} name="enabled">
+                  <option value="true">Enabled</option>
+                  <option value="false">Disabled</option>
+                </select>
+              </label>
+              <label className={styles.fieldLabel}>
+                Recharge amount (minor units)
+                <input
+                  className={styles.input}
+                  defaultValue={String(input.funding.autoRecharge.amountMinor)}
+                  min="1"
+                  name="amountMinor"
+                  step="1"
+                  type="number"
+                />
+              </label>
+            </div>
+            <div className={styles.formActions}>
+              <input name="returnTo" type="hidden" value={input.returnTo} />
+              <button className={styles.actionButton} type="submit">Save Auto-Recharge</button>
+            </div>
+          </form>
+        </article>
+      </div>
+
+      <div className={styles.tableWrap}>
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th>Attempt</th>
+              <th>Trigger</th>
+              <th>Amount</th>
+              <th>When</th>
+            </tr>
+          </thead>
+          <tbody>
+            {input.funding.attempts.map((attempt) => (
+              <tr key={attempt.id}>
+                <td>
+                  <strong>{formatPaymentAttemptKind(attempt)}</strong>
+                  <div className={styles.muted}>{formatPaymentAttemptStatus(attempt)}</div>
+                  {attempt.lastErrorMessage ? <div className={styles.muted}>{attempt.lastErrorMessage}</div> : null}
+                </td>
+                <td>{formatPaymentTrigger(attempt)}</td>
+                <td>{formatUsdMinor(attempt.amountMinor)}</td>
+                <td>{formatTimestamp(attempt.updatedAt || attempt.createdAt)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {input.funding.attempts.length === 0 ? <div className={styles.emptyState}>No payment attempts yet.</div> : null}
     </Section>
   );
 }

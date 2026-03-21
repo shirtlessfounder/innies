@@ -57,6 +57,45 @@ test('pilot page includes the required Darryn dashboard sections', () => {
   assert.ok(sharedSource.includes('Withdrawals'));
 });
 
+test('manual top-up form renders and forwards a stable idempotency key', () => {
+  const sharedSource = readSource('src/components/pilot/DashboardSections.tsx');
+  const routeSource = readSource('src/app/api/pilot/payments/top-up/route.ts');
+  const serverSource = readSource('src/lib/pilot/server.ts');
+
+  assert.ok(sharedSource.includes('randomUUID') || sharedSource.includes('randomBytes'));
+  assert.ok(sharedSource.includes('manualTopUpIdempotencyKey'));
+  assert.ok(sharedSource.includes('name="idempotencyKey"'));
+  assert.ok(routeSource.includes("readFormString(formData, 'idempotencyKey')"));
+  assert.ok(routeSource.includes("'idempotency-key': idempotencyKey"));
+  assert.ok(serverSource.includes('headers?: Record<string, string>'));
+  assert.ok(serverSource.includes('...(input.headers ?? {})'));
+});
+
+test('payment redirect routes sanitize returnTo before redirecting', async () => {
+  const { normalizePilotReturnTo } = await import('../src/lib/pilot/returnTo.ts');
+  const removeRouteSource = readSource('src/app/api/pilot/payments/remove/route.ts');
+  const autoRechargeRouteSource = readSource('src/app/api/pilot/payments/auto-recharge/route.ts');
+
+  assert.equal(normalizePilotReturnTo(' /pilot?tab=funding '), '/pilot?tab=funding');
+  assert.equal(normalizePilotReturnTo('//attacker.example'), null);
+  assert.equal(normalizePilotReturnTo('/\\attacker.example'), null);
+  assert.equal(normalizePilotReturnTo('https://attacker.example/pilot'), null);
+  assert.ok(removeRouteSource.includes('normalizePilotReturnTo'));
+  assert.ok(autoRechargeRouteSource.includes('normalizePilotReturnTo'));
+});
+
+test('payment POST routes use 303 redirects after successful submission', () => {
+  const setupRouteSource = readSource('src/app/api/pilot/payments/setup/route.ts');
+  const topUpRouteSource = readSource('src/app/api/pilot/payments/top-up/route.ts');
+  const removeRouteSource = readSource('src/app/api/pilot/payments/remove/route.ts');
+  const autoRechargeRouteSource = readSource('src/app/api/pilot/payments/auto-recharge/route.ts');
+
+  assert.ok(setupRouteSource.includes('status: 303'));
+  assert.ok(topUpRouteSource.includes('status: 303'));
+  assert.ok(removeRouteSource.includes('status: 303'));
+  assert.ok(autoRechargeRouteSource.includes('status: 303'));
+});
+
 test('admin pilot entry page includes identity discovery and impersonation entry UI', () => {
   const pageSource = readSource('src/app/admin/pilot/page.tsx');
   const sharedSource = readSource('src/components/pilot/DashboardSections.tsx');

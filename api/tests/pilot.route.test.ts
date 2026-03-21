@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { AppError } from '../src/utils/errors.js';
+import { sha256Hex, stableJson } from '../src/utils/hash.js';
 
 type RuntimeModule = typeof import('../src/services/runtime.js');
 type PilotRouteModule = typeof import('../src/routes/pilot.js');
@@ -135,6 +136,11 @@ describe('pilot routes', () => {
   let authStartHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let authCallbackHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let logoutHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let paymentsStateHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let paymentsSetupHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let paymentsTopUpHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let paymentsRemoveHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let paymentsAutoRechargeHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let earningsSummaryHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let earningsHistoryHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let withdrawalsListHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
@@ -153,6 +159,11 @@ describe('pilot routes', () => {
     authStartHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/auth/github/start', 'get');
     authCallbackHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/auth/github/callback', 'get');
     logoutHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/session/logout', 'post');
+    paymentsStateHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/payments', 'get');
+    paymentsSetupHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/payments/setup-session', 'post');
+    paymentsTopUpHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/payments/top-up-session', 'post');
+    paymentsRemoveHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/payments/payment-method/remove', 'post');
+    paymentsAutoRechargeHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/payments/auto-recharge', 'post');
     earningsSummaryHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/earnings/summary', 'get');
     earningsHistoryHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/earnings/history', 'get');
     withdrawalsListHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/withdrawals', 'get');
@@ -184,6 +195,48 @@ describe('pilot routes', () => {
       settledMinor: 120,
       adjustedMinor: -10
     });
+    vi.spyOn(runtimeModule.runtime.services.payments, 'getFundingState').mockResolvedValue({
+      paymentMethod: {
+        id: 'paymeth_local_1',
+        processor: 'stripe',
+        brand: 'visa',
+        last4: '4242',
+        expMonth: 8,
+        expYear: 2030,
+        status: 'active'
+      },
+      autoRecharge: {
+        enabled: true,
+        amountMinor: 2500,
+        currency: 'USD'
+      },
+      attempts: [{
+        id: 'payment_attempt_1',
+        kind: 'auto_recharge',
+        trigger: 'admission_blocked',
+        status: 'succeeded',
+        amountMinor: 2500,
+        currency: 'USD',
+        createdAt: '2026-03-20T10:30:00.000Z',
+        updatedAt: '2026-03-20T10:30:10.000Z',
+        lastErrorCode: null,
+        lastErrorMessage: null
+      }]
+    } as any);
+    vi.spyOn(runtimeModule.runtime.services.payments, 'createSetupSession').mockResolvedValue({
+      checkoutUrl: 'https://checkout.stripe.test/setup'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.services.payments, 'createTopUpSession').mockResolvedValue({
+      checkoutUrl: 'https://checkout.stripe.test/topup'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.services.payments, 'removeStoredPaymentMethod').mockResolvedValue({
+      removed: true
+    } as any);
+    vi.spyOn(runtimeModule.runtime.services.payments, 'updateAutoRechargeSettings').mockResolvedValue({
+      enabled: true,
+      amountMinor: 2500,
+      currency: 'USD'
+    } as any);
     vi.spyOn(runtimeModule.runtime.services.withdrawals, 'listContributorHistory').mockResolvedValue([]);
     vi.spyOn(runtimeModule.runtime.services.withdrawals, 'listContributorWithdrawals').mockResolvedValue([]);
     vi.spyOn(runtimeModule.runtime.services.withdrawals, 'createWithdrawalRequest').mockResolvedValue({
@@ -528,6 +581,268 @@ describe('pilot routes', () => {
     }));
   });
 
+  it('returns payment-method, auto-recharge, and recent attempt state for the effective wallet', async () => {
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/pilot/payments',
+      headers: {
+        authorization: 'Bearer pilot-token'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(paymentsStateHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      funding: expect.objectContaining({
+        paymentMethod: expect.objectContaining({
+          id: 'paymeth_local_1',
+          brand: 'visa',
+          last4: '4242'
+        }),
+        autoRecharge: expect.objectContaining({
+          enabled: true,
+          amountMinor: 2500
+        }),
+        attempts: [expect.objectContaining({
+          id: 'payment_attempt_1',
+          kind: 'auto_recharge',
+          status: 'succeeded'
+        })]
+      })
+    });
+    expect(runtimeModule.runtime.services.payments.getFundingState).toHaveBeenCalledWith({
+      walletId: 'org_fnf',
+      ownerOrgId: 'org_fnf'
+    });
+  });
+
+  it('creates a setup session for adding a stored payment method', async () => {
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/pilot/payments/setup-session',
+      headers: {
+        authorization: 'Bearer pilot-token',
+        'content-type': 'application/json'
+      }
+    });
+    req.body = {
+      returnTo: '/pilot'
+    };
+    const res = createMockRes();
+
+    await invoke(paymentsSetupHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      checkoutUrl: 'https://checkout.stripe.test/setup'
+    });
+    expect(runtimeModule.runtime.services.payments.createSetupSession).toHaveBeenCalledWith({
+      walletId: 'org_fnf',
+      ownerOrgId: 'org_fnf',
+      requestedByUserId: 'user_darryn',
+      returnTo: '/pilot'
+    });
+  });
+
+  it('creates a manual top-up session against the effective pilot wallet', async () => {
+    const idemSession = {
+      replay: false,
+      input: {
+        scope: 'pilot_payment_topup_session_v1',
+        tenantScope: 'org_fnf',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123456',
+        requestHash: sha256Hex(stableJson({
+          effectiveOrgId: 'org_fnf',
+          requestedByUserId: 'user_darryn',
+          amountMinor: 5000,
+          returnTo: '/pilot'
+        }))
+      }
+    } as any;
+    const startSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue(idemSession);
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/pilot/payments/top-up-session',
+      headers: {
+        authorization: 'Bearer pilot-token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456'
+      }
+    });
+    req.body = {
+      amountMinor: 5000,
+      returnTo: '/pilot'
+    };
+    const res = createMockRes();
+
+    await invoke(paymentsTopUpHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      checkoutUrl: 'https://checkout.stripe.test/topup'
+    });
+    expect(runtimeModule.runtime.services.payments.createTopUpSession).toHaveBeenCalledWith({
+      walletId: 'org_fnf',
+      ownerOrgId: 'org_fnf',
+      requestedByUserId: 'user_darryn',
+      amountMinor: 5000,
+      returnTo: '/pilot',
+      idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123456'
+    });
+    expect(startSpy).toHaveBeenCalledWith({
+      scope: 'pilot_payment_topup_session_v1',
+      tenantScope: 'org_fnf',
+      idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123456',
+      requestHash: sha256Hex(stableJson({
+        effectiveOrgId: 'org_fnf',
+        requestedByUserId: 'user_darryn',
+        amountMinor: 5000,
+        returnTo: '/pilot'
+      }))
+    });
+    expect(commitSpy).toHaveBeenCalledWith(idemSession, {
+      responseCode: 200,
+      responseBody: {
+        ok: true,
+        checkoutUrl: 'https://checkout.stripe.test/topup'
+      },
+      responseDigest: sha256Hex(stableJson({
+        ok: true,
+        checkoutUrl: 'https://checkout.stripe.test/topup'
+      })),
+      responseRef: 'org_fnf'
+    });
+  });
+
+  it('replays a manual top-up session without creating a second checkout session', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: true,
+      responseCode: 200,
+      responseBody: {
+        ok: true,
+        checkoutUrl: 'https://checkout.stripe.test/topup-replay'
+      }
+    } as any);
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/pilot/payments/top-up-session',
+      headers: {
+        authorization: 'Bearer pilot-token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456'
+      }
+    });
+    req.body = {
+      amountMinor: 5000,
+      returnTo: '/pilot'
+    };
+    const res = createMockRes();
+
+    await invoke(paymentsTopUpHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['x-idempotent-replay']).toBe('true');
+    expect(res.body).toEqual({
+      ok: true,
+      checkoutUrl: 'https://checkout.stripe.test/topup-replay'
+    });
+    expect(runtimeModule.runtime.services.payments.createTopUpSession).not.toHaveBeenCalled();
+    expect(commitSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects manual top-up session creation without an idempotency key header', async () => {
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/pilot/payments/top-up-session',
+      headers: {
+        authorization: 'Bearer pilot-token',
+        'content-type': 'application/json'
+      }
+    });
+    req.body = {
+      amountMinor: 5000,
+      returnTo: '/pilot'
+    };
+    const res = createMockRes();
+
+    await invoke(paymentsTopUpHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual({
+      code: 'invalid_request',
+      message: 'Missing Idempotency-Key header',
+      details: undefined
+    });
+    expect(runtimeModule.runtime.services.payments.createTopUpSession).not.toHaveBeenCalled();
+  });
+
+  it('removes the stored payment method through the payment service', async () => {
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/pilot/payments/payment-method/remove',
+      headers: {
+        authorization: 'Bearer pilot-token',
+        'content-type': 'application/json'
+      }
+    });
+    req.body = {};
+    const res = createMockRes();
+
+    await invoke(paymentsRemoveHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      removed: true
+    });
+    expect(runtimeModule.runtime.services.payments.removeStoredPaymentMethod).toHaveBeenCalledWith({
+      walletId: 'org_fnf',
+      ownerOrgId: 'org_fnf'
+    });
+  });
+
+  it('updates auto-recharge settings for the effective pilot wallet', async () => {
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/pilot/payments/auto-recharge',
+      headers: {
+        authorization: 'Bearer pilot-token',
+        'content-type': 'application/json'
+      }
+    });
+    req.body = {
+      enabled: true,
+      amountMinor: 2500
+    };
+    const res = createMockRes();
+
+    await invoke(paymentsAutoRechargeHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      autoRecharge: {
+        enabled: true,
+        amountMinor: 2500,
+        currency: 'USD'
+      }
+    });
+    expect(runtimeModule.runtime.services.payments.updateAutoRechargeSettings).toHaveBeenCalledWith({
+      walletId: 'org_fnf',
+      ownerOrgId: 'org_fnf',
+      enabled: true,
+      amountMinor: 2500,
+      updatedByUserId: 'user_darryn'
+    });
+  });
+
   it('redirects to GitHub auth with a signed state token', async () => {
     const buildAuthorizationUrl = vi.spyOn(runtimeModule.runtime.services.pilotGithubAuth, 'buildAuthorizationUrl')
       .mockReturnValue('https://github.com/login/oauth/authorize?state=signed');
@@ -554,6 +869,23 @@ describe('pilot routes', () => {
       method: 'GET',
       path: '/v1/pilot/auth/github/start',
       query: { returnTo: 'https://evil.example.com/phish' }
+    });
+    const res = createMockRes();
+
+    await invoke(authStartHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(302);
+    expect(buildAuthorizationUrl).toHaveBeenCalledWith({ returnTo: undefined });
+  });
+
+  it('drops slash-backslash returnTo values before starting GitHub auth', async () => {
+    const buildAuthorizationUrl = vi.spyOn(runtimeModule.runtime.services.pilotGithubAuth, 'buildAuthorizationUrl')
+      .mockReturnValue('https://github.com/login/oauth/authorize?state=signed');
+
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/pilot/auth/github/start',
+      query: { returnTo: '/\\evil.example.com' }
     });
     const res = createMockRes();
 
@@ -595,6 +927,32 @@ describe('pilot routes', () => {
     vi.spyOn(runtimeModule.runtime.services.pilotGithubAuth, 'finishOauthCallback').mockResolvedValue({
       sessionToken: 'signed-session-token',
       returnTo: 'https://evil.example.com/phish',
+      session: {
+        sessionKind: 'darryn_self',
+        actorUserId: 'user_darryn',
+        effectiveOrgId: 'org_fnf',
+        githubLogin: 'darryn',
+        userEmail: 'darryn@example.com'
+      }
+    } as any);
+
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/pilot/auth/github/callback',
+      query: { code: 'oauth-code', state: 'oauth-state' }
+    });
+    const res = createMockRes();
+
+    await invoke(authCallbackHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe('/pilot');
+  });
+
+  it('falls back to /pilot when the callback returnTo uses slash-backslash host bypass', async () => {
+    vi.spyOn(runtimeModule.runtime.services.pilotGithubAuth, 'finishOauthCallback').mockResolvedValue({
+      sessionToken: 'signed-session-token',
+      returnTo: '/\\evil.example.com',
       session: {
         sessionKind: 'darryn_self',
         actorUserId: 'user_darryn',

@@ -63,65 +63,25 @@ export class WalletLedgerRepository {
   ) {}
 
   async appendEntry(input: WalletLedgerEntryInput): Promise<WalletLedgerRow> {
-    if (MANUAL_WALLET_EFFECT_TYPES.has(input.effectType) && (!hasManualActorMetadata(input) || !input.reason)) {
-      throw new Error('manual wallet entries require actor metadata and reason');
-    }
+    const { sql, params } = buildWalletLedgerInsert(input, this.createId);
+    return this.appendEntryWithDb(input, this.db, sql, params);
+  }
 
-    if (PAYMENT_WALLET_EFFECT_TYPES.has(input.effectType) && !input.processorEffectId) {
-      throw new Error('payment wallet entries require processorEffectId');
-    }
-
-    if (
-      !MANUAL_WALLET_EFFECT_TYPES.has(input.effectType)
-      && !PAYMENT_WALLET_EFFECT_TYPES.has(input.effectType)
-      && !input.meteringEventId
-    ) {
-      throw new Error('metering-derived wallet entries require meteringEventId');
-    }
-
-    const metadata = manualWalletMetadata(input);
-    const sql = `
-      insert into ${TABLES.walletLedger} (
-        id,
-        wallet_id,
-        owner_org_id,
-        buyer_key_id,
-        metering_event_id,
-        effect_type,
-        amount_minor,
-        currency,
-        actor_user_id,
-        reason,
-        processor_effect_id,
-        metadata
-      ) values (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12
-      )
-      on conflict do nothing
-      returning *
-    `;
-
-    const params: SqlValue[] = [
-      input.entryId ?? this.createId(),
-      input.walletId,
-      input.ownerOrgId,
-      input.buyerKeyId ?? null,
-      input.meteringEventId ?? null,
-      input.effectType,
-      input.amountMinor,
-      input.currency ?? 'USD',
-      input.actorUserId ?? null,
-      input.reason ?? null,
-      input.processorEffectId ?? null,
-      metadata ? JSON.stringify(metadata) : null
-    ];
-
-    const result = await this.db.query<WalletLedgerRow>(sql, params);
+  async appendEntryWithDb(
+    input: WalletLedgerEntryInput,
+    db: Pick<TransactionContext, 'query'>,
+    sql?: string,
+    params?: SqlValue[]
+  ): Promise<WalletLedgerRow> {
+    const builtInsert = sql && params
+      ? { sql, params }
+      : buildWalletLedgerInsert(input, this.createId);
+    const result = await db.query<WalletLedgerRow>(builtInsert.sql, builtInsert.params);
     if (result.rowCount === 1) {
       return result.rows[0];
     }
 
-    const existing = await this.findExistingIdempotentEntry(input);
+    const existing = await this.findExistingIdempotentEntry(input, db);
     if (existing) {
       assertWalletLedgerReplayMatches(input, existing);
       return existing;
@@ -211,7 +171,10 @@ export class WalletLedgerRepository {
     return result.rows;
   }
 
-  private async findExistingIdempotentEntry(input: WalletLedgerEntryInput): Promise<WalletLedgerRow | null> {
+  private async findExistingIdempotentEntry(
+    input: WalletLedgerEntryInput,
+    db: Pick<TransactionContext, 'query'> = this.db
+  ): Promise<WalletLedgerRow | null> {
     if (input.entryId) {
       const sql = `
         select *
@@ -219,7 +182,7 @@ export class WalletLedgerRepository {
         where id = $1
         limit 1
       `;
-      const result = await this.db.query<WalletLedgerRow>(sql, [input.entryId]);
+      const result = await db.query<WalletLedgerRow>(sql, [input.entryId]);
       return result.rowCount === 1 ? result.rows[0] : null;
     }
 
@@ -231,7 +194,7 @@ export class WalletLedgerRepository {
           and effect_type = $2
         limit 1
       `;
-      const result = await this.db.query<WalletLedgerRow>(sql, [input.meteringEventId, input.effectType]);
+      const result = await db.query<WalletLedgerRow>(sql, [input.meteringEventId, input.effectType]);
       return result.rowCount === 1 ? result.rows[0] : null;
     }
 
@@ -243,7 +206,7 @@ export class WalletLedgerRepository {
           and effect_type = $2
         limit 1
       `;
-      const result = await this.db.query<WalletLedgerRow>(sql, [input.processorEffectId, input.effectType]);
+      const result = await db.query<WalletLedgerRow>(sql, [input.processorEffectId, input.effectType]);
       return result.rowCount === 1 ? result.rows[0] : null;
     }
 
@@ -280,5 +243,67 @@ function manualWalletMetadata(input: WalletLedgerEntryInput): Record<string, unk
   return {
     ...(input.metadata ?? {}),
     actorApiKeyId: input.actorApiKeyId
+  };
+}
+
+function buildWalletLedgerInsert(
+  input: WalletLedgerEntryInput,
+  createId: IdFactory
+): {
+  sql: string;
+  params: SqlValue[];
+} {
+  if (MANUAL_WALLET_EFFECT_TYPES.has(input.effectType) && (!hasManualActorMetadata(input) || !input.reason)) {
+    throw new Error('manual wallet entries require actor metadata and reason');
+  }
+
+  if (PAYMENT_WALLET_EFFECT_TYPES.has(input.effectType) && !input.processorEffectId) {
+    throw new Error('payment wallet entries require processorEffectId');
+  }
+
+  if (
+    !MANUAL_WALLET_EFFECT_TYPES.has(input.effectType)
+    && !PAYMENT_WALLET_EFFECT_TYPES.has(input.effectType)
+    && !input.meteringEventId
+  ) {
+    throw new Error('metering-derived wallet entries require meteringEventId');
+  }
+
+  const metadata = manualWalletMetadata(input);
+  return {
+    sql: `
+      insert into ${TABLES.walletLedger} (
+        id,
+        wallet_id,
+        owner_org_id,
+        buyer_key_id,
+        metering_event_id,
+        effect_type,
+        amount_minor,
+        currency,
+        actor_user_id,
+        reason,
+        processor_effect_id,
+        metadata
+      ) values (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12
+      )
+      on conflict do nothing
+      returning *
+    `,
+    params: [
+      input.entryId ?? createId(),
+      input.walletId,
+      input.ownerOrgId,
+      input.buyerKeyId ?? null,
+      input.meteringEventId ?? null,
+      input.effectType,
+      input.amountMinor,
+      input.currency ?? 'USD',
+      input.actorUserId ?? null,
+      input.reason ?? null,
+      input.processorEffectId ?? null,
+      metadata ? JSON.stringify(metadata) : null
+    ]
   };
 }

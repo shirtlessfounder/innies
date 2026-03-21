@@ -2,6 +2,7 @@ import {
   ConnectedAccountsSection,
   DashboardPage,
   EarningsSection,
+  PaymentFundingSection,
   PilotWithdrawalsSection,
   RequestHistorySection,
   WalletSection,
@@ -48,9 +49,10 @@ export default async function PilotPage() {
         { label: 'Withdrawable', value: formatUsdMinor(dashboard.earningsSummary.withdrawableMinor) },
         { label: 'Accounts', value: formatCount(dashboard.accounts.length) },
       ]}
-      sections={(
+        sections={(
         <>
           <WalletSection ledger={dashboard.walletLedger} wallet={dashboard.wallet} />
+          <PaymentFundingSection funding={dashboard.funding} returnTo="/pilot" />
           <RequestHistorySection orgId={dashboard.session.effectiveOrgId} requests={dashboard.requests} />
           <ConnectedAccountsSection accounts={dashboard.accounts} editable returnTo="/pilot" />
           <EarningsSection history={dashboard.earningsHistory} summary={dashboard.earningsSummary} />
