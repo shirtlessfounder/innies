@@ -3,7 +3,13 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { runtime } from '../services/runtime.js';
+import { buildConnectedAccountInventory } from '../services/pilot/pilotConnectedAccountInventory.js';
 import { AppError } from '../utils/errors.js';
+import {
+  decodeRequestHistoryCursor,
+  encodeRequestHistoryCursor,
+  requestHistoryQuerySchema
+} from '../utils/requestHistoryCursor.js';
 
 const router = Router();
 
@@ -110,6 +116,53 @@ router.get('/v1/pilot/wallet', async (req, res, next) => {
     res.status(200).json({
       ok: true,
       wallet
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/pilot/connected-accounts', async (req, res, next) => {
+  try {
+    const session = readPilotSession(req);
+    const credentials = await runtime.repos.tokenCredentials.listByOrg(session.effectiveOrgId);
+    const snapshots = await runtime.repos.tokenCredentialProviderUsage.listByTokenCredentialIds(
+      credentials.map((credential) => credential.id)
+    );
+
+    res.status(200).json({
+      ok: true,
+      accounts: buildConnectedAccountInventory({
+        credentials,
+        snapshots
+      })
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/pilot/requests', async (req, res, next) => {
+  try {
+    const session = readPilotSession(req);
+    const query = requestHistoryQuerySchema.parse(req.query ?? {});
+    const cursor = decodeRequestHistoryCursor(query.cursor);
+    const rows = await runtime.repos.routingAttribution.listOrgRequestHistory({
+      orgId: session.effectiveOrgId,
+      limit: query.limit,
+      cursor,
+      historyScope: 'post_cutover'
+    });
+
+    const last = rows[rows.length - 1];
+    res.status(200).json({
+      orgId: session.effectiveOrgId,
+      requests: rows,
+      nextCursor: rows.length === query.limit && last ? encodeRequestHistoryCursor({
+        createdAt: last.created_at,
+        requestId: last.request_id,
+        attemptNo: last.attempt_no
+      }) : null
     });
   } catch (error) {
     next(error);

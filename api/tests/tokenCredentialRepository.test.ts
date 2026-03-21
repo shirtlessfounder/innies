@@ -161,6 +161,62 @@ describe('tokenCredentialRepository', () => {
     ]);
   });
 
+  it('lists non-revoked credentials for one org for dashboard inventory reads', async () => {
+    process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 31).toString('base64');
+    const db = new SequenceSqlClient([{
+      rows: [{
+        id: 'cred_dashboard_1',
+        org_id: '00000000-0000-0000-0000-000000000099',
+        provider: 'openai',
+        auth_scheme: 'bearer',
+        encrypted_access_token: encryptSecret('dashboard-access'),
+        encrypted_refresh_token: encryptSecret('dashboard-refresh'),
+        expires_at: '2026-03-30T00:00:00Z',
+        status: 'expired',
+        rotation_version: 7,
+        created_at: '2026-03-01T00:00:00Z',
+        updated_at: '2026-03-20T12:00:00Z',
+        revoked_at: null,
+        monthly_contribution_limit_units: null,
+        monthly_contribution_used_units: 0,
+        monthly_window_start_at: '2026-03-01T00:00:00Z',
+        five_hour_reserve_percent: 12,
+        seven_day_reserve_percent: 34,
+        debug_label: 'darryn-codex',
+        consecutive_failure_count: 1,
+        consecutive_rate_limit_count: 2,
+        last_failed_status: 401,
+        last_failed_at: '2026-03-20T11:30:00Z',
+        last_rate_limited_at: null,
+        maxed_at: null,
+        rate_limited_until: null,
+        next_probe_at: '2026-03-20T13:00:00Z',
+        last_probe_at: '2026-03-20T12:00:00Z'
+      }],
+      rowCount: 1
+    }]);
+    const repo = new TokenCredentialRepository(db);
+
+    const rows = await (repo as any).listByOrg('00000000-0000-0000-0000-000000000099');
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(expect.objectContaining({
+      id: 'cred_dashboard_1',
+      orgId: '00000000-0000-0000-0000-000000000099',
+      provider: 'openai',
+      accessToken: 'dashboard-access',
+      refreshToken: 'dashboard-refresh',
+      status: 'expired',
+      fiveHourReservePercent: 12,
+      sevenDayReservePercent: 34,
+      debugLabel: 'darryn-codex'
+    }));
+    expect(db.queries[0].sql).toContain('where org_id = $1');
+    expect(db.queries[0].sql).not.toContain("status = 'active'");
+    expect(db.queries[0].sql).toContain("status <> 'revoked'");
+    expect(db.queries[0].params).toEqual(['00000000-0000-0000-0000-000000000099']);
+  });
+
   it('falls back cleanly when contribution-cap columns are missing from routing reads', async () => {
     process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 10).toString('base64');
     const db = new SequenceSqlClient([
