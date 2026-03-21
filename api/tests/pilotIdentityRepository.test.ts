@@ -99,4 +99,35 @@ describe('PilotIdentityRepository', () => {
     expect(db.queries[0].sql).toContain('where id = any($1::uuid[])');
     expect(db.queries[0].params?.[1]).toBe('org_fnf');
   });
+
+  it('lists pilot identity discovery rows by org slug for admin impersonation', async () => {
+    const db = new MockSqlClient({
+      rows: [{
+        org_id: 'org_fnf',
+        org_slug: 'fnf',
+        org_name: 'Friends & Family',
+        user_id: 'user_darryn',
+        user_email: 'darryn@example.com',
+        display_name: 'Darryn'
+      }],
+      rowCount: 1
+    });
+    const repo = new PilotIdentityRepository(db);
+
+    const rows = await (repo as any).listOrgUserDirectoryBySlug('fnf');
+
+    expect(rows).toEqual([{
+      orgId: 'org_fnf',
+      orgSlug: 'fnf',
+      orgName: 'Friends & Family',
+      userId: 'user_darryn',
+      userEmail: 'darryn@example.com',
+      displayName: 'Darryn'
+    }]);
+    expect(db.queries[0].sql).toContain('from in_orgs org');
+    expect(db.queries[0].sql).toContain('join in_memberships membership');
+    expect(db.queries[0].sql).toContain('join in_users "user"');
+    expect(db.queries[0].sql).toContain('where org.slug = $1');
+    expect(db.queries[0].params).toEqual(['fnf']);
+  });
 });

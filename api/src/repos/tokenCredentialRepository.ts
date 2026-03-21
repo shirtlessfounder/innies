@@ -288,6 +288,26 @@ function contributionCapLifecycleMetadata(input: {
 export class TokenCredentialRepository {
   constructor(private readonly db: SqlClient) {}
 
+  async listByOrg(orgId: string): Promise<TokenCredential[]> {
+    const sql = (input: {
+      includeContributionCapColumns: boolean;
+      includeFreezeJoin: boolean;
+    }) => `
+      select
+        ${tokenCredentialSelectColumns(input.includeContributionCapColumns)}
+      from ${TABLES.tokenCredentials}
+      where org_id = $1
+        and status <> 'revoked'
+      order by provider asc, updated_at desc, rotation_version desc
+    `;
+
+    const result = await queryTokenCredentialRowsWithSchemaFallback(this.db, sql, [orgId], {
+      includeContributionCapColumns: true,
+      includeFreezeJoin: false
+    });
+    return result.rows.map(mapRow);
+  }
+
   async create(input: CreateTokenCredentialInput): Promise<{ id: string; rotationVersion: number }> {
     return this.db.transaction(async (tx) => {
       const latestSql = `
