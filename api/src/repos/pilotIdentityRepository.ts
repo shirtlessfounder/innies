@@ -31,6 +31,24 @@ export type MembershipRow = {
   created_at: string;
 };
 
+type OrgUserDirectoryRow = {
+  org_id: string;
+  org_slug: string;
+  org_name: string;
+  user_id: string;
+  user_email: string;
+  display_name: string | null;
+};
+
+export type OrgUserDirectoryEntry = {
+  orgId: string;
+  orgSlug: string;
+  orgName: string;
+  userId: string;
+  userEmail: string;
+  displayName: string | null;
+};
+
 export class PilotIdentityRepository {
   constructor(
     private readonly db: SqlClient,
@@ -142,6 +160,34 @@ export class PilotIdentityRepository {
       input.userId,
       input.role
     ]);
+  }
+
+  async listOrgUserDirectoryBySlug(slug: string): Promise<OrgUserDirectoryEntry[]> {
+    const sql = `
+      select
+        org.id as org_id,
+        org.slug as org_slug,
+        org.name as org_name,
+        "user".id as user_id,
+        "user".email as user_email,
+        "user".display_name
+      from ${TABLES.orgs} org
+      join in_memberships membership
+        on membership.org_id = org.id
+      join in_users "user"
+        on "user".id = membership.user_id
+      where org.slug = $1
+      order by lower("user".email) asc, membership.created_at asc
+    `;
+    const result = await this.db.query<OrgUserDirectoryRow>(sql, [slug]);
+    return result.rows.map((row) => ({
+      orgId: row.org_id,
+      orgSlug: row.org_slug,
+      orgName: row.org_name,
+      userId: row.user_id,
+      userEmail: row.user_email,
+      displayName: row.display_name
+    }));
   }
 
   async reassignBuyerKeysToOrg(input: {

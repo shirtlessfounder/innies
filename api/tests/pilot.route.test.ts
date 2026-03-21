@@ -128,6 +128,8 @@ function getRouteHandlers(router: any, routePath: string, method: 'get' | 'post'
 describe('pilot routes', () => {
   let runtimeModule: RuntimeModule;
   let sessionHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let requestHistoryHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
+  let connectedAccountsHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let walletHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let walletLedgerHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
   let authStartHandlers: Array<(req: any, res: any, next: (error?: unknown) => void) => unknown>;
@@ -144,6 +146,8 @@ describe('pilot routes', () => {
     runtimeModule = await import('../src/services/runtime.js');
     const mod = await import('../src/routes/pilot.js') as PilotRouteModule;
     sessionHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/session', 'get');
+    requestHistoryHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/requests', 'get');
+    connectedAccountsHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/connected-accounts', 'get');
     walletHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/wallet', 'get');
     walletLedgerHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/wallet/ledger', 'get');
     authStartHandlers = getRouteHandlers(mod.default as any, '/v1/pilot/auth/github/start', 'get');
@@ -156,6 +160,7 @@ describe('pilot routes', () => {
   });
 
   beforeEach(() => {
+    const now = Date.now();
     vi.restoreAllMocks();
     vi.spyOn(runtimeModule.runtime.services.pilotSessions, 'readTokenFromRequest').mockReturnValue('pilot-token');
     vi.spyOn(runtimeModule.runtime.services.pilotSessions, 'readSession').mockReturnValue({
@@ -186,6 +191,78 @@ describe('pilot routes', () => {
       status: 'requested',
       amount_minor: 250
     } as any);
+    vi.spyOn(runtimeModule.runtime.repos.routingAttribution, 'listOrgRequestHistory').mockResolvedValue([{
+      request_id: 'req_1',
+      attempt_no: 1,
+      session_id: 'sess_1',
+      admission_org_id: 'org_fnf',
+      admission_cutover_id: 'cut_1',
+      admission_routing_mode: 'self-free',
+      consumer_org_id: 'org_fnf',
+      buyer_key_id: 'buyer_1',
+      serving_org_id: 'org_fnf',
+      provider_account_id: 'acct_1',
+      token_credential_id: 'cred_1',
+      capacity_owner_user_id: 'user_darryn',
+      provider: 'anthropic',
+      model: 'claude-opus-4-6',
+      rate_card_version_id: 'rate_1',
+      input_tokens: 11,
+      output_tokens: 22,
+      usage_units: 33,
+      buyer_debit_minor: 0,
+      contributor_earnings_minor: 0,
+      currency: 'USD',
+      metadata: null,
+      created_at: '2026-03-20T10:00:00.000Z',
+      prompt_preview: 'hello',
+      response_preview: 'world',
+      route_decision: { reason: 'cli_provider_pinned' },
+      projector_states: []
+    }] as any);
+    (runtimeModule.runtime.repos.tokenCredentials as any).listByOrg = vi.fn().mockResolvedValue([{
+      id: 'cred_1',
+      orgId: 'org_fnf',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'sk-ant-oat-pilot',
+      refreshToken: 'refresh_1',
+      expiresAt: new Date('2026-03-21T00:00:00.000Z'),
+      status: 'active',
+      rotationVersion: 2,
+      createdAt: new Date('2026-03-19T00:00:00.000Z'),
+      updatedAt: new Date('2026-03-20T00:00:00.000Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00.000Z'),
+      fiveHourReservePercent: 15,
+      sevenDayReservePercent: 25,
+      debugLabel: 'darryn-claude',
+      consecutiveFailureCount: 0,
+      consecutiveRateLimitCount: 0,
+      lastFailedStatus: null,
+      lastFailedAt: null,
+      lastRateLimitedAt: null,
+      maxedAt: null,
+      rateLimitedUntil: null,
+      nextProbeAt: null,
+      lastProbeAt: null
+    }]);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentialProviderUsage, 'listByTokenCredentialIds').mockResolvedValue([{
+      tokenCredentialId: 'cred_1',
+      orgId: 'org_fnf',
+      provider: 'anthropic',
+      usageSource: 'anthropic_oauth_usage',
+      fiveHourUtilizationRatio: 0.41,
+      fiveHourResetsAt: new Date(now + 2 * 60 * 60 * 1000),
+      sevenDayUtilizationRatio: 0.52,
+      sevenDayResetsAt: new Date(now + 7 * 24 * 60 * 60 * 1000),
+      rawPayload: {},
+      fetchedAt: new Date(now - 30 * 1000),
+      createdAt: new Date(now - 30 * 1000),
+      updatedAt: new Date(now - 30 * 1000)
+    }]);
   });
 
   afterEach(() => {
@@ -272,6 +349,135 @@ describe('pilot routes', () => {
         walletId: 'org_fnf',
         balanceMinor: 1250
       })
+    }));
+  });
+
+  it('returns connected-account inventory for the effective pilot org', async () => {
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/pilot/connected-accounts',
+      headers: {
+        authorization: 'Bearer pilot-token'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(connectedAccountsHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      accounts: [expect.objectContaining({
+        credentialId: 'cred_1',
+        orgId: 'org_fnf',
+        provider: 'anthropic',
+        debugLabel: 'darryn-claude',
+        status: 'active',
+        rawStatus: 'active',
+        fiveHourReservePercent: 15,
+        sevenDayReservePercent: 25,
+        fiveHourUtilizationRatio: 0.41,
+        sevenDayUtilizationRatio: 0.52,
+        fiveHourContributionCapExhausted: false,
+        sevenDayContributionCapExhausted: false
+      })]
+    });
+    expect((runtimeModule.runtime.repos.tokenCredentials as any).listByOrg).toHaveBeenCalledWith('org_fnf');
+    expect(runtimeModule.runtime.repos.tokenCredentialProviderUsage.listByTokenCredentialIds).toHaveBeenCalledWith(['cred_1']);
+  });
+
+  it('returns post-cutover request history for the effective pilot org', async () => {
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/pilot/requests',
+      headers: {
+        authorization: 'Bearer pilot-token'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(requestHistoryHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({
+      orgId: 'org_fnf',
+      requests: [expect.objectContaining({ request_id: 'req_1' })],
+      nextCursor: null
+    }));
+    expect(runtimeModule.runtime.repos.routingAttribution.listOrgRequestHistory).toHaveBeenCalledWith({
+      orgId: 'org_fnf',
+      limit: 20,
+      cursor: null,
+      historyScope: 'post_cutover'
+    });
+  });
+
+  it('accepts and emits full request-history cursors for pilot-session reads', async () => {
+    const decodedCursor = {
+      createdAt: '2026-03-19T09:00:00.000Z',
+      requestId: 'req_8',
+      attemptNo: 2
+    };
+    const encodedCursor = Buffer.from(JSON.stringify(decodedCursor), 'utf8').toString('base64url');
+    vi.spyOn(runtimeModule.runtime.repos.routingAttribution, 'listOrgRequestHistory').mockResolvedValue([{
+      request_id: 'req_9',
+      attempt_no: 3,
+      session_id: 'sess_2',
+      admission_org_id: 'org_fnf',
+      admission_cutover_id: 'cut_2',
+      admission_routing_mode: 'paid-team-capacity',
+      consumer_org_id: 'org_fnf',
+      buyer_key_id: 'buyer_1',
+      serving_org_id: 'org_capacity',
+      provider_account_id: 'acct_2',
+      token_credential_id: 'cred_2',
+      capacity_owner_user_id: 'user_capacity',
+      provider: 'openai',
+      model: 'gpt-5-codex',
+      rate_card_version_id: 'rate_2',
+      input_tokens: 101,
+      output_tokens: 202,
+      usage_units: 303,
+      buyer_debit_minor: 404,
+      contributor_earnings_minor: 55,
+      currency: 'USD',
+      metadata: null,
+      created_at: '2026-03-20T11:00:00.000Z',
+      prompt_preview: 'build',
+      response_preview: 'done',
+      route_decision: { reason: 'team_capacity_available' },
+      projector_states: []
+    }] as any);
+
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/pilot/requests',
+      headers: {
+        authorization: 'Bearer pilot-token'
+      },
+      query: {
+        limit: '1',
+        cursor: encodedCursor
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(requestHistoryHandlers[0], req, res);
+
+    expect(runtimeModule.runtime.repos.routingAttribution.listOrgRequestHistory).toHaveBeenCalledWith({
+      orgId: 'org_fnf',
+      limit: 1,
+      cursor: decodedCursor,
+      historyScope: 'post_cutover'
+    });
+    expect(res.body).toEqual(expect.objectContaining({
+      orgId: 'org_fnf',
+      requests: [expect.objectContaining({ request_id: 'req_9' })],
+      nextCursor: Buffer.from(JSON.stringify({
+        createdAt: '2026-03-20T11:00:00.000Z',
+        requestId: 'req_9',
+        attemptNo: 3
+      }), 'utf8').toString('base64url')
     }));
   });
 

@@ -20,6 +20,7 @@ import {
   refreshAnthropicOauthUsageWithCredentialRefresh,
   refreshTokenCredentialProviderUsageWithCredentialRefresh
 } from '../services/tokenCredentialOauthRefresh.js';
+import { buildConnectedAccountInventory } from '../services/pilot/pilotConnectedAccountInventory.js';
 import {
   probeAndUpdateTokenCredential,
   readTokenCredentialProbeIntervalMinutes,
@@ -255,6 +256,14 @@ const adminWithdrawalListQuerySchema = z.object({
   ownerOrgId: z.string().min(1)
 });
 
+const adminPilotConnectedAccountsQuerySchema = z.object({
+  ownerOrgId: z.string().min(1)
+});
+
+const adminPilotIdentityDiscoveryQuerySchema = z.object({
+  orgSlug: z.string().trim().min(1).optional()
+});
+
 const adminWithdrawalActionSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('approve'),
@@ -392,6 +401,47 @@ router.post('/v1/admin/pilot/session', requireApiKey(runtime.repos.apiKeys, ['ad
       ok: true,
       sessionToken,
       session
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/admin/pilot/identities', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const query = adminPilotIdentityDiscoveryQuerySchema.parse(req.query ?? {});
+    const orgSlug = query.orgSlug ?? process.env.PILOT_TARGET_ORG_SLUG ?? 'fnf';
+    const identities = await runtime.repos.pilotIdentity.listOrgUserDirectoryBySlug(orgSlug);
+    res.status(200).json({
+      ok: true,
+      identities: identities.map((identity) => ({
+        targetUserId: identity.userId,
+        targetOrgId: identity.orgId,
+        targetOrgSlug: identity.orgSlug,
+        targetOrgName: identity.orgName,
+        githubLogin: null,
+        userEmail: identity.userEmail,
+        displayName: identity.displayName
+      }))
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/v1/admin/pilot/connected-accounts', requireApiKey(runtime.repos.apiKeys, ['admin']), async (req, res, next) => {
+  try {
+    const query = adminPilotConnectedAccountsQuerySchema.parse(req.query ?? {});
+    const credentials = await runtime.repos.tokenCredentials.listByOrg(query.ownerOrgId);
+    const snapshots = await runtime.repos.tokenCredentialProviderUsage.listByTokenCredentialIds(
+      credentials.map((credential) => credential.id)
+    );
+    res.status(200).json({
+      ok: true,
+      accounts: buildConnectedAccountInventory({
+        credentials,
+        snapshots
+      })
     });
   } catch (error) {
     next(error);
