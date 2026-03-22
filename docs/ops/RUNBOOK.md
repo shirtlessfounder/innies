@@ -231,6 +231,8 @@ You should see a `paused` event for the token you just paused. If `probe_failed`
 
 Goal: move Darryn between `innies` and `fnf` without admitting new traffic during the ownership swap, and recover cleanly if the cutover fails before commit.
 
+For a sacrificial pre-launch rehearsal with a non-Darryn test user, use `docs/ops/DARRYN_PILOT_REHEARSAL_CHECKLIST.md` first. Do not use Darryn's identities, buyer keys, token credentials, payment methods, or withdrawal destinations for that dry run.
+
 ### Preconditions
 
 - `PILOT_GITHUB_ALLOWLIST_LOGINS` and / or `PILOT_GITHUB_ALLOWLIST_EMAILS` include Darryn.
@@ -240,7 +242,7 @@ Goal: move Darryn between `innies` and `fnf` without admitting new traffic durin
 ### Step 1 — Start the cutover
 
 ```bash
-curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+curl -s -X POST -H "x-api-key: $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   "$BASE_URL/v1/admin/pilot/cutover" \
   -d '{
@@ -286,7 +288,7 @@ Cutover-access records the failure message on the active freeze rows; it does no
 ### Step 4 — Roll back to `innies`
 
 ```bash
-curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+curl -s -X POST -H "x-api-key: $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   "$BASE_URL/v1/admin/pilot/rollback" \
   -d '{
@@ -307,3 +309,192 @@ What happens:
 - F&F ownership rows are updated to match the reverted state
 - the rollback marker is written
 - the active freezes are released only after the rollback commits
+
+---
+
+## 5. Wallet Projector Backlog Recovery
+
+Goal: detect wallet ledger projection rows that did not finalize and safely requeue one after the underlying issue is fixed.
+
+### Step 1 — List wallet projector backlog
+
+```bash
+curl -s -H "x-api-key: $ADMIN_TOKEN" \
+  "$BASE_URL/v1/admin/metering/projectors/wallet?limit=20" | jq '.rows[]
+    | {meteringEventId: .metering_event_id, state, retryCount: .retry_count, lastError: .last_error_message, updatedAt: .updated_at}'
+```
+
+Expected result:
+- rows in `pending_projection` or `needs_operator_correction`
+- `lastError` populated for rows that already failed projection
+
+### Step 2 — Retry one wallet projection
+
+```bash
+IDEMPOTENCY_KEY="$(uuidgen)"
+curl -s -X POST -H "x-api-key: $ADMIN_TOKEN" \
+  -H "Idempotency-Key: $IDEMPOTENCY_KEY" \
+  "$BASE_URL/v1/admin/metering/projectors/wallet/METERING_EVENT_ID/retry"
+```
+
+Expected result:
+- `200`
+- `ok: true`
+- the returned row is back in a retryable state
+
+If the same event returns to `needs_operator_correction`, inspect the canonical metering row and wallet dependencies before retrying again.
+
+---
+
+## 6. Earnings Projector Backlog Recovery
+
+Goal: find financially served requests whose contributor accrual projection is stuck and replay them after the root cause is fixed.
+
+### Step 1 — List earnings projection backlog
+
+```bash
+curl -s -H "x-api-key: $ADMIN_TOKEN" \
+  "$BASE_URL/v1/admin/pilot/earnings/projections?limit=20" | jq '.projections[]
+    | {meteringEventId, requestId, contributorUserId, routingMode, earningsMinor: .contributorEarningsMinor, state, retryCount, nextRetryAt, updatedAt}'
+```
+
+Expected result:
+- backlog rows identify the metering event and request that still need projection
+
+### Step 2 — Retry one earnings projection
+
+```bash
+curl -s -X POST -H "x-api-key: $ADMIN_TOKEN" \
+  "$BASE_URL/v1/admin/pilot/earnings/projections/METERING_EVENT_ID/retry"
+```
+
+Expected result:
+- `200`
+- `ok: true`
+- the event is re-projected immediately
+
+If replay keeps failing, fetch the matching request explanation and verify the request truly used `team-overflow-on-contributor-capacity` with a non-null capacity owner before retrying again.
+
+---
+
+## 7. Stripe Payment And Auto-Recharge Recovery
+
+Goal: distinguish processor failure, webhook normalization failure, and wallet-recording failure for manual top-ups and auto-recharge.
+
+### Step 1 — Inspect recent payment attempts
+
+```bash
+psql "$DATABASE_URL" -c "
+select id, wallet_id, kind, trigger, status, amount_minor, processor_payment_intent_id, processor_effect_id, last_error_code, last_error_message, created_at
+from in_payment_attempts
+where wallet_id = '$WALLET_ID'
+order by created_at desc
+limit 20;
+"
+```
+
+Interpretation:
+- `status = failed` means Stripe rejected the charge or setup path; the error columns hold the normalized reason
+- `status in ('pending', 'processing')` means wait for or replay the webhook path
+- `status = succeeded` means look for the matching payment outcome and wallet recording state next
+
+### Step 2 — Inspect payment outcomes and webhook events
+
+```bash
+psql "$DATABASE_URL" -c "
+select processor_effect_id, processor_event_id, effect_type, amount_minor, wallet_recorded_at, created_at
+from in_payment_outcomes
+where wallet_id = '$WALLET_ID'
+order by created_at desc
+limit 20;
+"
+```
+
+```bash
+psql "$DATABASE_URL" -c "
+select processor_event_id, event_type, received_at, processed_at
+from in_payment_webhook_events
+order by received_at desc
+limit 20;
+"
+```
+
+Interpretation:
+- outcome row present with `wallet_recorded_at is null`: the webhook normalized successfully, but wallet recording failed before the route could mark the event processed
+- webhook row present with `processed_at is null`: the webhook can be replayed safely after the wallet-side issue is fixed because the processor effect is unique and wallet recording is idempotent
+- no outcome row after a succeeded attempt: investigate Stripe event delivery and webhook signature/config first
+
+### Step 3 — Replay the Stripe event after the underlying issue is fixed
+
+Re-send the original Stripe event from Stripe or Stripe CLI to:
+
+```text
+POST /v1/payments/webhooks/stripe
+```
+
+Expected result:
+- the webhook route normalizes the event again
+- wallet recording completes
+- `wallet_recorded_at` becomes non-null
+- the webhook row gets `processed_at`
+
+If auto-recharge remains failed after replay, paid admissions stay blocked until a later successful recharge or a manual top-up restores positive balance.
+
+---
+
+## 8. Withdrawal Review And Settlement Operations
+
+Goal: review pilot-user withdrawal requests, move them through manual payout states, and preserve truthful ledger state for settlement failures and adjustments.
+
+### Step 1 — List withdrawals for the pilot org
+
+```bash
+curl -s -H "x-api-key: $ADMIN_TOKEN" \
+  "$BASE_URL/v1/admin/pilot/withdrawals?ownerOrgId=ORG_FNF" | jq '.withdrawals[]
+    | {id, contributorUserId: .contributor_user_id, amountMinor: .amount_minor, status, requestedAt: .created_at, reviewedAt: .reviewed_at, settlementReference: .settlement_reference, settlementFailureReason: .settlement_failure_reason}'
+```
+
+### Step 2 — Approve or reject
+
+Approve:
+
+```bash
+curl -s -X POST -H "x-api-key: $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  "$BASE_URL/v1/admin/pilot/withdrawals/WITHDRAWAL_ID/actions" \
+  -d '{"action":"approve","reason":"manual review passed"}'
+```
+
+Reject:
+
+```bash
+curl -s -X POST -H "x-api-key: $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  "$BASE_URL/v1/admin/pilot/withdrawals/WITHDRAWAL_ID/actions" \
+  -d '{"action":"reject","reason":"destination details invalid"}'
+```
+
+### Step 3 — Mark settlement result
+
+Settled:
+
+```bash
+curl -s -X POST -H "x-api-key: $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  "$BASE_URL/v1/admin/pilot/withdrawals/WITHDRAWAL_ID/actions" \
+  -d '{"action":"mark_settled","settlementReference":"usdc-tx-or-bank-ref","adjustmentMinor":0}'
+```
+
+Settlement failed with optional adjustment:
+
+```bash
+curl -s -X POST -H "x-api-key: $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  "$BASE_URL/v1/admin/pilot/withdrawals/WITHDRAWAL_ID/actions" \
+  -d '{"action":"mark_settlement_failed","settlementFailureReason":"bank rejected account","adjustmentMinor":0}'
+```
+
+Expected result:
+- `mark_settled` posts a `payout_settlement` ledger effect
+- `mark_settlement_failed` releases the reserved amount back to `withdrawable`
+- re-approving a `settlement_failed` withdrawal reserves the funds again before another payout attempt
