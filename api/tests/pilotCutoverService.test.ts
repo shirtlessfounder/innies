@@ -163,6 +163,80 @@ describe('PilotCutoverService', () => {
     expect(freezeRepository.releaseFreeze).not.toHaveBeenCalled();
   });
 
+  it('fails cutover closed when a requested buyer key base row is not reassigned', async () => {
+    const {
+      service,
+      freezeRepository,
+      identityRepository,
+      fnfOwnershipRepository,
+      cutoverRepository,
+      reserveFloorMigration
+    } = createService();
+    identityRepository.reassignBuyerKeysToOrg.mockResolvedValue([]);
+
+    await expect(service.cutover({
+      sourceOrgId: 'org_innies',
+      targetOrgSlug: 'fnf',
+      targetOrgName: 'Friends & Family',
+      targetUserEmail: 'darryn@example.com',
+      targetUserDisplayName: 'Darryn',
+      buyerKeyIds: ['buyer_1'],
+      tokenCredentialIds: ['cred_1']
+    } as any)).rejects.toThrow(/buyer key/i);
+
+    expect(fnfOwnershipRepository.upsertBuyerKeyOwnership).not.toHaveBeenCalled();
+    expect(cutoverRepository.createCutoverRecord).not.toHaveBeenCalled();
+    expect(reserveFloorMigration.migrateReserveFloors).not.toHaveBeenCalled();
+    expect(freezeRepository.recordFailure).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails rollback closed when a requested token credential base row is not reassigned', async () => {
+    const {
+      service,
+      freezeRepository,
+      identityRepository,
+      fnfOwnershipRepository,
+      cutoverRepository
+    } = createService();
+    identityRepository.reassignTokenCredentialsToOrg.mockResolvedValue([]);
+
+    await expect(service.rollback({
+      sourceCutoverId: 'cut_1',
+      targetOrgId: 'org_innies',
+      buyerKeyIds: ['buyer_1'],
+      tokenCredentialIds: ['cred_1']
+    } as any)).rejects.toThrow(/token credential/i);
+
+    expect(fnfOwnershipRepository.upsertTokenCredentialOwnership).not.toHaveBeenCalled();
+    expect(cutoverRepository.createRollbackRecord).not.toHaveBeenCalled();
+    expect(freezeRepository.recordFailure).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts duplicate requested ids when the unique base rows were reassigned', async () => {
+    const {
+      service,
+      cutoverRepository,
+      fnfOwnershipRepository,
+      reserveFloorMigration
+    } = createService();
+
+    const result = await service.cutover({
+      sourceOrgId: 'org_innies',
+      targetOrgSlug: 'fnf',
+      targetOrgName: 'Friends & Family',
+      targetUserEmail: 'darryn@example.com',
+      targetUserDisplayName: 'Darryn',
+      buyerKeyIds: ['buyer_1', 'buyer_1'],
+      tokenCredentialIds: ['cred_1', 'cred_1']
+    } as any);
+
+    expect(fnfOwnershipRepository.upsertBuyerKeyOwnership).toHaveBeenCalledTimes(2);
+    expect(fnfOwnershipRepository.upsertTokenCredentialOwnership).toHaveBeenCalledTimes(2);
+    expect(cutoverRepository.createCutoverRecord).toHaveBeenCalledTimes(1);
+    expect(reserveFloorMigration.migrateReserveFloors).toHaveBeenCalledTimes(1);
+    expect(result.cutoverRecord.id).toBe('cut_1');
+  });
+
   it('cuts over buyer keys and token credentials, then releases freezes after reserve-floor migration succeeds', async () => {
     const {
       service,
