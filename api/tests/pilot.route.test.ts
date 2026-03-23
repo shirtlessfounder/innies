@@ -172,6 +172,9 @@ describe('pilot routes', () => {
 
   beforeEach(() => {
     const now = Date.now();
+    delete process.env.PILOT_UI_BASE_URL;
+    delete process.env.UI_BASE_URL;
+    delete process.env.PILOT_GITHUB_CALLBACK_URL;
     vi.restoreAllMocks();
     vi.spyOn(runtimeModule.runtime.services.pilotSessions, 'readTokenFromRequest').mockReturnValue('pilot-token');
     vi.spyOn(runtimeModule.runtime.services.pilotSessions, 'readSession').mockReturnValue({
@@ -896,6 +899,8 @@ describe('pilot routes', () => {
   });
 
   it('handles the GitHub callback by setting the pilot session cookie and redirecting', async () => {
+    process.env.PILOT_UI_BASE_URL = 'https://www.innies.computer';
+    process.env.PILOT_GITHUB_CALLBACK_URL = 'https://api.innies.computer/v1/pilot/auth/github/callback';
     vi.spyOn(runtimeModule.runtime.services.pilotGithubAuth, 'finishOauthCallback').mockResolvedValue({
       sessionToken: 'signed-session-token',
       returnTo: '/pilot',
@@ -918,12 +923,43 @@ describe('pilot routes', () => {
     await invoke(authCallbackHandlers[0], req, res);
 
     expect(res.statusCode).toBe(302);
-    expect(res.headers.location).toBe('/pilot');
+    expect(res.headers.location).toBe('https://www.innies.computer/pilot');
     expect(res.headers['set-cookie']).toContain('innies_pilot_session=signed-session-token');
+    expect(res.headers['set-cookie']).toContain('Domain=innies.computer');
     expect(res.headers['set-cookie']).toContain('HttpOnly');
   });
 
+  it('defaults the GitHub callback redirect to the canonical prod UI host when no pilot UI env is set', async () => {
+    process.env.PILOT_GITHUB_CALLBACK_URL = 'https://api.innies.computer/v1/pilot/auth/github/callback';
+    vi.spyOn(runtimeModule.runtime.services.pilotGithubAuth, 'finishOauthCallback').mockResolvedValue({
+      sessionToken: 'signed-session-token',
+      returnTo: '/pilot',
+      session: {
+        sessionKind: 'darryn_self',
+        actorUserId: 'user_darryn',
+        effectiveOrgId: 'org_fnf',
+        githubLogin: 'darryn',
+        userEmail: 'darryn@example.com'
+      }
+    } as any);
+
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/pilot/auth/github/callback',
+      query: { code: 'oauth-code', state: 'oauth-state' }
+    });
+    const res = createMockRes();
+
+    await invoke(authCallbackHandlers[0], req, res);
+
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe('https://www.innies.computer/pilot');
+    expect(res.headers['set-cookie']).toContain('Domain=innies.computer');
+  });
+
   it('falls back to /pilot when the callback returnTo is unsafe', async () => {
+    process.env.PILOT_UI_BASE_URL = 'https://www.innies.computer';
+    process.env.PILOT_GITHUB_CALLBACK_URL = 'https://api.innies.computer/v1/pilot/auth/github/callback';
     vi.spyOn(runtimeModule.runtime.services.pilotGithubAuth, 'finishOauthCallback').mockResolvedValue({
       sessionToken: 'signed-session-token',
       returnTo: 'https://evil.example.com/phish',
@@ -946,10 +982,12 @@ describe('pilot routes', () => {
     await invoke(authCallbackHandlers[0], req, res);
 
     expect(res.statusCode).toBe(302);
-    expect(res.headers.location).toBe('/pilot');
+    expect(res.headers.location).toBe('https://www.innies.computer/pilot');
   });
 
   it('falls back to /pilot when the callback returnTo uses slash-backslash host bypass', async () => {
+    process.env.PILOT_UI_BASE_URL = 'https://www.innies.computer';
+    process.env.PILOT_GITHUB_CALLBACK_URL = 'https://api.innies.computer/v1/pilot/auth/github/callback';
     vi.spyOn(runtimeModule.runtime.services.pilotGithubAuth, 'finishOauthCallback').mockResolvedValue({
       sessionToken: 'signed-session-token',
       returnTo: '/\\evil.example.com',
@@ -972,7 +1010,7 @@ describe('pilot routes', () => {
     await invoke(authCallbackHandlers[0], req, res);
 
     expect(res.statusCode).toBe(302);
-    expect(res.headers.location).toBe('/pilot');
+    expect(res.headers.location).toBe('https://www.innies.computer/pilot');
   });
 
   it('clears the pilot session cookie on logout', async () => {

@@ -9,6 +9,7 @@ import {
   readClaudeContributionCapProviderExhaustionHold,
   readClaudeContributionCapSnapshotState
 } from '../services/claudeContributionCapState.js';
+import { buildPilotSessionCookie } from '../services/pilot/pilotSessionCookie.js';
 import {
   type AnthropicOauthUsageRefreshOutcome,
   isAnthropicOauthTokenCredential,
@@ -396,7 +397,7 @@ router.post('/v1/admin/pilot/session', requireApiKey(runtime.repos.apiKeys, ['ad
       };
 
     const sessionToken = runtime.services.pilotSessions.issueSession(session);
-    res.setHeader('set-cookie', `innies_pilot_session=${sessionToken}; Path=/; HttpOnly; SameSite=Lax`);
+    res.setHeader('set-cookie', buildPilotSessionCookie(sessionToken));
     res.status(200).json({
       ok: true,
       sessionToken,
