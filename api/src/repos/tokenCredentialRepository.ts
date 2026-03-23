@@ -121,39 +121,40 @@ function isMissingPilotAdmissionFreezeTable(error: unknown): boolean {
 }
 
 function tokenCredentialSelectColumns(includeContributionCapColumns: boolean): string {
+  const qualified = (column: string) => `${TABLES.tokenCredentials}.${column}`;
   const contributionCapColumns = includeContributionCapColumns
-    ? `five_hour_reserve_percent,
-        seven_day_reserve_percent`
+    ? `${qualified('five_hour_reserve_percent')} as five_hour_reserve_percent,
+        ${qualified('seven_day_reserve_percent')} as seven_day_reserve_percent`
     : `0::integer as five_hour_reserve_percent,
         0::integer as seven_day_reserve_percent`;
 
   return `
-        id,
-        org_id,
-        provider,
-        auth_scheme,
-        encrypted_access_token,
-        encrypted_refresh_token,
-        expires_at,
-        status,
-        rotation_version,
-        created_at,
-        revoked_at,
-        updated_at,
-        monthly_contribution_limit_units,
-        monthly_contribution_used_units,
-        monthly_window_start_at,
+        ${qualified('id')} as id,
+        ${qualified('org_id')} as org_id,
+        ${qualified('provider')} as provider,
+        ${qualified('auth_scheme')} as auth_scheme,
+        ${qualified('encrypted_access_token')} as encrypted_access_token,
+        ${qualified('encrypted_refresh_token')} as encrypted_refresh_token,
+        ${qualified('expires_at')} as expires_at,
+        ${qualified('status')} as status,
+        ${qualified('rotation_version')} as rotation_version,
+        ${qualified('created_at')} as created_at,
+        ${qualified('revoked_at')} as revoked_at,
+        ${qualified('updated_at')} as updated_at,
+        ${qualified('monthly_contribution_limit_units')} as monthly_contribution_limit_units,
+        ${qualified('monthly_contribution_used_units')} as monthly_contribution_used_units,
+        ${qualified('monthly_window_start_at')} as monthly_window_start_at,
         ${contributionCapColumns},
-        debug_label,
-        consecutive_failure_count,
-        consecutive_rate_limit_count,
-        last_failed_status,
-        last_failed_at,
-        last_rate_limited_at,
-        maxed_at,
-        rate_limited_until,
-        next_probe_at,
-        last_probe_at
+        ${qualified('debug_label')} as debug_label,
+        ${qualified('consecutive_failure_count')} as consecutive_failure_count,
+        ${qualified('consecutive_rate_limit_count')} as consecutive_rate_limit_count,
+        ${qualified('last_failed_status')} as last_failed_status,
+        ${qualified('last_failed_at')} as last_failed_at,
+        ${qualified('last_rate_limited_at')} as last_rate_limited_at,
+        ${qualified('maxed_at')} as maxed_at,
+        ${qualified('rate_limited_until')} as rate_limited_until,
+        ${qualified('next_probe_at')} as next_probe_at,
+        ${qualified('last_probe_at')} as last_probe_at
   `;
 }
 
@@ -377,23 +378,28 @@ export class TokenCredentialRepository {
         on paf.resource_type = 'token_credential'
         and paf.resource_id = ${TABLES.tokenCredentials}.id
         and paf.released_at is null` : ''}
-      where org_id = $1
-        and provider = ANY($2::text[])
+      where ${TABLES.tokenCredentials}.org_id = $1
+        and ${TABLES.tokenCredentials}.provider = ANY($2::text[])
         ${input.includeFreezeJoin ? 'and paf.id is null' : ''}
-        and status = 'active'
-        and expires_at > now()
-        and (rate_limited_until is null or rate_limited_until <= now())
+        and ${TABLES.tokenCredentials}.status = 'active'
+        and ${TABLES.tokenCredentials}.expires_at > now()
         and (
-          monthly_contribution_limit_units is null
+          ${TABLES.tokenCredentials}.rate_limited_until is null
+          or ${TABLES.tokenCredentials}.rate_limited_until <= now()
+        )
+        and (
+          ${TABLES.tokenCredentials}.monthly_contribution_limit_units is null
           or (
             case
-              when monthly_window_start_at < ${currentUtcMonthStartExpr()}
+              when ${TABLES.tokenCredentials}.monthly_window_start_at < ${currentUtcMonthStartExpr()}
               then 0
-              else monthly_contribution_used_units
+              else ${TABLES.tokenCredentials}.monthly_contribution_used_units
             end
-          ) < monthly_contribution_limit_units
+          ) < ${TABLES.tokenCredentials}.monthly_contribution_limit_units
         )
-      order by rotation_version desc, updated_at desc
+      order by
+        ${TABLES.tokenCredentials}.rotation_version desc,
+        ${TABLES.tokenCredentials}.updated_at desc
     `;
 
     const result = await queryTokenCredentialRowsWithSchemaFallback(this.db, sql, [orgId, routingProviders], {

@@ -90,8 +90,9 @@ describe('tokenCredentialRepository', () => {
     const [found] = await repo.listActiveForRouting('00000000-0000-0000-0000-000000000001', 'anthropic');
     expect(found?.accessToken).toBe('access-live');
     expect(found?.refreshToken).toBe('refresh-live');
-    expect(db.queries[0].sql).toContain("and expires_at > now()");
-    expect(db.queries[0].sql).toContain('rate_limited_until is null or rate_limited_until <= now()');
+    expect(db.queries[0].sql).toContain('in_token_credentials.expires_at > now()');
+    expect(db.queries[0].sql).toContain('in_token_credentials.rate_limited_until is null');
+    expect(db.queries[0].sql).toContain('in_token_credentials.rate_limited_until <= now()');
   });
 
   it('excludes token credentials that are actively frozen for cutover admissions', async () => {
@@ -124,6 +125,11 @@ describe('tokenCredentialRepository', () => {
     expect(db.queries[0].sql).toContain("paf.resource_type = 'token_credential'");
     expect(db.queries[0].sql).toContain('paf.released_at is null');
     expect(db.queries[0].sql).toContain('and paf.id is null');
+    expect(db.queries[0].sql).toContain('in_token_credentials.id as id');
+    expect(db.queries[0].sql).toContain('in_token_credentials.created_at as created_at');
+    expect(db.queries[0].sql).toContain('in_token_credentials.updated_at as updated_at');
+    expect(db.queries[0].sql).toContain('in_token_credentials.rotation_version desc');
+    expect(db.queries[0].sql).toContain('in_token_credentials.updated_at desc');
   });
 
   it('treats canonical openai routing reads as including legacy codex credentials', async () => {
