@@ -46,6 +46,9 @@
   - Not applicable to CLI coding session/tool-loop routing.
 
 ## Phase 2: Friends & Family PMF Scope
+- Status note:
+  - Core Darryn-pilot infrastructure is now largely built and sacrificially rehearsed on prod, but the Darryn-specific rollout is parked rather than actively being pushed to launch.
+  - See [PHASE2_DARRYN_PILOT_STATUS.md](PHASE2_DARRYN_PILOT_STATUS.md) for the canonical shipped/tested/paused summary.
 - Set up isolation between internal team tokens and F&F tokens for free internal team usage, while still allowing cross-pool purchasing:
   - F&F can buy usage from internal team tokens.
   - Internal team can buy usage from F&F tokens.
@@ -88,6 +91,8 @@
 - Add `innies claude` / `innies codex` how-to guide markdown for F&F onboarding.
 
 ## Phase 3: External PMF Scope
+- Current focus note:
+  - Active product work should move here: permissionless org creation, self-serve token onboarding, and simple billing/productization built on the additive Phase 2 seams already in `main`.
 - Permissionless org creation + user onboarding.
 - Permissionless org spin-up with Phase 2-style isolation controls:
   - org controls external usage access for its token pool (on/off policy).
