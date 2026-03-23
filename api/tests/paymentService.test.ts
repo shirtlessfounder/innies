@@ -242,7 +242,7 @@ describe('PaymentService', () => {
     });
   });
 
-  it('falls back to /pilot checkout URLs when returnTo uses a slash-backslash host bypass', async () => {
+  it('falls back to the canonical prod /pilot checkout URLs when returnTo uses a slash-backslash host bypass', async () => {
     const createSetupSession = vi.fn().mockResolvedValue({
       id: 'seti_1',
       url: 'https://checkout.stripe.test/setup'
@@ -279,8 +279,8 @@ describe('PaymentService', () => {
     });
 
     expect(createSetupSession).toHaveBeenCalledWith(expect.objectContaining({
-      successUrl: 'http://localhost:3000/pilot',
-      cancelUrl: 'http://localhost:3000/pilot'
+      successUrl: 'https://www.innies.computer/pilot',
+      cancelUrl: 'https://www.innies.computer/pilot'
     }));
   });
 
