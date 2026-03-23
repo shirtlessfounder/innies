@@ -4,6 +4,11 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { runtime } from '../services/runtime.js';
 import { buildConnectedAccountInventory } from '../services/pilot/pilotConnectedAccountInventory.js';
+import {
+  buildClearedPilotSessionCookie,
+  buildPilotSessionCookie,
+  buildPilotUiRedirectUrl
+} from '../services/pilot/pilotSessionCookie.js';
 import { AppError } from '../utils/errors.js';
 import { sha256Hex, stableJson } from '../utils/hash.js';
 import { readAndValidateIdempotencyKey } from '../utils/idempotencyKey.js';
@@ -352,7 +357,7 @@ router.get('/v1/pilot/auth/github/callback', async (req, res, next) => {
     });
 
     res.setHeader('set-cookie', buildPilotSessionCookie(result.sessionToken));
-    res.redirect(302, normalizePilotReturnTo(result.returnTo) ?? '/pilot');
+    res.redirect(302, buildPilotUiRedirectUrl(normalizePilotReturnTo(result.returnTo) ?? '/pilot'));
   } catch (error) {
     next(error);
   }
@@ -427,13 +432,5 @@ router.post('/v1/pilot/withdrawals', async (req, res, next) => {
     next(error);
   }
 });
-
-export function buildPilotSessionCookie(token: string): string {
-  return `innies_pilot_session=${token}; Path=/; HttpOnly; SameSite=Lax`;
-}
-
-export function buildClearedPilotSessionCookie(): string {
-  return 'innies_pilot_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0';
-}
 
 export default router;

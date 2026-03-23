@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { PilotServerError, fetchAdminJson } from '../../../../../lib/pilot/server';
+import { pilotSessionCookieOptions } from '../../../../../lib/pilot/sessionCookie';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,11 +28,7 @@ export async function POST(request: NextRequest) {
     });
 
     const redirect = NextResponse.redirect(new URL('/pilot', request.url), { status: 303 });
-    redirect.cookies.set('innies_pilot_session', response.sessionToken, {
-      httpOnly: true,
-      sameSite: 'lax',
-      path: '/'
-    });
+    redirect.cookies.set('innies_pilot_session', response.sessionToken, pilotSessionCookieOptions(request.url));
     return redirect;
   } catch (error) {
     if (error instanceof PilotServerError) {
