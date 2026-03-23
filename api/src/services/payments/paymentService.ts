@@ -14,6 +14,7 @@ import {
   type PaymentWalletEffectType
 } from './paymentTypes.js';
 import type { StripeClient, StripeWebhookEvent } from './stripeClient.js';
+import { readPilotUiBaseUrl } from '../pilot/pilotUrlConfig.js';
 
 export class PaymentService {
   constructor(private readonly deps: {
@@ -662,11 +663,10 @@ function buildCheckoutUrls(returnTo: string | null | undefined): {
   successUrl: string;
   cancelUrl: string;
 } {
-  const baseUrl = (process.env.PILOT_UI_BASE_URL ?? process.env.UI_BASE_URL ?? 'http://localhost:3000').replace(/\/+$/, '');
   const safeReturnTo = normalizeReturnTo(returnTo) ?? '/pilot';
   return {
-    successUrl: `${baseUrl}${safeReturnTo}`,
-    cancelUrl: `${baseUrl}${safeReturnTo}`
+    successUrl: new URL(safeReturnTo, `${readPilotUiBaseUrl()}/`).toString(),
+    cancelUrl: new URL(safeReturnTo, `${readPilotUiBaseUrl()}/`).toString()
   };
 }
 

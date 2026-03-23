@@ -1,3 +1,8 @@
+import {
+  readPilotApiBaseUrl,
+  readPilotUiBaseUrl
+} from './pilotUrlConfig.js';
+
 function readBaseUrl(value: string | null | undefined): string | null {
   const normalized = value?.trim();
   if (!normalized) return null;
@@ -51,14 +56,6 @@ function sharedDomainSuffix(leftHost: string | null, rightHost: string | null): 
   }
 
   return suffix;
-}
-
-function readPilotUiBaseUrl(): string {
-  return readBaseUrl(process.env.PILOT_UI_BASE_URL ?? process.env.UI_BASE_URL) ?? 'https://www.innies.computer';
-}
-
-function readPilotApiBaseUrl(): string | null {
-  return readBaseUrl(process.env.PILOT_GITHUB_CALLBACK_URL);
 }
 
 function readPilotSessionCookieDomain(): string | null {
