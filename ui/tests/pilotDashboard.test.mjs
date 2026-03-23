@@ -84,6 +84,23 @@ test('payment redirect routes sanitize returnTo before redirecting', async () =>
   assert.ok(autoRechargeRouteSource.includes('normalizePilotReturnTo'));
 });
 
+test('pilot auth cookie helpers derive a shared parent domain for api/ui siblings', async () => {
+  const { resolvePilotSessionCookieDomain } = await import('../src/lib/pilot/sessionCookie.ts');
+  const impersonateRouteSource = readSource('src/app/api/admin/pilot/impersonate/route.ts');
+  const logoutRouteSource = readSource('src/app/api/pilot/session/logout/route.ts');
+
+  assert.equal(
+    resolvePilotSessionCookieDomain('https://www.innies.computer/pilot', 'https://api.innies.computer'),
+    'innies.computer'
+  );
+  assert.equal(
+    resolvePilotSessionCookieDomain('http://localhost:3000/pilot', 'http://localhost:4010'),
+    null
+  );
+  assert.ok(impersonateRouteSource.includes('pilotSessionCookieOptions'));
+  assert.ok(logoutRouteSource.includes('pilotSessionCookieOptions'));
+});
+
 test('payment POST routes use 303 redirects after successful submission', () => {
   const setupRouteSource = readSource('src/app/api/pilot/payments/setup/route.ts');
   const topUpRouteSource = readSource('src/app/api/pilot/payments/top-up/route.ts');
