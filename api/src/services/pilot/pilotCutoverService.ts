@@ -117,14 +117,17 @@ export class PilotCutoverService {
           role: 'buyer'
         });
 
-        await identityRepository.reassignBuyerKeysToOrg({
+        const reassignedBuyerKeyIds = await identityRepository.reassignBuyerKeysToOrg({
           apiKeyIds: input.buyerKeyIds,
           targetOrgId: org.id
         });
-        await identityRepository.reassignTokenCredentialsToOrg({
+        this.assertExactReassignment('buyer key', input.buyerKeyIds, reassignedBuyerKeyIds);
+
+        const reassignedTokenCredentialIds = await identityRepository.reassignTokenCredentialsToOrg({
           tokenCredentialIds: input.tokenCredentialIds,
           targetOrgId: org.id
         });
+        this.assertExactReassignment('token credential', input.tokenCredentialIds, reassignedTokenCredentialIds);
 
         await Promise.all(input.buyerKeyIds.map((apiKeyId) => fnfOwnershipRepository.upsertBuyerKeyOwnership({
           apiKeyId,
@@ -204,14 +207,17 @@ export class PilotCutoverService {
         const pilotCutoverRepository = this.createPilotCutoverRepository(tx);
         const transactionalFreezeRepository = this.createFreezeRepository(tx);
 
-        await identityRepository.reassignBuyerKeysToOrg({
+        const reassignedBuyerKeyIds = await identityRepository.reassignBuyerKeysToOrg({
           apiKeyIds: input.buyerKeyIds,
           targetOrgId: input.targetOrgId
         });
-        await identityRepository.reassignTokenCredentialsToOrg({
+        this.assertExactReassignment('buyer key', input.buyerKeyIds, reassignedBuyerKeyIds);
+
+        const reassignedTokenCredentialIds = await identityRepository.reassignTokenCredentialsToOrg({
           tokenCredentialIds: input.tokenCredentialIds,
           targetOrgId: input.targetOrgId
         });
+        this.assertExactReassignment('token credential', input.tokenCredentialIds, reassignedTokenCredentialIds);
 
         await Promise.all(input.buyerKeyIds.map((apiKeyId) => fnfOwnershipRepository.upsertBuyerKeyOwnership({
           apiKeyId,
@@ -295,5 +301,16 @@ export class PilotCutoverService {
       resourceId: freeze.resourceId,
       errorMessage: message
     })));
+  }
+
+  private assertExactReassignment(resourceLabel: string, requestedIds: string[], updatedIds: string[]): void {
+    const uniqueRequestedIds = [...new Set(requestedIds)];
+    const updatedSet = new Set(updatedIds);
+    if (uniqueRequestedIds.every((id) => updatedSet.has(id))) {
+      return;
+    }
+
+    const missingIds = uniqueRequestedIds.filter((id) => !updatedSet.has(id));
+    throw new Error(`pilot ${resourceLabel} base ownership reassignment mismatch: missing ${missingIds.join(', ')}`);
   }
 }
