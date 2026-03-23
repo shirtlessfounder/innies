@@ -4,24 +4,30 @@ Use this to get your own Claude or Codex/OpenAI login into a form an Innies admi
 
 ## Claude
 
-1. Use the real Claude binary, not the Innies wrapper at `~/.local/bin/claude`.
+1. Make sure you're using the real Claude binary, not the Innies wrapper.
 
-   If needed:
+   Run `which -a claude` to see all paths. If the only result is the Innies wrapper, find the real binary (usually at `~/.local/share/claude/versions/<version>`) and run it directly:
 
    ```bash
-   which -a claude
-   export INNIES_CLAUDE_BIN=/path/to/real/claude
+   ~/.local/share/claude/versions/<version> /login
    ```
 
-2. Start Claude Code with the real binary, then run:
+   If `claude` already points to the real binary, just run:
 
-   ```text
-   /login
+   ```bash
+   claude /login
    ```
 
 3. Confirm Claude stays logged in when you reopen it.
 
-4. On macOS, Claude OAuth credentials are stored in Keychain, not in a stable plain-text file.
+4. On macOS, Claude OAuth credentials are stored in **Keychain Access**, not in a plain-text file.
+
+   To find them:
+   - Open **Keychain Access** (search for it in Spotlight)
+   - Search for **"claude"** in the search bar
+   - Double-click **"Claude Code-credentials"**
+   - Check **"Show password"** at the bottom — enter your macOS password when prompted
+   - The revealed value is a JSON blob containing your `access_token` (starts with `sk-ant-oat...`) and `refresh_token`
 
 5. Innies needs both:
 
