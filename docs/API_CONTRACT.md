@@ -182,7 +182,7 @@ Rotate token credential for an org/provider (admin only).
 Contract: primary path for replacing existing credential material.
 Behavior:
 - if `previousCredentialId` is omitted, Innies rotates the latest `active` credential for that `(org, provider)` lane when one exists
-- if `previousCredentialId` is provided, it may target an `active` or `maxed` credential in that `(org, provider)` lane; Innies revokes that prior credential after inserting the replacement
+- if `previousCredentialId` is provided, it may target an `active`, `maxed`, or `expired` credential in that `(org, provider)` lane; Innies revokes that prior credential after inserting the replacement
 Credential material:
 - `anthropic`: Claude Code OAuth bearer token (`sk-ant-oat...`)
   - expected fields: access token, refresh token when available

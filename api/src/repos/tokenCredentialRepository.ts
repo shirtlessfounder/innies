@@ -688,7 +688,7 @@ export class TokenCredentialRepository {
           where id = $1
             and org_id = $2
             and provider = $3
-            and status in ('active', 'maxed')
+            and status in ('active', 'maxed', 'expired')
           for update
         `;
         const target = await tx.query<{ id: string; status: TokenCredentialStatus; debug_label: string | null }>(

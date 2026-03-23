@@ -76,6 +76,7 @@ Behavior:
 - add/rotate now prompt for an optional OAuth refresh token; type `paste` to read it from your clipboard, or press Enter to skip
 - `innies-token-rotate` accepts a credential UUID or exact `debugLabel`; if `DATABASE_URL` is available it lists existing credentials for the selected provider first so you can choose one by number
 - `innies-token-rotate` shows labeled credentials plus unlabeled `active`/`maxed` credentials by default; unlabeled lower-priority rows stay collapsed behind a summary count
+- `innies-token-rotate` can replace a selected `active`, `maxed`, or `expired` prior credential; `revoked` credentials remain ineligible
 - `innies-token-rotate` preserves the previous credential's `debugLabel` when you leave the rotate label prompt blank
 - `innies-token-pause` accepts optional args `pause|unpause`, then lists eligible credentials for the chosen provider and lets you select one by number / UUID / exact `debugLabel`
 - `innies-token-pause` needs `DATABASE_URL` so it can list/select existing credentials and verify the current state before calling the admin API
