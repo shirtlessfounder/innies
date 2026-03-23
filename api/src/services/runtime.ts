@@ -45,6 +45,7 @@ import { PilotCutoverService } from './pilot/pilotCutoverService.js';
 import { WalletService } from './wallet/walletService.js';
 import { PaymentService } from './payments/paymentService.js';
 import { StripeClient } from './payments/stripeClient.js';
+import { readPilotGithubCallbackUrl } from './pilot/pilotUrlConfig.js';
 import { assertRequiredEnv, readRequiredEnv } from '../utils/env.js';
 import { AppError } from '../utils/errors.js';
 
@@ -127,7 +128,7 @@ runtime.services.pilotSessions = new PilotSessionService({
 runtime.services.pilotGithubAuth = new PilotGithubAuthService({
   clientId: process.env.PILOT_GITHUB_CLIENT_ID || '',
   clientSecret: process.env.PILOT_GITHUB_CLIENT_SECRET || '',
-  callbackUrl: process.env.PILOT_GITHUB_CALLBACK_URL || 'http://localhost:4010/v1/pilot/auth/github/callback',
+  callbackUrl: readPilotGithubCallbackUrl(),
   allowlistedLogins: (process.env.PILOT_GITHUB_ALLOWLIST_LOGINS || '').split(',').map((value) => value.trim()).filter(Boolean),
   allowlistedEmails: (process.env.PILOT_GITHUB_ALLOWLIST_EMAILS || '').split(',').map((value) => value.trim()).filter(Boolean),
   identityRepository: runtime.repos.pilotIdentity,
