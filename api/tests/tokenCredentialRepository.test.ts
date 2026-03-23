@@ -375,6 +375,35 @@ describe('tokenCredentialRepository', () => {
     expect(db.queries[3].sql).toContain("set status = 'revoked'");
   });
 
+  it('rotates selected expired credential by revoking it directly', async () => {
+    process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 13).toString('base64');
+    const db = new SequenceSqlClient([
+      { rows: [{ id: 'latest_1', rotation_version: 6 }], rowCount: 1 },
+      { rows: [{ id: 'old_expired_1', status: 'expired', debug_label: 'oogway' }], rowCount: 1 },
+      { rows: [], rowCount: 1 },
+      { rows: [], rowCount: 1 }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    const rotated = await repo.rotate({
+      orgId: '00000000-0000-0000-0000-000000000001',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'next-token',
+      refreshToken: 'next-refresh',
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      previousCredentialId: 'old_expired_1'
+    });
+
+    expect(rotated.rotationVersion).toBe(7);
+    expect(rotated.previousId).toBe('old_expired_1');
+    expect(db.queries).toHaveLength(4);
+    expect(db.queries[1].sql).toContain("status in ('active', 'maxed', 'expired')");
+    expect(db.queries[2].sql).toContain('insert into in_token_credentials');
+    expect(db.queries[2].params?.[8]).toBe('oogway');
+    expect(db.queries[3].sql).toContain("set status = 'revoked'");
+  });
+
   it('lists active provider poll candidates without relying on stored auth_scheme', async () => {
     process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 21).toString('base64');
     const db = new SequenceSqlClient([{
