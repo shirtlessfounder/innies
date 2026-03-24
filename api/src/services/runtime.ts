@@ -28,6 +28,10 @@ import { PaymentMethodRepository } from '../repos/paymentMethodRepository.js';
 import { AutoRechargeSettingsRepository } from '../repos/autoRechargeSettingsRepository.js';
 import { PaymentAttemptRepository } from '../repos/paymentAttemptRepository.js';
 import { PaymentWebhookEventRepository } from '../repos/paymentWebhookEventRepository.js';
+import { OrgAccessRepository } from '../repos/orgAccessRepository.js';
+import { OrgInviteRepository } from '../repos/orgInviteRepository.js';
+import { OrgBuyerKeyRepository } from '../repos/orgBuyerKeyRepository.js';
+import { OrgTokenRepository } from '../repos/orgTokenRepository.js';
 import { PaymentOutcomeRepository } from '../repos/paymentOutcomeRepository.js';
 import { buildDefaultJobs } from '../jobs/registry.js';
 import { JobScheduler } from '../jobs/scheduler.js';
@@ -84,7 +88,11 @@ export const runtime = {
     autoRechargeSettings: new AutoRechargeSettingsRepository(sql),
     paymentAttempts: new PaymentAttemptRepository(sql),
     paymentWebhookEvents: new PaymentWebhookEventRepository(sql),
-    paymentOutcomes: new PaymentOutcomeRepository(sql)
+    paymentOutcomes: new PaymentOutcomeRepository(sql),
+    orgAccess: new OrgAccessRepository(sql),
+    orgInvites: new OrgInviteRepository(sql),
+    orgBuyerKeys: new OrgBuyerKeyRepository(sql),
+    orgTokens: new OrgTokenRepository(sql)
   },
   services: {
     earningsProjector: undefined as unknown as EarningsProjectorService,
