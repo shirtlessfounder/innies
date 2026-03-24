@@ -137,4 +137,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_in_api_keys_active_membership
   WHERE membership_id IS NOT NULL
     AND revoked_at IS NULL;
 
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_roles
+    WHERE rolname = 'niyant'
+  ) THEN
+    GRANT ALL PRIVILEGES ON TABLE in_org_invites TO niyant;
+    GRANT SELECT (github_login), INSERT (github_login), UPDATE (github_login), REFERENCES (github_login)
+      ON TABLE in_users TO niyant;
+    GRANT SELECT (owner_user_id), INSERT (owner_user_id), UPDATE (owner_user_id), REFERENCES (owner_user_id)
+      ON TABLE in_orgs TO niyant;
+    GRANT SELECT (ended_at), INSERT (ended_at), UPDATE (ended_at), REFERENCES (ended_at)
+      ON TABLE in_memberships TO niyant;
+    GRANT SELECT (membership_id, revoked_at), INSERT (membership_id, revoked_at), UPDATE (membership_id, revoked_at), REFERENCES (membership_id, revoked_at)
+      ON TABLE in_api_keys TO niyant;
+  END IF;
+END $$;
+
 COMMIT;

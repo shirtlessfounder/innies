@@ -33,3 +33,13 @@ Do not front-load old theories. Do not patch blindly.
 - Facts first.
 - Cite concrete request ids, log artifacts, and file references when conclusions come from logs or captures.
 - If evidence is insufficient, say exactly what artifact is missing next.
+
+## Migration Rule
+
+- When adding or editing SQL migrations in `docs/migrations/*.sql`, include `niyant` grants for the new surface introduced by that migration.
+- Scope the grants narrowly to what the migration adds or changes:
+  - new tables: grant `ALL PRIVILEGES` on the new table to `niyant`
+  - new columns on existing tables: grant column-level permissions to `niyant` for the new columns instead of widening the whole table
+  - paired `_no_extensions.sql` migrations: keep the `niyant` grant contract aligned there too
+- Guard the grant block so the migration does not fail if the Postgres role `niyant` does not exist.
+- If a migration genuinely introduces no new surface that should be granted to `niyant`, say so explicitly in the migration file with a short comment instead of silently omitting it.

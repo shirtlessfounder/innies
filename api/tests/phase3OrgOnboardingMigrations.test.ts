@@ -47,6 +47,7 @@ describe('phase 3 org onboarding migrations', () => {
     expect(sql).toContain('CREATE UNIQUE INDEX IF NOT EXISTS uq_in_api_keys_active_membership');
     expect(sql).toContain('WHERE membership_id IS NOT NULL');
     expect(sql).toContain('AND revoked_at IS NULL');
+    expectNiyantPhase3Grants(sql);
   });
 
   it('keeps the no-extensions migration aligned with the primary org onboarding contract', () => {
@@ -62,6 +63,7 @@ describe('phase 3 org onboarding migrations', () => {
     expect(sql).toContain('created_by_user_id uuid NOT NULL REFERENCES in_users(id) ON DELETE RESTRICT');
     expect(sql).toContain('CREATE UNIQUE INDEX IF NOT EXISTS uq_in_org_invites_pending_org_login');
     expect(sql).toContain('CREATE UNIQUE INDEX IF NOT EXISTS uq_in_api_keys_active_membership');
+    expectNiyantPhase3Grants(sql);
   });
 
   it('references only tables that already exist in schema history or are created in the migration', () => {
@@ -138,4 +140,18 @@ function extractMatches(sql: string, pattern: RegExp): string[] {
     matches.push(match[1]);
   }
   return matches;
+}
+
+function expectNiyantPhase3Grants(sql: string): void {
+  expect(sql).toContain('FROM pg_roles');
+  expect(sql).toContain("WHERE rolname = 'niyant'");
+  expect(sql).toContain('GRANT ALL PRIVILEGES ON TABLE in_org_invites TO niyant');
+  expect(sql).toContain('GRANT SELECT (github_login), INSERT (github_login), UPDATE (github_login), REFERENCES (github_login)');
+  expect(sql).toContain('ON TABLE in_users TO niyant');
+  expect(sql).toContain('GRANT SELECT (owner_user_id), INSERT (owner_user_id), UPDATE (owner_user_id), REFERENCES (owner_user_id)');
+  expect(sql).toContain('ON TABLE in_orgs TO niyant');
+  expect(sql).toContain('GRANT SELECT (ended_at), INSERT (ended_at), UPDATE (ended_at), REFERENCES (ended_at)');
+  expect(sql).toContain('ON TABLE in_memberships TO niyant');
+  expect(sql).toContain('GRANT SELECT (membership_id, revoked_at), INSERT (membership_id, revoked_at), UPDATE (membership_id, revoked_at), REFERENCES (membership_id, revoked_at)');
+  expect(sql).toContain('ON TABLE in_api_keys TO niyant');
 }
