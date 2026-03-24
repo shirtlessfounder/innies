@@ -7,6 +7,7 @@ import adminOrgsRouter from './routes/adminOrgs.js';
 import analyticsRoutes from './routes/analytics.js';
 import anthropicCompatRoutes from './routes/anthropicCompat.js';
 import paymentsRoutes from './routes/payments.js';
+import orgRoutes from './routes/org.js';
 import pilotRoutes from './routes/pilot.js';
 import proxyRoutes from './routes/proxy.js';
 import sellerKeysRoutes from './routes/sellerKeys.js';
@@ -147,6 +148,7 @@ export function createApp(): express.Express {
   app.use(analyticsRoutes);
   app.use(anthropicCompatRoutes);
   app.use(paymentsRoutes);
+  app.use(orgRoutes);
   app.use(pilotRoutes);
   app.use(sellerKeysRoutes);
   app.use(usageRoutes);
