@@ -1858,7 +1858,7 @@ describe('analytics routes', () => {
         seven_day_utilization_ratio: 0.95,
         seven_day_resets_at: '2026-03-15T00:00:00.000Z',
         seven_day_contribution_cap_exhausted: true,
-        provider_usage_fetched_at: '2026-03-12T12:07:00.000Z',
+        provider_usage_fetched_at: '2026-03-12T11:59:00.000Z',
         last_refresh_error: null
       }
     ]);
@@ -1882,7 +1882,7 @@ describe('analytics routes', () => {
 
     expect((res.body as any).warnings).toEqual([
       'alpha: provider_usage_snapshot_missing - reserved Claude token has no provider-usage snapshot yet; pooled routing excludes it until one arrives.',
-      'beta: provider_usage_snapshot_soft_stale - last Claude usage snapshot is 3m old; routing is still using the last successful snapshot.',
+      'beta: provider_usage_snapshot_soft_stale - last Claude usage snapshot is 11m old; routing is still using the last successful snapshot.',
       'beta: usage_exhausted_7d - pooled Claude routing is at the 7d cap until 2026-03-15T00:00:00.000Z.'
     ]);
   });

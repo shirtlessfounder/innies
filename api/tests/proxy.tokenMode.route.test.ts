@@ -651,7 +651,7 @@ describe('proxy token-mode route behavior', () => {
     expect(upstreamSpy).not.toHaveBeenCalled();
   });
 
-  it('excludes reserve-enabled Claude oauth tokens when the provider-usage snapshot is hard stale', async () => {
+  it('excludes reserve-enabled Claude oauth tokens when the provider-usage snapshot is hard stale after 30m', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
       id: '11113333-3333-4333-8333-333333333333',
@@ -682,7 +682,7 @@ describe('proxy token-mode route behavior', () => {
       sevenDayUtilizationRatio: 0.1,
       sevenDayResetsAt: new Date('2026-03-08T00:00:00Z'),
       rawPayload: {},
-      fetchedAt: new Date(Date.now() - (11 * 60 * 1000)),
+      fetchedAt: new Date(Date.now() - (31 * 60 * 1000)),
       createdAt: new Date('2026-03-01T00:00:00Z'),
       updatedAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
@@ -718,7 +718,7 @@ describe('proxy token-mode route behavior', () => {
     expect(upstreamSpy).not.toHaveBeenCalled();
   });
 
-  it('excludes zero-reserve Claude oauth tokens when the provider-usage snapshot is hard stale', async () => {
+  it('excludes zero-reserve Claude oauth tokens when the provider-usage snapshot is hard stale after 30m', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
       id: '11113336-3333-4333-8333-333333333336',
@@ -749,7 +749,7 @@ describe('proxy token-mode route behavior', () => {
       sevenDayUtilizationRatio: 0.1,
       sevenDayResetsAt: new Date('2026-03-08T00:00:00Z'),
       rawPayload: {},
-      fetchedAt: new Date(Date.now() - (11 * 60 * 1000)),
+      fetchedAt: new Date(Date.now() - (31 * 60 * 1000)),
       createdAt: new Date('2026-03-01T00:00:00Z'),
       updatedAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
@@ -785,7 +785,7 @@ describe('proxy token-mode route behavior', () => {
     expect(upstreamSpy).not.toHaveBeenCalled();
   });
 
-  it('excludes reserve-enabled Claude oauth tokens when the provider-usage snapshot is soft stale', async () => {
+  it('excludes reserve-enabled Claude oauth tokens when the provider-usage snapshot is soft stale after 10m', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
       id: '11113335-3333-4333-8333-333333333335',
@@ -816,7 +816,7 @@ describe('proxy token-mode route behavior', () => {
       sevenDayUtilizationRatio: 0.1,
       sevenDayResetsAt: new Date('2026-03-08T00:00:00Z'),
       rawPayload: {},
-      fetchedAt: new Date(Date.now() - (3 * 60 * 1000)),
+      fetchedAt: new Date(Date.now() - (11 * 60 * 1000)),
       createdAt: new Date('2026-03-01T00:00:00Z'),
       updatedAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
@@ -883,7 +883,7 @@ describe('proxy token-mode route behavior', () => {
       sevenDayUtilizationRatio: 0.1,
       sevenDayResetsAt: new Date('2026-03-08T00:00:00Z'),
       rawPayload: {},
-      fetchedAt: new Date(Date.now() - (11 * 60 * 1000)),
+      fetchedAt: new Date(Date.now() - (31 * 60 * 1000)),
       createdAt: new Date('2026-03-01T00:00:00Z'),
       updatedAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
@@ -1229,7 +1229,7 @@ describe('proxy token-mode route behavior', () => {
       sevenDayUtilizationRatio: 0.1,
       sevenDayResetsAt: new Date('2026-03-08T00:00:00Z'),
       rawPayload: {},
-      fetchedAt: new Date(Date.now() - (3 * 60 * 1000)),
+      fetchedAt: new Date(Date.now() - (11 * 60 * 1000)),
       createdAt: new Date('2026-03-01T00:00:00Z'),
       updatedAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
@@ -2586,7 +2586,7 @@ describe('proxy token-mode route behavior', () => {
     expect(upstreamSpy).not.toHaveBeenCalled();
   });
 
-  it('excludes reserve-enabled Codex credentials when the provider-usage snapshot is hard stale', async () => {
+  it('excludes reserve-enabled Codex credentials when the provider-usage snapshot is hard stale after 30m', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     const oauthToken = createFakeOpenAiOauthToken({ accountId: 'acct_codex_reserved_stale' });
     vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
@@ -2634,7 +2634,7 @@ describe('proxy token-mode route behavior', () => {
         five_hour: { utilization: 0.2, resets_at: '2026-03-19T01:00:00.000Z' },
         seven_day: { utilization: 0.1, resets_at: '2026-03-22T00:00:00.000Z' }
       },
-      fetchedAt: new Date(Date.now() - (11 * 60 * 1000)),
+      fetchedAt: new Date(Date.now() - (31 * 60 * 1000)),
       createdAt: new Date('2026-03-18T22:31:00.000Z'),
       updatedAt: new Date('2026-03-18T22:31:00.000Z')
     } as any]);
@@ -2669,7 +2669,7 @@ describe('proxy token-mode route behavior', () => {
     expect(upstreamSpy).not.toHaveBeenCalled();
   });
 
-  it('excludes zero-reserve Codex credentials when the provider-usage snapshot is hard stale', async () => {
+  it('excludes zero-reserve Codex credentials when the provider-usage snapshot is hard stale after 30m', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     const oauthToken = createFakeOpenAiOauthToken({ accountId: 'acct_codex_zero_reserve_stale' });
     vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
@@ -2717,7 +2717,7 @@ describe('proxy token-mode route behavior', () => {
         five_hour: { utilization: 0.2, resets_at: '2026-03-19T01:00:00.000Z' },
         seven_day: { utilization: 0.1, resets_at: '2026-03-22T00:00:00.000Z' }
       },
-      fetchedAt: new Date(Date.now() - (11 * 60 * 1000)),
+      fetchedAt: new Date(Date.now() - (31 * 60 * 1000)),
       createdAt: new Date('2026-03-18T22:31:00.000Z'),
       updatedAt: new Date('2026-03-18T22:31:00.000Z')
     } as any]);
@@ -2752,7 +2752,7 @@ describe('proxy token-mode route behavior', () => {
     expect(upstreamSpy).not.toHaveBeenCalled();
   });
 
-  it('excludes reserve-enabled Codex credentials when the provider-usage snapshot is soft stale', async () => {
+  it('excludes reserve-enabled Codex credentials when the provider-usage snapshot is soft stale after 10m', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     const oauthToken = createFakeOpenAiOauthToken({ accountId: 'acct_codex_reserved_soft_stale' });
     vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
@@ -2800,7 +2800,7 @@ describe('proxy token-mode route behavior', () => {
         five_hour: { utilization: 0.2, resets_at: '2026-03-19T01:00:00.000Z' },
         seven_day: { utilization: 0.1, resets_at: '2026-03-22T00:00:00.000Z' }
       },
-      fetchedAt: new Date(Date.now() - (3 * 60 * 1000)),
+      fetchedAt: new Date(Date.now() - (11 * 60 * 1000)),
       createdAt: new Date('2026-03-18T22:31:00.000Z'),
       updatedAt: new Date('2026-03-18T22:31:00.000Z')
     } as any]);
