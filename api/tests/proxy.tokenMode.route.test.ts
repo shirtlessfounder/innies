@@ -4417,8 +4417,12 @@ describe('proxy token-mode route behavior', () => {
     await invoke(handlers[1], req, res);
 
     expect(res.statusCode).toBe(200);
-    expect(String(res.body)).toContain('event: message_stop');
-    expect(String(res.body)).toContain('[Innies stream error: upstream stream ended before completion]');
+    expect(String(res.body)).toContain('event: error');
+    expect(String(res.body)).toContain('"type":"error"');
+    expect(String(res.body)).toContain('"type":"api_error"');
+    expect(String(res.body)).toContain('"message":"upstream stream ended before completion"');
+    expect(String(res.body)).not.toContain('event: message_stop');
+    expect(String(res.body)).not.toContain('[Innies stream error: upstream stream ended before completion]');
     expect(String(res.body)).not.toContain('"type":"response.failed"');
     expect(runtimeModule.runtime.repos.tokenCredentials.recordSuccess).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.metering.recordUsage).not.toHaveBeenCalled();
