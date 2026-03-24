@@ -61,6 +61,10 @@ This helper:
 The helper scripts live at:
 - `~/.local/bin/conductor-open`
 - `~/.local/bin/conductor-openai-key-sync`
+- `~/.local/bin/conductor-claude-install`
+- `~/.local/bin/conductor-claude-ensure`
+
+These are local machine helpers installed during onboarding. They are not tracked in the `innies` repo.
 
 If the key changes, refresh the saved Keychain copy from a shell that already has the new key:
 
@@ -91,6 +95,8 @@ After installing or changing either helper, fully quit Conductor and relaunch it
 conductor-open
 ```
 
+`conductor-open` now also checks Conductor's private Claude entrypoint before launch and automatically reruns the local Claude wrapper installer if a Conductor update has overwritten it.
+
 ## Daily Flow
 
 1. Start Conductor:
@@ -114,7 +120,7 @@ conductor-open
 | Opus/Claude says authentication is required | Install the Conductor-only Claude shim with `conductor-claude-install`, then fully relaunch with `conductor-open`. |
 | Conductor still behaves like the old config | Fully quit Conductor before relaunching; the app must start fresh with the new environment. |
 | Failed workspace stuck in sidebar | Archive/delete it in Conductor, then recreate after fixing the base branch. |
-| Opus routing breaks again after a Conductor update | Re-run `conductor-claude-install`; app updates may restore Conductor's private `bin/claude`. |
+| Opus routing breaks again after a Conductor update | Prefer relaunching with `conductor-open`; it now self-heals the private Claude wrapper before launch. If needed, run `conductor-claude-install` manually. |
 
 ## Notes
 - Keep `~/innies` itself on `main` unless you intentionally need otherwise.
