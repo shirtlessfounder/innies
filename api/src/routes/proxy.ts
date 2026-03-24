@@ -2087,50 +2087,21 @@ function buildSyntheticAnthropicStreamFailureSse(input: {
   model: string;
   message: string;
 }): string {
-  const id = input.id ?? `msg_${Date.now()}`;
-  return [
-    `event: message_start\ndata: ${JSON.stringify({
-      type: 'message_start',
-      message: {
-        id,
-        type: 'message',
-        role: 'assistant',
-        model: input.model,
-        content: [],
-        stop_reason: null,
-        stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 0 }
-      }
-    })}\n\n`,
-    `event: content_block_start\ndata: ${JSON.stringify({
-      type: 'content_block_start',
-      index: 0,
-      content_block: { type: 'text', text: '' }
-    })}\n\n`,
-    `event: content_block_delta\ndata: ${JSON.stringify({
-      type: 'content_block_delta',
-      index: 0,
-      delta: {
-        type: 'text_delta',
-        text: `[Innies stream error: ${input.message}]`
-      }
-    })}\n\n`,
-    `event: content_block_stop\ndata: ${JSON.stringify({
-      type: 'content_block_stop',
-      index: 0
-    })}\n\n`,
-    `event: message_delta\ndata: ${JSON.stringify({
-      type: 'message_delta',
-      delta: { stop_reason: 'end_turn', stop_sequence: null },
-      usage: { input_tokens: 0, output_tokens: 0 }
-    })}\n\n`,
-    'event: message_stop\ndata: {"type":"message_stop"}\n\n'
-  ].join('');
+  return `event: error\ndata: ${JSON.stringify({
+    type: 'error',
+    error: {
+      type: 'api_error',
+      message: input.message
+    }
+  })}\n\n`;
 }
 
 function hasTerminalAnthropicStreamEvent(raw: string): boolean {
   const normalized = raw.toLowerCase();
-  return normalized.includes('event: message_stop') || normalized.includes('"type":"message_stop"');
+  return normalized.includes('event: message_stop')
+    || normalized.includes('"type":"message_stop"')
+    || normalized.includes('event: error')
+    || normalized.includes('"type":"error"');
 }
 
 function isDownstreamClientDisconnect(res: Response, error: unknown): boolean {
@@ -2154,7 +2125,9 @@ function resolveOpenAiResponsesStreamTerminalStatus(raw: string): StreamTerminal
 }
 
 function resolveAnthropicStreamTerminalStatus(raw: string): StreamTerminalStatus {
+  const normalized = raw.toLowerCase();
   if (raw.includes('[Translation error:')) return 'failed';
+  if (normalized.includes('event: error') || normalized.includes('"type":"error"')) return 'failed';
   return hasTerminalAnthropicStreamEvent(raw) ? 'completed' : 'missing';
 }
 
