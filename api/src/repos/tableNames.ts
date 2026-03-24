@@ -10,6 +10,7 @@ export const TABLES = {
   idempotencyKeys: 'in_idempotency_keys',
   meteringProjectorStates: 'in_metering_projector_states',
   orgs: 'in_orgs',
+  orgInvites: 'in_org_invites',
   paymentAttempts: 'in_payment_attempts',
   paymentMethods: 'in_payment_methods',
   paymentOutcomes: 'in_payment_outcomes',
