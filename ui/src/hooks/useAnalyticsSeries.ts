@@ -23,6 +23,7 @@ export function useAnalyticsSeries(input: {
   metric: AnalyticsMetric;
   selections: AnalyticsSeriesSelection[];
   paused?: boolean;
+  timeseriesPath?: string;
 }): UseAnalyticsSeriesResult {
   const [series, setSeries] = useState<AnalyticsSeries[]>([]);
   const [loading, setLoading] = useState(false);
@@ -64,6 +65,8 @@ export function useAnalyticsSeries(input: {
             metric: input.metric,
             analyticsWindow: input.window,
             signal: activeControllers[index]?.signal,
+          }, {
+            timeseriesPath: input.timeseriesPath,
           }),
         ),
       );
@@ -140,7 +143,7 @@ export function useAnalyticsSeries(input: {
       activeControllers.forEach((controller) => controller.abort());
       if (timeoutId) globalThis.clearTimeout(timeoutId);
     };
-  }, [input.metric, input.paused, input.window, selectionKey]);
+  }, [input.metric, input.paused, input.timeseriesPath, input.window, selectionKey]);
 
   return {
     series,
