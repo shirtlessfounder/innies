@@ -43,18 +43,40 @@ import { UsageMeteringWriter } from './metering/usageMeteringWriter.js';
 import { EarningsProjectorService } from './earnings/earningsProjectorService.js';
 import { WithdrawalService } from './earnings/withdrawalService.js';
 import { TokenCredentialService } from './tokenCredentialService.js';
+import { OrgSessionService } from './org/orgSessionService.js';
+import { OrgGithubAuthService } from './org/orgGithubAuthService.js';
+import { OrgMembershipService } from './org/orgMembershipService.js';
+import { OrgTokenManagementService } from './org/orgTokenManagementService.js';
 import { PilotSessionService } from './pilot/pilotSessionService.js';
 import { PilotGithubAuthService } from './pilot/pilotGithubAuthService.js';
 import { PilotCutoverService } from './pilot/pilotCutoverService.js';
 import { WalletService } from './wallet/walletService.js';
 import { PaymentService } from './payments/paymentService.js';
 import { StripeClient } from './payments/stripeClient.js';
-import { readPilotGithubCallbackUrl } from './pilot/pilotUrlConfig.js';
+import { readPilotApiBaseUrl, readPilotGithubCallbackUrl } from './pilot/pilotUrlConfig.js';
 import { assertRequiredEnv, readRequiredEnv } from '../utils/env.js';
 import { AppError } from '../utils/errors.js';
 
 assertRequiredEnv(['DATABASE_URL', 'SELLER_SECRET_ENC_KEY_B64']);
 const sql = buildPgClient(readRequiredEnv('DATABASE_URL'));
+
+function readOrgGithubCallbackUrl(): string {
+  const configured = process.env.ORG_GITHUB_CALLBACK_URL?.trim();
+  if (configured) {
+    return configured;
+  }
+
+  const apiBaseUrl = readPilotApiBaseUrl();
+  if (apiBaseUrl) {
+    return new URL('/v1/org/auth/github/callback', `${apiBaseUrl}/`).toString();
+  }
+
+  if (process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'development') {
+    return new URL('/v1/org/auth/github/callback', 'http://localhost:4010/').toString();
+  }
+
+  throw new Error('Missing org GitHub callback configuration. Set ORG_GITHUB_CALLBACK_URL or INNIES_BASE_URL.');
+}
 
 export const runtime = {
   sql,
@@ -100,6 +122,10 @@ export const runtime = {
     jobs: undefined as unknown as JobScheduler,
     keyPool: new KeyPool(),
     metering: undefined as unknown as UsageMeteringWriter,
+    orgGithubAuth: undefined as unknown as OrgGithubAuthService,
+    orgMemberships: undefined as unknown as OrgMembershipService,
+    orgSessions: undefined as unknown as OrgSessionService,
+    orgTokenManagement: undefined as unknown as OrgTokenManagementService,
     pilotCutovers: undefined as unknown as PilotCutoverService,
     pilotGithubAuth: undefined as unknown as PilotGithubAuthService,
     pilotSessions: undefined as unknown as PilotSessionService,
@@ -133,6 +159,9 @@ runtime.services.metering = new UsageMeteringWriter({
 runtime.services.pilotSessions = new PilotSessionService({
   secret: process.env.PILOT_SESSION_SECRET || 'dev-insecure-pilot-session-secret'
 });
+runtime.services.orgSessions = new OrgSessionService({
+  secret: process.env.ORG_SESSION_SECRET || 'dev-insecure-org-session-secret'
+});
 runtime.services.pilotGithubAuth = new PilotGithubAuthService({
   clientId: process.env.PILOT_GITHUB_CLIENT_ID || '',
   clientSecret: process.env.PILOT_GITHUB_CLIENT_SECRET || '',
@@ -144,6 +173,24 @@ runtime.services.pilotGithubAuth = new PilotGithubAuthService({
   targetOrgSlug: process.env.PILOT_TARGET_ORG_SLUG || 'fnf',
   targetOrgName: process.env.PILOT_TARGET_ORG_NAME || 'Friends & Family',
   stateSecret: process.env.PILOT_GITHUB_STATE_SECRET || 'dev-insecure-pilot-oauth-state-secret'
+});
+runtime.services.orgMemberships = new OrgMembershipService({
+  sql: runtime.sql
+});
+runtime.services.orgGithubAuth = new OrgGithubAuthService({
+  clientId: process.env.ORG_GITHUB_CLIENT_ID || process.env.PILOT_GITHUB_CLIENT_ID || '',
+  clientSecret: process.env.ORG_GITHUB_CLIENT_SECRET || process.env.PILOT_GITHUB_CLIENT_SECRET || '',
+  callbackUrl: readOrgGithubCallbackUrl(),
+  stateSecret: process.env.ORG_GITHUB_STATE_SECRET || process.env.PILOT_GITHUB_STATE_SECRET || 'dev-insecure-org-oauth-state-secret',
+  identityRepository: runtime.repos.pilotIdentity as never,
+  orgAccessRepository: runtime.repos.orgAccess,
+  sessionService: runtime.services.orgSessions
+});
+runtime.services.orgTokenManagement = new OrgTokenManagementService({
+  orgAccessRepository: runtime.repos.orgAccess,
+  orgTokenRepository: runtime.repos.orgTokens,
+  tokenCredentialRepository: runtime.repos.tokenCredentials,
+  tokenCredentialService: runtime.services.tokenCredentials
 });
 runtime.services.pilotCutovers = new PilotCutoverService({
   sql: runtime.sql,
