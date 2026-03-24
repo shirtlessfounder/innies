@@ -3,6 +3,7 @@ import express from 'express';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import adminRoutes from './routes/admin.js';
+import adminOrgsRouter from './routes/adminOrgs.js';
 import analyticsRoutes from './routes/analytics.js';
 import anthropicCompatRoutes from './routes/anthropicCompat.js';
 import paymentsRoutes from './routes/payments.js';
@@ -142,6 +143,7 @@ export function createApp(): express.Express {
   });
 
   app.use(adminRoutes);
+  app.use('/v1/admin', adminOrgsRouter);
   app.use(analyticsRoutes);
   app.use(anthropicCompatRoutes);
   app.use(paymentsRoutes);
