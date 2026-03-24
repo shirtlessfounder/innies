@@ -418,6 +418,10 @@ describe('proxy token-mode route behavior', () => {
     } as any);
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'clearRateLimitBackoff').mockResolvedValue(false);
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'setProviderUsageWarning').mockResolvedValue(false);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'syncClaudeContributionCapLifecycle').mockResolvedValue({
+      fiveHourTransition: null,
+      sevenDayTransition: null
+    } as any);
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentialProviderUsage, 'listByTokenCredentialIds').mockImplementation(async (ids: string[]) => (
       ids.map((id) => ({
         tokenCredentialId: id,
@@ -651,8 +655,9 @@ describe('proxy token-mode route behavior', () => {
     expect(upstreamSpy).not.toHaveBeenCalled();
   });
 
-  it('excludes reserve-enabled Claude oauth tokens when the provider-usage snapshot is hard stale after 30m', async () => {
+  it('keeps reserve-enabled Claude oauth tokens excluded when the forced hard-stale refresh fails', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.ANTHROPIC_UPSTREAM_BASE_URL = 'https://anthropic.internal.test';
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
       id: '11113333-3333-4333-8333-333333333333',
       orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
@@ -686,7 +691,13 @@ describe('proxy token-mode route behavior', () => {
       createdAt: new Date('2026-03-01T00:00:00Z'),
       updatedAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
-    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      type: 'error',
+      error: { type: 'overloaded_error', message: 'busy' }
+    }), {
+      status: 503,
+      headers: { 'content-type': 'application/json' }
+    }));
 
     const req = createMockReq({
       method: 'POST',
@@ -715,11 +726,13 @@ describe('proxy token-mode route behavior', () => {
     expect((res.body as any).details?.providerUsageExcludedReasonCounts).toEqual({
       provider_usage_snapshot_hard_stale: 1
     });
-    expect(upstreamSpy).not.toHaveBeenCalled();
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    expect(String(upstreamSpy.mock.calls[0]?.[0])).toBe('https://anthropic.internal.test/api/oauth/usage');
   });
 
-  it('excludes zero-reserve Claude oauth tokens when the provider-usage snapshot is hard stale after 30m', async () => {
+  it('keeps zero-reserve Claude oauth tokens excluded when the forced hard-stale refresh fails', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.ANTHROPIC_UPSTREAM_BASE_URL = 'https://anthropic.internal.test';
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
       id: '11113336-3333-4333-8333-333333333336',
       orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
@@ -753,7 +766,13 @@ describe('proxy token-mode route behavior', () => {
       createdAt: new Date('2026-03-01T00:00:00Z'),
       updatedAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
-    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      type: 'error',
+      error: { type: 'overloaded_error', message: 'busy' }
+    }), {
+      status: 503,
+      headers: { 'content-type': 'application/json' }
+    }));
 
     const req = createMockReq({
       method: 'POST',
@@ -782,11 +801,13 @@ describe('proxy token-mode route behavior', () => {
     expect((res.body as any).details?.providerUsageExcludedReasonCounts).toEqual({
       provider_usage_snapshot_hard_stale: 1
     });
-    expect(upstreamSpy).not.toHaveBeenCalled();
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    expect(String(upstreamSpy.mock.calls[0]?.[0])).toBe('https://anthropic.internal.test/api/oauth/usage');
   });
 
-  it('excludes reserve-enabled Claude oauth tokens when the provider-usage snapshot is soft stale after 10m', async () => {
+  it('keeps reserve-enabled Claude oauth tokens excluded when the forced soft-stale refresh fails', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.ANTHROPIC_UPSTREAM_BASE_URL = 'https://anthropic.internal.test';
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
       id: '11113335-3333-4333-8333-333333333335',
       orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
@@ -820,7 +841,13 @@ describe('proxy token-mode route behavior', () => {
       createdAt: new Date('2026-03-01T00:00:00Z'),
       updatedAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
-    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      type: 'error',
+      error: { type: 'overloaded_error', message: 'busy' }
+    }), {
+      status: 503,
+      headers: { 'content-type': 'application/json' }
+    }));
 
     const req = createMockReq({
       method: 'POST',
@@ -849,7 +876,120 @@ describe('proxy token-mode route behavior', () => {
     expect((res.body as any).details?.providerUsageExcludedReasonCounts).toEqual({
       provider_usage_snapshot_soft_stale: 1
     });
-    expect(upstreamSpy).not.toHaveBeenCalled();
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    expect(String(upstreamSpy.mock.calls[0]?.[0])).toBe('https://anthropic.internal.test/api/oauth/usage');
+  });
+
+  it('recovers Anthropic pinned requests by forcing one usage refresh when the only credential snapshot is soft stale', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.ANTHROPIC_UPSTREAM_BASE_URL = 'https://anthropic.internal.test';
+    const credential = {
+      ...createRoutingCredentialFixture({
+        id: '11113337-3333-4333-8333-333333333337',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-soft-stale-recover'
+      }),
+      fiveHourReservePercent: 0,
+      sevenDayReservePercent: 0
+    } as any;
+    const staleSnapshot = {
+      tokenCredentialId: credential.id,
+      orgId: credential.orgId,
+      provider: credential.provider,
+      usageSource: 'anthropic_oauth_usage',
+      fiveHourUtilizationRatio: 0.2,
+      fiveHourResetsAt: new Date('2026-03-01T05:00:00Z'),
+      sevenDayUtilizationRatio: 0.1,
+      sevenDayResetsAt: new Date('2026-03-08T00:00:00Z'),
+      rawPayload: {},
+      fetchedAt: new Date(Date.now() - (11 * 60 * 1000)),
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z')
+    } as any;
+    let currentSnapshot = staleSnapshot;
+
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([credential]);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentialProviderUsage, 'listByTokenCredentialIds').mockImplementation(async (ids: string[]) => (
+      ids.includes(credential.id) ? [currentSnapshot] : []
+    ));
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentialProviderUsage, 'upsertSnapshot').mockImplementation(async (input: any) => {
+      currentSnapshot = {
+        tokenCredentialId: input.tokenCredentialId,
+        orgId: input.orgId,
+        provider: input.provider,
+        usageSource: input.usageSource,
+        fiveHourUtilizationRatio: input.fiveHourUtilizationRatio,
+        fiveHourResetsAt: input.fiveHourResetsAt,
+        sevenDayUtilizationRatio: input.sevenDayUtilizationRatio,
+        sevenDayResetsAt: input.sevenDayResetsAt,
+        rawPayload: input.rawPayload,
+        fetchedAt: input.fetchedAt,
+        createdAt: input.fetchedAt,
+        updatedAt: input.fetchedAt
+      };
+      return currentSnapshot;
+    });
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://anthropic.internal.test/api/oauth/usage') {
+        return new Response(JSON.stringify({
+          five_hour: {
+            utilization: 21,
+            resets_at: '2026-03-25T01:00:00.582890+00:00'
+          },
+          seven_day: {
+            utilization: 79,
+            resets_at: '2026-03-27T16:00:00.582908+00:00'
+          }
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      if (url === 'https://anthropic.internal.test/v1/messages') {
+        return new Response(JSON.stringify({
+          id: 'msg_soft_stale_recovered',
+          usage: { input_tokens: 2, output_tokens: 3 }
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      throw new Error(`unexpected fetch target: ${url}`);
+    });
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-innies-provider-pin': 'true'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-3-5-sonnet-latest',
+        streaming: false,
+        payload: { model: 'claude-3-5-sonnet-latest', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('msg_soft_stale_recovered');
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe('https://anthropic.internal.test/api/oauth/usage');
+    expect(String(fetchSpy.mock.calls[1]?.[0])).toBe('https://anthropic.internal.test/v1/messages');
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls[0]?.[0]?.routeDecision;
+    expect(routeDecision?.providerUsageSnapshotState).toBe('fresh');
+    expect(routeDecision?.fiveHourUtilizationRatio).toBe(0.21);
   });
 
   it('keeps truly 100%-exhausted Claude oauth tokens excluded until reset even when the snapshot is hard stale', async () => {
