@@ -2,6 +2,8 @@
 
 import type { NextFunction, Request, Response } from 'express';
 import { ApiKeyRepository, type ApiKeyScope } from '../repos/apiKeyRepository.js';
+import type { OrgSessionService, OrgWebSession } from '../services/org/orgSessionService.js';
+import { readOrgSessionTokenFromRequest } from '../services/org/orgSessionCookie.js';
 import { sha256Hex } from '../utils/hash.js';
 import { resolveDefaultBuyerProvider } from '../utils/providerPreference.js';
 
@@ -63,6 +65,42 @@ export function requireApiKey(repo: ApiKeyRepository, allowedScopes: ApiKeyScope
       };
 
       await repo.touchLastUsed(record.id);
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
+export function readOrgSession(
+  req: Request,
+  sessionService: Pick<OrgSessionService, 'readSession'>
+): OrgWebSession | null {
+  if (req.orgSession) {
+    return req.orgSession;
+  }
+
+  const token = readOrgSessionTokenFromRequest(req);
+  if (!token) {
+    req.orgSession = null;
+    return null;
+  }
+
+  const session = sessionService.readSession(token);
+  req.orgSession = session;
+  return session;
+}
+
+export function requireOrgSession(
+  sessionService: Pick<OrgSessionService, 'readSession'>
+) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const session = readOrgSession(req, sessionService);
+      if (!session) {
+        res.status(401).json({ code: 'unauthorized', message: 'Missing org session' });
+        return;
+      }
       next();
     } catch (error) {
       next(error);
