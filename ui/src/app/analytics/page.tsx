@@ -1,12 +1,5 @@
-import { AnalyticsDashboardClient } from './AnalyticsDashboardClient';
-import styles from './page.module.css';
+import { redirect } from 'next/navigation';
 
 export default function AnalyticsPage() {
-  return (
-    <main className={styles.page}>
-      <div className={styles.shell}>
-        <AnalyticsDashboardClient />
-      </div>
-    </main>
-  );
+  redirect('/innies');
 }
