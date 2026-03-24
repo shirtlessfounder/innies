@@ -1,9 +1,12 @@
 import Image from 'next/image';
-import Link from 'next/link';
 import { LandingHeroHeader } from '../components/LandingHeroHeader';
+import { OrgCreationForm } from '../components/org/OrgCreationForm';
+import { getOrgLandingState } from '../lib/org/server';
 import styles from './page.module.css';
 
-export default function DashboardIndexPage() {
+export default async function DashboardIndexPage() {
+  const landing = await getOrgLandingState();
+
   const heroFrame = (
     <div className={styles.heroArtwork}>
       <Image
@@ -38,9 +41,13 @@ export default function DashboardIndexPage() {
                 {heroFrame}
               </a>
 
-              <Link href="/onboard" className={styles.primaryCta}>
-                <span>ONBOARD YOUR INNIES</span>
-              </Link>
+              {landing.signedIn ? (
+                <OrgCreationForm submitClassName={styles.primaryCta} />
+              ) : (
+                <a href={landing.authStartUrl} className={styles.primaryCta}>
+                  <span>Sign in with GitHub</span>
+                </a>
+              )}
             </div>
           </section>
         </div>
