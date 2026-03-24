@@ -234,8 +234,13 @@ function eventDetailLabel(event: AnalyticsEventRow): string | null {
   return parts.length > 0 ? parts.join(' / ') : null;
 }
 
-export function AnalyticsDashboardClient() {
-  const dashboard = useAnalyticsDashboard('24h');
+export function AnalyticsDashboardClient(input: {
+  dashboardPath?: string;
+  timeseriesPath?: string;
+} = {}) {
+  const dashboard = useAnalyticsDashboard('24h', {
+    dashboardPath: input.dashboardPath,
+  });
   const snapshot = dashboard.snapshot;
   const [seriesMode, setSeriesMode] = useState<SeriesMode>('token');
   const [metric, setMetric] = useState<AnalyticsMetric>('usageUnits');
@@ -308,6 +313,7 @@ export function AnalyticsDashboardClient() {
     metric,
     paused: dashboard.paused,
     selections: seriesMode === 'token' ? tokenSelections : buyerSelections,
+    timeseriesPath: input.timeseriesPath,
   });
   const tokenProviderById = new Map(
     visibleTokenRows.map((row) => [row.credentialId, tokenProviderKey(row.provider)] as const),
