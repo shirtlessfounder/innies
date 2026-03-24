@@ -3719,10 +3719,117 @@ describe('proxy token-mode route behavior', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toContain('text/event-stream');
+    expect(String(res.body)).toContain(': keepalive');
     expect(String(res.body)).toContain('data: {"type":"response.created"');
     expect(String(res.body)).toContain('"delta":"hello"');
     expect(String(res.body)).toContain('"type":"response.completed"');
-    expect(String(res.body)).not.toContain(': keepalive');
+    upstreamSpy.mockRestore();
+  });
+
+  it('starts mislabelled native codex SSE streams before the upstream body fully drains', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const oauthToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_codex_stream_delayed',
+      clientId: 'app_codex_stream_delayed'
+    });
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      supports_streaming: true
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'dddd1113-2000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: oauthToken,
+      refreshToken: 'rt_codex_stream_delayed',
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+
+    const encoder = new TextEncoder();
+    let releaseTerminalChunk: (() => void) | null = null;
+    const terminalChunkGate = new Promise<void>((resolve) => {
+      releaseTerminalChunk = resolve;
+    });
+    const upstreamStream = new ReadableStream({
+      async start(controller) {
+        controller.enqueue(encoder.encode(
+          'data: {"type":"response.created","response":{"id":"resp_upstream_delayed_1","status":"in_progress","output":[],"usage":{"input_tokens":0,"output_tokens":0}}}\n\n'
+        ));
+        controller.enqueue(encoder.encode(
+          'data: {"type":"response.output_text.delta","output_index":0,"item_id":"msg_upstream_delayed_1","content_index":0,"delta":"hello"}\n\n'
+        ));
+        await terminalChunkGate;
+        controller.enqueue(encoder.encode(
+          'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_upstream_delayed_1","role":"assistant","content":[{"type":"output_text","text":"hello"}],"status":"completed"}}\n\n'
+        ));
+        controller.enqueue(encoder.encode(
+          'data: {"type":"response.completed","response":{"id":"resp_upstream_delayed_1","status":"completed","usage":{"input_tokens":5,"output_tokens":7}}}\n\n'
+        ));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      }
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(upstreamStream, {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/responses',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-innies-provider-pin': 'true'
+      },
+      body: {
+        model: 'gpt-5.4',
+        stream: true,
+        instructions: 'Reply with one word only.',
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] }]
+      }
+    });
+    const res = createStreamingMockRes();
+
+    await invoke(handlers[0], req, res);
+    const routePromise = invoke(handlers[1], req, res);
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['content-type']).toContain('text/event-stream');
+      expect(String(res.body)).toContain(': keepalive');
+      expect(String(res.body)).toContain('data: {"type":"response.created"');
+      expect(String(res.body)).toContain('"delta":"hello"');
+      expect(String(res.body)).not.toContain('"type":"response.completed"');
+    } finally {
+      releaseTerminalChunk?.();
+      await routePromise;
+    }
+
+    expect(String(res.body)).toContain('"type":"response.completed"');
     upstreamSpy.mockRestore();
   });
 

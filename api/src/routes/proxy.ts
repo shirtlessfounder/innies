@@ -1775,6 +1775,24 @@ function looksLikeSsePayload(raw: string): boolean {
     || trimmed.includes('\n\nevent:');
 }
 
+async function peekResponseBodyPrefix(response: globalThis.Response, maxBytes = 512): Promise<string> {
+  try {
+    const body = response.clone().body;
+    if (!body) return '';
+    const reader = body.getReader();
+    try {
+      const { value, done } = await reader.read();
+      if (done || !value) return '';
+      const prefix = value instanceof Uint8Array ? value : new Uint8Array(value);
+      return new TextDecoder().decode(prefix.slice(0, maxBytes));
+    } finally {
+      void reader.cancel().catch(() => undefined);
+    }
+  } catch {
+    return '';
+  }
+}
+
 async function readUpstreamBody(input: {
   upstreamResponse: globalThis.Response;
   contentType: string;
@@ -3579,7 +3597,13 @@ async function executeTokenModeStreaming(input: {
       }
 
       const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
-      const isStreaming = contentType.includes('text/event-stream');
+      const shouldProbeMislabelledOpenAiSse = !compatTranslation
+        && !compatModeFlag
+        && parseRelativeProxyUrl(proxiedPath).pathname === '/v1/responses'
+        && contentType.includes('application/json');
+      const mislabelledOpenAiSse = shouldProbeMislabelledOpenAiSse
+        && looksLikeSsePayload(await peekResponseBodyPrefix(upstreamResponse));
+      const isStreaming = contentType.includes('text/event-stream') || mislabelledOpenAiSse;
       if (!isStreaming) {
         const { data: rawData, rawText, looksLikeSse } = await readUpstreamBody({
           upstreamResponse,
@@ -4026,7 +4050,10 @@ async function executeTokenModeStreaming(input: {
       res.setHeader('x-request-id', requestId);
       res.setHeader('x-innies-token-credential-id', credential.id);
       res.setHeader('x-innies-attempt-no', String(attemptNo));
-      res.setHeader('content-type', compatTranslation ? 'text/event-stream; charset=utf-8' : contentType);
+      const downstreamContentType = (compatTranslation || mislabelledOpenAiSse)
+        ? 'text/event-stream; charset=utf-8'
+        : contentType;
+      res.setHeader('content-type', downstreamContentType);
       // Force pass-through semantics for SSE across reverse proxies.
       res.setHeader('cache-control', 'no-cache, no-transform');
       res.setHeader('connection', 'keep-alive');
@@ -4117,7 +4144,8 @@ async function executeTokenModeStreaming(input: {
                 attemptNo,
                 provider,
                 model,
-                first_byte_ms: firstByteAt - startedAt
+                first_byte_ms: firstByteAt - startedAt,
+                mislabelled_upstream_sse: mislabelledOpenAiSse
               });
             }
             totalBytes += buffer.length;
@@ -4325,6 +4353,7 @@ async function executeTokenModeStreaming(input: {
         upstream_content_type: contentType,
         stream_mode: compatTranslation ? 'translated_passthrough' : 'passthrough',
         synthetic_stream_bridge: false,
+        mislabelled_upstream_sse: mislabelledOpenAiSse,
         metering_source: meteringSource,
         pre_upstream_ms: dispatchStartedAt - attemptStartedAt,
         upstream_ttfb_ms: firstByteAt !== null ? (firstByteAt - dispatchStartedAt) : (upstreamHeadersAt - dispatchStartedAt),
