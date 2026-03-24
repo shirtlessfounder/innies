@@ -2131,6 +2131,98 @@ function isDownstreamClientDisconnect(res: Response, error: unknown): boolean {
 }
 
 type StreamTerminalStatus = 'completed' | 'incomplete' | 'failed' | 'missing';
+type StreamTerminalErrorMetadata = {
+  streamTerminalErrorType: string | null;
+  streamTerminalErrorCode: string | null;
+  streamTerminalErrorMessage: string | null;
+};
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function sanitizeStreamTerminalErrorValue(value: unknown, maxChars = 280): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length === 0) return null;
+  return normalized.slice(0, maxChars);
+}
+
+function parseSseObjectPayloads(raw: string): Array<Record<string, unknown>> {
+  const payloads: Array<Record<string, unknown>> = [];
+  for (const chunk of raw.split(/\n\n+/)) {
+    const dataLines = chunk
+      .split('\n')
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart());
+    if (dataLines.length === 0) continue;
+    const joined = dataLines.join('\n').trim();
+    if (joined.length === 0 || joined === '[DONE]') continue;
+    try {
+      const parsed = JSON.parse(joined);
+      const record = readRecord(parsed);
+      if (record) {
+        payloads.push(record);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return payloads;
+}
+
+function extractOpenAiResponsesStreamTerminalError(raw: string): StreamTerminalErrorMetadata | null {
+  const payloads = parseSseObjectPayloads(raw);
+  for (let index = payloads.length - 1; index >= 0; index -= 1) {
+    const payload = payloads[index];
+    if (payload.type !== 'response.failed') continue;
+    const response = readRecord(payload.response);
+    const error = readRecord(response?.error);
+    const type = sanitizeStreamTerminalErrorValue(error?.type);
+    const code = sanitizeStreamTerminalErrorValue(error?.code);
+    const message = sanitizeStreamTerminalErrorValue(error?.message);
+    if (type || code || message) {
+      return {
+        streamTerminalErrorType: type,
+        streamTerminalErrorCode: code,
+        streamTerminalErrorMessage: message
+      };
+    }
+  }
+  return null;
+}
+
+function extractAnthropicStreamTerminalError(raw: string): StreamTerminalErrorMetadata | null {
+  const payloads = parseSseObjectPayloads(raw);
+  for (let index = payloads.length - 1; index >= 0; index -= 1) {
+    const payload = payloads[index];
+    if (payload.type !== 'error') continue;
+    const error = readRecord(payload.error);
+    const type = sanitizeStreamTerminalErrorValue(error?.type);
+    const code = sanitizeStreamTerminalErrorValue(error?.code);
+    const message = sanitizeStreamTerminalErrorValue(error?.message);
+    if (type || code || message) {
+      return {
+        streamTerminalErrorType: type,
+        streamTerminalErrorCode: code,
+        streamTerminalErrorMessage: message
+      };
+    }
+  }
+  return null;
+}
+
+function extractStreamTerminalErrorMetadata(input: {
+  downstreamUsesAnthropicSse: boolean;
+  raw: string;
+}): StreamTerminalErrorMetadata | null {
+  return input.downstreamUsesAnthropicSse
+    ? extractAnthropicStreamTerminalError(input.raw)
+    : extractOpenAiResponsesStreamTerminalError(input.raw);
+}
 
 function resolveOpenAiResponsesStreamTerminalStatus(raw: string): StreamTerminalStatus {
   const normalized = raw.toLowerCase();
@@ -4258,6 +4350,22 @@ async function executeTokenModeStreaming(input: {
         : null;
 
       if (streamFailureCode) {
+        const streamFailureRouteDecision = buildTokenRouteDecision(
+          credential,
+          correlation,
+          providerPreference,
+          compatTranslation,
+          providerUsageRouteMeta.get(credential.id)
+        );
+        if (streamFailureCode === 'stream_failed_terminal') {
+          Object.assign(
+            streamFailureRouteDecision,
+            extractStreamTerminalErrorMetadata({
+              downstreamUsesAnthropicSse,
+              raw: sampled
+            }) ?? {}
+          );
+        }
         await runtime.repos.routingEvents.insert({
           requestId,
           attemptNo,
@@ -4267,13 +4375,7 @@ async function executeTokenModeStreaming(input: {
           provider,
           model,
           streaming: true,
-          routeDecision: buildTokenRouteDecision(
-            credential,
-            correlation,
-            providerPreference,
-            compatTranslation,
-            providerUsageRouteMeta.get(credential.id)
-          ),
+          routeDecision: streamFailureRouteDecision,
           upstreamStatus: status,
           errorCode: streamFailureCode,
           latencyMs: Date.now() - startedAt,
