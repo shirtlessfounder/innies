@@ -680,10 +680,16 @@ export class TokenCredentialRepository {
       const latestRow = latest.rowCount === 1 ? latest.rows[0] : null;
       const nextRotationVersion = (latestRow?.rotation_version ?? 0) + 1;
 
-      let previousCredential: { id: string; status: TokenCredentialStatus; debugLabel: string | null } | null = null;
+      let previousCredential: {
+        id: string;
+        status: TokenCredentialStatus;
+        debugLabel: string | null;
+        fiveHourReservePercent: number;
+        sevenDayReservePercent: number;
+      } | null = null;
       if (input.previousCredentialId) {
         const targetSql = `
-          select id, status, debug_label
+          select id, status, debug_label, five_hour_reserve_percent, seven_day_reserve_percent
           from ${TABLES.tokenCredentials}
           where id = $1
             and org_id = $2
@@ -691,7 +697,13 @@ export class TokenCredentialRepository {
             and status in ('active', 'maxed', 'expired')
           for update
         `;
-        const target = await tx.query<{ id: string; status: TokenCredentialStatus; debug_label: string | null }>(
+        const target = await tx.query<{
+          id: string;
+          status: TokenCredentialStatus;
+          debug_label: string | null;
+          five_hour_reserve_percent: number | null;
+          seven_day_reserve_percent: number | null;
+        }>(
           targetSql,
           [input.previousCredentialId, input.orgId, input.provider]
         );
@@ -701,18 +713,26 @@ export class TokenCredentialRepository {
         previousCredential = {
           id: target.rows[0].id,
           status: target.rows[0].status,
-          debugLabel: target.rows[0].debug_label ?? null
+          debugLabel: target.rows[0].debug_label ?? null,
+          fiveHourReservePercent: Number(target.rows[0].five_hour_reserve_percent ?? 0),
+          sevenDayReservePercent: Number(target.rows[0].seven_day_reserve_percent ?? 0)
         };
       } else {
         const activeSql = `
-          select id, status, debug_label
+          select id, status, debug_label, five_hour_reserve_percent, seven_day_reserve_percent
           from ${TABLES.tokenCredentials}
           where org_id = $1 and provider = $2 and status = 'active'
           order by rotation_version desc
           limit 1
           for update
         `;
-        const active = await tx.query<{ id: string; status: TokenCredentialStatus; debug_label: string | null }>(
+        const active = await tx.query<{
+          id: string;
+          status: TokenCredentialStatus;
+          debug_label: string | null;
+          five_hour_reserve_percent: number | null;
+          seven_day_reserve_percent: number | null;
+        }>(
           activeSql,
           [input.orgId, input.provider]
         );
@@ -720,7 +740,9 @@ export class TokenCredentialRepository {
           ? {
             id: active.rows[0].id,
             status: active.rows[0].status,
-            debugLabel: active.rows[0].debug_label ?? null
+            debugLabel: active.rows[0].debug_label ?? null,
+            fiveHourReservePercent: Number(active.rows[0].five_hour_reserve_percent ?? 0),
+            sevenDayReservePercent: Number(active.rows[0].seven_day_reserve_percent ?? 0)
           }
           : null;
       }
@@ -753,9 +775,11 @@ export class TokenCredentialRepository {
           status,
           rotation_version,
           created_by,
+          five_hour_reserve_percent,
+          seven_day_reserve_percent,
           created_at,
           updated_at
-        ) values ($1,$2,$3,$4,$5,$6,$7,$8,0,${currentUtcMonthStartExpr()},$9,'active',$10,$11,now(),now())
+        ) values ($1,$2,$3,$4,$5,$6,$7,$8,0,${currentUtcMonthStartExpr()},$9,'active',$10,$11,$12,$13,now(),now())
       `;
 
       const insertParams: SqlValue[] = [
@@ -769,7 +793,9 @@ export class TokenCredentialRepository {
         input.monthlyContributionLimitUnits ?? null,
         input.debugLabel ?? previousCredential?.debugLabel ?? null,
         nextRotationVersion,
-        input.createdBy ?? null
+        input.createdBy ?? null,
+        previousCredential?.fiveHourReservePercent ?? 0,
+        previousCredential?.sevenDayReservePercent ?? 0
       ];
       await tx.query(insertSql, insertParams);
 
