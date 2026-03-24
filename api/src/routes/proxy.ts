@@ -1159,6 +1159,7 @@ async function resolveEligibleTokenCredentials(input: {
   providerUsageRouteMeta: Map<string, Record<string, unknown>>;
   providerUsageExcludedReasonCounts: Record<string, number>;
   providerUsageExcludedRouteMeta: Record<string, Record<string, unknown>>;
+  anthropicStaleRecoveryCandidate: TokenCredential | null;
 }> {
   const canonicalProvider = canonicalizeProvider(input.provider);
   const seededCredentials = orderCredentialsForRequest(
@@ -1176,7 +1177,8 @@ async function resolveEligibleTokenCredentials(input: {
       credentials: orderedCredentials,
       providerUsageRouteMeta,
       providerUsageExcludedReasonCounts: {},
-      providerUsageExcludedRouteMeta: {}
+      providerUsageExcludedRouteMeta: {},
+      anthropicStaleRecoveryCandidate: null
     };
   }
 
@@ -1187,6 +1189,7 @@ async function resolveEligibleTokenCredentials(input: {
   const eligibleCredentials: TokenCredential[] = [];
   const providerUsageExcludedReasonCounts: Record<string, number> = {};
   const providerUsageExcludedRouteMeta: Record<string, Record<string, unknown>> = {};
+  let anthropicStaleRecoveryCandidate: TokenCredential | null = null;
   const rateLimitEscalationThreshold = tokenCredentialRateLimitThreshold();
 
   for (const credential of orderedCredentials) {
@@ -1240,6 +1243,16 @@ async function resolveEligibleTokenCredentials(input: {
 
     if (!evaluation.eligible && !buyerLabelAffinityBypassApplied) {
       const reason = evaluation.exclusionReason ?? 'provider_usage_unknown';
+      if (
+        anthropicStaleRecoveryCandidate === null
+        && !repeated429HoldActive
+        && (
+          reason === 'provider_usage_snapshot_soft_stale'
+          || reason === 'provider_usage_snapshot_hard_stale'
+        )
+      ) {
+        anthropicStaleRecoveryCandidate = credential;
+      }
       providerUsageExcludedReasonCounts[reason] = (providerUsageExcludedReasonCounts[reason] ?? 0) + 1;
       if (providerUsageRouteMeta.has(credential.id)) {
         providerUsageExcludedRouteMeta[credential.id] = providerUsageRouteMeta.get(credential.id) as Record<string, unknown>;
@@ -1264,8 +1277,133 @@ async function resolveEligibleTokenCredentials(input: {
     credentials: eligibleCredentials,
     providerUsageRouteMeta,
     providerUsageExcludedReasonCounts,
-    providerUsageExcludedRouteMeta
+    providerUsageExcludedRouteMeta,
+    anthropicStaleRecoveryCandidate
   };
+}
+
+async function refreshAnthropicCredentialUsageForEligibilityRecovery(input: {
+  credential: TokenCredential;
+  requestId: string;
+  provider: string;
+  model: string;
+}): Promise<void> {
+  const refreshedUsage = await refreshAnthropicOauthUsageWithCredentialRefresh(
+    runtime.repos.tokenCredentialProviderUsage,
+    runtime.repos.tokenCredentials,
+    input.credential,
+    { ignoreRetryBackoff: true }
+  );
+  const credentialForUsage = refreshedUsage.credential;
+  const refreshResult = refreshedUsage.outcome;
+  const usageAuthFailureStatusCode = anthropicOauthUsageAuthFailureStatusCode(refreshResult);
+
+  if (usageAuthFailureStatusCode !== null) {
+    const nextProbeAt = new Date(Date.now() + (tokenCredentialProbeIntervalMinutes() * 60 * 1000));
+    await parkAnthropicOauthCredentialAfterUsageAuthFailure(runtime.repos.tokenCredentials, credentialForUsage, {
+      statusCode: usageAuthFailureStatusCode,
+      nextProbeAt,
+      reason: `upstream_${usageAuthFailureStatusCode}_provider_usage_refresh`,
+      requestId: input.requestId,
+      attemptNo: 0
+    });
+  }
+
+  try {
+    await runtime.repos.tokenCredentials.setProviderUsageWarning(
+      credentialForUsage.id,
+      usageAuthFailureStatusCode === null
+        ? providerUsageWarningReasonFromRefreshOutcome(refreshResult)
+        : null
+    );
+  } catch (error) {
+    console.error('[token-credential] provider-usage-warning-sync-failed', {
+      request_id: input.requestId,
+      attempt_no: 0,
+      provider: input.provider,
+      model: input.model,
+      credential_id: credentialForUsage.id,
+      credential_label: credentialForUsage.debugLabel ?? null,
+      error_message: error instanceof Error ? error.message : 'unknown'
+    });
+  }
+
+  if (!refreshResult.ok) return;
+
+  const capState = readClaudeContributionCapSnapshotState({
+    credential: credentialForUsage,
+    snapshot: refreshResult.snapshot
+  });
+  if (
+    capState.fetchedAt === null
+    || capState.fiveHourUtilizationRatio === null
+    || capState.sevenDayUtilizationRatio === null
+    || capState.fiveHourSharedThresholdPercent === null
+    || capState.sevenDaySharedThresholdPercent === null
+  ) {
+    return;
+  }
+
+  try {
+    await runtime.repos.tokenCredentials.syncClaudeContributionCapLifecycle({
+      id: credentialForUsage.id,
+      orgId: credentialForUsage.orgId,
+      provider: credentialForUsage.provider,
+      snapshotFetchedAt: capState.fetchedAt,
+      fiveHourReservePercent: capState.fiveHourReservePercent,
+      fiveHourUtilizationRatio: capState.fiveHourUtilizationRatio,
+      fiveHourResetsAt: capState.fiveHourResetsAt,
+      fiveHourSharedThresholdPercent: capState.fiveHourSharedThresholdPercent,
+      fiveHourContributionCapExhausted: capState.fiveHourContributionCapExhausted,
+      sevenDayReservePercent: capState.sevenDayReservePercent,
+      sevenDayUtilizationRatio: capState.sevenDayUtilizationRatio,
+      sevenDayResetsAt: capState.sevenDayResetsAt,
+      sevenDaySharedThresholdPercent: capState.sevenDaySharedThresholdPercent,
+      sevenDayContributionCapExhausted: capState.sevenDayContributionCapExhausted
+    });
+  } catch (error) {
+    console.error('[token-credential] contribution-cap-lifecycle-sync-failed', {
+      request_id: input.requestId,
+      attempt_no: 0,
+      provider: input.provider,
+      model: input.model,
+      credential_id: credentialForUsage.id,
+      credential_label: credentialForUsage.debugLabel ?? null,
+      error_message: error instanceof Error ? error.message : 'unknown'
+    });
+  }
+}
+
+async function resolveEligibleTokenCredentialsWithAnthropicStaleRecovery(input: {
+  orgId: string;
+  provider: string;
+  requestId: string;
+  buyerKeyLabel?: string | null;
+  model: string;
+}): Promise<{
+  credentials: TokenCredential[];
+  providerUsageRouteMeta: Map<string, Record<string, unknown>>;
+  providerUsageExcludedReasonCounts: Record<string, number>;
+  providerUsageExcludedRouteMeta: Record<string, Record<string, unknown>>;
+  anthropicStaleRecoveryCandidate: TokenCredential | null;
+}> {
+  const initial = await resolveEligibleTokenCredentials(input);
+  if (
+    initial.credentials.length > 0
+    || canonicalizeProvider(input.provider) !== 'anthropic'
+    || initial.anthropicStaleRecoveryCandidate === null
+  ) {
+    return initial;
+  }
+
+  await refreshAnthropicCredentialUsageForEligibilityRecovery({
+    credential: initial.anthropicStaleRecoveryCandidate,
+    requestId: input.requestId,
+    provider: input.provider,
+    model: input.model
+  });
+
+  return resolveEligibleTokenCredentials(input);
 }
 
 function buildSellerRouteDecision(input: {
@@ -2411,11 +2549,12 @@ async function executeTokenModeNonStreaming(input: {
     providerUsageRouteMeta,
     providerUsageExcludedReasonCounts,
     providerUsageExcludedRouteMeta
-  } = await resolveEligibleTokenCredentials({
+  } = await resolveEligibleTokenCredentialsWithAnthropicStaleRecovery({
     orgId,
     provider,
     requestId,
-    buyerKeyLabel
+    buyerKeyLabel,
+    model
   });
   if (credentials.length === 0) {
     throw new AppError('capacity_unavailable', 429, 'No eligible token credentials available', {
@@ -3214,11 +3353,12 @@ async function executeTokenModeStreaming(input: {
     providerUsageRouteMeta,
     providerUsageExcludedReasonCounts,
     providerUsageExcludedRouteMeta
-  } = await resolveEligibleTokenCredentials({
+  } = await resolveEligibleTokenCredentialsWithAnthropicStaleRecovery({
     orgId,
     provider,
     requestId,
-    buyerKeyLabel
+    buyerKeyLabel,
+    model
   });
   if (credentials.length === 0) {
     throw new AppError('capacity_unavailable', 429, 'No eligible token credentials available', {
