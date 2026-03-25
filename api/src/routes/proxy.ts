@@ -74,7 +74,6 @@ const nativeOpenAiResponsesRequestSchema = z.object({
   stream: z.boolean().optional()
 }).passthrough();
 
-type ParsedProxyRequestBody = z.infer<typeof proxyRequestSchema>;
 type AttemptFailure = {
   statusCode?: number;
   message?: string;
@@ -400,67 +399,33 @@ function isWrappedProxyRequestBody(body: unknown): body is Record<string, unknow
   );
 }
 
-function readForcedAnthropicOpusModel(): string | null {
-  const raw = process.env.ANTHROPIC_FORCE_OPUS_MODEL;
-  if (typeof raw !== 'string') return null;
-  const normalized = raw.trim();
-  return normalized.length > 0 ? normalized : null;
-}
-
-function shouldRemapAnthropicOpusModel(provider: string, model: string): boolean {
-  return canonicalizeProvider(provider) === 'anthropic'
-    && model.trim().toLowerCase().startsWith('claude-opus');
-}
-
-function rewriteAnthropicPayloadModel(payload: unknown, model: string): unknown {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
-  if (typeof (payload as Record<string, unknown>).model !== 'string') return payload;
-  return {
-    ...(payload as Record<string, unknown>),
-    model
-  };
-}
-
-function applyForcedAnthropicOpusRemap(request: ParsedProxyRequestBody): ParsedProxyRequestBody {
-  const forcedModel = readForcedAnthropicOpusModel();
-  if (!forcedModel || !shouldRemapAnthropicOpusModel(request.provider, request.model)) {
-    return request;
-  }
-
-  return {
-    ...request,
-    model: forcedModel,
-    payload: rewriteAnthropicPayloadModel(request.payload, forcedModel)
-  };
-}
-
-export function parseProxyRequestBody(body: unknown, proxiedPath: string): ParsedProxyRequestBody {
+function parseProxyRequestBody(body: unknown, proxiedPath: string) {
   if (isWrappedProxyRequestBody(body)) {
-    return applyForcedAnthropicOpusRemap(proxyRequestSchema.parse(body));
+    return proxyRequestSchema.parse(body);
   }
 
   const parsedPath = parseRelativeProxyUrl(proxiedPath);
   if (parsedPath.pathname === '/v1/messages') {
     const parsed = nativeAnthropicProxyRequestSchema.parse(body);
-    return applyForcedAnthropicOpusRemap({
+    return {
       provider: 'anthropic',
       model: parsed.model,
       streaming: parsed.stream === true,
       payload: parsed
-    });
+    };
   }
 
   if (parsedPath.pathname === '/v1/responses') {
     const parsed = nativeOpenAiResponsesRequestSchema.parse(body);
-    return applyForcedAnthropicOpusRemap({
+    return {
       provider: 'openai',
       model: parsed.model,
       streaming: parsed.stream !== false,
       payload: parsed
-    });
+    };
   }
 
-  return applyForcedAnthropicOpusRemap(proxyRequestSchema.parse(body));
+  return proxyRequestSchema.parse(body);
 }
 
 function upstreamBaseUrl(provider: string): string {

@@ -19,6 +19,3 @@ DEVOPS_JOURNAL_PASSWORD=replace_me
 INNIES_IDEMPOTENCY_PREFIX=prefdemo
 INNIES_MODEL_ANTHROPIC=claude-opus-4-6
 INNIES_MODEL_CODEX=gpt-5.4
-
-# Optional, when set remaps anthropic claude-opus* requests at proxy ingress.
-ANTHROPIC_FORCE_OPUS_MODEL=claude-sonnet-4-6
