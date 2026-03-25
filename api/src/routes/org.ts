@@ -19,7 +19,9 @@ type OrgRouteDeps = {
 export function createOrgRouter(deps: OrgRouteDeps): Router {
   const router = Router();
   router.use(createOrgAuthRouter({
-    orgGithubAuth: deps.orgGithubAuth
+    orgGithubAuth: deps.orgGithubAuth,
+    orgSessions: deps.orgSessions,
+    orgAccess: deps.orgAccess
   }));
   router.use(createOrgAccessRouter({
     orgAccess: deps.orgAccess,

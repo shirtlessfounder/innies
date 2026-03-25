@@ -60,19 +60,19 @@ Use this to get your own Claude or Codex/OpenAI login into a form an Innies admi
 - provider: `openai`
 - auth scheme: `bearer`
 - `tokens.access_token`
-- `tokens.refresh_token` if present
+- `tokens.refresh_token`
 
 ## Send To Admin
 
 Claude:
 - provider: `anthropic`
 - token: `sk-ant-oat...`
-- refresh token: optional, but useful if you have it
+- refresh token: required for the org dashboard add-token flow
 
 Codex:
 - provider: `openai`
 - access token: `tokens.access_token`
-- refresh token: `tokens.refresh_token` if present
+- refresh token: `tokens.refresh_token` (required for the org dashboard add-token flow; Innies probes the OAuth token before saving it)
 
 ## Quick Fixes
 - `claude` opens Innies instead of Claude Code: run `which -a claude` and use the non-wrapper path.

@@ -191,6 +191,17 @@ export function buildOrgSessionCookie(token: string): string {
   return buildCookieParts(ORG_SESSION_COOKIE_NAME, token, '/').join('; ');
 }
 
+export function buildOrgUiRedirectUrl(returnTo: string | null | undefined): string {
+  const normalized = returnTo?.trim();
+  const safeReturnTo = normalized
+    && normalized.startsWith('/')
+    && !normalized.startsWith('//')
+    && !normalized.includes('\\')
+    ? normalized
+    : '/';
+  return new URL(safeReturnTo, `${readPilotUiBaseUrl()}/`).toString();
+}
+
 export function buildClearOrgSessionCookie(): string {
   return [...buildCookieParts(ORG_SESSION_COOKIE_NAME, '', '/'), 'Max-Age=0'].join('; ');
 }

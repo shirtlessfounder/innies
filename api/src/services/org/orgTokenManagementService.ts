@@ -1,6 +1,8 @@
 import type { TokenCredential, TokenCredentialRepository } from '../../repos/tokenCredentialRepository.js';
 import type { TokenCredentialService } from '../tokenCredentialService.js';
 import { attemptTokenCredentialRefresh } from '../tokenCredentialOauthRefresh.js';
+import { probeAndUpdateTokenCredential, type TokenCredentialProbeOutcome } from '../tokenCredentialProbe.js';
+import { preflightValidateTokenMaterial, type ValidatedTokenMaterial } from '../tokenCredentialPreflight.js';
 import { AppError } from '../../utils/errors.js';
 import { isOpenAiOauthAccessToken, resolveOpenAiOauthExpiresAt } from '../../utils/openaiOauth.js';
 import type { OrgAccessRepository } from '../../repos/orgAccessRepository.js';
@@ -8,11 +10,26 @@ import type { OrgTokenRepository } from '../../repos/orgTokenRepository.js';
 
 type OrgAccessRepositoryLike = Pick<OrgAccessRepository, 'findOrgBySlug' | 'listMembers'>;
 type OrgTokenRepositoryLike = Pick<OrgTokenRepository, 'listOrgTokens'>;
-type TokenCredentialRepositoryLike = Pick<TokenCredentialRepository, 'getById'>;
+type TokenCredentialRepositoryLike = Pick<
+  TokenCredentialRepository,
+  'getById' | 'markProbeFailure' | 'reactivateFromMaxed' | 'refreshInPlace'
+>;
 type TokenCredentialServiceLike = Pick<
   TokenCredentialService,
   'create' | 'updateContributionCap' | 'revoke'
 >;
+
+function assertTokenCredentialService(
+  value: TokenCredentialServiceLike | undefined
+): TokenCredentialServiceLike {
+  if (!value
+    || typeof value.create !== 'function'
+    || typeof value.updateContributionCap !== 'function'
+    || typeof value.revoke !== 'function') {
+    throw new Error('OrgTokenManagementService requires tokenCredentialService');
+  }
+  return value;
+}
 
 function normalizeProvider(provider: string): string {
   const normalized = provider.trim().toLowerCase();
@@ -23,27 +40,16 @@ function isAnthropicOauthAccessToken(provider: string, accessToken: string): boo
   return provider === 'anthropic' && accessToken.includes('sk-ant-oat');
 }
 
-function resolveTokenCredentialAuthScheme(provider: string, accessToken: string): 'x_api_key' | 'bearer' {
-  if (isAnthropicOauthAccessToken(provider, accessToken)) {
-    return 'bearer';
-  }
-  if ((provider === 'openai' || provider === 'codex') && isOpenAiOauthAccessToken(accessToken)) {
-    return 'bearer';
-  }
-  return 'x_api_key';
-}
-
-function resolveTokenCredentialExpiresAt(provider: string, accessToken: string): Date {
-  if ((provider === 'openai' || provider === 'codex') && isOpenAiOauthAccessToken(accessToken)) {
-    return resolveOpenAiOauthExpiresAt(accessToken) ?? new Date('9999-12-31T23:59:59.999Z');
-  }
-  return new Date('9999-12-31T23:59:59.999Z');
-}
-
 export class OrgTokenManagementService {
   private readonly refreshTokenCredential: (
     credential: TokenCredential
   ) => Promise<TokenCredential | null>;
+  private readonly validateTokenMaterial: (
+    input: { provider: string; accessToken: string; refreshToken: string }
+  ) => Promise<ValidatedTokenMaterial>;
+  private readonly probeTokenCredential: (
+    credential: TokenCredential
+  ) => Promise<TokenCredentialProbeOutcome>;
 
   constructor(private readonly input: {
     orgAccessRepository: OrgAccessRepositoryLike;
@@ -53,9 +59,23 @@ export class OrgTokenManagementService {
     refreshTokenCredential?: (
       credential: TokenCredential
     ) => Promise<TokenCredential | null>;
+    validateTokenMaterial?: (
+      input: { provider: string; accessToken: string; refreshToken: string }
+    ) => Promise<ValidatedTokenMaterial>;
+    probeTokenCredential?: (
+      credential: TokenCredential
+    ) => Promise<TokenCredentialProbeOutcome>;
   }) {
+    this.input.tokenCredentialService = assertTokenCredentialService(input.tokenCredentialService);
     this.refreshTokenCredential = input.refreshTokenCredential
       ?? ((credential) => attemptTokenCredentialRefresh(
+        input.tokenCredentialRepository as TokenCredentialRepository,
+        credential
+      ));
+    this.validateTokenMaterial = input.validateTokenMaterial
+      ?? ((value) => preflightValidateTokenMaterial(value));
+    this.probeTokenCredential = input.probeTokenCredential
+      ?? ((credential) => probeAndUpdateTokenCredential(
         input.tokenCredentialRepository as TokenCredentialRepository,
         credential
       ));
@@ -65,7 +85,9 @@ export class OrgTokenManagementService {
     orgSlug: string;
     actorUserId: string;
     token: string;
+    refreshToken: string;
     provider: string;
+    debugLabel?: string;
     fiveHourReservePercent?: number;
     sevenDayReservePercent?: number;
   }): Promise<{ tokenId: string }> {
@@ -79,14 +101,20 @@ export class OrgTokenManagementService {
       input.sevenDayReservePercent,
       'sevenDayReservePercent'
     );
+    const validated = await this.validateTokenMaterial({
+      provider,
+      accessToken: input.token,
+      refreshToken: input.refreshToken
+    });
 
     const created = await this.input.tokenCredentialService.create({
       orgId: org.id,
       provider,
-      authScheme: resolveTokenCredentialAuthScheme(provider, input.token),
-      accessToken: input.token,
-      refreshToken: null,
-      expiresAt: resolveTokenCredentialExpiresAt(provider, input.token),
+      authScheme: 'bearer',
+      accessToken: validated.accessToken,
+      refreshToken: validated.refreshToken,
+      debugLabel: input.debugLabel?.trim() || null,
+      expiresAt: validated.expiresAt,
       createdBy: actorMembership.userId
     }, {
       actorUserId: actorMembership.userId
@@ -118,6 +146,87 @@ export class OrgTokenManagementService {
     if (!refreshed) {
       throw new AppError('upstream_error', 502, 'Token refresh failed');
     }
+  }
+
+  async updateOrgTokenReserve(input: {
+    orgSlug: string;
+    actorUserId: string;
+    tokenId: string;
+    fiveHourReservePercent: number;
+    sevenDayReservePercent: number;
+  }): Promise<{
+    tokenId: string;
+    fiveHourReservePercent: number;
+    sevenDayReservePercent: number;
+  }> {
+    const { org, actorMembership } = await this.resolveAuthorizedTokenMutation(input.orgSlug, input.actorUserId, input.tokenId);
+
+    if (!actorMembership.isOwner) {
+      throw new AppError('forbidden', 403, 'Owner access required');
+    }
+
+    const updated = await this.input.tokenCredentialService.updateContributionCap(input.tokenId, {
+      fiveHourReservePercent: this.normalizeReservePercent(input.fiveHourReservePercent, 'fiveHourReservePercent'),
+      sevenDayReservePercent: this.normalizeReservePercent(input.sevenDayReservePercent, 'sevenDayReservePercent')
+    }, {
+      actorUserId: actorMembership.userId
+    });
+
+    if (!updated || updated.orgId !== org.id) {
+      throw new AppError('not_found', 404, `Token not found: ${input.tokenId}`);
+    }
+
+    return {
+      tokenId: updated.id,
+      fiveHourReservePercent: updated.fiveHourReservePercent,
+      sevenDayReservePercent: updated.sevenDayReservePercent
+    };
+  }
+
+  async probeOrgToken(input: {
+    orgSlug: string;
+    actorUserId: string;
+    tokenId: string;
+  }): Promise<{
+    tokenId: string;
+    probeOk: boolean;
+    reactivated: boolean;
+    status: 'active' | 'maxed';
+    reason: string;
+    nextProbeAt: string | null;
+  }> {
+    const { org, actorMembership } = await this.resolveAuthorizedTokenMutation(
+      input.orgSlug,
+      input.actorUserId,
+      input.tokenId
+    );
+
+    if (!actorMembership.isOwner) {
+      throw new AppError('forbidden', 403, 'Owner access required');
+    }
+
+    const credential = await this.input.tokenCredentialRepository.getById(input.tokenId);
+    if (!credential || credential.orgId !== org.id) {
+      throw new AppError('not_found', 404, `Token not found: ${input.tokenId}`);
+    }
+    if (credential.status !== 'active' && credential.status !== 'maxed') {
+      throw new AppError('invalid_request', 409, 'Token credential must be active or maxed before manual probe', {
+        status: credential.status
+      });
+    }
+    if (credential.expiresAt.getTime() <= Date.now()) {
+      throw new AppError('invalid_request', 409, 'Token credential is expired and cannot be probed');
+    }
+
+    const probeOutcome = await this.probeTokenCredential(credential);
+    return {
+      tokenId: credential.id,
+      probeOk: probeOutcome.ok,
+      reactivated: probeOutcome.reactivated,
+      status: probeOutcome.status,
+      reason: probeOutcome.reason,
+      nextProbeAt: probeOutcome.nextProbeAt ? probeOutcome.nextProbeAt.toISOString() : null
+    };
   }
 
   async removeOrgToken(input: {

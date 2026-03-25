@@ -88,6 +88,20 @@ function createHarness(input?: {
             ownerUserId: org.ownerUserId
           };
         },
+        async findActiveOrgByUserId(userId: string) {
+          const activeMembership = repoState.memberships.find((entry) => entry.userId === userId && entry.endedAt === null);
+          if (!activeMembership) return null;
+
+          const org = repoState.orgs.find((entry) => entry.id === activeMembership.orgId);
+          if (!org) return null;
+
+          return {
+            id: org.id,
+            slug: org.slug,
+            name: org.name,
+            ownerUserId: org.ownerUserId
+          };
+        },
         async activateMembership(value: {
           orgId: string;
           userId: string;
@@ -329,6 +343,41 @@ describe('OrgMembershipService', () => {
     })).rejects.toThrow('already exists');
   });
 
+  it('allows org creation while the actor is already active in another org', async () => {
+    const harness = createHarness({
+      ids: ['org_2', 'membership_new_org'],
+      state: {
+        users: { user_owner: 'shipit' },
+        orgs: [{ id: 'org_existing', slug: 'launch-team', name: 'Launch Team', ownerUserId: 'user_other' }],
+        memberships: [
+          { membershipId: 'membership_existing', orgId: 'org_existing', userId: 'user_owner', endedAt: null }
+        ]
+      }
+    });
+
+    await expect(harness.service.createOrg({
+      orgName: 'Second Org',
+      actorUserId: 'user_owner',
+      actorGithubLogin: 'shipit'
+    })).resolves.toEqual({
+      orgId: 'org_2',
+      orgSlug: 'second-org',
+      reveal: {
+        buyerKey: 'in_live_membership_new_org',
+        reason: 'org_created'
+      }
+    });
+
+    expect(harness.getState().orgs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'org_existing', slug: 'launch-team' }),
+      expect.objectContaining({ id: 'org_2', slug: 'second-org', ownerUserId: 'user_owner' })
+    ]));
+    expect(harness.getState().memberships).toEqual(expect.arrayContaining([
+      expect.objectContaining({ membershipId: 'membership_existing', orgId: 'org_existing', userId: 'user_owner' }),
+      expect.objectContaining({ membershipId: 'membership_new_org', orgId: 'org_2', userId: 'user_owner', endedAt: null })
+    ]));
+  });
+
   it('returns already_a_member when the invite login already has an active membership', async () => {
     const harness = createHarness({
       state: {
@@ -532,6 +581,55 @@ describe('OrgMembershipService', () => {
       actorUserId: 'user_member',
       actorGithubLogin: 'Invited-User'
     })).resolves.toEqual({ kind: 'invite_no_longer_valid' });
+  });
+
+  it('accepts an invite while the actor remains active in another org', async () => {
+    const harness = createHarness({
+      ids: ['membership_new'],
+      state: {
+        orgs: [
+          { id: 'org_1', slug: 'launch-team', name: 'Launch Team', ownerUserId: 'user_owner' },
+          { id: 'org_2', slug: 'second-team', name: 'Second Team', ownerUserId: 'user_other' }
+        ],
+        users: {
+          user_owner: 'shipit',
+          user_other: 'other-owner',
+          user_member: 'invited-user'
+        },
+        memberships: [
+          { membershipId: 'membership_second', orgId: 'org_2', userId: 'user_member', endedAt: null }
+        ],
+        invites: [{
+          inviteId: 'invite_1',
+          orgId: 'org_1',
+          githubLogin: 'invited-user',
+          createdByUserId: 'user_owner',
+          status: 'pending',
+          createdAt: '2026-03-20T00:00:00.000Z'
+        }]
+      }
+    });
+
+    await expect(harness.service.acceptInvite({
+      orgSlug: 'launch-team',
+      actorUserId: 'user_member',
+      actorGithubLogin: 'Invited-User'
+    })).resolves.toEqual({
+      kind: 'invite_accepted',
+      membershipId: 'membership_new',
+      reveal: {
+        buyerKey: 'in_live_membership_new',
+        reason: 'invite_accepted'
+      }
+    });
+
+    expect(harness.getState().memberships).toEqual(expect.arrayContaining([
+      expect.objectContaining({ membershipId: 'membership_second', orgId: 'org_2', userId: 'user_member', endedAt: null }),
+      expect.objectContaining({ membershipId: 'membership_new', orgId: 'org_1', userId: 'user_member', endedAt: null })
+    ]));
+    expect(harness.getState().buyerKeys).toEqual(expect.arrayContaining([
+      expect.objectContaining({ membershipId: 'membership_new', orgId: 'org_1', userId: 'user_member', revoked: false })
+    ]));
   });
 
   it('reactivates an ended membership on the same row and issues a fresh buyer key', async () => {

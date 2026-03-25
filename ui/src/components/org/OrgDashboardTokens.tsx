@@ -1,15 +1,30 @@
 'use client';
 
-import type { FormEvent } from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import styles from './orgDashboard.module.css';
-import type { OrgDashboardPageState } from '../../lib/org/types';
+import analyticsStyles from '../../app/analytics/page.module.css';
+import { formatCount } from '../../lib/analytics/present';
+import type { OrgDashboardPageState, OrgTokenStatus } from '../../lib/org/types';
 
 type OrgDashboardTokensProps = Pick<
   OrgDashboardPageState,
   'org' | 'membership' | 'tokenPermissions' | 'tokens'
 >;
+
+type ReserveDraft = {
+  fiveHourReservePercent: string;
+  sevenDayReservePercent: string;
+};
+
+function buildReserveDrafts(tokens: OrgDashboardTokensProps['tokens']): Record<string, ReserveDraft> {
+  return Object.fromEntries(tokens.map((token) => [
+    token.tokenId,
+    {
+      fiveHourReservePercent: String(token.fiveHourReservePercent),
+      sevenDayReservePercent: String(token.sevenDayReservePercent),
+    },
+  ]));
+}
 
 function readErrorMessage(body: unknown, fallback: string): string {
   if (body && typeof body === 'object') {
@@ -37,17 +52,6 @@ async function safeReadBody(response: Response): Promise<unknown> {
   }
 }
 
-function parseOptionalReserve(value: FormDataEntryValue | null, label: string): number | undefined {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    return undefined;
-  }
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 100) {
-    throw new Error(`${label} reserve percent must be between 0 and 100.`);
-  }
-  return parsed;
-}
-
 function canManageToken(
   githubLogin: string,
   canManageAllTokens: boolean,
@@ -56,83 +60,51 @@ function canManageToken(
   return canManageAllTokens || (githubLogin.length > 0 && githubLogin === createdByGithubLogin);
 }
 
+function parseReservePercent(value: string, label: '5h' | '1w'): number {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error(`${label} reserve percent is required.`);
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 100) {
+    throw new Error(`${label} reserve percent must be between 0 and 100.`);
+  }
+  return parsed;
+}
+
+function formatTokenLabel(debugLabel: string | null): string {
+  const trimmed = debugLabel?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : '--';
+}
+
+function canProbeToken(status: OrgTokenStatus): boolean {
+  return status === 'active' || status === 'maxed';
+}
+
 export function OrgDashboardTokens(input: OrgDashboardTokensProps) {
   const { membership, org, tokenPermissions, tokens } = input;
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [reserveDrafts, setReserveDrafts] = useState<Record<string, ReserveDraft>>(() => buildReserveDrafts(tokens));
 
-  async function handleAddToken(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (pendingAction) return;
+  useEffect(() => {
+    setReserveDrafts(buildReserveDrafts(tokens));
+  }, [tokens]);
 
-    const form = event.currentTarget;
-    const formData = new FormData(form);
-
-    let fiveHourReservePercent: number | undefined;
-    let sevenDayReservePercent: number | undefined;
-
-    try {
-      fiveHourReservePercent = parseOptionalReserve(formData.get('fiveHourReservePercent'), '5h');
-      sevenDayReservePercent = parseOptionalReserve(formData.get('sevenDayReservePercent'), '1w');
-    } catch (parseError) {
-      setError(parseError instanceof Error ? parseError.message : 'Reserve values are invalid.');
-      return;
-    }
-
-    const provider = String(formData.get('provider') ?? '').trim();
-    const token = String(formData.get('token') ?? '').trim();
-    if (!provider || !token) {
-      setError('Provider and token are required.');
-      return;
-    }
-
-    setPendingAction('add');
-    setError(null);
-
-    try {
-      const response = await fetch(`/api/orgs/${org.slug}/tokens/add`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          provider,
-          token,
-          ...(fiveHourReservePercent === undefined ? {} : { fiveHourReservePercent }),
-          ...(sevenDayReservePercent === undefined ? {} : { sevenDayReservePercent }),
-        }),
-      });
-      const body = await safeReadBody(response);
-      if (!response.ok) {
-        setError(readErrorMessage(body, 'Could not add this token.'));
-        return;
-      }
-
-      form.reset();
-      router.refresh();
-    } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Could not add this token.');
-    } finally {
-      setPendingAction(null);
-    }
-  }
-
-  async function mutateToken(token: { tokenId: string }, action: 'refresh' | 'remove') {
+  async function mutateToken(token: { tokenId: string }, action: 'probe' | 'remove') {
     if (pendingAction) return;
 
     setPendingAction(`${action}:${token.tokenId}`);
     setError(null);
 
     try {
-      const response = await fetch(
-        action === 'refresh'
-          ? `/api/orgs/${org.slug}/tokens/${token.tokenId}/refresh`
-          : `/api/orgs/${org.slug}/tokens/${token.tokenId}/remove`,
-        {
-          method: 'POST',
-        },
-      );
+      const path = action === 'probe'
+        ? `/api/orgs/${org.slug}/tokens/${token.tokenId}/probe`
+        : `/api/orgs/${org.slug}/tokens/${token.tokenId}/remove`;
+      const response = await fetch(path, {
+        method: 'POST',
+      });
       const body = await safeReadBody(response);
       if (!response.ok) {
         setError(readErrorMessage(body, `Could not ${action} this token.`));
@@ -147,59 +119,102 @@ export function OrgDashboardTokens(input: OrgDashboardTokensProps) {
     }
   }
 
+  function updateReserveDraft(
+    tokenId: string,
+    field: keyof ReserveDraft,
+    value: string,
+  ) {
+    setReserveDrafts((current) => ({
+      ...current,
+      [tokenId]: {
+        ...(current[tokenId] ?? {
+          fiveHourReservePercent: '0',
+          sevenDayReservePercent: '0',
+        }),
+        [field]: value,
+      },
+    }));
+  }
+
+  async function saveReserveFloors(token: {
+    tokenId: string;
+    fiveHourReservePercent: number;
+    sevenDayReservePercent: number;
+  }) {
+    if (pendingAction) return;
+
+    const draft = reserveDrafts[token.tokenId] ?? {
+      fiveHourReservePercent: String(token.fiveHourReservePercent),
+      sevenDayReservePercent: String(token.sevenDayReservePercent),
+    };
+
+    let fiveHourReservePercent: number;
+    let sevenDayReservePercent: number;
+
+    try {
+      fiveHourReservePercent = parseReservePercent(draft.fiveHourReservePercent, '5h');
+      sevenDayReservePercent = parseReservePercent(draft.sevenDayReservePercent, '1w');
+    } catch (parseError) {
+      setError(parseError instanceof Error ? parseError.message : 'Reserve values are invalid.');
+      return;
+    }
+
+    setPendingAction(`reserve:${token.tokenId}`);
+    setError(null);
+
+    try {
+      const response = await fetch(`/api/orgs/${org.slug}/tokens/${token.tokenId}/reserve-floors`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          fiveHourReservePercent,
+          sevenDayReservePercent,
+        }),
+      });
+      const body = await safeReadBody(response);
+      if (!response.ok) {
+        setError(readErrorMessage(body, 'Could not save reserve floors for this token.'));
+        return;
+      }
+
+      router.refresh();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : 'Could not save reserve floors for this token.');
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
   return (
-    <section className={styles.section}>
-      <div className={styles.sectionHeader}>
-        <div>
-          <h2 className={styles.sectionTitle}>Org tokens</h2>
-          <p className={styles.sectionHint}>
-            Borrow Claude and Codex capacity into this org, keep creator attribution visible, and preserve the existing 5h / 1w reserve model.
-          </p>
+    <section className={analyticsStyles.section}>
+      <div className={analyticsStyles.sectionHeader}>
+        <div className={analyticsStyles.sectionTitle}>Org tokens</div>
+        <div className={analyticsStyles.sectionMeta}>
+          {`${formatCount(tokens.length)} TOKENS`}
         </div>
       </div>
 
-      {error ? <p className={styles.errorBox}>{error}</p> : null}
-
-      <form className={styles.cardGrid} onSubmit={handleAddToken}>
-        <label className={styles.fieldLabel}>
-          Provider
-          <select className={styles.select} defaultValue="anthropic" name="provider">
-            <option value="anthropic">Claude</option>
-            <option value="openai">Codex</option>
-          </select>
-        </label>
-
-        <label className={styles.fieldLabel}>
-          Token
-          <input className={styles.input} name="token" placeholder="Paste provider token" required type="password" />
-        </label>
-
-        <label className={styles.fieldLabel}>
-          5h reserve %
-          <input className={styles.input} inputMode="numeric" name="fiveHourReservePercent" placeholder="Optional" type="number" />
-        </label>
-
-        <label className={styles.fieldLabel}>
-          1w reserve %
-          <input className={styles.input} inputMode="numeric" name="sevenDayReservePercent" placeholder="Optional" type="number" />
-        </label>
-
-        <div className={styles.formActions}>
-          <button className={styles.actionButton} disabled={pendingAction === 'add'} type="submit">
-            {pendingAction === 'add' ? 'Adding token...' : 'Add token'}
-          </button>
+      {error ? (
+        <div className={analyticsStyles.noticeList}>
+          <div className={analyticsStyles.noticeError}>{error}</div>
         </div>
-      </form>
+      ) : null}
 
-      <div className={styles.tableWrap}>
-        <table className={styles.table}>
+      {tokens.length === 0 ? (
+        <div className={analyticsStyles.emptyStateText}>No org tokens yet.</div>
+      ) : (
+      <div className={analyticsStyles.tableWrap}>
+        <table className={analyticsStyles.table}>
           <thead>
             <tr>
               <th>Provider</th>
               <th>Creator</th>
-              <th>5h</th>
-              <th>1w</th>
-              <th>Actions</th>
+              <th>Token</th>
+              <th className={analyticsStyles.numeric}>5h</th>
+              <th className={analyticsStyles.numeric}>1w</th>
+              <th className={analyticsStyles.tableActionsColumn}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -209,34 +224,88 @@ export function OrgDashboardTokens(input: OrgDashboardTokensProps) {
                 tokenPermissions.canManageAllTokens,
                 token.createdByGithubLogin,
               );
+              const reserveDraft = reserveDrafts[token.tokenId] ?? {
+                fiveHourReservePercent: String(token.fiveHourReservePercent),
+                sevenDayReservePercent: String(token.sevenDayReservePercent),
+              };
+              const probeEnabled = canProbeToken(token.status);
+              const reserveDirty = reserveDraft.fiveHourReservePercent !== String(token.fiveHourReservePercent)
+                || reserveDraft.sevenDayReservePercent !== String(token.sevenDayReservePercent);
               return (
                 <tr key={token.tokenId}>
-                  <td>{token.provider}</td>
+                  <td>{token.provider === 'openai' ? 'Codex' : 'Claude'}</td>
                   <td>{token.createdByGithubLogin ?? token.createdByUserId ?? '--'}</td>
-                  <td>{token.fiveHourReservePercent}%</td>
-                  <td>{token.sevenDayReservePercent}%</td>
-                  <td>
+                  <td>{formatTokenLabel(token.debugLabel)}</td>
+                  <td className={analyticsStyles.numeric}>
+                    {tokenPermissions.canManageAllTokens ? (
+                      <label className={analyticsStyles.tableBracketField}>
+                        <span className={analyticsStyles.tableBracketAffix} aria-hidden="true">[</span>
+                        <input
+                          className={analyticsStyles.tableBracketInput}
+                          inputMode="numeric"
+                          max={100}
+                          min={0}
+                          name="fiveHourReservePercent"
+                          onChange={(event) => updateReserveDraft(token.tokenId, 'fiveHourReservePercent', event.target.value)}
+                          type="number"
+                          value={reserveDraft.fiveHourReservePercent}
+                        />
+                        <span className={analyticsStyles.tableBracketAffix} aria-hidden="true">]</span>
+                      </label>
+                    ) : <span className={analyticsStyles.tableBracketValue}>[{token.fiveHourReservePercent}]</span>}
+                  </td>
+                  <td className={analyticsStyles.numeric}>
+                    {tokenPermissions.canManageAllTokens ? (
+                      <label className={analyticsStyles.tableBracketField}>
+                        <span className={analyticsStyles.tableBracketAffix} aria-hidden="true">[</span>
+                        <input
+                          className={analyticsStyles.tableBracketInput}
+                          inputMode="numeric"
+                          max={100}
+                          min={0}
+                          name="sevenDayReservePercent"
+                          onChange={(event) => updateReserveDraft(token.tokenId, 'sevenDayReservePercent', event.target.value)}
+                          type="number"
+                          value={reserveDraft.sevenDayReservePercent}
+                        />
+                        <span className={analyticsStyles.tableBracketAffix} aria-hidden="true">]</span>
+                      </label>
+                    ) : <span className={analyticsStyles.tableBracketValue}>[{token.sevenDayReservePercent}]</span>}
+                  </td>
+                  <td className={analyticsStyles.tableActionsColumn}>
                     {manageable ? (
-                      <div className={styles.inlineActions}>
+                      <div className={analyticsStyles.managementInlineActions}>
                         <button
-                          className={styles.inlineButton}
-                          disabled={pendingAction === `refresh:${token.tokenId}`}
-                          onClick={() => mutateToken(token, 'refresh')}
+                          className={analyticsStyles.managementTableActionButton}
+                          disabled={pendingAction !== null || !reserveDirty}
+                          onClick={() => {
+                            void saveReserveFloors(token);
+                          }}
                           type="button"
                         >
-                          Refresh
+                          [save]
                         </button>
+                        {probeEnabled ? (
+                          <button
+                            className={analyticsStyles.managementTableActionButton}
+                            disabled={pendingAction !== null}
+                            onClick={() => mutateToken(token, 'probe')}
+                            type="button"
+                          >
+                            [probe]
+                          </button>
+                        ) : null}
                         <button
-                          className={styles.inlineButton}
-                          disabled={pendingAction === `remove:${token.tokenId}`}
+                          className={analyticsStyles.managementTableActionButton}
+                          disabled={pendingAction !== null}
                           onClick={() => mutateToken(token, 'remove')}
                           type="button"
                         >
-                          Remove
+                          [remove]
                         </button>
                       </div>
                     ) : (
-                      <span className={styles.muted}>Owner or creator only</span>
+                      <span className={analyticsStyles.managementMuted}>Owner or creator only</span>
                     )}
                   </td>
                 </tr>
@@ -245,8 +314,7 @@ export function OrgDashboardTokens(input: OrgDashboardTokensProps) {
           </tbody>
         </table>
       </div>
-
-      {tokens.length === 0 ? <div className={styles.emptyState}>No org tokens yet.</div> : null}
+      )}
     </section>
   );
 }

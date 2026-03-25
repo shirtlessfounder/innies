@@ -2,6 +2,7 @@ import type { SqlClient, SqlQueryResult, SqlValue, TransactionContext } from './
 import { TABLES } from './tableNames.js';
 import { newId } from '../utils/ids.js';
 import { decryptSecret, encryptSecret } from '../utils/crypto.js';
+import { sha256Hex } from '../utils/hash.js';
 
 export type TokenAuthScheme = 'x_api_key' | 'bearer';
 export type TokenCredentialStatus = 'active' | 'paused' | 'rotating' | 'maxed' | 'expired' | 'revoked';
@@ -94,6 +95,23 @@ export type RotateTokenCredentialInput = {
 export type UpdateTokenCredentialContributionCapInput = {
   fiveHourReservePercent?: number;
   sevenDayReservePercent?: number;
+};
+
+export class DuplicateTokenCredentialLabelError extends Error {
+  constructor(
+    readonly provider: string,
+    readonly debugLabel: string
+  ) {
+    super(`A token with provider "${provider}" and label "${debugLabel}" already exists for this org.`);
+    this.name = 'DuplicateTokenCredentialLabelError';
+  }
+}
+
+type TokenCredentialDuplicateLookupRow = {
+  id: string;
+  org_id: string;
+  status: TokenCredentialStatus;
+  encrypted_access_token: Buffer | string;
 };
 
 type ClaudeContributionCapLifecycleTransition = 'exhausted' | 'cleared' | null;
@@ -264,6 +282,15 @@ function routingProvidersForLookup(provider: string): string[] {
     : [normalized];
 }
 
+function normalizeDebugLabel(debugLabel: string | null | undefined): string | null {
+  if (typeof debugLabel !== 'string') {
+    return null;
+  }
+
+  const trimmed = debugLabel.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function contributionCapLifecycleMetadata(input: {
   window: ClaudeContributionCapWindow;
   latestEventType: string | null;
@@ -289,6 +316,40 @@ function contributionCapLifecycleMetadata(input: {
 export class TokenCredentialRepository {
   constructor(private readonly db: SqlClient) {}
 
+  private async assertNoDuplicateDebugLabel(
+    client: TransactionContext,
+    input: {
+      orgId: string;
+      provider: string;
+      debugLabel: string | null;
+      excludeId?: string | null;
+    }
+  ): Promise<void> {
+    if (!input.debugLabel) {
+      return;
+    }
+
+    const duplicate = await client.query<{ id: string }>(
+      `
+        select id
+        from ${TABLES.tokenCredentials}
+        where org_id = $1
+          and provider = $2
+          and status <> 'revoked'
+          and debug_label is not null
+          and btrim(debug_label) = $3
+          and ($4::uuid is null or id <> $4)
+        limit 1
+        for update
+      `,
+      [input.orgId, input.provider, input.debugLabel, input.excludeId ?? null]
+    );
+
+    if (duplicate.rowCount > 0) {
+      throw new DuplicateTokenCredentialLabelError(input.provider, input.debugLabel);
+    }
+  }
+
   async listByOrg(orgId: string): Promise<TokenCredential[]> {
     const sql = (input: {
       includeContributionCapColumns: boolean;
@@ -309,8 +370,38 @@ export class TokenCredentialRepository {
     return result.rows.map(mapRow);
   }
 
+  async findNonRevokedByAccessToken(accessToken: string): Promise<{
+    id: string;
+    orgId: string;
+    status: TokenCredentialStatus;
+  } | null> {
+    const result = await this.db.query<TokenCredentialDuplicateLookupRow>(
+      `select
+        id,
+        org_id,
+        status,
+        encrypted_access_token
+      from ${TABLES.tokenCredentials}
+      where status <> 'revoked'`,
+      []
+    );
+
+    for (const row of result.rows) {
+      if (decryptSecret(row.encrypted_access_token) === accessToken) {
+        return {
+          id: row.id,
+          orgId: row.org_id,
+          status: row.status
+        };
+      }
+    }
+
+    return null;
+  }
+
   async create(input: CreateTokenCredentialInput): Promise<{ id: string; rotationVersion: number }> {
     return this.db.transaction(async (tx) => {
+      const normalizedDebugLabel = normalizeDebugLabel(input.debugLabel ?? null);
       const latestSql = `
         select rotation_version
         from ${TABLES.tokenCredentials}
@@ -321,6 +412,12 @@ export class TokenCredentialRepository {
       `;
       const latest = await tx.query<{ rotation_version: number }>(latestSql, [input.orgId, input.provider]);
       const nextRotationVersion = (latest.rowCount === 1 ? latest.rows[0].rotation_version : 0) + 1;
+
+      await this.assertNoDuplicateDebugLabel(tx, {
+        orgId: input.orgId,
+        provider: input.provider,
+        debugLabel: normalizedDebugLabel
+      });
 
       const id = newId();
       const insertSql = `
@@ -336,12 +433,13 @@ export class TokenCredentialRepository {
           monthly_contribution_used_units,
           monthly_window_start_at,
           debug_label,
+          access_token_sha256,
           status,
           rotation_version,
           created_by,
           created_at,
           updated_at
-        ) values ($1,$2,$3,$4,$5,$6,$7,$8,0,${currentUtcMonthStartExpr()},$9,'active',$10,$11,now(),now())
+        ) values ($1,$2,$3,$4,$5,$6,$7,$8,0,${currentUtcMonthStartExpr()},$9,$10,'active',$11,$12,now(),now())
         returning id, rotation_version
       `;
 
@@ -354,7 +452,8 @@ export class TokenCredentialRepository {
         input.refreshToken ? encryptSecret(input.refreshToken) : null,
         input.expiresAt,
         input.monthlyContributionLimitUnits ?? null,
-        input.debugLabel ?? null,
+        normalizedDebugLabel,
+        sha256Hex(input.accessToken),
         nextRotationVersion,
         input.createdBy ?? null
       ];
@@ -453,6 +552,7 @@ export class TokenCredentialRepository {
         encrypted_access_token = $2,
         encrypted_refresh_token = $3,
         expires_at = $4,
+        access_token_sha256 = $6,
         monthly_contribution_used_units = case
           when monthly_window_start_at < ${currentUtcMonthStartExpr()}
           then 0
@@ -520,7 +620,8 @@ export class TokenCredentialRepository {
       encryptSecret(input.accessToken),
       input.refreshToken ? encryptSecret(input.refreshToken) : null,
       input.expiresAt,
-      input.preserveStatus === true
+      input.preserveStatus === true,
+      sha256Hex(input.accessToken)
     ];
 
     const result = await queryTokenCredentialRowsWithSchemaFallback(this.db, sql, params);
@@ -553,37 +654,70 @@ export class TokenCredentialRepository {
     provider: string;
     debugLabel: string;
   } | null> {
-    const sql = `
-      update ${TABLES.tokenCredentials}
-      set
-        debug_label = $2,
-        updated_at = now()
-      where id = $1
-        and status <> 'revoked'
-      returning
-        id,
-        org_id,
-        provider,
-        debug_label
-    `;
+    return this.db.transaction(async (tx) => {
+      const existing = await tx.query<{
+        id: string;
+        org_id: string;
+        provider: string;
+        status: TokenCredentialStatus;
+        debug_label: string | null;
+      }>(
+        `
+          select id, org_id, provider, status, debug_label
+          from ${TABLES.tokenCredentials}
+          where id = $1
+          limit 1
+          for update
+        `,
+        [id]
+      );
 
-    const result = await this.db.query<{
-      id: string;
-      org_id: string;
-      provider: string;
-      debug_label: string;
-    }>(sql, [id, debugLabel]);
+      if (existing.rowCount !== 1 || existing.rows[0].status === 'revoked') {
+        return null;
+      }
 
-    if (result.rowCount !== 1) {
-      return null;
-    }
+      const normalizedDebugLabel = normalizeDebugLabel(debugLabel) ?? debugLabel;
 
-    return {
-      id: result.rows[0].id,
-      orgId: result.rows[0].org_id,
-      provider: result.rows[0].provider,
-      debugLabel: result.rows[0].debug_label
-    };
+      await this.assertNoDuplicateDebugLabel(tx, {
+        orgId: existing.rows[0].org_id,
+        provider: existing.rows[0].provider,
+        debugLabel: normalizedDebugLabel,
+        excludeId: id
+      });
+
+      const result = await tx.query<{
+        id: string;
+        org_id: string;
+        provider: string;
+        debug_label: string;
+      }>(
+        `
+          update ${TABLES.tokenCredentials}
+          set
+            debug_label = $2,
+            updated_at = now()
+          where id = $1
+            and status <> 'revoked'
+          returning
+            id,
+            org_id,
+            provider,
+            debug_label
+        `,
+        [id, normalizedDebugLabel]
+      );
+
+      if (result.rowCount !== 1) {
+        return null;
+      }
+
+      return {
+        id: result.rows[0].id,
+        orgId: result.rows[0].org_id,
+        provider: result.rows[0].provider,
+        debugLabel: result.rows[0].debug_label
+      };
+    });
   }
 
   async updateContributionCap(
@@ -725,6 +859,15 @@ export class TokenCredentialRepository {
           : null;
       }
 
+      const normalizedDebugLabel = normalizeDebugLabel(input.debugLabel ?? previousCredential?.debugLabel ?? null);
+
+      await this.assertNoDuplicateDebugLabel(tx, {
+        orgId: input.orgId,
+        provider: input.provider,
+        debugLabel: normalizedDebugLabel,
+        excludeId: previousCredential?.id ?? null
+      });
+
       if (previousCredential?.status === 'active') {
         await tx.query(
           `
@@ -750,12 +893,13 @@ export class TokenCredentialRepository {
           monthly_contribution_used_units,
           monthly_window_start_at,
           debug_label,
+          access_token_sha256,
           status,
           rotation_version,
           created_by,
           created_at,
           updated_at
-        ) values ($1,$2,$3,$4,$5,$6,$7,$8,0,${currentUtcMonthStartExpr()},$9,'active',$10,$11,now(),now())
+        ) values ($1,$2,$3,$4,$5,$6,$7,$8,0,${currentUtcMonthStartExpr()},$9,$10,'active',$11,$12,now(),now())
       `;
 
       const insertParams: SqlValue[] = [
@@ -767,7 +911,8 @@ export class TokenCredentialRepository {
         input.refreshToken ? encryptSecret(input.refreshToken) : null,
         input.expiresAt,
         input.monthlyContributionLimitUnits ?? null,
-        input.debugLabel ?? previousCredential?.debugLabel ?? null,
+        normalizedDebugLabel,
+        sha256Hex(input.accessToken),
         nextRotationVersion,
         input.createdBy ?? null
       ];

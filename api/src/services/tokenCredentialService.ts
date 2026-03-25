@@ -1,5 +1,6 @@
 import { AuditLogRepository } from '../repos/auditLogRepository.js';
 import {
+  DuplicateTokenCredentialLabelError,
   TokenCredentialRepository,
   type CreateTokenCredentialInput,
   type RotateTokenCredentialInput,
@@ -12,6 +13,39 @@ type ActorContext = {
   actorUserId?: string | null;
 };
 
+const DUPLICATE_BORROWED_TOKEN_CONSTRAINT = 'uq_in_token_credentials_access_token_sha256_active';
+const DUPLICATE_BORROWED_TOKEN_MESSAGE = 'This token is already lent to an org and cannot be added again until it is removed.';
+
+function isDuplicateBorrowedTokenWriteConflict(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  const details = error as { code?: string; constraint?: string };
+  return details.code === '23505' && details.constraint === DUPLICATE_BORROWED_TOKEN_CONSTRAINT;
+}
+
+function buildDuplicateBorrowedTokenError(): AppError {
+  return new AppError('invalid_request', 409, DUPLICATE_BORROWED_TOKEN_MESSAGE);
+}
+
+function normalizeDebugLabel(debugLabel: string | null | undefined): string | null {
+  if (typeof debugLabel !== 'string') {
+    return null;
+  }
+
+  const trimmed = debugLabel.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function isDuplicateTokenCredentialLabelError(error: unknown): error is DuplicateTokenCredentialLabelError {
+  return error instanceof DuplicateTokenCredentialLabelError;
+}
+
+function buildDuplicateTokenCredentialLabelError(error: DuplicateTokenCredentialLabelError): AppError {
+  return new AppError('invalid_request', 409, error.message);
+}
+
 export class TokenCredentialService {
   constructor(
     private readonly repo: TokenCredentialRepository,
@@ -19,7 +53,28 @@ export class TokenCredentialService {
   ) {}
 
   async create(input: CreateTokenCredentialInput, actor?: ActorContext): Promise<{ id: string; rotationVersion: number }> {
-    const created = await this.repo.create(input);
+    const normalizedDebugLabel = normalizeDebugLabel(input.debugLabel);
+    const existing = await this.repo.findNonRevokedByAccessToken(input.accessToken);
+    if (existing) {
+      throw buildDuplicateBorrowedTokenError();
+    }
+
+    let created: { id: string; rotationVersion: number };
+    try {
+      created = await this.repo.create({
+        ...input,
+        debugLabel: normalizedDebugLabel
+      });
+    } catch (error) {
+      if (isDuplicateTokenCredentialLabelError(error)) {
+        throw buildDuplicateTokenCredentialLabelError(error);
+      }
+      if (isDuplicateBorrowedTokenWriteConflict(error)) {
+        throw buildDuplicateBorrowedTokenError();
+      }
+      throw error;
+    }
+
     await this.auditLogs.createEvent({
       actorApiKeyId: actor?.actorApiKeyId ?? null,
       actorUserId: actor?.actorUserId ?? null,
@@ -30,7 +85,7 @@ export class TokenCredentialService {
       metadata: {
         provider: input.provider,
         authScheme: input.authScheme,
-        debugLabel: input.debugLabel ?? null,
+        debugLabel: normalizedDebugLabel,
         rotationVersion: created.rotationVersion
       }
     });
@@ -38,10 +93,17 @@ export class TokenCredentialService {
   }
 
   async rotate(input: RotateTokenCredentialInput, actor?: ActorContext): Promise<{ id: string; rotationVersion: number; previousId: string | null }> {
+    const normalizedDebugLabel = normalizeDebugLabel(input.debugLabel);
     let rotated: { id: string; rotationVersion: number; previousId: string | null };
     try {
-      rotated = await this.repo.rotate(input);
+      rotated = await this.repo.rotate({
+        ...input,
+        debugLabel: normalizedDebugLabel
+      });
     } catch (error) {
+      if (isDuplicateTokenCredentialLabelError(error)) {
+        throw buildDuplicateTokenCredentialLabelError(error);
+      }
       if (
         error instanceof Error
         && error.message.includes('not found or not rotatable for org/provider')
@@ -64,7 +126,7 @@ export class TokenCredentialService {
       metadata: {
         provider: input.provider,
         authScheme: input.authScheme,
-        debugLabel: input.debugLabel ?? null,
+        debugLabel: normalizedDebugLabel,
         rotationVersion: rotated.rotationVersion,
         previousId: rotated.previousId
       }
@@ -242,22 +304,40 @@ export class TokenCredentialService {
     debugLabel: string;
     changed: boolean;
   } | null> {
+    const normalizedDebugLabel = normalizeDebugLabel(debugLabel);
+    if (!normalizedDebugLabel) {
+      throw new AppError('invalid_request', 400, 'Token credential label must not be empty');
+    }
+
     const existing = await this.repo.getById(id);
     if (!existing || existing.status === 'revoked') {
       return null;
     }
 
-    if (existing.debugLabel === debugLabel) {
+    if (normalizeDebugLabel(existing.debugLabel) === normalizedDebugLabel) {
       return {
         id,
         orgId: existing.orgId,
         provider: existing.provider,
-        debugLabel,
+        debugLabel: normalizedDebugLabel,
         changed: false,
       };
     }
 
-    const updated = await this.repo.updateDebugLabel(id, debugLabel);
+    let updated: {
+      id: string;
+      orgId: string;
+      provider: string;
+      debugLabel: string;
+    } | null;
+    try {
+      updated = await this.repo.updateDebugLabel(id, normalizedDebugLabel);
+    } catch (error) {
+      if (isDuplicateTokenCredentialLabelError(error)) {
+        throw buildDuplicateTokenCredentialLabelError(error);
+      }
+      throw error;
+    }
     if (!updated) {
       return null;
     }

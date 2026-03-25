@@ -1,10 +1,10 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { TbEye, TbEyeClosed } from 'react-icons/tb';
 import { AnalyticsChart } from '../../components/analytics/AnalyticsChart';
-import { BuyerTable, TokenTable } from '../../components/analytics/AnalyticsTables';
+import { BuyerTable, TokenTable, type TokenRowRemoveConfig } from '../../components/analytics/AnalyticsTables';
 import { useAnalyticsDashboard } from '../../hooks/useAnalyticsDashboard';
 import { useAnalyticsSeries } from '../../hooks/useAnalyticsSeries';
 import {
@@ -42,6 +42,7 @@ import {
   type AnalyticsMetric,
   type AnalyticsPageWindow,
 } from '../../lib/analytics/types';
+import type { OrgHeaderOrg } from '../../lib/org/types';
 import styles from './page.module.css';
 
 type SeriesMode = 'token' | 'buyer';
@@ -237,7 +238,28 @@ function eventDetailLabel(event: AnalyticsEventRow): string | null {
 export function AnalyticsDashboardClient(input: {
   dashboardPath?: string;
   timeseriesPath?: string;
+  toolbarLead?: ReactNode;
+  toolbarAction?: ReactNode;
+  tokenSectionMetaAction?: ReactNode;
+  tokenRowRemoveConfig?: TokenRowRemoveConfig;
+  authGithubLogin?: string | null;
+  authStartUrl?: string | null;
+  activeOrgs?: OrgHeaderOrg[];
+  orgSlug?: string | null;
+  title?: string;
+  kickerLabel?: string;
+  tokenSectionTitle?: string;
+  buyerSectionTitle?: string;
+  children?: ReactNode;
 } = {}) {
+  const authGithubLogin = input.authGithubLogin?.trim() || null;
+  const authStartUrl = input.authStartUrl?.trim() || null;
+  const activeOrgs = input.activeOrgs ?? [];
+  const orgSlug = input.orgSlug?.trim() || 'innies';
+  const dashboardTitle = input.title ?? (orgSlug === 'innies' ? 'monitor the innies' : `monitor ${orgSlug}`);
+  const kickerLabel = input.kickerLabel ?? ` / ${orgSlug.toUpperCase()}`;
+  const tokenSectionTitle = input.tokenSectionTitle ?? `TOKEN CREDS (${orgSlug})`;
+  const buyerSectionTitle = input.buyerSectionTitle ?? 'BUYER KEYS (outies)';
   const dashboard = useAnalyticsDashboard('24h', {
     dashboardPath: input.dashboardPath,
   });
@@ -368,13 +390,30 @@ export function AnalyticsDashboardClient(input: {
     <div className={styles.console}>
       <header className={styles.consoleHeader}>
         <div className={styles.headerBlock}>
-          <div className={styles.kicker}>
-            <Link className={styles.homeLink} href="/">
-              INNIES.COMPUTER
-            </Link>
-            <span> / ANALYTICS</span>
+        <div className={styles.kicker}>
+          <Link className={styles.homeLink} href="/">
+            INNIES.COMPUTER
+          </Link>
+          <span>{kickerLabel}</span>
+        </div>
+        {activeOrgs.length > 0 ? (
+          <div className={styles.promptLine}>
+            <span className={styles.promptPrefix}>ORGS:</span>
+            <span className={styles.promptCommand}>
+              <span className={styles.promptCommandText}>
+                {activeOrgs.map((org, index) => (
+                  <span key={org.slug}>
+                    {index > 0 ? ', ' : ''}
+                    <Link className={styles.liveMetaLink} href={`/${org.slug}`}>
+                      {org.slug}
+                    </Link>
+                  </span>
+                ))}
+              </span>
+            </span>
           </div>
-          <h1 className={styles.title}>monitor the innies</h1>
+        ) : null}
+        <h1 className={styles.title}>{dashboardTitle}</h1>
           <div className={styles.promptLine}>
             <span className={styles.promptPrefix}>innies:~$</span>
             <span className={styles.promptCommand}>
@@ -394,12 +433,46 @@ export function AnalyticsDashboardClient(input: {
           <span className={styles.liveText}>
             LAST {formatTimestamp(dashboard.lastSuccessfulUpdateAt)} {formatLocalTimeZoneAbbreviation(dashboard.lastSuccessfulUpdateAt)}
           </span>
-        </div>
-      </header>
+          <span className={styles.liveTextSecondary}>
+            {authGithubLogin ? (
+              <>
+                AUTH:{' '}
+                <a
+                  className={styles.liveMetaLink}
+                  href={`https://github.com/${authGithubLogin}`}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  {authGithubLogin}
+                </a>
+              </>
+            ) : authStartUrl ? (
+              <a className={styles.liveMetaLink} href={authStartUrl}>
+                [CLICK TO LOG IN WITH GITHUB]
+              </a>
+          ) : (
+            <>
+              AUTH:{' '}
+              <span className={styles.liveMetaMuted}>None</span>
+            </>
+          )}
+        </span>
+      </div>
+    </header>
 
       <div className={styles.toolbar}>
         <div className={styles.toolbarMain}>
-          <div className={styles.segmented}>
+          {input.toolbarLead ? (
+            <div className={`${styles.segmented} ${styles.toolbarGroupLead}`}>
+              {input.toolbarLead}
+            </div>
+          ) : null}
+
+          <div className={[
+            styles.segmented,
+            styles.toolbarGroupWindows,
+            input.toolbarLead ? styles.toolbarGroupDivided : '',
+          ].filter(Boolean).join(' ')}>
             {ANALYTICS_PAGE_WINDOWS.map((window) => (
               <button
                 key={window}
@@ -419,7 +492,7 @@ export function AnalyticsDashboardClient(input: {
             ))}
           </div>
 
-          <div className={styles.segmented}>
+          <div className={`${styles.segmented} ${styles.toolbarGroupSeries} ${styles.toolbarGroupDivided}`}>
             <button
               className={seriesMode === 'token' ? styles.windowButtonActive : styles.windowButton}
               onClick={() => setSeriesMode('token')}
@@ -436,7 +509,7 @@ export function AnalyticsDashboardClient(input: {
             </button>
           </div>
 
-          <div className={styles.segmented}>
+          <div className={`${styles.segmented} ${styles.toolbarGroupMetrics} ${styles.toolbarGroupDivided}`}>
             {availableMetrics.map((entry) => (
               <button
                 key={entry}
@@ -451,12 +524,16 @@ export function AnalyticsDashboardClient(input: {
         </div>
 
         <div className={styles.toolbarActions}>
-          <button className={styles.controlButton} onClick={() => dashboard.setPaused(!dashboard.paused)} type="button">
-            {dashboard.paused ? 'RESUME' : 'PAUSE'}
-          </button>
-          <button className={styles.controlButton} onClick={dashboard.refresh} type="button">
-            REFRESH
-          </button>
+          {input.toolbarAction ?? (
+            <>
+              <button className={styles.controlButton} onClick={() => dashboard.setPaused(!dashboard.paused)} type="button">
+                {dashboard.paused ? 'RESUME' : 'PAUSE'}
+              </button>
+              <button className={styles.controlButton} onClick={dashboard.refresh} type="button">
+                REFRESH
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -560,8 +637,16 @@ export function AnalyticsDashboardClient(input: {
           <div className={styles.tableGrid}>
             <section className={`${styles.section} ${styles.tableSection}`}>
               <div className={styles.sectionHeader}>
-                <div className={styles.sectionTitle}>TOKEN CREDS (innies)</div>
-                <div className={styles.sectionMeta}>{formatCount(visibleTokenRows.length)} VISIBLE</div>
+                <div className={styles.sectionTitle}>{tokenSectionTitle}</div>
+                <div className={styles.sectionMeta}>
+                  {formatCount(visibleTokenRows.length)} VISIBLE
+                  {input.tokenSectionMetaAction ? (
+                    <>
+                      {' '}·{' '}
+                      {input.tokenSectionMetaAction}
+                    </>
+                  ) : null}
+                </div>
               </div>
               <TokenTable
                 metric={metric}
@@ -569,12 +654,13 @@ export function AnalyticsDashboardClient(input: {
                 hiddenIds={hiddenTokenIds}
                 rows={visibleTokenRows}
                 sort={tokenSort}
+                tokenRowRemoveConfig={input.tokenRowRemoveConfig}
               />
             </section>
 
             <section className={`${styles.section} ${styles.tableSection}`}>
               <div className={styles.sectionHeader}>
-                <div className={styles.sectionTitle}>BUYER KEYS (outies)</div>
+                <div className={styles.sectionTitle}>{buyerSectionTitle}</div>
                 <div className={styles.sectionMeta}>
                   {snapshot.capabilities.buyersComplete
                     ? `${formatCount(visibleBuyerRows.length)} ACTIVE`
@@ -639,6 +725,8 @@ export function AnalyticsDashboardClient(input: {
           </div>
         </>
       )}
+
+      {input.children ? <div className={styles.managementSectionStack}>{input.children}</div> : null}
     </div>
   );
 }

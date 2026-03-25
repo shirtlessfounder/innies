@@ -9,6 +9,10 @@ function generateBuyerKey(): string {
   return `in_live_${randomBytes(24).toString('base64url')}`;
 }
 
+function buildMembershipBuyerKeyName(membershipId: string): string {
+  return `membership:${membershipId}`;
+}
+
 export class OrgBuyerKeyRepository {
   constructor(
     private readonly db: SqlClient,
@@ -23,11 +27,12 @@ export class OrgBuyerKeyRepository {
     const id = this.createId();
     const plaintextKey = this.generateKey();
     const keyHash = sha256Hex(plaintextKey);
+    const keyName = buildMembershipBuyerKeyName(input.membershipId);
 
     await tx.query(
-      `insert into in_api_keys (id, org_id, membership_id, is_active, key_hash, scope, user_id)
-      values ($1, $2, $3, $4, $5, $6, $7)`,
-      [id, input.orgId, input.membershipId, true, keyHash, 'buyer_proxy', input.userId]
+      `insert into in_api_keys (id, org_id, name, membership_id, is_active, key_hash, scope, created_by)
+      values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [id, input.orgId, keyName, input.membershipId, true, keyHash, 'buyer_proxy', input.userId]
     );
 
     return { apiKeyId: id, plaintextKey };
@@ -69,11 +74,12 @@ export class OrgBuyerKeyRepository {
       `select
         k.id as api_key_id,
         k.membership_id,
-        k.user_id,
+        membership.user_id,
         u.github_login,
         k.revoked_at
       from in_api_keys k
-      left join in_users u on u.id = k.user_id
+      join in_memberships membership on membership.id = k.membership_id
+      left join in_users u on u.id = membership.user_id
       where k.org_id = $1
         and k.membership_id is not null
       order by k.created_at asc`,

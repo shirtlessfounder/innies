@@ -6,9 +6,10 @@ export async function POST(request: Request) {
   const orgSlug = getPathSegments(request)[2] ?? '';
 
   return new Response(null, {
-    status: 204,
+    status: 303,
     headers: {
       'cache-control': 'no-store',
+      location: new URL(`/${orgSlug}`, request.url).toString(),
       'set-cookie': expireCookieHeader('innies_org_reveal', request.url, `/${orgSlug}`),
     },
   });

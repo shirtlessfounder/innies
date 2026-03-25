@@ -1,3 +1,4 @@
+import type { TokenCredentialStatus } from './tokenCredentialRepository.js';
 import type { SqlClient, TransactionContext } from './sqlClient.js';
 
 export class OrgTokenRepository {
@@ -6,24 +7,30 @@ export class OrgTokenRepository {
   async listOrgTokens(orgId: string): Promise<Array<{
     tokenId: string;
     provider: string;
+    status: TokenCredentialStatus;
     createdByUserId: string;
     createdByGithubLogin: string;
+    debugLabel: string | null;
     fiveHourReservePercent: number;
     sevenDayReservePercent: number;
   }>> {
     const result = await this.db.query<{
       token_id: string;
       provider: string;
+      status: TokenCredentialStatus;
       created_by_user_id: string;
       created_by_github_login: string;
+      debug_label: string | null;
       five_hour_reserve_percent: number;
       seven_day_reserve_percent: number;
     }>(
       `select
         tc.id as token_id,
         tc.provider,
+        tc.status,
         tc.created_by as created_by_user_id,
         u.github_login as created_by_github_login,
+        tc.debug_label,
         tc.five_hour_reserve_percent,
         tc.seven_day_reserve_percent
       from in_token_credentials tc
@@ -36,8 +43,10 @@ export class OrgTokenRepository {
     return result.rows.map((row) => ({
       tokenId: row.token_id,
       provider: row.provider,
+      status: row.status,
       createdByUserId: row.created_by_user_id,
       createdByGithubLogin: row.created_by_github_login,
+      debugLabel: row.debug_label,
       fiveHourReservePercent: row.five_hour_reserve_percent,
       sevenDayReservePercent: row.seven_day_reserve_percent
     }));

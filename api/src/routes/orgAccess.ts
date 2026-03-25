@@ -2,6 +2,7 @@
 
 import { Router } from 'express';
 import { readOrgSession } from '../middleware/auth.js';
+import { resolveOrgRouteSlug } from '../services/org/orgRouteSlug.js';
 import { runtime } from '../services/runtime.js';
 
 export type OrgAccessResponse =
@@ -56,9 +57,11 @@ export function createOrgAccessRouter(deps: OrgAccessDeps): Router {
 
   router.get('/v1/orgs/:slug/access', async (req, res, next) => {
     try {
-      const orgSlug = String(req.params.slug ?? '').trim().toLowerCase();
-      const org = await deps.orgAccess.findOrgBySlug(orgSlug);
-      if (!org) {
+      const resolved = await resolveOrgRouteSlug({
+        routeSlug: String(req.params.slug ?? ''),
+        findOrgBySlug: (slug) => deps.orgAccess.findOrgBySlug(slug)
+      });
+      if (!resolved) {
         res.status(404).json({ kind: 'not_found' } satisfies OrgAccessResponse);
         return;
       }
@@ -68,17 +71,17 @@ export function createOrgAccessRouter(deps: OrgAccessDeps): Router {
         res.json({
           kind: 'sign_in_required',
           org: {
-            id: org.id,
-            slug: org.slug,
-            name: org.name
+            id: resolved.org.id,
+            slug: resolved.org.slug,
+            name: resolved.org.name
           },
-          authStartUrl: buildAuthStartUrl(org.slug)
+          authStartUrl: buildAuthStartUrl(resolved.routeSlug)
         } satisfies OrgAccessResponse);
         return;
       }
 
       const resolution = await deps.orgAccess.findAuthResolutionBySlugAndGithubLogin({
-        orgSlug,
+        orgSlug: resolved.effectiveOrgSlug,
         githubLogin: session.githubLogin
       });
 
@@ -88,7 +91,7 @@ export function createOrgAccessRouter(deps: OrgAccessDeps): Router {
             kind: 'active_membership',
             org: {
               id: resolution.orgId,
-              slug: resolution.orgSlug,
+              slug: resolved.routeSlug,
               name: resolution.orgName
             },
             membership: {
@@ -102,7 +105,7 @@ export function createOrgAccessRouter(deps: OrgAccessDeps): Router {
             kind: 'pending_invite',
             org: {
               id: resolution.orgId,
-              slug: resolution.orgSlug,
+              slug: resolved.routeSlug,
               name: resolution.orgName
             },
             invite: {
@@ -116,7 +119,7 @@ export function createOrgAccessRouter(deps: OrgAccessDeps): Router {
             kind: 'not_invited',
             org: {
               id: resolution.orgId,
-              slug: resolution.orgSlug,
+              slug: resolved.routeSlug,
               name: resolution.orgName
             }
           } satisfies OrgAccessResponse);

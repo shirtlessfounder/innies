@@ -1,32 +1,80 @@
+import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import analyticsStyles from '../analytics/page.module.css';
 import { InviteAcceptanceCard } from '../../components/org/InviteAcceptanceCard';
 import { OrgDashboardSections } from '../../components/org/OrgDashboardSections';
-import styles from '../../components/org/orgDashboard.module.css';
-import { getOrgPageState } from '../../lib/org/server';
+import { OrgModalShell } from '../../components/org/OrgModalShell';
+import { getOrgHeaderMeta, getOrgPageState } from '../../lib/org/server';
+import type { OrgHeaderOrg } from '../../lib/org/types';
 
 export const dynamic = 'force-dynamic';
 
-function OrgStatePage(input: {
-  eyebrow: string;
-  title: string;
-  lede: string;
-  actions?: React.ReactNode;
-  children?: React.ReactNode;
+function OrgStateBackdrop(input: {
+  orgSlug: string;
+  activeOrgs: OrgHeaderOrg[];
 }) {
   return (
-    <main className={styles.page}>
-      <div className={styles.shell}>
-        <section className={styles.hero}>
-          <div className={styles.heroTop}>
-            <div>
-              <div className={styles.eyebrow}>{input.eyebrow}</div>
-              <h1 className={styles.title}>{input.title}</h1>
-              <p className={styles.lede}>{input.lede}</p>
-            </div>
-            {input.actions ? <div className={styles.heroActions}>{input.actions}</div> : null}
+    <div className={analyticsStyles.console} aria-hidden="true">
+      <header className={analyticsStyles.consoleHeader}>
+        <div className={analyticsStyles.headerBlock}>
+          <div className={analyticsStyles.kicker}>
+            <Link className={analyticsStyles.homeLink} href="/">
+              INNIES.COMPUTER
+            </Link>
+            <span>{` / ${input.orgSlug.toUpperCase()}`}</span>
           </div>
-        </section>
-        {input.children ? <div className={styles.grid}>{input.children}</div> : null}
+          {input.activeOrgs.length > 0 ? (
+            <div className={analyticsStyles.promptLine}>
+              <span className={analyticsStyles.promptPrefix}>ORGS:</span>
+              <span className={analyticsStyles.promptCommand}>
+                <span className={analyticsStyles.promptCommandText}>
+                  {input.activeOrgs.map((org, index) => (
+                    <span key={org.slug}>
+                      {index > 0 ? ', ' : ''}
+                      <Link className={analyticsStyles.liveMetaLink} href={`/${org.slug}`}>
+                        {org.slug}
+                      </Link>
+                    </span>
+                  ))}
+                </span>
+              </span>
+            </div>
+          ) : null}
+          <h1 className={analyticsStyles.title}>{input.orgSlug}</h1>
+        </div>
+      </header>
+    </div>
+  );
+}
+
+function OrgStateModalPage(input: {
+  orgSlug: string;
+  activeOrgs: OrgHeaderOrg[];
+  eyebrow: string;
+  title: string;
+  lede?: string;
+  children?: React.ReactNode;
+  actions?: React.ReactNode;
+}) {
+  return (
+    <main className={analyticsStyles.page}>
+      <div className={analyticsStyles.shell}>
+        <OrgStateBackdrop activeOrgs={input.activeOrgs} orgSlug={input.orgSlug} />
+        <OrgModalShell eyebrow={input.eyebrow} title={input.title}>
+          {input.lede ? (
+            <div className={analyticsStyles.noticeList}>
+              <div className={analyticsStyles.noticeText}>{input.lede}</div>
+            </div>
+          ) : null}
+          {input.children || input.actions ? (
+            <div className={analyticsStyles.modalFormStack}>
+              {input.children}
+              {input.actions ? (
+                <div className={analyticsStyles.managementActionRow}>{input.actions}</div>
+              ) : null}
+            </div>
+          ) : null}
+        </OrgModalShell>
       </div>
     </main>
   );
@@ -36,7 +84,10 @@ export default async function OrgSlugPage(input: {
   params: Promise<{ orgSlug: string }>;
 }) {
   const params = await input.params;
-  const state = await getOrgPageState(params.orgSlug);
+  const [headerMeta, state] = await Promise.all([
+    getOrgHeaderMeta({ orgSlug: params.orgSlug }),
+    getOrgPageState(params.orgSlug)
+  ]);
 
   if (state.kind === 'not_found') {
     notFound();
@@ -44,10 +95,12 @@ export default async function OrgSlugPage(input: {
 
   if (state.kind === 'sign_in') {
     return (
-      <OrgStatePage
-        actions={<a className={styles.actionButton} href={state.authStartUrl}>Sign in with GitHub</a>}
-        eyebrow={state.org.slug}
-        lede="This org route requires the GitHub web session. Continue through the backend auth start URL so the return target survives unchanged."
+      <OrgStateModalPage
+        activeOrgs={headerMeta.activeOrgs}
+        actions={<a className={analyticsStyles.controlButton} href={state.authStartUrl}>Sign in with GitHub</a>}
+        eyebrow="Sign in"
+        orgSlug={state.org.slug}
+        lede="You must be whitelisted to view this org route. Continue to verify your identity."
         title={state.org.name}
       />
     );
@@ -55,8 +108,10 @@ export default async function OrgSlugPage(input: {
 
   if (state.kind === 'not_invited') {
     return (
-      <OrgStatePage
-        eyebrow={state.org.slug}
+      <OrgStateModalPage
+        activeOrgs={headerMeta.activeOrgs}
+        eyebrow="Access blocked"
+        orgSlug={state.org.slug}
         lede="You are signed in, but this GitHub account does not have an active invite or membership for this org."
         title="You are not invited to this org"
       />
@@ -65,51 +120,52 @@ export default async function OrgSlugPage(input: {
 
   if (state.kind === 'invite') {
     return (
-      <OrgStatePage
-        eyebrow={state.invite.org.slug}
-        lede="A pending org invite matches the current GitHub login. Accept it here to activate membership and provision the org buyer key."
+      <OrgStateModalPage
+        activeOrgs={headerMeta.activeOrgs}
+        eyebrow="Accept invite"
+        orgSlug={state.invite.org.slug}
         title={state.invite.org.name}
       >
         <InviteAcceptanceCard
           githubLogin={state.invite.githubLogin}
           orgName={state.invite.org.name}
           orgSlug={state.invite.org.slug}
+          variant="modal"
         />
-      </OrgStatePage>
+      </OrgStateModalPage>
     );
   }
 
   if (state.kind === 'reveal') {
     const orgSlug = state.reveal.org.slug;
-    const reasonLabel = state.reveal.reason === 'org_created'
-      ? 'Org created'
-      : state.reveal.reason === 'invite_accepted'
-        ? 'Invite accepted'
-        : 'Buyer key reveal';
     return (
-      <OrgStatePage
-        eyebrow={reasonLabel}
+      <OrgStateModalPage
+        activeOrgs={headerMeta.activeOrgs}
+        eyebrow="Buyer key"
+        orgSlug={state.reveal.org.slug}
         lede="This buyer key is shown exactly once after org creation or invite acceptance. Dismiss the reveal to return to the normal dashboard."
         title={state.reveal.org.name}
       >
-        <section className={styles.section}>
-          <div className={styles.pillRow}>
-            <span className={styles.goodPill}>{state.reveal.reason}</span>
-            <span className={styles.pill}>{state.reveal.org.slug}</span>
-          </div>
-          <div className={styles.subsection}>
-            <h2 className={styles.sectionTitle}>Buyer key</h2>
-            <pre className={styles.emptyState}>{state.reveal.buyerKey}</pre>
-          </div>
-          <div className={styles.formActions}>
-            <form action={`/api/orgs/${orgSlug}/reveal/dismiss`} method="post">
-              <button className={styles.actionButton} type="submit">Dismiss reveal</button>
-            </form>
-          </div>
-        </section>
-      </OrgStatePage>
+        <div className={analyticsStyles.noticeText}>
+            {state.reveal.reason} · {state.reveal.org.slug}
+        </div>
+        <div className={analyticsStyles.tableWrap}>
+          <table className={analyticsStyles.table}>
+            <tbody>
+              <tr>
+                <td>{state.reveal.buyerKey}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div className={analyticsStyles.managementActionRow}>
+          <form action={`/api/orgs/${orgSlug}/reveal/dismiss`} method="post">
+            <button className={analyticsStyles.managementPrimaryButton} type="submit">Dismiss reveal</button>
+          </form>
+        </div>
+      </OrgStateModalPage>
     );
   }
 
-  return <OrgDashboardSections data={state.data} />;
+  return <OrgDashboardSections activeOrgs={headerMeta.activeOrgs} data={state.data} />;
 }

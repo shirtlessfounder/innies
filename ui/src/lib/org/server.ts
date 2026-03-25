@@ -9,9 +9,12 @@ import {
 import type {
   OrgAccessResponse,
   OrgDashboardPageState,
+  OrgHeaderOrg,
   OrgInvitesResponse,
   OrgMembersResponse,
   OrgPageState,
+  OrgSessionResponse,
+  OrgSessionState,
   OrgTokensResponse,
 } from './types';
 
@@ -48,14 +51,66 @@ export function buildOrgAuthStartUrl(returnTo = '/'): string {
   return url.toString();
 }
 
+function resolveOrgAuthStartUrl(authStartUrl: string): string {
+  return new URL(authStartUrl, `${readApiBaseUrl()}/`).toString();
+}
+
+export async function getOrgSession(cookieHeader?: string | null): Promise<OrgSessionResponse['session'] | null> {
+  try {
+    const response = await fetchPilotJson<OrgSessionResponse>({
+      path: '/v1/org/session',
+      cookieHeader,
+    });
+    return {
+      ...response.session,
+      activeOrgs: (response.session.activeOrgs ?? []).map((org) => ({
+        ...org,
+        slug: normalizeOrgSlug(org.slug),
+      })),
+    };
+  } catch (error) {
+    if (error instanceof PilotServerError && error.status === 401) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+export async function getOrgHeaderMeta(input?: {
+  orgSlug?: string | null;
+}): Promise<{
+  authGithubLogin: string | null;
+  activeOrgs: OrgHeaderOrg[];
+  orgSlug: string | null;
+}> {
+  const cookieStore = await cookies();
+  const cookieHeader = cookieStore.toString();
+  const session = cookieStore.has(ORG_SESSION_COOKIE_NAME)
+    ? await getOrgSession(cookieHeader)
+    : null;
+
+  return {
+    authGithubLogin: session?.githubLogin ?? null,
+    activeOrgs: session?.activeOrgs ?? [],
+    orgSlug: input?.orgSlug ? normalizeOrgSlug(input.orgSlug) : null,
+  };
+}
+
 export async function getOrgLandingState(): Promise<{
   signedIn: boolean;
   authStartUrl: string;
+  authGithubLogin: string | null;
+  activeOrgs: OrgSessionState['activeOrgs'];
 }> {
   const cookieStore = await cookies();
+  const session = cookieStore.has(ORG_SESSION_COOKIE_NAME)
+    ? await getOrgSession(cookieStore.toString())
+    : null;
   return {
-    signedIn: cookieStore.has(ORG_SESSION_COOKIE_NAME),
+    signedIn: Boolean(session),
     authStartUrl: buildOrgAuthStartUrl('/'),
+    authGithubLogin: session?.githubLogin ?? null,
+    activeOrgs: session?.activeOrgs ?? [],
   };
 }
 
@@ -155,7 +210,7 @@ export async function getOrgPageState(orgSlug: string): Promise<OrgPageState> {
     case 'sign_in_required':
       return {
         kind: 'sign_in',
-        authStartUrl: access.authStartUrl,
+        authStartUrl: resolveOrgAuthStartUrl(access.authStartUrl),
         org: access.org,
       };
     case 'not_invited':

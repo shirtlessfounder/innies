@@ -141,7 +141,7 @@ function createDeps() {
   const orgs = new Map([
     ['acme', { id: 'org_1', slug: 'acme', name: 'Acme', ownerUserId: 'user_owner' }],
     ['beta', { id: 'org_2', slug: 'beta', name: 'Beta', ownerUserId: 'user_beta_owner' }],
-    ['innies', { id: 'org_3', slug: 'innies', name: 'Innies', ownerUserId: 'user_internal_owner' }]
+    ['team-seller', { id: 'org_3', slug: 'team-seller', name: 'Team Seller Org', ownerUserId: 'user_internal_owner' }]
   ]);
 
   const orgGithubAuth = {
@@ -176,6 +176,27 @@ function createDeps() {
 
   const orgAccess = {
     findOrgBySlug: vi.fn(async (slug: string) => orgs.get(slug) ?? null),
+    listActiveOrgsForUser: vi.fn(async (userId: string) => {
+      if (userId === 'user_owner') {
+        return [
+          {
+            orgId: 'org_1',
+            orgSlug: 'acme',
+            orgName: 'Acme',
+            membershipId: 'membership_owner',
+            isOwner: true
+          },
+          {
+            orgId: 'org_3',
+            orgSlug: 'team-seller',
+            orgName: 'Team Seller Org',
+            membershipId: 'membership_internal',
+            isOwner: false
+          }
+        ];
+      }
+      return [];
+    }),
     findAuthResolutionBySlugAndGithubLogin: vi.fn(async (input: { orgSlug: string; githubLogin: string }) => {
       if (input.orgSlug === 'acme') {
         return {
@@ -196,12 +217,15 @@ function createDeps() {
           orgName: 'Beta'
         };
       }
-      if (input.orgSlug === 'innies') {
+      if (input.orgSlug === 'team-seller') {
         return {
-          kind: 'no_access',
+          kind: 'active_membership',
           orgId: 'org_3',
-          orgSlug: 'innies',
-          orgName: 'Innies'
+          orgSlug: 'team-seller',
+          orgName: 'Team Seller Org',
+          userId: 'user_owner',
+          membershipId: 'membership_internal',
+          isOwner: false
         };
       }
       return { kind: 'org_not_found' };
@@ -243,8 +267,10 @@ function createDeps() {
       {
         tokenId: 'token_1',
         provider: 'openai',
+        status: 'paused',
         createdByUserId: 'user_member',
         createdByGithubLogin: 'member-login',
+        debugLabel: 'testing-test-codex-main',
         fiveHourReservePercent: 15,
         sevenDayReservePercent: 25
       }
@@ -284,6 +310,19 @@ function createDeps() {
 
   const orgTokenManagement = {
     addOrgToken: vi.fn().mockResolvedValue({ tokenId: 'token_new' }),
+    updateOrgTokenReserve: vi.fn().mockResolvedValue({
+      tokenId: 'token_1',
+      fiveHourReservePercent: 22,
+      sevenDayReservePercent: 48
+    }),
+    probeOrgToken: vi.fn().mockResolvedValue({
+      tokenId: 'token_1',
+      probeOk: true,
+      reactivated: false,
+      status: 'active',
+      reason: 'ok',
+      nextProbeAt: null
+    }),
     refreshOrgToken: vi.fn().mockResolvedValue(undefined),
     removeOrgToken: vi.fn().mockResolvedValue(undefined)
   };
@@ -291,8 +330,73 @@ function createDeps() {
   const analytics = {
     getSystemSummary: vi.fn().mockResolvedValue({
       total_requests: 3,
-      total_usage_units: 12
+      total_usage_units: 12,
+      active_tokens: 1,
+      maxed_tokens: 0,
+      total_tokens: 1,
+      maxed_events_7d: 0,
+      error_rate: 0,
+      fallback_rate: 0,
+      by_provider: [],
+      by_model: [],
+      by_source: []
     }),
+    getTokenUsage: vi.fn().mockResolvedValue([
+      {
+        credential_id: '11111111-1111-4111-8111-111111111111',
+        debug_label: 'alpha',
+        provider: 'openai',
+        status: 'active',
+        attempts: 4,
+        requests: 3,
+        usage_units: 12,
+        by_source: []
+      }
+    ]),
+    getTokenHealth: vi.fn().mockResolvedValue([]),
+    getTokenRouting: vi.fn().mockResolvedValue([]),
+    getBuyers: vi.fn().mockResolvedValue([
+      {
+        api_key_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        label: 'buyer-alpha',
+        org_id: 'org_1',
+        org_label: 'Acme',
+        effective_provider: 'openai',
+        requests: 3,
+        attempts: 3,
+        usage_units: 12,
+        by_source: []
+      }
+    ]),
+    getBuyerTimeSeries: vi.fn().mockResolvedValue([
+      {
+        bucket: '2026-03-24T00:00:00.000Z',
+        api_key_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        request_count: 3,
+        usage_units: 12,
+        error_rate: 0,
+        latency_p50_ms: 140
+      }
+    ]),
+    getAnomalies: vi.fn().mockResolvedValue({
+      checks: {},
+      ok: true
+    }),
+    getEvents: vi.fn().mockResolvedValue([
+      {
+        id: 'event_1',
+        event_type: 'maxed',
+        created_at: '2026-03-24T00:00:00.000Z',
+        provider: 'openai',
+        credential_id: '11111111-1111-4111-8111-111111111111',
+        credential_label: 'alpha',
+        summary: 'credential maxed',
+        severity: 'warn',
+        status_code: 401,
+        reason: 'upstream_401_consecutive_failure',
+        metadata: { threshold: 3 }
+      }
+    ]),
     getTimeSeries: vi.fn().mockResolvedValue([
       {
         bucket: '2026-03-24T00:00:00.000Z',
@@ -365,6 +469,7 @@ describe('org routes', () => {
   it('completes the GitHub callback, sets the org session cookie, and redirects back to the org route', async () => {
     const { deps, orgGithubAuth } = createDeps();
     const router = createOrgAuthRouter(deps as any);
+    process.env.PILOT_UI_BASE_URL = 'https://www.innies.computer';
     const req = createMockReq({
       method: 'GET',
       path: '/v1/org/auth/github/callback',
@@ -383,7 +488,48 @@ describe('org routes', () => {
     });
     expect(String(res.headers['set-cookie'])).toContain(`${ORG_SESSION_COOKIE_NAME}=`);
     expect(res.statusCode).toBe(302);
-    expect(res.headers.location).toBe('/acme');
+    expect(res.headers.location).toBe('https://www.innies.computer/acme');
+  });
+
+  it('returns the current org session with every active org membership when the org session cookie is present', async () => {
+    const { deps, orgAccess } = createDeps();
+    const router = createOrgAuthRouter(deps as any);
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/org/session',
+      headers: {
+        cookie: `${ORG_SESSION_COOKIE_NAME}=signed-org-session`
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(getRouteHandlers(router as any, '/v1/org/session', 'get'), req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      session: {
+        actorUserId: 'user_owner',
+        githubLogin: 'owner-login',
+        issuedAt: '2026-03-24T00:00:00.000Z',
+        expiresAt: '2026-03-24T12:00:00.000Z',
+        activeOrgs: [
+          {
+            id: 'org_1',
+            slug: 'acme',
+            name: 'Acme',
+            isOwner: true
+          },
+          {
+            id: 'org_3',
+            slug: 'team-seller',
+            name: 'Team Seller Org',
+            isOwner: false
+          }
+        ]
+      }
+    });
+    expect(orgAccess.listActiveOrgsForUser).toHaveBeenCalledWith('user_owner');
   });
 
   it('returns not_found for a nonexistent org slug and sign_in_required when the org exists but there is no session', async () => {
@@ -557,8 +703,8 @@ describe('org routes', () => {
     });
   });
 
-  it('treats /v1/orgs/innies/access as org-scoped and requires active internal membership', async () => {
-    const { deps } = createDeps();
+  it('aliases /v1/orgs/innies/access to the internal org slug while preserving the /innies route contract', async () => {
+    const { deps, orgAccess } = createDeps();
     const router = createOrgAccessRouter(deps as any);
     const headers = { cookie: `${ORG_SESSION_COOKIE_NAME}=signed-org-session` };
     const res = createMockRes();
@@ -571,13 +717,56 @@ describe('org routes', () => {
     }), res);
 
     expect(res.body).toEqual({
-      kind: 'not_invited',
+      kind: 'active_membership',
       org: {
         id: 'org_3',
         slug: 'innies',
-        name: 'Innies'
+        name: 'Team Seller Org'
+      },
+      membership: {
+        membershipId: 'membership_internal',
+        isOwner: false
       }
     });
+    expect(orgAccess.findAuthResolutionBySlugAndGithubLogin).toHaveBeenLastCalledWith({
+      orgSlug: 'team-seller',
+      githubLogin: 'owner-login'
+    });
+  });
+
+  it('keeps repository method binding intact while resolving the /innies alias', async () => {
+    const { deps, orgAccess } = createDeps();
+    const router = createOrgAccessRouter({
+      ...deps,
+      orgAccess: {
+        ...orgAccess,
+        orgs: new Map([
+          ['team-seller', { id: 'org_3', slug: 'team-seller', name: 'Team Seller Org', ownerUserId: 'user_internal_owner' }]
+        ]),
+        async findOrgBySlug(this: {
+          orgs: Map<string, { id: string; slug: string; name: string; ownerUserId: string }>;
+        }, slug: string) {
+          return this.orgs.get(slug) ?? null;
+        }
+      }
+    } as any);
+    const headers = { cookie: `${ORG_SESSION_COOKIE_NAME}=signed-org-session` };
+    const res = createMockRes();
+
+    await invokeHandlers(getRouteHandlers(router as any, '/v1/orgs/:slug/access', 'get'), createMockReq({
+      method: 'GET',
+      path: '/v1/orgs/innies/access',
+      headers,
+      params: { slug: 'innies' }
+    }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({
+      kind: 'active_membership',
+      org: expect.objectContaining({
+        slug: 'innies'
+      })
+    }));
   });
 
   it('creates orgs and fresh invite acceptances with reveal cookies while never returning plaintext buyer keys in JSON', async () => {
@@ -642,6 +831,38 @@ describe('org routes', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({ orgSlug: 'acme' });
     expect(res.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('accepts /v1/orgs/innies invite actions against the internal org slug but keeps the route slug in the response and cookie', async () => {
+    const { deps, orgMemberships } = createDeps();
+    const router = createOrgManagementRouter(deps as any);
+    const headers = { cookie: `${ORG_SESSION_COOKIE_NAME}=signed-org-session` };
+
+    orgMemberships.acceptInvite.mockResolvedValueOnce({
+      kind: 'invite_accepted',
+      membershipId: 'membership_internal',
+      reveal: {
+        buyerKey: 'in_live_internal',
+        reason: 'invite_accepted'
+      }
+    });
+
+    const res = createMockRes();
+    await invokeHandlers(getRouteHandlers(router as any, '/v1/orgs/:slug/invites/accept', 'post'), createMockReq({
+      method: 'POST',
+      path: '/v1/orgs/innies/invites/accept',
+      headers,
+      params: { slug: 'innies' }
+    }), res);
+
+    expect(orgMemberships.acceptInvite).toHaveBeenCalledWith({
+      orgSlug: 'team-seller',
+      actorUserId: 'user_owner',
+      actorGithubLogin: 'owner-login'
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({ orgSlug: 'innies' });
+    expect(String(res.headers['set-cookie'])).toContain('Path=/innies');
   });
 
   it('surfaces reserved/conflicting slug rejection on org creation', async () => {
@@ -769,8 +990,10 @@ describe('org routes', () => {
         {
           tokenId: 'token_1',
           provider: 'openai',
+          status: 'paused',
           createdByUserId: 'user_member',
           createdByGithubLogin: 'member-login',
+          debugLabel: 'testing-test-codex-main',
           fiveHourReservePercent: 15,
           sevenDayReservePercent: 25
         }
@@ -778,7 +1001,7 @@ describe('org routes', () => {
     });
   });
 
-  it('adds tokens with optional reserve values, accepts blank defaults, and rejects out-of-range values', async () => {
+  it('adds tokens with required refresh tokens, accepts blank reserve defaults, and rejects invalid input', async () => {
     const { deps, orgTokenManagement } = createDeps();
     const router = createOrgManagementRouter(deps as any);
     const headers = { cookie: `${ORG_SESSION_COOKIE_NAME}=signed-org-session` };
@@ -791,7 +1014,9 @@ describe('org routes', () => {
       params: { slug: 'acme' },
       body: {
         provider: 'openai',
+        debugLabel: 'testing-test-codex-main',
         token: 'sk-live-created',
+        refreshToken: 'rt-live-created',
         fiveHourReservePercent: 10,
         sevenDayReservePercent: 20
       }
@@ -802,7 +1027,9 @@ describe('org routes', () => {
       orgSlug: 'acme',
       actorUserId: 'user_owner',
       provider: 'openai',
+      debugLabel: 'testing-test-codex-main',
       token: 'sk-live-created',
+      refreshToken: 'rt-live-created',
       fiveHourReservePercent: 10,
       sevenDayReservePercent: 20
     });
@@ -816,6 +1043,7 @@ describe('org routes', () => {
       body: {
         provider: 'openai',
         token: 'sk-live-created',
+        refreshToken: 'rt-live-created',
         fiveHourReservePercent: '',
         sevenDayReservePercent: ''
       }
@@ -826,9 +1054,26 @@ describe('org routes', () => {
       actorUserId: 'user_owner',
       provider: 'openai',
       token: 'sk-live-created',
+      refreshToken: 'rt-live-created',
       fiveHourReservePercent: undefined,
       sevenDayReservePercent: undefined
     });
+
+    const missingRefreshRes = createMockRes();
+    await invokeHandlers(getRouteHandlers(router as any, '/v1/orgs/:slug/tokens', 'post'), createMockReq({
+      method: 'POST',
+      path: '/v1/orgs/acme/tokens',
+      headers,
+      params: { slug: 'acme' },
+      body: {
+        provider: 'openai',
+        token: 'sk-live-created'
+      }
+    }), missingRefreshRes);
+    expect(missingRefreshRes.statusCode).toBe(400);
+    expect(missingRefreshRes.body).toEqual(expect.objectContaining({
+      code: 'invalid_request'
+    }));
 
     const invalidRes = createMockRes();
     await invokeHandlers(getRouteHandlers(router as any, '/v1/orgs/:slug/tokens', 'post'), createMockReq({
@@ -839,6 +1084,7 @@ describe('org routes', () => {
       body: {
         provider: 'openai',
         token: 'sk-live-created',
+        refreshToken: 'rt-live-created',
         sevenDayReservePercent: 101
       }
     }), invalidRes);
@@ -846,6 +1092,97 @@ describe('org routes', () => {
     expect(invalidRes.body).toEqual(expect.objectContaining({
       code: 'invalid_request'
     }));
+  });
+
+  it('surfaces duplicate borrowed-token rejection on org token add', async () => {
+    const { deps, orgTokenManagement } = createDeps();
+    const router = createOrgManagementRouter(deps as any);
+    const headers = { cookie: `${ORG_SESSION_COOKIE_NAME}=signed-org-session` };
+
+    orgTokenManagement.addOrgToken.mockRejectedValueOnce(
+      new AppError('invalid_request', 409, 'This token is already lent to an org and cannot be added again until it is removed.')
+    );
+
+    const res = createMockRes();
+    await invokeHandlers(getRouteHandlers(router as any, '/v1/orgs/:slug/tokens', 'post'), createMockReq({
+      method: 'POST',
+      path: '/v1/orgs/acme/tokens',
+      headers,
+      params: { slug: 'acme' },
+      body: {
+        provider: 'openai',
+        token: 'sk-live-created',
+        refreshToken: 'rt-live-created'
+      }
+    }), res);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body).toEqual({
+      code: 'invalid_request',
+      message: 'This token is already lent to an org and cannot be added again until it is removed.',
+      details: undefined
+    });
+  });
+
+  it('surfaces duplicate provider-label rejection on org token add', async () => {
+    const { deps, orgTokenManagement } = createDeps();
+    const router = createOrgManagementRouter(deps as any);
+    const headers = { cookie: `${ORG_SESSION_COOKIE_NAME}=signed-org-session` };
+
+    orgTokenManagement.addOrgToken.mockRejectedValueOnce(
+      new AppError('invalid_request', 409, 'A token with provider "openai" and label "shirtless" already exists for this org.')
+    );
+
+    const res = createMockRes();
+    await invokeHandlers(getRouteHandlers(router as any, '/v1/orgs/:slug/tokens', 'post'), createMockReq({
+      method: 'POST',
+      path: '/v1/orgs/acme/tokens',
+      headers,
+      params: { slug: 'acme' },
+      body: {
+        provider: 'openai',
+        debugLabel: 'shirtless',
+        token: 'sk-live-created',
+        refreshToken: 'rt-live-created'
+      }
+    }), res);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body).toEqual({
+      code: 'invalid_request',
+      message: 'A token with provider "openai" and label "shirtless" already exists for this org.',
+      details: undefined
+    });
+  });
+
+  it('surfaces token preflight rejection on org token add', async () => {
+    const { deps, orgTokenManagement } = createDeps();
+    const router = createOrgManagementRouter(deps as any);
+    const headers = { cookie: `${ORG_SESSION_COOKIE_NAME}=signed-org-session` };
+
+    orgTokenManagement.addOrgToken.mockRejectedValueOnce(
+      new AppError('invalid_request', 400, 'Codex/OpenAI OAuth token is not valid.')
+    );
+
+    const res = createMockRes();
+    await invokeHandlers(getRouteHandlers(router as any, '/v1/orgs/:slug/tokens', 'post'), createMockReq({
+      method: 'POST',
+      path: '/v1/orgs/acme/tokens',
+      headers,
+      params: { slug: 'acme' },
+      body: {
+        provider: 'openai',
+        token: 'sk-live-created',
+        refreshToken: 'rt-live-created'
+      }
+    }), res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual({
+      code: 'invalid_request',
+      message: 'Codex/OpenAI OAuth token is not valid.',
+      details: undefined
+    });
   });
 
   it('refreshes and removes tokens through the org token service', async () => {
@@ -884,6 +1221,99 @@ describe('org routes', () => {
     });
   });
 
+  it('updates token reserve floors for owners and rejects non-owner reserve edits', async () => {
+    const { deps, orgTokenManagement } = createDeps();
+    const router = createOrgManagementRouter(deps as any);
+    const headers = { cookie: `${ORG_SESSION_COOKIE_NAME}=signed-org-session` };
+
+    const updateRes = createMockRes();
+    await invokeHandlers(getRouteHandlers(router as any, '/v1/orgs/:slug/tokens/:tokenId/reserve-floors', 'post'), createMockReq({
+      method: 'POST',
+      path: '/v1/orgs/acme/tokens/token_1/reserve-floors',
+      headers,
+      params: { slug: 'acme', tokenId: 'token_1' },
+      body: {
+        fiveHourReservePercent: 22,
+        sevenDayReservePercent: 48
+      }
+    }), updateRes);
+    expect(updateRes.statusCode).toBe(200);
+    expect(updateRes.body).toEqual({
+      tokenId: 'token_1',
+      fiveHourReservePercent: 22,
+      sevenDayReservePercent: 48
+    });
+    expect(orgTokenManagement.updateOrgTokenReserve).toHaveBeenCalledWith({
+      orgSlug: 'acme',
+      actorUserId: 'user_owner',
+      tokenId: 'token_1',
+      fiveHourReservePercent: 22,
+      sevenDayReservePercent: 48
+    });
+
+    const forbiddenRes = createMockRes();
+    await invokeHandlers(getRouteHandlers(router as any, '/v1/orgs/:slug/tokens/:tokenId/reserve-floors', 'post'), createMockReq({
+      method: 'POST',
+      path: '/v1/orgs/team-seller/tokens/token_1/reserve-floors',
+      headers,
+      params: { slug: 'team-seller', tokenId: 'token_1' },
+      body: {
+        fiveHourReservePercent: 10,
+        sevenDayReservePercent: 20
+      }
+    }), forbiddenRes);
+    expect(forbiddenRes.statusCode).toBe(403);
+    expect(forbiddenRes.body).toEqual({
+      code: 'forbidden',
+      message: 'Owner access required',
+      details: undefined
+    });
+    expect(orgTokenManagement.updateOrgTokenReserve).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets owners manually probe org tokens and rejects non-owner probes', async () => {
+    const { deps, orgTokenManagement } = createDeps();
+    const router = createOrgManagementRouter(deps as any);
+    const headers = { cookie: `${ORG_SESSION_COOKIE_NAME}=signed-org-session` };
+
+    const probeRes = createMockRes();
+    await invokeHandlers(getRouteHandlers(router as any, '/v1/orgs/:slug/tokens/:tokenId/probe', 'post'), createMockReq({
+      method: 'POST',
+      path: '/v1/orgs/acme/tokens/token_1/probe',
+      headers,
+      params: { slug: 'acme', tokenId: 'token_1' }
+    }), probeRes);
+    expect(probeRes.statusCode).toBe(200);
+    expect(probeRes.body).toEqual({
+      tokenId: 'token_1',
+      probeOk: true,
+      reactivated: false,
+      status: 'active',
+      reason: 'ok',
+      nextProbeAt: null
+    });
+    expect(orgTokenManagement.probeOrgToken).toHaveBeenCalledWith({
+      orgSlug: 'acme',
+      actorUserId: 'user_owner',
+      tokenId: 'token_1'
+    });
+
+    const forbiddenRes = createMockRes();
+    await invokeHandlers(getRouteHandlers(router as any, '/v1/orgs/:slug/tokens/:tokenId/probe', 'post'), createMockReq({
+      method: 'POST',
+      path: '/v1/orgs/team-seller/tokens/token_1/probe',
+      headers,
+      params: { slug: 'team-seller', tokenId: 'token_1' }
+    }), forbiddenRes);
+    expect(forbiddenRes.statusCode).toBe(403);
+    expect(forbiddenRes.body).toEqual({
+      code: 'forbidden',
+      message: 'Owner access required',
+      details: undefined
+    });
+    expect(orgTokenManagement.probeOrgToken).toHaveBeenCalledTimes(1);
+  });
+
   it('handles leave and remove-member flows', async () => {
     const { deps, orgMemberships } = createDeps();
     const router = createOrgManagementRouter(deps as any);
@@ -918,7 +1348,7 @@ describe('org routes', () => {
     });
   });
 
-  it('serves org analytics endpoints with org-scoped filters', async () => {
+  it('serves a full org analytics dashboard snapshot with org-scoped filters', async () => {
     const { deps, analytics } = createDeps();
     const router = createOrgAnalyticsRouter(deps as any);
     const headers = { cookie: `${ORG_SESSION_COOKIE_NAME}=signed-org-session` };
@@ -928,15 +1358,114 @@ describe('org routes', () => {
       method: 'GET',
       path: '/v1/orgs/acme/analytics/dashboard',
       headers,
-      params: { slug: 'acme' }
+      params: { slug: 'acme' },
+      query: { window: '1w' }
     }), dashboardRes);
     expect(dashboardRes.statusCode).toBe(200);
     expect(analytics.getSystemSummary).toHaveBeenCalledWith({
-      window: '24h',
+      window: '7d',
       provider: undefined,
       source: undefined,
       orgId: 'org_1'
     });
+    expect(analytics.getTokenUsage).toHaveBeenCalledWith({
+      window: '7d',
+      provider: undefined,
+      source: undefined,
+      orgId: 'org_1'
+    });
+    expect(analytics.getTokenHealth).toHaveBeenCalledWith({
+      window: '7d',
+      provider: undefined,
+      source: undefined,
+      orgId: 'org_1'
+    });
+    expect(analytics.getTokenRouting).toHaveBeenCalledWith({
+      window: '7d',
+      provider: undefined,
+      source: undefined,
+      orgId: 'org_1'
+    });
+    expect(analytics.getBuyers).toHaveBeenCalledWith({
+      window: '7d',
+      provider: undefined,
+      source: undefined,
+      orgId: 'org_1'
+    });
+    expect(analytics.getAnomalies).toHaveBeenCalledWith({
+      window: '7d',
+      provider: undefined,
+      source: undefined,
+      orgId: 'org_1'
+    });
+    expect(analytics.getEvents).toHaveBeenCalledWith({
+      window: '7d',
+      provider: undefined,
+      limit: 20,
+      orgId: 'org_1'
+    });
+    expect(dashboardRes.body).toEqual({
+      window: '1w',
+      effectiveWindow: '7d',
+      snapshotAt: expect.any(String),
+      summary: expect.objectContaining({
+        totalRequests: 3,
+        totalUsageUnits: 12,
+        activeTokens: 1,
+        maxedTokens: 0,
+        totalTokens: 1
+      }),
+      tokens: [
+        expect.objectContaining({
+          credentialId: '11111111-1111-4111-8111-111111111111',
+          debugLabel: 'alpha',
+          provider: 'openai',
+          requests: 3,
+          usageUnits: 12
+        })
+      ],
+      buyers: [
+        expect.objectContaining({
+          apiKeyId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          label: 'buyer-alpha',
+          orgId: 'org_1',
+          effectiveProvider: 'openai'
+        })
+      ],
+      anomalies: {
+        checks: {
+          missingDebugLabels: 0,
+          unresolvedCredentialIdsInTokenModeUsage: 0,
+          nullCredentialIdsInRouting: 0,
+          staleAggregateWindows: null,
+          usageLedgerVsAggregateMismatchCount: null
+        },
+        ok: true
+      },
+      events: [
+        expect.objectContaining({
+          id: 'event_1',
+          type: 'maxed',
+          provider: 'openai',
+          credentialId: '11111111-1111-4111-8111-111111111111'
+        })
+      ],
+      capabilities: {
+        supports5hWindow: true,
+        buyersComplete: true,
+        buyerSeriesAvailable: true,
+        lifecycleEventsAvailable: true,
+        dashboardSnapshotAvailable: true,
+        timeseriesMultiEntityAvailable: false
+      },
+      warnings: []
+    });
+  });
+
+  it('routes org token timeseries queries through org-scoped credential filters', async () => {
+    const { deps, analytics } = createDeps();
+    const router = createOrgAnalyticsRouter(deps as any);
+    const headers = { cookie: `${ORG_SESSION_COOKIE_NAME}=signed-org-session` };
 
     const timeseriesRes = createMockRes();
     await invokeHandlers(getRouteHandlers(router as any, '/v1/orgs/:slug/analytics/timeseries', 'get'), createMockReq({
@@ -944,16 +1473,100 @@ describe('org routes', () => {
       path: '/v1/orgs/acme/analytics/timeseries',
       headers,
       params: { slug: 'acme' },
-      query: { window: '24h', granularity: '15m' }
+      query: {
+        window: '1w',
+        entityType: 'token',
+        entityId: '11111111-1111-4111-8111-111111111111',
+        metric: 'usageUnits'
+      }
     }), timeseriesRes);
     expect(timeseriesRes.statusCode).toBe(200);
     expect(analytics.getTimeSeries).toHaveBeenCalledWith({
+      window: '7d',
+      granularity: 'hour',
+      credentialId: '11111111-1111-4111-8111-111111111111',
+      orgId: 'org_1'
+    });
+    expect(analytics.getBuyerTimeSeries).not.toHaveBeenCalled();
+    expect(timeseriesRes.body).toEqual({
+      window: '1w',
+      effectiveWindow: '7d',
+      entityType: 'token',
+      entityId: '11111111-1111-4111-8111-111111111111',
+      metric: 'usageUnits',
+      partial: false,
+      warning: null,
+      series: [
+        {
+          timestamp: '2026-03-24T00:00:00.000Z',
+          value: 2
+        }
+      ]
+    });
+  });
+
+  it('routes org buyer timeseries queries through org-scoped buyer filters', async () => {
+    const { deps, analytics } = createDeps();
+    const router = createOrgAnalyticsRouter(deps as any);
+    const headers = { cookie: `${ORG_SESSION_COOKIE_NAME}=signed-org-session` };
+
+    const timeseriesRes = createMockRes();
+    await invokeHandlers(getRouteHandlers(router as any, '/v1/orgs/:slug/analytics/timeseries', 'get'), createMockReq({
+      method: 'GET',
+      path: '/v1/orgs/acme/analytics/timeseries',
+      headers,
+      params: { slug: 'acme' },
+      query: {
+        window: '24h',
+        entityType: 'buyer',
+        entityId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        metric: 'requests'
+      }
+    }), timeseriesRes);
+    expect(timeseriesRes.statusCode).toBe(200);
+    expect(analytics.getBuyerTimeSeries).toHaveBeenCalledWith({
       window: '24h',
       granularity: '15m',
+      apiKeyIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+      orgId: 'org_1'
+    });
+    expect(analytics.getTimeSeries).not.toHaveBeenCalled();
+    expect(timeseriesRes.body).toEqual({
+      window: '24h',
+      effectiveWindow: '24h',
+      entityType: 'buyer',
+      entityId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      metric: 'requests',
+      partial: false,
+      warning: null,
+      series: [
+        {
+          timestamp: '2026-03-24T00:00:00.000Z',
+          value: 3
+        }
+      ]
+    });
+  });
+
+  it('routes /v1/orgs/innies analytics through the internal org slug', async () => {
+    const { deps, analytics } = createDeps();
+    const router = createOrgAnalyticsRouter(deps as any);
+    const headers = { cookie: `${ORG_SESSION_COOKIE_NAME}=signed-org-session` };
+
+    const dashboardRes = createMockRes();
+    await invokeHandlers(getRouteHandlers(router as any, '/v1/orgs/:slug/analytics/dashboard', 'get'), createMockReq({
+      method: 'GET',
+      path: '/v1/orgs/innies/analytics/dashboard',
+      headers,
+      params: { slug: 'innies' }
+    }), dashboardRes);
+
+    expect(dashboardRes.statusCode).toBe(200);
+    expect(analytics.getSystemSummary).toHaveBeenCalledWith({
+      window: '24h',
       provider: undefined,
       source: undefined,
-      credentialId: undefined,
-      orgId: 'org_1'
+      orgId: 'org_3'
     });
   });
 });

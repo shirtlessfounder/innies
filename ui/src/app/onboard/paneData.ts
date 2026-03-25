@@ -27,6 +27,7 @@ export type OnboardingPane = {
 };
 
 export const ONBOARDING_FILES = [
+  'INNIES_BETA_DECISIONS.md',
   'CLAUDE_CODEX_OAUTH_TOKENS.md',
   'CLI_ONBOARDING.md',
   'OPENCLAW_ONBOARDING.md',

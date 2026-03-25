@@ -6,6 +6,14 @@ export type OrgAuthResolution =
   | { kind: 'no_access'; orgId: string; orgSlug: string; orgName: string }
   | { kind: 'org_not_found' };
 
+export type ActiveOrgMembership = {
+  orgId: string;
+  orgSlug: string;
+  orgName: string;
+  membershipId: string;
+  isOwner: boolean;
+};
+
 type OrgRow = { id: string; slug: string; name: string; owner_user_id: string };
 type OrgSummary = { id: string; slug: string; name: string; ownerUserId: string };
 
@@ -57,6 +65,55 @@ export class OrgAccessRepository {
       [slug]
     );
     return result.rowCount === 1 ? mapOrg(result.rows[0]) : null;
+  }
+
+  async findActiveOrgByUserId(userId: string): Promise<OrgSummary | null> {
+    const result = await this.db.query<OrgRow>(
+      `select
+        org.id,
+        org.slug,
+        org.name,
+        org.owner_user_id
+      from in_memberships membership
+      join in_orgs org on org.id = membership.org_id
+      where membership.user_id = $1
+        and membership.ended_at is null
+      order by (org.owner_user_id = membership.user_id) desc, membership.created_at asc
+      limit 1`,
+      [userId]
+    );
+    return result.rowCount === 1 ? mapOrg(result.rows[0]) : null;
+  }
+
+  async listActiveOrgsForUser(userId: string): Promise<ActiveOrgMembership[]> {
+    const result = await this.db.query<{
+      org_id: string;
+      org_slug: string;
+      org_name: string;
+      membership_id: string;
+      is_owner: boolean;
+    }>(
+      `select
+        org.id as org_id,
+        org.slug as org_slug,
+        org.name as org_name,
+        membership.id as membership_id,
+        (org.owner_user_id = membership.user_id) as is_owner
+      from in_memberships membership
+      join in_orgs org on org.id = membership.org_id
+      where membership.user_id = $1
+        and membership.ended_at is null
+      order by org.slug asc`,
+      [userId]
+    );
+
+    return result.rows.map((row) => ({
+      orgId: row.org_id,
+      orgSlug: row.org_slug,
+      orgName: row.org_name,
+      membershipId: row.membership_id,
+      isOwner: row.is_owner
+    }));
   }
 
   async findAuthResolutionBySlugAndGithubLogin(input: {
