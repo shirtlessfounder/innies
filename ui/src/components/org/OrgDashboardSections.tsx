@@ -1,169 +1,243 @@
 'use client';
 
+import Link from 'next/link';
+import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
-import styles from './orgDashboard.module.css';
-import { OrgDashboardTokens } from './OrgDashboardTokens';
-import { OrgDashboardMembers } from './OrgDashboardMembers';
-import type { AnalyticsDashboardSnapshot } from '../../lib/analytics/types';
-import type { OrgDashboardPageState } from '../../lib/org/types';
+import analyticsStyles from '../../app/analytics/page.module.css';
+import { AnalyticsDashboardClient } from '../../app/analytics/AnalyticsDashboardClient';
+import { useAnalyticsDashboard } from '../../hooks/useAnalyticsDashboard';
+import { formatLocalTimeZoneAbbreviation, formatTimestamp } from '../../lib/analytics/present';
+import type { OrgDashboardPageState, OrgHeaderOrg } from '../../lib/org/types';
+import { OrgManagementSections } from './OrgManagementSections';
+import { OrgDashboardToolbarActions } from './OrgDashboardToolbarActions';
 
-function formatPercent(value: number): string {
-  return `${(value * 100).toFixed(1)}%`;
+type OwnerView = 'analytics' | 'management';
+
+function readOwnerViewFromHash(hash: string): OwnerView {
+  return hash === '#management' ? 'management' : 'analytics';
 }
 
-async function fetchAnalyticsSnapshot(path: string, signal: AbortSignal): Promise<AnalyticsDashboardSnapshot> {
-  const searchParams = new URLSearchParams({ window: '24h' });
-  const response = await fetch(`${path}?${searchParams.toString()}`, {
-    cache: 'no-store',
-    signal,
-    headers: {
-      accept: 'application/json',
-    },
-  });
-  const text = await response.text();
-  const body = text.length > 0 ? JSON.parse(text) : null;
-  if (!response.ok) {
-    const record = body && typeof body === 'object' ? body as Record<string, unknown> : null;
-    const message = typeof record?.message === 'string' ? record.message : `Analytics request failed (${response.status})`;
-    throw new Error(message);
-  }
-  return body as AnalyticsDashboardSnapshot;
+function ownerViewHref(view: OwnerView): string {
+  return view === 'management' ? '#management' : '#analytics';
 }
 
-function OrgAnalyticsSection(input: {
-  dashboardPath: string;
-  timeseriesPath: string;
+function OwnerViewToggle(input: {
+  ownerView: OwnerView;
+  onChange: (view: OwnerView) => void;
 }) {
-  const [snapshot, setSnapshot] = useState<AnalyticsDashboardSnapshot | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setError(null);
-
-    void fetchAnalyticsSnapshot(input.dashboardPath, controller.signal)
-      .then((nextSnapshot) => {
-        setSnapshot(nextSnapshot);
-      })
-      .catch((fetchError) => {
-        if (fetchError instanceof Error && fetchError.name === 'AbortError') return;
-        setError(fetchError instanceof Error ? fetchError.message : 'Could not load analytics.');
-      });
-
-    return () => controller.abort();
-  }, [input.dashboardPath]);
-
   return (
-    <section className={styles.section} data-series-path={input.timeseriesPath}>
-      <div className={styles.sectionHeader}>
-        <div>
-          <h2 className={styles.sectionTitle}>Analytics</h2>
-          <p className={styles.sectionHint}>
-            Org-scoped dashboard summary, loaded from the current route&apos;s analytics proxy instead of the old global analytics surface.
-          </p>
-        </div>
-      </div>
-
-      {error ? <p className={styles.errorBox}>{error}</p> : null}
-
-      {!snapshot && !error ? (
-        <div className={styles.emptyState}>Loading analytics...</div>
-      ) : null}
-
-      {snapshot ? (
-        <>
-          <div className={styles.heroStats}>
-            <div className={styles.statCard}>
-              <p className={styles.statLabel}>Requests</p>
-              <p className={styles.statValue}>{snapshot.summary.totalRequests}</p>
-            </div>
-            <div className={styles.statCard}>
-              <p className={styles.statLabel}>Usage Units</p>
-              <p className={styles.statValue}>{snapshot.summary.totalUsageUnits}</p>
-            </div>
-            <div className={styles.statCard}>
-              <p className={styles.statLabel}>Active Tokens</p>
-              <p className={styles.statValue}>{snapshot.summary.activeTokens}</p>
-            </div>
-            <div className={styles.statCard}>
-              <p className={styles.statLabel}>Error Rate</p>
-              <p className={styles.statValue}>{formatPercent(snapshot.summary.errorRate)}</p>
-            </div>
-          </div>
-          {snapshot.warnings.length > 0 ? (
-            <ul className={styles.warningList}>
-              {snapshot.warnings.map((warning) => (
-                <li className={styles.warnPill} key={warning}>{warning}</li>
-              ))}
-            </ul>
-          ) : null}
-        </>
-      ) : null}
-    </section>
+    <>
+      <a
+        aria-pressed={input.ownerView === 'analytics'}
+        className={input.ownerView === 'analytics' ? analyticsStyles.windowButtonActive : analyticsStyles.windowButton}
+        href={ownerViewHref('analytics')}
+        onClick={(event) => {
+          event.preventDefault();
+          input.onChange('analytics');
+        }}
+        role="button"
+      >
+        ANALYTICS
+      </a>
+      <a
+        aria-pressed={input.ownerView === 'management'}
+        className={input.ownerView === 'management' ? analyticsStyles.windowButtonActive : analyticsStyles.windowButton}
+        href={ownerViewHref('management')}
+        onClick={(event) => {
+          event.preventDefault();
+          input.onChange('management');
+        }}
+        role="button"
+      >
+        MANAGEMENT
+      </a>
+    </>
   );
 }
 
-export function OrgDashboardSections(input: { data: OrgDashboardPageState }) {
-  const { data } = input;
-  const roleLabel = data.membership.isOwner ? 'Owner' : 'Member';
+function OwnerManagementView(input: {
+  data: OrgDashboardPageState;
+  activeOrgs: OrgHeaderOrg[];
+  ownerToggle: ReactNode;
+  toolbarAction: ReactNode;
+  dashboardTitle: string;
+}) {
+  const { activeOrgs, data, dashboardTitle, ownerToggle, toolbarAction } = input;
+  const orgSlug = data.org.slug;
+  const managementDashboard = useAnalyticsDashboard('24h', {
+    dashboardPath: data.analyticsPaths.dashboardPath,
+  });
 
   return (
-    <main className={styles.page}>
-      <div className={styles.shell}>
-        <section className={styles.hero}>
-          <div className={styles.heroTop}>
-            <div>
-              <div className={styles.eyebrow}>{data.org.slug}</div>
-              <h1 className={styles.title}>{data.org.name}</h1>
-              <p className={styles.lede}>
-                Org-scoped analytics, token inventory, and membership controls live here. Owner-only actions stay visible only when the membership role allows them.
-              </p>
+    <main className={analyticsStyles.page}>
+      <div className={analyticsStyles.shell}>
+        <div className={analyticsStyles.console}>
+          <header className={analyticsStyles.consoleHeader}>
+            <div className={analyticsStyles.headerBlock}>
+              <div className={analyticsStyles.kicker}>
+                <Link className={analyticsStyles.homeLink} href="/">
+                  INNIES.COMPUTER
+                </Link>
+                <span>{` / ${orgSlug.toUpperCase()}`}</span>
+              </div>
+              {activeOrgs.length > 0 ? (
+                <div className={analyticsStyles.promptLine}>
+                  <span className={analyticsStyles.promptPrefix}>ORGS:</span>
+                  <span className={analyticsStyles.promptCommand}>
+                    <span className={analyticsStyles.promptCommandText}>
+                      {activeOrgs.map((org, index) => (
+                        <span key={org.slug}>
+                          {index > 0 ? ', ' : ''}
+                          <Link className={analyticsStyles.liveMetaLink} href={`/${org.slug}`}>
+                            {org.slug}
+                          </Link>
+                        </span>
+                      ))}
+                    </span>
+                  </span>
+                </div>
+              ) : null}
+              <h1 className={analyticsStyles.title}>{dashboardTitle}</h1>
+              <div className={analyticsStyles.promptLine}>
+                <span className={analyticsStyles.promptPrefix}>innies:~$</span>
+                <span className={analyticsStyles.promptCommand}>
+                  <span className={analyticsStyles.promptCommandText}>
+                    {`manage org --slug ${orgSlug}`}
+                    <span className={analyticsStyles.promptCursor} aria-hidden="true" />
+                  </span>
+                </span>
+              </div>
             </div>
-            <div className={styles.heroActions}>
-              <span className={styles.goodPill}>Role {roleLabel}</span>
-              <span className={styles.pill}>Members {data.members.length}</span>
-              <span className={styles.pill}>Pending {data.pendingInvites.length}</span>
+
+            <div className={analyticsStyles.liveMeta}>
+              <span className={`${analyticsStyles.liveBadge} ${analyticsStyles[`liveBadge_${managementDashboard.liveStatus}`]}`}>
+                <span className={analyticsStyles.liveDot} />
+                {managementDashboard.liveStatus.toUpperCase()}
+              </span>
+              <span className={analyticsStyles.liveText}>
+                LAST {formatTimestamp(managementDashboard.lastSuccessfulUpdateAt)} {formatLocalTimeZoneAbbreviation(managementDashboard.lastSuccessfulUpdateAt)}
+              </span>
+              <span className={analyticsStyles.liveTextSecondary}>
+                AUTH:{' '}
+                <a
+                  className={analyticsStyles.liveMetaLink}
+                  href={`https://github.com/${data.membership.githubLogin}`}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  {data.membership.githubLogin}
+                </a>
+              </span>
+            </div>
+          </header>
+
+          <div className={analyticsStyles.toolbar}>
+            <div className={analyticsStyles.toolbarMain}>
+              <div className={`${analyticsStyles.segmented} ${analyticsStyles.toolbarGroupLead}`}>
+                {ownerToggle}
+              </div>
+            </div>
+            <div className={analyticsStyles.toolbarActions}>
+              {toolbarAction}
             </div>
           </div>
 
-          <div className={styles.heroStats}>
-            <div className={styles.statCard}>
-              <p className={styles.statLabel}>Org</p>
-              <p className={styles.statValue}>{data.org.slug}</p>
-            </div>
-            <div className={styles.statCard}>
-              <p className={styles.statLabel}>Tokens</p>
-              <p className={styles.statValue}>{data.tokens.length}</p>
-            </div>
-            <div className={styles.statCard}>
-              <p className={styles.statLabel}>Members</p>
-              <p className={styles.statValue}>{data.members.length}</p>
-            </div>
-            <div className={styles.statCard}>
-              <p className={styles.statLabel}>Role</p>
-              <p className={styles.statValue}>{roleLabel}</p>
-            </div>
+          <div className={analyticsStyles.managementSectionStack}>
+            <OrgManagementSections data={data} />
           </div>
-        </section>
-
-        <div className={styles.grid}>
-          <OrgAnalyticsSection
-            dashboardPath={data.analyticsPaths.dashboardPath}
-            timeseriesPath={data.analyticsPaths.timeseriesPath}
-          />
-          <OrgDashboardTokens
-            membership={data.membership}
-            org={data.org}
-            tokenPermissions={data.tokenPermissions}
-            tokens={data.tokens}
-          />
-          <OrgDashboardMembers
-            members={data.members}
-            membership={data.membership}
-            org={data.org}
-            pendingInvites={data.pendingInvites}
-          />
         </div>
+      </div>
+    </main>
+  );
+}
+
+export function OrgDashboardSections(input: {
+  data: OrgDashboardPageState;
+  activeOrgs?: OrgHeaderOrg[];
+}) {
+  const { data } = input;
+  const activeOrgs = input.activeOrgs ?? [];
+  const orgSlug = data.org.slug;
+  const dashboardTitle = orgSlug === 'innies' ? 'monitor the innies' : `monitor ${orgSlug} innies`;
+  const [ownerView, setOwnerView] = useState<OwnerView>('analytics');
+  const showOwnerToggle = data.membership.isOwner;
+  const applyOwnerView = (nextView: OwnerView) => {
+    setOwnerView(nextView);
+
+    const nextHash = ownerViewHref(nextView);
+    if (window.location.hash === nextHash) {
+      return;
+    }
+
+    const url = new URL(window.location.href);
+    url.hash = nextHash.slice(1);
+    window.history.replaceState(null, '', url);
+  };
+
+  useEffect(() => {
+    if (!showOwnerToggle) return;
+
+    function handleHashChange() {
+      setOwnerView(readOwnerViewFromHash(window.location.hash));
+    }
+
+    handleHashChange();
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, [showOwnerToggle]);
+
+  const ownerToggle = showOwnerToggle ? (
+    <OwnerViewToggle ownerView={ownerView} onChange={applyOwnerView} />
+  ) : null;
+  const toolbarAction = (
+    <OrgDashboardToolbarActions membership={data.membership} org={data.org} view={ownerView} />
+  );
+  const tokenSectionMetaAction = (
+    <button
+      className={analyticsStyles.sectionMetaButton}
+      onClick={() => globalThis.dispatchEvent(new CustomEvent('innies:add-token-modal'))}
+      type="button"
+    >
+      [CLICK TO ADD TOKENS]
+    </button>
+  );
+
+  if (showOwnerToggle && ownerView === 'management') {
+    return (
+      <OwnerManagementView
+        activeOrgs={activeOrgs}
+        dashboardTitle={dashboardTitle}
+        data={data}
+        ownerToggle={ownerToggle}
+        toolbarAction={toolbarAction}
+      />
+    );
+  }
+
+  return (
+    <main className={analyticsStyles.page}>
+      <div className={analyticsStyles.shell}>
+        <AnalyticsDashboardClient
+          activeOrgs={activeOrgs}
+          authGithubLogin={data.membership.githubLogin}
+          buyerSectionTitle="BUYER KEYS (outies)"
+          dashboardPath={data.analyticsPaths.dashboardPath}
+          kickerLabel={` / ${orgSlug.toUpperCase()}`}
+          orgSlug={orgSlug}
+          timeseriesPath={data.analyticsPaths.timeseriesPath}
+          tokenRowRemoveConfig={orgSlug === 'innies' ? undefined : {
+            orgSlug,
+            viewerGithubLogin: data.membership.githubLogin,
+            createdByGithubLoginByTokenId: Object.fromEntries(
+              data.tokens.map((token) => [token.tokenId, token.createdByGithubLogin]),
+            ),
+          }}
+          toolbarAction={toolbarAction}
+          toolbarLead={ownerToggle}
+          title={dashboardTitle}
+          tokenSectionMetaAction={tokenSectionMetaAction}
+          tokenSectionTitle="TOKEN CREDS (innies)"
+        />
       </div>
     </main>
   );

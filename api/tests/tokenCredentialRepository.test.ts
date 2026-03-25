@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { SqlClient, SqlQueryResult, SqlValue, TransactionContext } from '../src/repos/sqlClient.js';
-import { TokenCredentialRepository } from '../src/repos/tokenCredentialRepository.js';
+import { DuplicateTokenCredentialLabelError, TokenCredentialRepository } from '../src/repos/tokenCredentialRepository.js';
 import { encryptSecret } from '../src/utils/crypto.js';
+import { sha256Hex } from '../src/utils/hash.js';
 
 class SequenceSqlClient implements SqlClient {
   readonly queries: Array<{ sql: string; params?: SqlValue[] }> = [];
@@ -40,6 +41,7 @@ describe('tokenCredentialRepository', () => {
     process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 7).toString('base64');
     const db = new SequenceSqlClient([
       { rows: [], rowCount: 0 },
+      { rows: [], rowCount: 0 },
       { rows: [{ id: 'cred_1', rotation_version: 1 }], rowCount: 1 }
     ]);
     const repo = new TokenCredentialRepository(db);
@@ -50,15 +52,82 @@ describe('tokenCredentialRepository', () => {
       authScheme: 'x_api_key',
       accessToken: 'access-secret',
       refreshToken: 'refresh-secret',
+      debugLabel: 'main',
       expiresAt: new Date('2026-03-02T00:00:00Z')
     });
 
     expect(saved.id).toBe('cred_1');
     expect(saved.rotationVersion).toBe(1);
-    expect(db.queries[1].sql).toContain('insert into in_token_credentials');
-    expect(Buffer.isBuffer(db.queries[1].params?.[4])).toBe(true);
-    expect(Buffer.isBuffer(db.queries[1].params?.[5])).toBe(true);
-    expect(String(db.queries[1].params?.[4])).not.toContain('access-secret');
+    expect(db.queries[1].sql).toContain('btrim(debug_label) = $3');
+    expect(db.queries[1].params).toEqual([
+      '00000000-0000-0000-0000-000000000001',
+      'anthropic',
+      'main',
+      null
+    ]);
+    expect(db.queries[2].sql).toContain('insert into in_token_credentials');
+    expect(db.queries[2].sql).toContain('access_token_sha256');
+    expect(Buffer.isBuffer(db.queries[2].params?.[4])).toBe(true);
+    expect(Buffer.isBuffer(db.queries[2].params?.[5])).toBe(true);
+    expect(db.queries[2].params?.[9]).toBe(sha256Hex('access-secret'));
+    expect(String(db.queries[2].params?.[4])).not.toContain('access-secret');
+  });
+
+  it('rejects creating a duplicate provider-label pair within the same org', async () => {
+    const db = new SequenceSqlClient([
+      { rows: [], rowCount: 0 },
+      { rows: [{ id: 'cred_dup' }], rowCount: 1 }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    await expect(repo.create({
+      orgId: '00000000-0000-0000-0000-000000000001',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: 'access-secret',
+      refreshToken: null,
+      debugLabel: 'shirtless',
+      expiresAt: new Date('2026-03-02T00:00:00Z')
+    })).rejects.toEqual(new DuplicateTokenCredentialLabelError('openai', 'shirtless'));
+
+    expect(db.queries).toHaveLength(2);
+    expect(db.queries[1].sql).toContain("status <> 'revoked'");
+    expect(db.queries[1].sql).toContain('btrim(debug_label) = $3');
+    expect(db.queries[1].params).toEqual([
+      '00000000-0000-0000-0000-000000000001',
+      'openai',
+      'shirtless',
+      null
+    ]);
+  });
+
+  it('finds an existing non-revoked credential by exact access token value', async () => {
+    process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 17).toString('base64');
+    const db = new SequenceSqlClient([{
+      rows: [
+        {
+          id: 'cred_old',
+          org_id: 'org_legacy',
+          status: 'active',
+          encrypted_access_token: encryptSecret('shared-oauth-token')
+        },
+        {
+          id: 'cred_other',
+          org_id: 'org_other',
+          status: 'paused',
+          encrypted_access_token: encryptSecret('different-token')
+        }
+      ],
+      rowCount: 2
+    }]);
+    const repo = new TokenCredentialRepository(db);
+
+    await expect(repo.findNonRevokedByAccessToken('shared-oauth-token')).resolves.toEqual({
+      id: 'cred_old',
+      orgId: 'org_legacy',
+      status: 'active'
+    });
+    expect(db.queries[0].sql).toContain("where status <> 'revoked'");
   });
 
   it('selects and decrypts active credential', async () => {
@@ -325,6 +394,7 @@ describe('tokenCredentialRepository', () => {
     const db = new SequenceSqlClient([
       { rows: [{ id: 'latest_1', rotation_version: 2 }], rowCount: 1 },
       { rows: [{ id: 'old_1', status: 'active', debug_label: 'oauth-main-1' }], rowCount: 1 },
+      { rows: [], rowCount: 0 },
       { rows: [], rowCount: 1 },
       { rows: [], rowCount: 1 },
       { rows: [], rowCount: 1 }
@@ -342,9 +412,39 @@ describe('tokenCredentialRepository', () => {
 
     expect(rotated.rotationVersion).toBe(3);
     expect(rotated.previousId).toBe('old_1');
-    expect(db.queries[2].sql).toContain("set status = 'rotating'");
-    expect(db.queries[4].sql).toContain("set status = 'revoked'");
-    expect(db.queries[3].params?.[8]).toBe('oauth-main-1');
+    expect(db.queries[2].sql).toContain('btrim(debug_label) = $3');
+    expect(db.queries[3].sql).toContain("set status = 'rotating'");
+    expect(db.queries[5].sql).toContain("set status = 'revoked'");
+    expect(db.queries[4].sql).toContain('access_token_sha256');
+    expect(db.queries[4].params?.[8]).toBe('oauth-main-1');
+    expect(db.queries[4].params?.[9]).toBe(sha256Hex('next-token'));
+  });
+
+  it('rejects rotating into a duplicate provider-label pair within the same org', async () => {
+    const db = new SequenceSqlClient([
+      { rows: [{ id: 'latest_1', rotation_version: 2 }], rowCount: 1 },
+      { rows: [{ id: 'old_1', status: 'active', debug_label: 'oauth-main-1' }], rowCount: 1 },
+      { rows: [{ id: 'cred_dup' }], rowCount: 1 }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    await expect(repo.rotate({
+      orgId: '00000000-0000-0000-0000-000000000001',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: 'next-token',
+      refreshToken: null,
+      debugLabel: 'shirtless',
+      expiresAt: new Date('2026-03-02T00:00:00Z')
+    })).rejects.toEqual(new DuplicateTokenCredentialLabelError('openai', 'shirtless'));
+
+    expect(db.queries).toHaveLength(3);
+    expect(db.queries[2].params).toEqual([
+      '00000000-0000-0000-0000-000000000001',
+      'openai',
+      'shirtless',
+      'old_1'
+    ]);
   });
 
   it('rotates selected maxed credential by revoking it directly', async () => {
@@ -352,6 +452,7 @@ describe('tokenCredentialRepository', () => {
     const db = new SequenceSqlClient([
       { rows: [{ id: 'latest_1', rotation_version: 4 }], rowCount: 1 },
       { rows: [{ id: 'old_maxed_1', status: 'maxed', debug_label: 'darryn' }], rowCount: 1 },
+      { rows: [], rowCount: 0 },
       { rows: [], rowCount: 1 },
       { rows: [], rowCount: 1 }
     ]);
@@ -369,10 +470,12 @@ describe('tokenCredentialRepository', () => {
 
     expect(rotated.rotationVersion).toBe(5);
     expect(rotated.previousId).toBe('old_maxed_1');
-    expect(db.queries).toHaveLength(4);
-    expect(db.queries[2].sql).toContain('insert into in_token_credentials');
-    expect(db.queries[2].params?.[8]).toBe('darryn');
-    expect(db.queries[3].sql).toContain("set status = 'revoked'");
+    expect(db.queries).toHaveLength(5);
+    expect(db.queries[2].sql).toContain('btrim(debug_label) = $3');
+    expect(db.queries[3].sql).toContain('insert into in_token_credentials');
+    expect(db.queries[3].params?.[8]).toBe('darryn');
+    expect(db.queries[3].params?.[9]).toBe(sha256Hex('next-token'));
+    expect(db.queries[4].sql).toContain("set status = 'revoked'");
   });
 
   it('rotates selected expired credential by revoking it directly', async () => {
@@ -380,6 +483,7 @@ describe('tokenCredentialRepository', () => {
     const db = new SequenceSqlClient([
       { rows: [{ id: 'latest_1', rotation_version: 6 }], rowCount: 1 },
       { rows: [{ id: 'old_expired_1', status: 'expired', debug_label: 'oogway' }], rowCount: 1 },
+      { rows: [], rowCount: 0 },
       { rows: [], rowCount: 1 },
       { rows: [], rowCount: 1 }
     ]);
@@ -397,11 +501,13 @@ describe('tokenCredentialRepository', () => {
 
     expect(rotated.rotationVersion).toBe(7);
     expect(rotated.previousId).toBe('old_expired_1');
-    expect(db.queries).toHaveLength(4);
+    expect(db.queries).toHaveLength(5);
     expect(db.queries[1].sql).toContain("status in ('active', 'maxed', 'expired')");
-    expect(db.queries[2].sql).toContain('insert into in_token_credentials');
-    expect(db.queries[2].params?.[8]).toBe('oogway');
-    expect(db.queries[3].sql).toContain("set status = 'revoked'");
+    expect(db.queries[2].sql).toContain('btrim(debug_label) = $3');
+    expect(db.queries[3].sql).toContain('insert into in_token_credentials');
+    expect(db.queries[3].params?.[8]).toBe('oogway');
+    expect(db.queries[3].params?.[9]).toBe(sha256Hex('next-token'));
+    expect(db.queries[4].sql).toContain("set status = 'revoked'");
   });
 
   it('lists active provider poll candidates without relying on stored auth_scheme', async () => {
@@ -637,6 +743,18 @@ describe('tokenCredentialRepository', () => {
         id: 'cred_1',
         org_id: '00000000-0000-0000-0000-000000000001',
         provider: 'openai',
+        status: 'active',
+        debug_label: 'codex-main-1'
+      }],
+      rowCount: 1
+    }, {
+      rows: [],
+      rowCount: 0
+    }, {
+      rows: [{
+        id: 'cred_1',
+        org_id: '00000000-0000-0000-0000-000000000001',
+        provider: 'openai',
         debug_label: 'codex-main-2'
       }],
       rowCount: 1
@@ -651,10 +769,43 @@ describe('tokenCredentialRepository', () => {
       provider: 'openai',
       debugLabel: 'codex-main-2'
     });
-    expect(db.queries[0].sql).toContain('debug_label = $2');
-    expect(db.queries[0].sql).toContain('updated_at = now()');
-    expect(db.queries[0].sql).toContain("status <> 'revoked'");
-    expect(db.queries[0].params).toEqual(['cred_1', 'codex-main-2']);
+    expect(db.queries[0].sql).toContain('select id, org_id, provider, status, debug_label');
+    expect(db.queries[1].sql).toContain('btrim(debug_label) = $3');
+    expect(db.queries[2].sql).toContain('debug_label = $2');
+    expect(db.queries[2].sql).toContain('updated_at = now()');
+    expect(db.queries[2].sql).toContain("status <> 'revoked'");
+    expect(db.queries[2].params).toEqual(['cred_1', 'codex-main-2']);
+  });
+
+  it('rejects updating debug_label into a duplicate provider-label pair within the same org', async () => {
+    const db = new SequenceSqlClient([
+      {
+        rows: [{
+          id: 'cred_1',
+          org_id: '00000000-0000-0000-0000-000000000001',
+          provider: 'openai',
+          status: 'active',
+          debug_label: 'codex-main-1'
+        }],
+        rowCount: 1
+      },
+      {
+        rows: [{ id: 'cred_dup' }],
+        rowCount: 1
+      }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    await expect(repo.updateDebugLabel('cred_1', 'shirtless'))
+      .rejects.toEqual(new DuplicateTokenCredentialLabelError('openai', 'shirtless'));
+
+    expect(db.queries).toHaveLength(2);
+    expect(db.queries[1].params).toEqual([
+      '00000000-0000-0000-0000-000000000001',
+      'openai',
+      'shirtless',
+      'cred_1'
+    ]);
   });
 
   it('records failure and marks credential maxed when threshold is reached', async () => {
@@ -1083,6 +1234,8 @@ describe('tokenCredentialRepository', () => {
     });
 
     expect(updated?.rotationVersion).toBe(7);
+    expect(db.queries[0].sql).toContain('access_token_sha256 = $6');
+    expect(db.queries[0].params?.[5]).toBe(sha256Hex('access-new'));
     expect(db.queries[0].sql).not.toContain('rotation_version = rotation_version + 1');
     expect(db.queries[0].sql).toContain('consecutive_failure_count = 0');
     expect(db.queries[0].sql).toContain('consecutive_rate_limit_count = 0');
@@ -1139,6 +1292,8 @@ describe('tokenCredentialRepository', () => {
     } as any);
 
     expect(updated?.status).toBe('maxed');
+    expect(db.queries[0].sql).toContain('access_token_sha256 = $6');
+    expect(db.queries[0].params?.[5]).toBe(sha256Hex('access-new'));
     expect(db.queries[0].sql).toContain('status = case');
     expect(db.queries[0].sql).toContain('maxed_at = case');
   });

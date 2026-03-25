@@ -6,6 +6,7 @@ export type DashboardSnapshotFilters = {
   window: AnalyticsWindow;
   provider?: string;
   source?: string;
+  orgId?: string;
 };
 
 export type AnalyticsDashboardSnapshotPayload = {
@@ -50,7 +51,7 @@ type SnapshotRow = {
 const LOCK_NAMESPACE = 19772191;
 // Version the shared snapshot row so mixed-version API instances do not clobber
 // newer dashboard payload shapes during rollouts or local/prod DB sharing.
-const DASHBOARD_SNAPSHOT_CACHE_SCHEMA_VERSION = 4;
+const DASHBOARD_SNAPSHOT_CACHE_SCHEMA_VERSION = 5;
 
 function buildCacheKey(filters: DashboardSnapshotFilters): string {
   return [
@@ -58,7 +59,8 @@ function buildCacheKey(filters: DashboardSnapshotFilters): string {
     `v${DASHBOARD_SNAPSHOT_CACHE_SCHEMA_VERSION}`,
     filters.window,
     filters.provider ?? '_',
-    filters.source ?? '_'
+    filters.source ?? '_',
+    filters.orgId ?? '_'
   ].join(':');
 }
 

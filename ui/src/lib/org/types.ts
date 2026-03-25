@@ -4,6 +4,23 @@ export type OrgSummary = {
   name: string;
 };
 
+export type OrgHeaderOrg = OrgSummary & {
+  isOwner: boolean;
+};
+
+export type OrgSessionState = {
+  actorUserId: string;
+  githubLogin: string;
+  issuedAt: string;
+  expiresAt: string;
+  activeOrgs: OrgHeaderOrg[];
+};
+
+export type OrgSessionResponse = {
+  ok: true;
+  session: OrgSessionState;
+};
+
 export type OrgAccessResponse =
   | { kind: 'not_found' }
   | {
@@ -45,11 +62,16 @@ export type OrgPendingInvite = {
   createdAt: string;
 };
 
+export type OrgTokenStatus =
+  'active' | 'paused' | 'rotating' | 'maxed' | 'expired' | 'revoked';
+
 export type OrgToken = {
   tokenId: string;
   provider: string;
+  status: OrgTokenStatus;
   createdByUserId: string | null;
   createdByGithubLogin: string | null;
+  debugLabel: string | null;
   fiveHourReservePercent: number;
   sevenDayReservePercent: number;
 };

@@ -17,8 +17,9 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const uiRoot = join(__dirname, '..');
 
-test('onboard page includes conductor onboarding in the pane file list', () => {
+test('onboard page includes the beta decisions guide first in the pane file list', () => {
   assert.deepEqual(ONBOARDING_FILES, [
+    'INNIES_BETA_DECISIONS.md',
     'CLAUDE_CODEX_OAUTH_TOKENS.md',
     'CLI_ONBOARDING.md',
     'OPENCLAW_ONBOARDING.md',
@@ -33,16 +34,19 @@ test('buildPane uses the markdown heading as the pane title', () => {
   assert.equal(pane.lines[0]?.kind, 'heading1');
 });
 
-test('chunkIntoPanePages groups four guides into two 3-pane pages', () => {
+test('chunkIntoPanePages groups five guides into two 3-pane pages', () => {
   const pages = chunkIntoPanePages(ONBOARDING_FILES, 3);
 
   assert.equal(pages.length, 2);
   assert.deepEqual(pages[0], [
+    'INNIES_BETA_DECISIONS.md',
     'CLAUDE_CODEX_OAUTH_TOKENS.md',
     'CLI_ONBOARDING.md',
-    'OPENCLAW_ONBOARDING.md',
   ]);
-  assert.deepEqual(pages[1], ['CONDUCTOR_ONBOARDING.md']);
+  assert.deepEqual(pages[1], [
+    'OPENCLAW_ONBOARDING.md',
+    'CONDUCTOR_ONBOARDING.md',
+  ]);
 });
 
 test('clampPageIndex keeps the page index inside the page range', () => {
@@ -66,7 +70,9 @@ test('getPageButtonState disables nav buttons at the first and last page', () =>
 test('onboard header copy tells the user to copy and send the docs to an agent', () => {
   const source = readFileSync(join(uiRoot, 'src/app/onboard/OnboardingPaneCarousel.tsx'), 'utf8');
 
+  assert.ok(source.includes('input.panes.length'));
   assert.ok(source.includes('COPY AND SEND TO AGENT TO SET UP'));
+  assert.ok(!source.includes('4 GUIDES LOADED'));
   assert.ok(!source.includes('3 PANES PER PAGE · SCROLL EACH PANE INDEPENDENTLY'));
   assert.ok(!source.includes('workspaceMetaText'));
 });

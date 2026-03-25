@@ -198,13 +198,14 @@ function createDashboardSnapshotPayload(overrides: Record<string, unknown> = {})
 
 function createDashboardSnapshotRecord(
   payload = createDashboardSnapshotPayload(),
-  refreshedAt = '2026-03-12T12:00:00.000Z'
+  refreshedAt = '2026-03-12T12:00:00.000Z',
+  filters: { provider?: string; source?: string; orgId?: string } = {}
 ) {
   return {
-    cacheKey: `dashboard:v3:${payload.window}:_:_`,
+    cacheKey: `dashboard:v5:${payload.window}:${filters.provider ?? '_'}:${filters.source ?? '_'}:${filters.orgId ?? '_'}`,
     window: payload.window,
-    provider: undefined,
-    source: undefined,
+    provider: filters.provider,
+    source: filters.source,
     payload,
     snapshotAt: new Date(String(payload.snapshotAt)),
     refreshedAt: new Date(refreshedAt)
@@ -2273,6 +2274,98 @@ describe('analytics routes', () => {
     expect(dashboardSnapshots.refreshIfLockAvailable).not.toHaveBeenCalled();
     expect(analytics.getSystemSummary).not.toHaveBeenCalled();
     expect(res.body).toEqual(cachedPayload);
+  });
+
+  it('threads orgId through admin dashboard cache lookups and analytics queries', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    analytics.getEvents.mockResolvedValue([]);
+    const dashboardSnapshots = createDashboardSnapshotStore();
+    dashboardSnapshots.get.mockResolvedValue(null);
+    dashboardSnapshots.refreshIfLockAvailable.mockImplementation(async (_query, buildPayload) => (
+      createDashboardSnapshotRecord(await buildPayload(), '2026-03-12T12:00:10.000Z', {
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d'
+      })
+    ));
+
+    const router = createAnalyticsRouter({
+      apiKeys: apiKeys as any,
+      analytics,
+      dashboardSnapshots: dashboardSnapshots as any
+    });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/dashboard', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/dashboard',
+      headers: {
+        authorization: 'Bearer admin_token'
+      },
+      query: {
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(dashboardSnapshots.get).toHaveBeenCalledWith({
+      window: '24h',
+      provider: undefined,
+      source: undefined,
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d'
+    });
+    expect(dashboardSnapshots.refreshIfLockAvailable).toHaveBeenCalledWith(
+      {
+        window: '24h',
+        provider: undefined,
+        source: undefined,
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d'
+      },
+      expect.any(Function)
+    );
+    expect(analytics.getSystemSummary).toHaveBeenCalledWith({
+      window: '24h',
+      provider: undefined,
+      source: undefined,
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d'
+    });
+    expect(analytics.getTokenUsage).toHaveBeenCalledWith({
+      window: '24h',
+      provider: undefined,
+      source: undefined,
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d'
+    });
+  });
+
+  it('threads orgId through admin timeseries filters', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/timeseries', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/timeseries',
+      headers: {
+        authorization: 'Bearer admin_token'
+      },
+      query: {
+        window: '24h',
+        credentialId: '11111111-1111-4111-8111-111111111111',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(analytics.getTimeSeries).toHaveBeenCalledWith({
+      window: '24h',
+      provider: undefined,
+      source: undefined,
+      credentialId: '11111111-1111-4111-8111-111111111111',
+      granularity: '15m',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d'
+    });
   });
 
   it('refreshes a stale dashboard snapshot when the refresh lock is available', async () => {

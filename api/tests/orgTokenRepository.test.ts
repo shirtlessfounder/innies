@@ -3,13 +3,15 @@ import { OrgTokenRepository } from '../src/repos/orgTokenRepository.js';
 import { MockSqlClient } from './testHelpers.js';
 
 describe('OrgTokenRepository', () => {
-  it('lists org token inventory with creator attribution and reserve percentages', async () => {
+  it('lists org token inventory with creator attribution, label, and reserve percentages', async () => {
     const db = new MockSqlClient({
       rows: [{
         token_id: 'token_1',
         provider: 'anthropic',
+        status: 'paused',
         created_by_user_id: 'user_1',
         created_by_github_login: 'shirtlessfounder',
+        debug_label: 'claude-main',
         five_hour_reserve_percent: 12,
         seven_day_reserve_percent: 34
       }],
@@ -20,11 +22,15 @@ describe('OrgTokenRepository', () => {
     expect(await repo.listOrgTokens('org_1')).toEqual([{
       tokenId: 'token_1',
       provider: 'anthropic',
+      status: 'paused',
       createdByUserId: 'user_1',
       createdByGithubLogin: 'shirtlessfounder',
+      debugLabel: 'claude-main',
       fiveHourReservePercent: 12,
       sevenDayReservePercent: 34
     }]);
+    expect(db.queries[0]?.sql).toContain('tc.status');
+    expect(db.queries[0]?.sql).toContain('debug_label');
     expect(db.queries[0]?.sql).toContain('five_hour_reserve_percent');
     expect(db.queries[0]?.sql).toContain('seven_day_reserve_percent');
   });

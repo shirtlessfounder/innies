@@ -24,6 +24,7 @@ type EventFilters = {
   window: AnalyticsWindow;
   provider?: string;
   limit: number;
+  orgId?: string;
 };
 
 function windowSql(window: AnalyticsWindow, alias = 're'): string {
@@ -1395,6 +1396,11 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
     if (filters.provider) {
       params.push(filters.provider);
       where.push(`tce.provider = $${params.length}`);
+    }
+
+    if (filters.orgId) {
+      params.push(filters.orgId);
+      where.push(`tc.org_id = $${params.length}`);
     }
 
     const limit = Math.max(1, Math.min(200, filters.limit));

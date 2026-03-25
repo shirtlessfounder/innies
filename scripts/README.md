@@ -31,6 +31,7 @@ innies-token-refresh-token-set
 innies-token-probe-run
 innies-token-usage-refresh
 innies-buyer-key-create
+innies-org-buyer-key-recover
 innies-buyer-preference-set
 innies-buyer-preference-get
 innies-buyer-preference-check
@@ -57,6 +58,7 @@ What they do:
 - `innies-token-probe-run`: directly probe an active or maxed token credential now; successful maxed probes immediately reactivate it
 - `innies-token-usage-refresh`: fetch provider usage for a Claude Code or Codex token now and print raw plus parsed 5h / 7d values
 - `innies-buyer-key-create`: create a new buyer key in `in_api_keys` and prompt for provider preference up front
+- `innies-org-buyer-key-recover`: resolve an org member by membership id or GitHub login, rotate their buyer key through the admin org route, and print the new plaintext key once
 - `innies-buyer-preference-set`: set a buyer key preference to `Claude Code`, `Codex`, or `null`
 - `innies-buyer-preference-get`: read the current buyer key preference
 - `innies-buyer-preference-check`: run the provider-preference canary after prompting for the expected provider (`Claude Code` or `Codex`)
@@ -70,6 +72,9 @@ Behavior:
 - `innies-buyer-key-create` prompts for `Claude Code`, `Codex`, or `null`, stores the live key hash, and prints the automatic fallback provider
 - `innies-buyer-key-create` optionally accepts an ISO8601 `expiresAt`; press Enter to create a non-expiring buyer key
 - `innies-buyer-key-create` prints the live `in_live_...` key once after insert
+- `innies-org-buyer-key-recover` requires `--org <slug>` plus exactly one of `--membership <id>` or `--github <login>`; add `--json` for machine-readable output
+- `innies-org-buyer-key-recover` calls the existing admin org members + buyer-key rotate routes, so it needs `INNIES_ADMIN_API_KEY` (or prompts for it) and the local admin API base URL from `INNIES_BASE_URL`
+- `innies-org-buyer-key-recover` prints the new plaintext buyer key once after rotation; store it immediately
 - focused token scripts are OAuth-token flows, not provider API-key flows
 - add/rotate always send `authScheme=bearer`
 - on macOS, add/rotate reads the OAuth access token from your clipboard after you press Enter

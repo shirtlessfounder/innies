@@ -1,9 +1,9 @@
 'use client';
 
-import type { FormEvent } from 'react';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import styles from './orgDashboard.module.css';
+import analyticsStyles from '../../app/analytics/page.module.css';
+import { formatCount, formatTimestamp } from '../../lib/analytics/present';
 import type { OrgDashboardPageState } from '../../lib/org/types';
 
 type OrgDashboardMembersProps = Pick<
@@ -42,49 +42,6 @@ export function OrgDashboardMembers(input: OrgDashboardMembersProps) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
-
-  async function handleInvite(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!membership.isOwner || pendingAction) return;
-
-    const form = event.currentTarget;
-    const formData = new FormData(form);
-    const githubLogin = String(formData.get('githubLogin') ?? '').trim();
-    if (!githubLogin) {
-      setError('GitHub login is required.');
-      return;
-    }
-
-    setPendingAction('invite');
-    setError(null);
-
-    try {
-      const response = await fetch(`/api/orgs/${org.slug}/invites`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ githubLogin }),
-      });
-      const body = await safeReadBody(response);
-      if (!response.ok) {
-        setError(readErrorMessage(body, 'Could not create this invite.'));
-        return;
-      }
-
-      if (body && typeof body === 'object' && (body as Record<string, unknown>).kind === 'already_a_member') {
-        setError('That GitHub login is already a member.');
-        return;
-      }
-
-      form.reset();
-      router.refresh();
-    } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Could not create this invite.');
-    } finally {
-      setPendingAction(null);
-    }
-  }
 
   async function revokeInvite(inviteId: string) {
     if (!membership.isOwner || pendingAction) return;
@@ -138,55 +95,29 @@ export function OrgDashboardMembers(input: OrgDashboardMembersProps) {
     }
   }
 
-  async function leaveOrg() {
-    if (membership.isOwner || pendingAction) return;
-
-    setPendingAction('leave');
-    setError(null);
-
-    try {
-      const response = await fetch(`/api/orgs/${org.slug}/leave`, {
-        method: 'POST',
-      });
-      const body = await safeReadBody(response);
-      if (!response.ok) {
-        setError(readErrorMessage(body, 'Could not leave this org.'));
-        return;
-      }
-
-      const redirectTo = body && typeof body === 'object' && typeof (body as Record<string, unknown>).redirectTo === 'string'
-        ? String((body as Record<string, unknown>).redirectTo)
-        : '/';
-      router.push(redirectTo);
-      router.refresh();
-    } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Could not leave this org.');
-    } finally {
-      setPendingAction(null);
-    }
-  }
-
   return (
-    <section className={styles.section}>
-      <div className={styles.sectionHeader}>
-        <div>
-          <h2 className={styles.sectionTitle}>Members</h2>
-          <p className={styles.sectionHint}>
-            All active members can see the roster. Owners can create or revoke pending invites and remove members directly from this org surface.
-          </p>
+    <section className={analyticsStyles.section}>
+      <div className={analyticsStyles.sectionHeader}>
+        <div className={analyticsStyles.sectionTitle}>Members</div>
+        <div className={analyticsStyles.sectionMeta}>
+          {`${formatCount(members.length)} MEMBERS`}
         </div>
       </div>
 
-      {error ? <p className={styles.errorBox}>{error}</p> : null}
+      {error ? (
+        <div className={analyticsStyles.noticeList}>
+          <div className={analyticsStyles.noticeError}>{error}</div>
+        </div>
+      ) : null}
 
-      <div className={styles.tableWrap}>
-        <table className={styles.table}>
+      <div className={analyticsStyles.tableWrap}>
+        <table className={analyticsStyles.table}>
           <thead>
             <tr>
               <th>GitHub</th>
               <th>Role</th>
               <th>Membership</th>
-              <th>Actions</th>
+              <th className={analyticsStyles.tableActionsColumn}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -199,18 +130,18 @@ export function OrgDashboardMembers(input: OrgDashboardMembersProps) {
                   <td>{member.githubLogin ?? '--'}</td>
                   <td>{member.isOwner ? 'Owner' : 'Member'}</td>
                   <td>{member.membershipId}</td>
-                  <td>
+                  <td className={analyticsStyles.tableActionsColumn}>
                     {canRemove ? (
                         <button
-                          className={styles.inlineButton}
+                          className={analyticsStyles.managementTableActionButton}
                           disabled={pendingAction === `remove:${member.userId}`}
                           onClick={() => removeMember(member)}
                           type="button"
                         >
-                        Remove
+                        [remove]
                       </button>
                     ) : (
-                      <span className={styles.muted}>{member.isOwner ? 'Owner' : 'Active'}</span>
+                      null
                     )}
                   </td>
                 </tr>
@@ -221,61 +152,49 @@ export function OrgDashboardMembers(input: OrgDashboardMembersProps) {
       </div>
 
       {membership.isOwner ? (
-        <>
-          <form className={styles.cardGrid} onSubmit={handleInvite}>
-            <label className={styles.fieldLabel}>
-              Invite GitHub login
-              <input className={styles.input} name="githubLogin" placeholder="octocat" required type="text" />
-            </label>
-            <div className={styles.formActions}>
-              <button className={styles.actionButton} disabled={pendingAction === 'invite'} type="submit">
-                {pendingAction === 'invite' ? 'Inviting...' : 'Create invite'}
-              </button>
+        <div className={analyticsStyles.managementSubsection}>
+          <div className={analyticsStyles.sectionHeader}>
+            <div className={analyticsStyles.managementSubsectionTitle}>Pending invites</div>
+            <div className={analyticsStyles.sectionMeta}>
+              {`${formatCount(pendingInvites.length)} PENDING`}
             </div>
-          </form>
-
-          <div className={styles.subsection}>
-            <h3 className={styles.cardTitle}>Pending invites</h3>
-            {pendingInvites.length === 0 ? (
-              <div className={styles.emptyState}>No pending invites.</div>
-            ) : (
-              <ul className={styles.inviteList}>
-                {pendingInvites.map((invite) => (
-                  <li className={styles.listRow} key={invite.inviteId}>
-                    <div>
-                      <strong>{invite.githubLogin}</strong>
-                      <div className={styles.muted}>{invite.createdAt}</div>
-                    </div>
-                    <button
-                      className={styles.inlineButton}
-                      disabled={pendingAction === `revoke:${invite.inviteId}`}
-                      onClick={() => revokeInvite(invite.inviteId)}
-                      type="button"
-                    >
-                      Revoke
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
           </div>
-        </>
-      ) : (
-        <div className={styles.subsection}>
-          <h3 className={styles.cardTitle}>Leave org</h3>
-          <p className={styles.cardMeta}>Owners cannot use the leave flow in MVP.</p>
-          <button className={styles.actionButton} disabled={pendingAction === 'leave'} onClick={leaveOrg} type="button">
-            Leave org
-          </button>
-        </div>
-      )}
-
-      {membership.isOwner ? (
-        <div className={styles.subsection}>
-          <h3 className={styles.cardTitle}>Leave org</h3>
-          <p className={styles.cardMeta}>The owner cannot use the leave flow in MVP.</p>
+          {pendingInvites.length === 0 ? (
+            <div className={analyticsStyles.emptyStateText}>No pending invites.</div>
+          ) : (
+            <div className={analyticsStyles.tableWrap}>
+              <table className={analyticsStyles.table}>
+                <thead>
+                  <tr>
+                    <th>GitHub</th>
+                    <th>Created</th>
+                    <th className={analyticsStyles.tableActionsColumn}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pendingInvites.map((invite) => (
+                    <tr key={invite.inviteId}>
+                      <td>{invite.githubLogin}</td>
+                      <td>{formatTimestamp(invite.createdAt)}</td>
+                      <td className={analyticsStyles.tableActionsColumn}>
+                        <button
+                          className={analyticsStyles.managementTableActionButton}
+                          disabled={pendingAction === `revoke:${invite.inviteId}`}
+                          onClick={() => revokeInvite(invite.inviteId)}
+                          type="button"
+                        >
+                          [revoke]
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       ) : null}
+
     </section>
   );
 }

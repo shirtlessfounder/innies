@@ -360,4 +360,14 @@ describe('AnalyticsRepository', () => {
     expect(db.queries[0]?.sql).toContain('LIMIT $2');
     expect(db.queries[0]?.params).toEqual(['openai', 20]);
   });
+
+  it('applies org filters to lifecycle events queries', async () => {
+    const db = new MockSqlClient({ rows: [], rowCount: 0 });
+    const repo = new AnalyticsRepository(db);
+
+    await repo.getEvents({ window: '5h', limit: 20, orgId: 'org_1' } as any);
+
+    expect(db.queries[0]?.sql).toContain('tc.org_id = $1');
+    expect(db.queries[0]?.params).toEqual(['org_1', 20]);
+  });
 });

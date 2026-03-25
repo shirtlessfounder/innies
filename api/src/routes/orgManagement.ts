@@ -3,6 +3,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { readOrgSession, requireOrgSession } from '../middleware/auth.js';
+import { resolveOrgRouteSlug } from '../services/org/orgRouteSlug.js';
 import { runtime } from '../services/runtime.js';
 import { buildOrgRevealCookie } from '../services/org/orgSessionCookie.js';
 import { AppError } from '../utils/errors.js';
@@ -46,8 +47,10 @@ type OrgManagementDeps = {
     listOrgTokens(orgId: string): Promise<Array<{
       tokenId: string;
       provider: string;
+      status: string;
       createdByUserId: string | null;
       createdByGithubLogin: string | null;
+      debugLabel: string | null;
       fiveHourReservePercent: number;
       sevenDayReservePercent: number;
     }>>;
@@ -95,10 +98,35 @@ type OrgManagementDeps = {
       orgSlug: string;
       actorUserId: string;
       provider: string;
+      debugLabel?: string;
       token: string;
+      refreshToken: string;
       fiveHourReservePercent?: number;
       sevenDayReservePercent?: number;
     }): Promise<{ tokenId: string }>;
+    updateOrgTokenReserve(input: {
+      orgSlug: string;
+      actorUserId: string;
+      tokenId: string;
+      fiveHourReservePercent: number;
+      sevenDayReservePercent: number;
+    }): Promise<{
+      tokenId: string;
+      fiveHourReservePercent: number;
+      sevenDayReservePercent: number;
+    }>;
+    probeOrgToken(input: {
+      orgSlug: string;
+      actorUserId: string;
+      tokenId: string;
+    }): Promise<{
+      tokenId: string;
+      probeOk: boolean;
+      reactivated: boolean;
+      status: 'active' | 'maxed';
+      reason: string;
+      nextProbeAt: string | null;
+    }>;
     refreshOrgToken(input: {
       orgSlug: string;
       actorUserId: string;
@@ -136,19 +164,44 @@ const reservePercentSchema = z.preprocess((value) => {
 
 const addTokenSchema = z.object({
   provider: z.string().trim().min(1),
+  debugLabel: z.string().trim().min(1).max(64).optional(),
   token: z.string().trim().min(1),
+  refreshToken: z.string().trim().min(1),
   fiveHourReservePercent: reservePercentSchema.optional(),
   sevenDayReservePercent: reservePercentSchema.optional()
+});
+
+const updateTokenReserveSchema = z.object({
+  fiveHourReservePercent: reservePercentSchema,
+  sevenDayReservePercent: reservePercentSchema
+}).superRefine((value, ctx) => {
+  if (value.fiveHourReservePercent === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'fiveHourReservePercent is required',
+      path: ['fiveHourReservePercent']
+    });
+  }
+  if (value.sevenDayReservePercent === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'sevenDayReservePercent is required',
+      path: ['sevenDayReservePercent']
+    });
+  }
 });
 
 async function resolveActiveMembershipContext(
   req: Parameters<Router['get']>[1],
   deps: Pick<OrgManagementDeps, 'orgAccess' | 'orgSessions'>
 ) {
-  const orgSlug = String((req as any).params.slug ?? '').trim().toLowerCase();
-  const org = await deps.orgAccess.findOrgBySlug(orgSlug);
-  if (!org) {
-    throw new AppError('not_found', 404, `Org not found: ${orgSlug}`);
+  const resolved = await resolveOrgRouteSlug({
+    routeSlug: String((req as any).params.slug ?? ''),
+    findOrgBySlug: (slug) => deps.orgAccess.findOrgBySlug(slug)
+  });
+  if (!resolved) {
+    const routeSlug = String((req as any).params.slug ?? '').trim().toLowerCase();
+    throw new AppError('not_found', 404, `Org not found: ${routeSlug}`);
   }
 
   const session = readOrgSession(req as never, deps.orgSessions);
@@ -157,7 +210,7 @@ async function resolveActiveMembershipContext(
   }
 
   const resolution = await deps.orgAccess.findAuthResolutionBySlugAndGithubLogin({
-    orgSlug,
+    orgSlug: resolved.effectiveOrgSlug,
     githubLogin: session.githubLogin
   });
 
@@ -166,7 +219,9 @@ async function resolveActiveMembershipContext(
   }
 
   return {
-    org,
+    org: resolved.org,
+    effectiveOrgSlug: resolved.effectiveOrgSlug,
+    routeOrgSlug: resolved.routeSlug,
     session,
     membership: {
       membershipId: resolution.membershipId,
@@ -215,7 +270,7 @@ export function createOrgManagementRouter(deps: OrgManagementDeps): Router {
       assertOwner(context.membership.isOwner);
       const body = createInviteSchema.parse(req.body ?? {});
       const created = await deps.orgMemberships.createInvite({
-        orgSlug: context.org.slug,
+        orgSlug: context.effectiveOrgSlug,
         actorUserId: context.session.actorUserId,
         githubLogin: body.githubLogin
       });
@@ -234,29 +289,36 @@ export function createOrgManagementRouter(deps: OrgManagementDeps): Router {
   router.post('/v1/orgs/:slug/invites/accept', requireOrgSession(deps.orgSessions), async (req, res, next) => {
     try {
       const session = req.orgSession;
-      const orgSlug = String(req.params.slug ?? '').trim().toLowerCase();
       if (!session) {
         throw new AppError('unauthorized', 401, 'Missing org session');
       }
+      const resolved = await resolveOrgRouteSlug({
+        routeSlug: String(req.params.slug ?? ''),
+        findOrgBySlug: (slug) => deps.orgAccess.findOrgBySlug(slug)
+      });
+      if (!resolved) {
+        const routeSlug = String(req.params.slug ?? '').trim().toLowerCase();
+        throw new AppError('not_found', 404, `Org not found: ${routeSlug}`);
+      }
 
       const accepted = await deps.orgMemberships.acceptInvite({
-        orgSlug,
+        orgSlug: resolved.effectiveOrgSlug,
         actorUserId: session.actorUserId,
         actorGithubLogin: session.githubLogin
       });
 
       if (accepted.kind === 'invite_accepted') {
         res.setHeader('Set-Cookie', buildOrgRevealCookie({
-          orgSlug,
+          orgSlug: resolved.routeSlug,
           buyerKey: accepted.reveal.buyerKey,
           reason: accepted.reveal.reason
         }));
-        res.json({ orgSlug });
+        res.json({ orgSlug: resolved.routeSlug });
         return;
       }
 
       if (accepted.kind === 'already_active_member') {
-        res.json({ orgSlug });
+        res.json({ orgSlug: resolved.routeSlug });
         return;
       }
 
@@ -272,7 +334,7 @@ export function createOrgManagementRouter(deps: OrgManagementDeps): Router {
       assertOwner(context.membership.isOwner);
       const body = revokeInviteSchema.parse(req.body ?? {});
       await deps.orgMemberships.revokeInvite({
-        orgSlug: context.org.slug,
+        orgSlug: context.effectiveOrgSlug,
         actorUserId: context.session.actorUserId,
         inviteId: body.inviteId
       });
@@ -327,10 +389,12 @@ export function createOrgManagementRouter(deps: OrgManagementDeps): Router {
       const context = await resolveActiveMembershipContext(req as never, deps);
       const body = addTokenSchema.parse(req.body ?? {});
       const created = await deps.orgTokenManagement.addOrgToken({
-        orgSlug: context.org.slug,
+        orgSlug: context.effectiveOrgSlug,
         actorUserId: context.session.actorUserId,
         provider: body.provider,
+        ...(body.debugLabel ? { debugLabel: body.debugLabel } : {}),
         token: body.token,
+        refreshToken: body.refreshToken,
         fiveHourReservePercent: body.fiveHourReservePercent,
         sevenDayReservePercent: body.sevenDayReservePercent
       });
@@ -340,11 +404,44 @@ export function createOrgManagementRouter(deps: OrgManagementDeps): Router {
     }
   });
 
+  router.post('/v1/orgs/:slug/tokens/:tokenId/reserve-floors', requireOrgSession(deps.orgSessions), async (req, res, next) => {
+    try {
+      const context = await resolveActiveMembershipContext(req as never, deps);
+      assertOwner(context.membership.isOwner);
+      const body = updateTokenReserveSchema.parse(req.body ?? {});
+      const updated = await deps.orgTokenManagement.updateOrgTokenReserve({
+        orgSlug: context.effectiveOrgSlug,
+        actorUserId: context.session.actorUserId,
+        tokenId: String(req.params.tokenId ?? ''),
+        fiveHourReservePercent: body.fiveHourReservePercent as number,
+        sevenDayReservePercent: body.sevenDayReservePercent as number
+      });
+      res.json(updated);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/v1/orgs/:slug/tokens/:tokenId/probe', requireOrgSession(deps.orgSessions), async (req, res, next) => {
+    try {
+      const context = await resolveActiveMembershipContext(req as never, deps);
+      assertOwner(context.membership.isOwner);
+      const probe = await deps.orgTokenManagement.probeOrgToken({
+        orgSlug: context.effectiveOrgSlug,
+        actorUserId: context.session.actorUserId,
+        tokenId: String(req.params.tokenId ?? '')
+      });
+      res.json(probe);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post('/v1/orgs/:slug/tokens/:tokenId/refresh', requireOrgSession(deps.orgSessions), async (req, res, next) => {
     try {
       const context = await resolveActiveMembershipContext(req as never, deps);
       await deps.orgTokenManagement.refreshOrgToken({
-        orgSlug: context.org.slug,
+        orgSlug: context.effectiveOrgSlug,
         actorUserId: context.session.actorUserId,
         tokenId: String(req.params.tokenId ?? '')
       });
@@ -361,7 +458,7 @@ export function createOrgManagementRouter(deps: OrgManagementDeps): Router {
     try {
       const context = await resolveActiveMembershipContext(req as never, deps);
       await deps.orgTokenManagement.removeOrgToken({
-        orgSlug: context.org.slug,
+        orgSlug: context.effectiveOrgSlug,
         actorUserId: context.session.actorUserId,
         tokenId: String(req.params.tokenId ?? '')
       });
@@ -377,12 +474,19 @@ export function createOrgManagementRouter(deps: OrgManagementDeps): Router {
   router.post('/v1/orgs/:slug/leave', requireOrgSession(deps.orgSessions), async (req, res, next) => {
     try {
       const session = req.orgSession;
-      const orgSlug = String(req.params.slug ?? '').trim().toLowerCase();
       if (!session) {
         throw new AppError('unauthorized', 401, 'Missing org session');
       }
+      const resolved = await resolveOrgRouteSlug({
+        routeSlug: String(req.params.slug ?? ''),
+        findOrgBySlug: (slug) => deps.orgAccess.findOrgBySlug(slug)
+      });
+      if (!resolved) {
+        const routeSlug = String(req.params.slug ?? '').trim().toLowerCase();
+        throw new AppError('not_found', 404, `Org not found: ${routeSlug}`);
+      }
       const result = await deps.orgMemberships.leaveOrg({
-        orgSlug,
+        orgSlug: resolved.effectiveOrgSlug,
         actorUserId: session.actorUserId
       });
       res.json({
@@ -397,12 +501,19 @@ export function createOrgManagementRouter(deps: OrgManagementDeps): Router {
   router.post('/v1/orgs/:slug/members/:memberUserId/remove', requireOrgSession(deps.orgSessions), async (req, res, next) => {
     try {
       const session = req.orgSession;
-      const orgSlug = String(req.params.slug ?? '').trim().toLowerCase();
       if (!session) {
         throw new AppError('unauthorized', 401, 'Missing org session');
       }
+      const resolved = await resolveOrgRouteSlug({
+        routeSlug: String(req.params.slug ?? ''),
+        findOrgBySlug: (slug) => deps.orgAccess.findOrgBySlug(slug)
+      });
+      if (!resolved) {
+        const routeSlug = String(req.params.slug ?? '').trim().toLowerCase();
+        throw new AppError('not_found', 404, `Org not found: ${routeSlug}`);
+      }
       const result = await deps.orgMemberships.removeMember({
-        orgSlug,
+        orgSlug: resolved.effectiveOrgSlug,
         actorUserId: session.actorUserId,
         memberUserId: String(req.params.memberUserId ?? '')
       });

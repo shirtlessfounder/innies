@@ -68,6 +68,71 @@ describe('OrgAccessRepository', () => {
     });
   });
 
+  it('finds the active org for a user via active memberships only', async () => {
+    const db = new MockSqlClient({
+      rows: [{
+        id: 'org_1',
+        slug: 'launch-team',
+        name: 'Launch Team',
+        owner_user_id: 'user_owner'
+      }],
+      rowCount: 1
+    });
+    const repo = new OrgAccessRepository(db);
+
+    await expect(repo.findActiveOrgByUserId('user_owner')).resolves.toEqual({
+      id: 'org_1',
+      slug: 'launch-team',
+      name: 'Launch Team',
+      ownerUserId: 'user_owner'
+    });
+    expect(db.queries[0]?.sql).toContain('membership.ended_at is null');
+    expect(db.queries[0]?.params).toEqual(['user_owner']);
+  });
+
+  it('lists every active org membership for a user ordered by slug', async () => {
+    const db = new MockSqlClient({
+      rows: [
+        {
+          org_id: 'org_1',
+          org_slug: 'acme',
+          org_name: 'Acme',
+          membership_id: 'membership_1',
+          is_owner: true
+        },
+        {
+          org_id: 'org_2',
+          org_slug: 'beta',
+          org_name: 'Beta',
+          membership_id: 'membership_2',
+          is_owner: false
+        }
+      ],
+      rowCount: 2
+    });
+    const repo = new OrgAccessRepository(db);
+
+    expect(await repo.listActiveOrgsForUser('user_1')).toEqual([
+      {
+        orgId: 'org_1',
+        orgSlug: 'acme',
+        orgName: 'Acme',
+        membershipId: 'membership_1',
+        isOwner: true
+      },
+      {
+        orgId: 'org_2',
+        orgSlug: 'beta',
+        orgName: 'Beta',
+        membershipId: 'membership_2',
+        isOwner: false
+      }
+    ]);
+    expect(db.queries[0]?.sql).toContain('membership.user_id = $1');
+    expect(db.queries[0]?.sql).toContain('membership.ended_at is null');
+    expect(db.queries[0]?.params).toEqual(['user_1']);
+  });
+
   it('resolves active membership auth by org slug and normalized github login', async () => {
     const db = new SequenceSqlClient([
       {

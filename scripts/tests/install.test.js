@@ -24,6 +24,7 @@ async function setupFakeRepo(rootDir) {
     'innies-token-probe-run.sh',
     'innies-token-usage-refresh.sh',
     'innies-buyer-key-create.sh',
+    'innies-org-buyer-key-recover.sh',
     'innies-buyer-preference-set.sh',
     'innies-buyer-preference-get.sh',
     'innies-buyer-preference-check.sh',
@@ -76,4 +77,6 @@ test('install prefers stable home repo when invoked from a temp worker path', as
   assert.equal(result.code, 0, result.stderr);
   const usageRefreshTarget = await readlink(join(homeDir, '.local', 'bin', 'innies-token-usage-refresh'));
   assert.equal(usageRefreshTarget, join(canonicalRoot, 'scripts', 'innies-token-usage-refresh.sh'));
+  const buyerKeyRecoverTarget = await readlink(join(homeDir, '.local', 'bin', 'innies-org-buyer-key-recover'));
+  assert.equal(buyerKeyRecoverTarget, join(canonicalRoot, 'scripts', 'innies-org-buyer-key-recover.sh'));
 });

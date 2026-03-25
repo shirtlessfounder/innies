@@ -23,10 +23,14 @@ describe('OrgBuyerKeyRepository', () => {
       plaintextKey: 'in_live_plaintext_key'
     });
     expect(db.queries[0]?.sql).toContain('insert into in_api_keys');
-    expect(db.queries[0]?.params?.[2]).toBe('membership_1');
-    expect(db.queries[0]?.params?.[5]).toBe('buyer_proxy');
-    expect(db.queries[0]?.params?.[6]).toBe('user_1');
-    expect(db.queries[0]?.params?.[4]).not.toBe('in_live_plaintext_key');
+    expect(db.queries[0]?.sql).toContain('(id, org_id, name, membership_id, is_active, key_hash, scope, created_by)');
+    expect(db.queries[0]?.sql).not.toContain('user_id');
+    expect(db.queries[0]?.params?.[2]).toBe('membership:membership_1');
+    expect(db.queries[0]?.params?.[3]).toBe('membership_1');
+    expect(db.queries[0]?.params?.[6]).toBe('buyer_proxy');
+    expect(db.queries[0]?.params?.[7]).toBe('user_1');
+    expect(db.queries[0]?.params).toHaveLength(8);
+    expect(db.queries[0]?.params?.[5]).not.toBe('in_live_plaintext_key');
   });
 
   it('revokes the active membership buyer key idempotently', async () => {
@@ -82,6 +86,9 @@ describe('OrgBuyerKeyRepository', () => {
       githubLogin: 'shirtlessfounder',
       revokedAt: null
     }]);
+    expect(db.queries[0]?.sql).toContain('join in_memberships membership');
+    expect(db.queries[0]?.sql).toContain('membership.user_id');
     expect(db.queries[0]?.sql).toContain('left join in_users');
+    expect(db.queries[0]?.sql).not.toContain('k.user_id');
   });
 });

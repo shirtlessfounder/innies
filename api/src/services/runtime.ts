@@ -186,6 +186,10 @@ runtime.services.orgGithubAuth = new OrgGithubAuthService({
   orgAccessRepository: runtime.repos.orgAccess,
   sessionService: runtime.services.orgSessions
 });
+runtime.services.tokenCredentials = new TokenCredentialService(
+  runtime.repos.tokenCredentials,
+  runtime.repos.auditLogs
+);
 runtime.services.orgTokenManagement = new OrgTokenManagementService({
   orgAccessRepository: runtime.repos.orgAccess,
   orgTokenRepository: runtime.repos.orgTokens,
@@ -208,10 +212,6 @@ runtime.services.earningsProjector = new EarningsProjectorService({
 runtime.services.routingService = new RoutingService(
   runtime.services.keyPool,
   runtime.services.routerEngine
-);
-runtime.services.tokenCredentials = new TokenCredentialService(
-  runtime.repos.tokenCredentials,
-  runtime.repos.auditLogs
 );
 runtime.services.payments = new PaymentService({
   paymentProfiles: runtime.repos.paymentProfiles,

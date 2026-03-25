@@ -166,6 +166,22 @@ test('org action proxies forward the expected upstream path and preserve JSON re
       responseBody: { tokenId: 'token_123', status: 'refreshed' },
     },
     {
+      label: 'token probe',
+      modulePath: 'src/app/api/orgs/[orgSlug]/tokens/[tokenId]/probe/route.ts',
+      requestUrl: 'https://ui.innies.test/api/orgs/acme/tokens/token_123/probe',
+      upstreamUrl: 'https://api.innies.test/v1/orgs/acme/tokens/token_123/probe',
+      body: {},
+      status: 200,
+      responseBody: {
+        tokenId: 'token_123',
+        probeOk: true,
+        reactivated: false,
+        status: 'active',
+        reason: 'ok',
+        nextProbeAt: null,
+      },
+    },
+    {
       label: 'token remove',
       modulePath: 'src/app/api/orgs/[orgSlug]/tokens/[tokenId]/remove/route.ts',
       requestUrl: 'https://ui.innies.test/api/orgs/acme/tokens/token_123/remove',
@@ -173,6 +189,22 @@ test('org action proxies forward the expected upstream path and preserve JSON re
       body: {},
       status: 200,
       responseBody: { tokenId: 'token_123', status: 'removed' },
+    },
+    {
+      label: 'token reserve floors',
+      modulePath: 'src/app/api/orgs/[orgSlug]/tokens/[tokenId]/reserve-floors/route.ts',
+      requestUrl: 'https://ui.innies.test/api/orgs/acme/tokens/token_123/reserve-floors',
+      upstreamUrl: 'https://api.innies.test/v1/orgs/acme/tokens/token_123/reserve-floors',
+      body: {
+        fiveHourReservePercent: 22,
+        sevenDayReservePercent: 48,
+      },
+      status: 200,
+      responseBody: {
+        tokenId: 'token_123',
+        fiveHourReservePercent: 22,
+        sevenDayReservePercent: 48,
+      },
     },
   ];
 
@@ -272,7 +304,7 @@ test('invite accept proxy only forwards Set-Cookie when the upstream sends one',
   );
 });
 
-test('token add proxy preserves optional reserve values in the proxied payload', async () => {
+test('token add proxy preserves debug label, token, refresh token, and optional reserve values in the proxied payload', async () => {
   process.env.INNIES_API_BASE_URL = 'https://api.innies.test';
   const { POST } = await importUiModule('src/app/api/orgs/[orgSlug]/tokens/add/route.ts');
 
@@ -287,7 +319,9 @@ test('token add proxy preserves optional reserve values in the proxied payload',
         },
         body: JSON.stringify({
           provider: 'openai',
+          debugLabel: 'testing-test-codex-main',
           token: 'sk-test',
+          refreshToken: 'rt-test',
           fiveHourReservePercent: 15,
           sevenDayReservePercent: 35,
         }),
@@ -297,7 +331,9 @@ test('token add proxy preserves optional reserve values in the proxied payload',
       assert.equal(calls[0].url, 'https://api.innies.test/v1/orgs/acme/tokens');
       assert.deepEqual(JSON.parse(String(calls[0].init.body)), {
         provider: 'openai',
+        debugLabel: 'testing-test-codex-main',
         token: 'sk-test',
+        refreshToken: 'rt-test',
         fiveHourReservePercent: 15,
         sevenDayReservePercent: 35,
       });
@@ -312,6 +348,8 @@ test('reveal dismiss clears the org-scoped reveal cookie', async () => {
     method: 'POST',
   }));
 
+  assert.equal(response.status, 303);
+  assert.equal(response.headers.get('location'), 'https://www.innies.test/acme');
   assert.match(response.headers.get('set-cookie') ?? '', /Max-Age=0/i);
   assert.match(response.headers.get('set-cookie') ?? '', /Path=\/acme/i);
 });
@@ -360,6 +398,23 @@ test('org analytics proxy handlers forward the backend path and query string', a
       );
     },
   );
+});
+
+test('innies analytics proxy handlers scope admin analytics to the internal org', () => {
+  const dashboardRouteSource = readSource('src/app/api/innies/analytics/dashboard/route.ts');
+  const seriesRouteSource = readSource('src/app/api/innies/analytics/timeseries/route.ts');
+  const internalSource = readSource('src/lib/org/internal.ts');
+  const analyticsServerSource = readSource('src/lib/analytics/server.ts');
+
+  assert.ok(internalSource.includes("export const INNIES_INTERNAL_ORG_ID = '818d0cc7-7ed2-469f-b690-a977e72a921d';"));
+  assert.ok(dashboardRouteSource.includes('getAnalyticsDashboardSnapshot(window, {'));
+  assert.ok(dashboardRouteSource.includes('orgId: INNIES_INTERNAL_ORG_ID'));
+  assert.ok(seriesRouteSource.includes('getAnalyticsSeries({'));
+  assert.ok(seriesRouteSource.includes('orgId: INNIES_INTERNAL_ORG_ID'));
+  assert.ok(analyticsServerSource.includes('const orgId = toStringOrNull(input?.orgId) ?? undefined;'));
+  assert.ok(analyticsServerSource.includes("fetchOptionalAdminJson<CurrentDashboardResponse>('/v1/admin/analytics/dashboard', {"));
+  assert.ok(analyticsServerSource.includes("fetchAdminJson<CurrentTokenSeriesResponse>('/v1/admin/analytics/timeseries', {"));
+  assert.ok(analyticsServerSource.includes("fetchOptionalAdminJson<CurrentBuyerSeriesResponse>('/v1/admin/analytics/buyers/timeseries', {"));
 });
 
 test('analytics client supports default and org-scoped path overrides', () => {
