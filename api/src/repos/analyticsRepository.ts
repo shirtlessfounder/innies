@@ -12,6 +12,7 @@ type BaseFilters = {
   window: AnalyticsWindow;
   provider?: string;
   source?: string;
+  orgId?: string;
 };
 
 type BuyerTimeSeriesFilters = BaseFilters & {
@@ -23,6 +24,7 @@ type EventFilters = {
   window: AnalyticsWindow;
   provider?: string;
   limit: number;
+  orgId?: string;
 };
 
 function windowSql(window: AnalyticsWindow, alias = 're'): string {
@@ -111,6 +113,22 @@ function applyBaseFilters(
     params.push(filters.source);
     where.push(`(${SOURCE_CASE}) = $${params.length}`);
   }
+
+  if (filters.orgId) {
+    params.push(filters.orgId);
+    where.push(`${alias}.org_id = $${params.length}`);
+  }
+}
+
+function applyOrgIdFilter(
+  where: string[],
+  params: SqlValue[],
+  orgId: string | undefined,
+  column: string
+): void {
+  if (!orgId) return;
+  params.push(orgId);
+  where.push(`${column} = $${params.length}`);
 }
 
 function applyCanonicalCredentialProviderFilter(
@@ -826,6 +844,7 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
     // for health metrics so derived cycle/utilization fields stay credential-global.
     const credWhere: string[] = [];
     applyCanonicalCredentialProviderFilter(credWhere, params, filters.provider, 'tc.provider');
+    applyOrgIdFilter(credWhere, params, filters.orgId, 'tc.org_id');
     const credFilter = credWhere.length > 0 ? `WHERE ${credWhere.join(' AND ')}` : '';
     const maxedWindowFilter = windowSqlRaw(filters.window, 'cr.maxed_at');
     const recoveryWindowFilter = windowSqlRaw(filters.window, 'cr.reactivated_at');
@@ -988,9 +1007,11 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
       `created_at >= now() - interval '7 days'`
     ];
     applyCanonicalCredentialProviderFilter(maxedWhere, maxedParams, filters.provider, 'provider');
+    applyOrgIdFilter(maxedWhere, maxedParams, filters.orgId, 'org_id');
     const tokenCountParams: SqlValue[] = [];
     const tokenCountWhere: string[] = [];
     applyCanonicalCredentialProviderFilter(tokenCountWhere, tokenCountParams, filters.provider, 'tc.provider');
+    applyOrgIdFilter(tokenCountWhere, tokenCountParams, filters.orgId, 'tc.org_id');
     const tokenCountProviderFilter = tokenCountWhere.length > 0
       ? `where ${tokenCountWhere.join(' AND ')}`
       : '';
@@ -1375,6 +1396,11 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
     if (filters.provider) {
       params.push(filters.provider);
       where.push(`tce.provider = $${params.length}`);
+    }
+
+    if (filters.orgId) {
+      params.push(filters.orgId);
+      where.push(`tc.org_id = $${params.length}`);
     }
 
     const limit = Math.max(1, Math.min(200, filters.limit));

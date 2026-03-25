@@ -43,7 +43,8 @@
   opacity: 0.28;
 }
 
-.console {
+.console,
+.modalScope {
   --console-ink: #16333e;
   --console-ink-soft: rgba(22, 51, 62, 0.68);
   --console-line: rgba(28, 62, 74, 0.14);
@@ -64,6 +65,16 @@
   margin: 0 auto;
   color: var(--console-ink);
   font-family: 'SFMono-Regular', 'JetBrains Mono', 'IBM Plex Mono', 'Menlo', 'Monaco', ui-monospace, monospace;
+}
+
+.console {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: min(1520px, 100%);
+  margin: 0 auto;
 }
 
 .consoleHeader {
@@ -202,6 +213,34 @@
   color: var(--console-live);
 }
 
+.liveTextSecondary {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: rgba(22, 51, 62, 0.78);
+}
+
+.liveMetaLink,
+.liveMetaLink:link,
+.liveMetaLink:visited,
+.liveMetaLink:active,
+.liveMetaLink:focus,
+.liveMetaLink:focus-visible {
+  color: inherit;
+  text-decoration: none;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+}
+
+.liveMetaLink:hover,
+.liveMetaLink:focus-visible {
+  color: var(--console-accent);
+  text-decoration: underline;
+}
+
+.liveMetaMuted {
+  color: rgba(22, 51, 62, 0.56);
+}
+
 .toolbar {
   display: flex;
   align-items: center;
@@ -232,12 +271,22 @@
   gap: 8px;
 }
 
-.toolbarMain > .segmented + .segmented {
+.toolbarGroupLead {
+  max-width: 100%;
+}
+
+.toolbarGroupWindows,
+.toolbarGroupSeries,
+.toolbarGroupMetrics {
+  max-width: 100%;
+}
+
+.toolbarGroupDivided {
   position: relative;
   padding-left: 20px;
 }
 
-.toolbarMain > .segmented + .segmented::before {
+.toolbarGroupDivided::before {
   position: absolute;
   left: 0;
   top: 4px;
@@ -251,12 +300,16 @@
 .windowButtonActive,
 .windowButtonDisabled,
 .controlButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   appearance: none;
   border: 1px solid var(--console-line);
   border-radius: 6px;
   padding: 9px 11px;
   background: rgba(248, 251, 253, 0.24);
   color: var(--console-ink);
+  text-decoration: none;
   font: inherit;
   font-size: 11px;
   letter-spacing: 0.16em;
@@ -274,6 +327,17 @@
   border-color: var(--console-line-strong);
   background: rgba(248, 251, 253, 0.52);
   transform: translateY(-1px);
+}
+
+.controlButton:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.controlButton:disabled:hover {
+  border-color: var(--console-line);
+  background: rgba(248, 251, 253, 0.24);
 }
 
 .windowButtonActive {
@@ -349,6 +413,22 @@
   color: var(--console-ink-soft);
   text-transform: uppercase;
   text-align: right;
+}
+
+.sectionMetaButton {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.sectionMetaButton:hover {
+  color: var(--console-accent);
 }
 
 .noticeList,
@@ -508,6 +588,311 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.managementSectionStack {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background: rgba(227, 233, 238, 0.74);
+  backdrop-filter: blur(4px);
+}
+
+.modalCard {
+  width: min(410px, 100%);
+  max-height: min(88svh, 960px);
+  overflow: auto;
+  border: 1px solid var(--console-line-strong);
+  background:
+    linear-gradient(180deg, rgba(251, 253, 254, 0.96) 0%, rgba(244, 248, 250, 0.93) 100%);
+  box-shadow:
+    0 30px 80px rgba(22, 51, 62, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42);
+}
+
+.modalHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 22px 22px 0;
+}
+
+.modalTitleBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.modalHeading {
+  margin: 0;
+  font-size: clamp(32px, 5vw, 54px);
+  line-height: 0.92;
+  letter-spacing: -0.08em;
+  text-transform: lowercase;
+}
+
+.modalBody {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px 22px 22px;
+}
+
+.managementFormGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
+}
+
+.modalFormStack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modalFormPair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
+}
+
+.modalFormStack .managementInput,
+.modalFormStack .managementSelect {
+  border-radius: 8px;
+}
+
+.managementSplitRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.managementField {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--console-ink-soft);
+}
+
+.managementFieldWide,
+.managementActionRow {
+  grid-column: 1 / -1;
+}
+
+.managementInput,
+.managementSelect {
+  appearance: none;
+  width: 100%;
+  min-height: 42px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--console-line);
+  background: rgba(248, 251, 253, 0.24);
+  color: var(--console-ink);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.managementInput::placeholder {
+  color: rgba(22, 51, 62, 0.42);
+}
+
+.managementInput:focus,
+.managementSelect:focus {
+  outline: none;
+  border-color: rgba(11, 114, 133, 0.34);
+  box-shadow: 0 0 0 1px rgba(11, 114, 133, 0.1);
+}
+
+.modalInlineLink,
+.modalInlineLink:link,
+.modalInlineLink:visited,
+.modalInlineLink:active,
+.modalInlineLink:focus,
+.modalInlineLink:focus-visible {
+  color: inherit;
+  text-decoration: none;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+
+.modalInlineLink:hover,
+.modalInlineLink:focus-visible {
+  color: var(--console-accent);
+  text-decoration: underline;
+}
+
+.managementActionRow,
+.managementInlineActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.managementPrimaryButton,
+.managementSecondaryButton,
+.managementInlineButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  appearance: none;
+  border-radius: 6px;
+  padding: 9px 11px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    transform 120ms ease,
+    opacity 120ms ease;
+}
+
+.managementPrimaryButton:link,
+.managementPrimaryButton:visited,
+.managementPrimaryButton:active,
+.managementPrimaryButton:focus,
+.managementPrimaryButton:focus-visible,
+.managementSecondaryButton:link,
+.managementSecondaryButton:visited,
+.managementSecondaryButton:active,
+.managementSecondaryButton:focus,
+.managementSecondaryButton:focus-visible,
+.managementInlineButton:link,
+.managementInlineButton:visited,
+.managementInlineButton:active,
+.managementInlineButton:focus,
+.managementInlineButton:focus-visible {
+  text-decoration: none;
+}
+
+.managementPrimaryButton {
+  border: 1px solid rgba(10, 90, 105, 0.72);
+  color: #f3fbfd;
+  background: linear-gradient(180deg, #0c7f94 0%, #0a5a69 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.managementSecondaryButton,
+.managementInlineButton {
+  border: 1px solid var(--console-line);
+  background: rgba(248, 251, 253, 0.24);
+  color: var(--console-ink);
+}
+
+.managementPrimaryButton:hover,
+.managementSecondaryButton:hover,
+.managementInlineButton:hover {
+  transform: translateY(-1px);
+}
+
+.managementSecondaryButton:hover,
+.managementInlineButton:hover {
+  border-color: var(--console-line-strong);
+  background: rgba(248, 251, 253, 0.52);
+}
+
+.managementPrimaryButton:disabled,
+.managementSecondaryButton:disabled,
+.managementInlineButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+  transform: none;
+}
+
+.managementTableActionButton {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+.managementTableActionButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.managementMuted {
+  color: var(--console-ink-soft);
+}
+
+.managementSubsection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--console-line);
+}
+
+.managementSubsectionTitle {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--console-ink-soft);
+}
+
+.managementSubsectionTitle::before {
+  content: '> ';
+  color: var(--console-accent);
+}
+
+.tableNumberInputWrap {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.tableBracketField {
+  display: inline-grid;
+  grid-template-columns: auto 3ch auto;
+  align-items: center;
+  justify-content: end;
+  gap: 1px;
+  color: inherit;
+  line-height: inherit;
+}
+
+.tableBracketField:focus-within {
+  color: var(--console-accent);
+}
+
+.tableBracketAffix {
+  color: inherit;
+}
+
+.tableBracketValue {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  line-height: inherit;
+}
+
 .tableWrap {
   overflow: auto;
   max-height: 626px;
@@ -522,7 +907,7 @@
 .table {
   --status-column-width: 88px;
   width: 100%;
-  min-width: 720px;
+  min-width: 860px;
   border-collapse: collapse;
 }
 
@@ -548,6 +933,15 @@
   color: var(--console-ink-soft);
   letter-spacing: 0.1em;
   text-transform: uppercase;
+}
+
+.tableActionsColumn {
+  width: 1%;
+  text-align: right !important;
+}
+
+.tableActionsColumn .managementInlineActions {
+  justify-content: flex-end;
 }
 
 .sortButton {
@@ -602,6 +996,41 @@
 
 .numeric {
   text-align: right !important;
+}
+
+.tableNumberInput {
+  width: 100%;
+  min-width: 3ch;
+  height: auto;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: right;
+}
+
+.tableBracketInput {
+  width: 100%;
+  min-width: 3ch;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: right;
+  appearance: textfield;
+}
+
+.tableBracketInput:focus {
+  outline: none;
+}
+
+.tableBracketInput::-webkit-outer-spin-button,
+.tableBracketInput::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
 }
 
 .rowHidden {
@@ -801,6 +1230,11 @@
   .eventGrid {
     grid-template-columns: 1fr;
   }
+
+  .modalFormPair,
+  .managementFormGrid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 760px) {
@@ -846,18 +1280,14 @@
     justify-content: flex-start;
   }
 
-  .toolbarMain > .segmented:nth-child(2) {
-    padding-left: 20px;
-  }
-
-  .toolbarMain > .segmented:nth-child(3) {
+  .toolbarGroupMetrics {
     grid-column: 1 / -1;
     width: min(100%, 520px);
     max-width: 100%;
     padding-left: 0;
   }
 
-  .toolbarMain > .segmented:nth-child(3)::before {
+  .toolbarGroupMetrics::before {
     display: none;
   }
 
@@ -882,6 +1312,10 @@
 
   .summaryStrip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .managementSplitRow {
+    grid-template-columns: 1fr;
   }
 
   .summaryItem:nth-child(odd) {

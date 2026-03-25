@@ -1,10 +1,97 @@
 import { describe, expect, it, vi } from 'vitest';
+import { DuplicateTokenCredentialLabelError } from '../src/repos/tokenCredentialRepository.js';
 import { TokenCredentialService } from '../src/services/tokenCredentialService.js';
 import { AppError } from '../src/utils/errors.js';
 
 describe('tokenCredentialService', () => {
+  it('rejects creating a token credential when the same token is already borrowed elsewhere', async () => {
+    const repo = {
+      findNonRevokedByAccessToken: vi.fn(async () => ({
+        id: 'cred_existing',
+        orgId: 'org_2',
+        status: 'active'
+      })),
+      create: vi.fn()
+    };
+    const createEvent = vi.fn();
+    const service = new TokenCredentialService(repo as any, { createEvent } as any);
+
+    await expect(service.create({
+      orgId: 'org_1',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: 'oauth-access-token',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z')
+    })).rejects.toMatchObject<AppError>({
+      code: 'invalid_request',
+      status: 409,
+      message: 'This token is already lent to an org and cannot be added again until it is removed.'
+    });
+
+    expect(repo.create).not.toHaveBeenCalled();
+    expect(createEvent).not.toHaveBeenCalled();
+  });
+
+  it('maps duplicate borrowed-token unique violations into a stable app error', async () => {
+    const repo = {
+      findNonRevokedByAccessToken: vi.fn(async () => null),
+      create: vi.fn(async () => {
+        throw Object.assign(new Error('duplicate key value violates unique constraint'), {
+          code: '23505',
+          constraint: 'uq_in_token_credentials_access_token_sha256_active'
+        });
+      })
+    };
+    const createEvent = vi.fn();
+    const service = new TokenCredentialService(repo as any, { createEvent } as any);
+
+    await expect(service.create({
+      orgId: 'org_1',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: 'oauth-access-token',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z')
+    })).rejects.toMatchObject<AppError>({
+      code: 'invalid_request',
+      status: 409,
+      message: 'This token is already lent to an org and cannot be added again until it is removed.'
+    });
+
+    expect(createEvent).not.toHaveBeenCalled();
+  });
+
+  it('rejects creating a token credential when the org already has that provider and label', async () => {
+    const repo = {
+      findNonRevokedByAccessToken: vi.fn(async () => null),
+      create: vi.fn(async () => {
+        throw new DuplicateTokenCredentialLabelError('openai', 'shirtless');
+      })
+    };
+    const createEvent = vi.fn();
+    const service = new TokenCredentialService(repo as any, { createEvent } as any);
+
+    await expect(service.create({
+      orgId: 'org_1',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: 'oauth-access-token',
+      refreshToken: null,
+      debugLabel: 'shirtless',
+      expiresAt: new Date('2026-03-02T00:00:00Z')
+    })).rejects.toMatchObject<AppError>({
+      code: 'invalid_request',
+      status: 409,
+      message: 'A token with provider "openai" and label "shirtless" already exists for this org.'
+    });
+
+    expect(createEvent).not.toHaveBeenCalled();
+  });
+
   it('writes audit events for create, rotate, revoke', async () => {
     const repo = {
+      findNonRevokedByAccessToken: vi.fn(async () => null),
       create: vi.fn(async () => ({ id: 'cred_1', rotationVersion: 1 })),
       rotate: vi.fn(async () => ({ id: 'cred_2', rotationVersion: 2, previousId: 'cred_1' })),
       revoke: vi.fn(async () => true)
@@ -42,6 +129,7 @@ describe('tokenCredentialService', () => {
 
   it('maps unrotatable previousCredentialId errors into invalid_request app errors', async () => {
     const repo = {
+      findNonRevokedByAccessToken: vi.fn(async () => null),
       rotate: vi.fn(async () => {
         throw new Error('Credential cred_maxed_old not found or not rotatable for org/provider');
       })
@@ -61,6 +149,32 @@ describe('tokenCredentialService', () => {
       status: 400,
       message: 'Credential cred_maxed_old not found or not rotatable for org/provider'
     });
+  });
+
+  it('maps duplicate provider-label rotation conflicts into a stable app error', async () => {
+    const repo = {
+      rotate: vi.fn(async () => {
+        throw new DuplicateTokenCredentialLabelError('openai', 'shirtless');
+      })
+    };
+    const createEvent = vi.fn();
+    const service = new TokenCredentialService(repo as any, { createEvent } as any);
+
+    await expect(service.rotate({
+      orgId: 'org_1',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: 'rotated-access-token',
+      refreshToken: null,
+      debugLabel: 'shirtless',
+      expiresAt: new Date('2026-03-03T00:00:00Z')
+    })).rejects.toMatchObject<AppError>({
+      code: 'invalid_request',
+      status: 409,
+      message: 'A token with provider "openai" and label "shirtless" already exists for this org.'
+    });
+
+    expect(createEvent).not.toHaveBeenCalled();
   });
 
   it('writes an audit event for Claude contribution-cap updates', async () => {
@@ -293,6 +407,31 @@ describe('tokenCredentialService', () => {
     await expect(revokedService.updateDebugLabel('cred_revoked', 'new-label')).resolves.toBeNull();
     expect(revokedRepo.updateDebugLabel).not.toHaveBeenCalled();
     expect(revokedCreateEvent).not.toHaveBeenCalled();
+  });
+
+  it('maps duplicate provider-label relabel conflicts into a stable app error', async () => {
+    const repo = {
+      getById: vi.fn(async () => ({
+        id: 'cred_1',
+        orgId: 'org_1',
+        provider: 'openai',
+        debugLabel: 'codex-main-1',
+        status: 'active'
+      })),
+      updateDebugLabel: vi.fn(async () => {
+        throw new DuplicateTokenCredentialLabelError('openai', 'shirtless');
+      })
+    };
+    const createEvent = vi.fn();
+    const service = new TokenCredentialService(repo as any, { createEvent } as any);
+
+    await expect(service.updateDebugLabel('cred_1', 'shirtless')).rejects.toMatchObject<AppError>({
+      code: 'invalid_request',
+      status: 409,
+      message: 'A token with provider "openai" and label "shirtless" already exists for this org.'
+    });
+
+    expect(createEvent).not.toHaveBeenCalled();
   });
 
   it('writes audit events for pause and unpause', async () => {

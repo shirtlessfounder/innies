@@ -41,9 +41,22 @@ async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Promi
   return body as T;
 }
 
-export function fetchAnalyticsDashboard(window: AnalyticsPageWindow, signal?: AbortSignal) {
+type DashboardFetchOptions = {
+  dashboardPath?: string;
+  signal?: AbortSignal;
+};
+
+type TimeseriesFetchOptions = {
+  timeseriesPath?: string;
+};
+
+export function fetchAnalyticsDashboard(window: AnalyticsPageWindow, opts?: DashboardFetchOptions | AbortSignal) {
+  opts = opts instanceof AbortSignal ? { signal: opts } : opts;
   const searchParams = new URLSearchParams({ window });
-  return fetchJson<AnalyticsDashboardSnapshot>(`/api/analytics/dashboard?${searchParams.toString()}`, { signal });
+  const dashboardPath = opts?.dashboardPath ?? '/api/analytics/dashboard';
+  return fetchJson<AnalyticsDashboardSnapshot>(`${dashboardPath}?${searchParams.toString()}`, {
+    signal: opts?.signal,
+  });
 }
 
 export function fetchAnalyticsSeries(input: {
@@ -52,15 +65,16 @@ export function fetchAnalyticsSeries(input: {
   metric: AnalyticsMetric;
   analyticsWindow: AnalyticsPageWindow;
   signal?: AbortSignal;
-}) {
+}, opts?: TimeseriesFetchOptions) {
   const searchParams = new URLSearchParams({
     window: input.analyticsWindow,
     entityType: input.entityType,
     entityId: input.entityId,
     metric: input.metric,
   });
+  const timeseriesPath = opts?.timeseriesPath ?? '/api/analytics/timeseries';
 
-  return fetchJson<AnalyticsSeriesResponse>(`/api/analytics/timeseries?${searchParams.toString()}`, {
+  return fetchJson<AnalyticsSeriesResponse>(`${timeseriesPath}?${searchParams.toString()}`, {
     signal: input.signal,
   });
 }
