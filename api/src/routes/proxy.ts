@@ -50,6 +50,10 @@ import {
   attemptTokenCredentialRefresh,
   refreshAnthropicOauthUsageWithCredentialRefresh
 } from '../services/tokenCredentialOauthRefresh.js';
+import {
+  armNextPromptProviderOverride,
+  consumeNextPromptProviderOverride
+} from '../services/nextPromptProviderOverride.js';
 
 const router = Router();
 
@@ -1159,6 +1163,7 @@ async function resolveEligibleTokenCredentials(input: {
   providerUsageRouteMeta: Map<string, Record<string, unknown>>;
   providerUsageExcludedReasonCounts: Record<string, number>;
   providerUsageExcludedRouteMeta: Record<string, Record<string, unknown>>;
+  anthropicStaleRecoveryCandidate: TokenCredential | null;
 }> {
   const canonicalProvider = canonicalizeProvider(input.provider);
   const seededCredentials = orderCredentialsForRequest(
@@ -1176,7 +1181,8 @@ async function resolveEligibleTokenCredentials(input: {
       credentials: orderedCredentials,
       providerUsageRouteMeta,
       providerUsageExcludedReasonCounts: {},
-      providerUsageExcludedRouteMeta: {}
+      providerUsageExcludedRouteMeta: {},
+      anthropicStaleRecoveryCandidate: null
     };
   }
 
@@ -1187,6 +1193,7 @@ async function resolveEligibleTokenCredentials(input: {
   const eligibleCredentials: TokenCredential[] = [];
   const providerUsageExcludedReasonCounts: Record<string, number> = {};
   const providerUsageExcludedRouteMeta: Record<string, Record<string, unknown>> = {};
+  let anthropicStaleRecoveryCandidate: TokenCredential | null = null;
   const rateLimitEscalationThreshold = tokenCredentialRateLimitThreshold();
 
   for (const credential of orderedCredentials) {
@@ -1240,6 +1247,16 @@ async function resolveEligibleTokenCredentials(input: {
 
     if (!evaluation.eligible && !buyerLabelAffinityBypassApplied) {
       const reason = evaluation.exclusionReason ?? 'provider_usage_unknown';
+      if (
+        anthropicStaleRecoveryCandidate === null
+        && !repeated429HoldActive
+        && (
+          reason === 'provider_usage_snapshot_soft_stale'
+          || reason === 'provider_usage_snapshot_hard_stale'
+        )
+      ) {
+        anthropicStaleRecoveryCandidate = credential;
+      }
       providerUsageExcludedReasonCounts[reason] = (providerUsageExcludedReasonCounts[reason] ?? 0) + 1;
       if (providerUsageRouteMeta.has(credential.id)) {
         providerUsageExcludedRouteMeta[credential.id] = providerUsageRouteMeta.get(credential.id) as Record<string, unknown>;
@@ -1264,8 +1281,133 @@ async function resolveEligibleTokenCredentials(input: {
     credentials: eligibleCredentials,
     providerUsageRouteMeta,
     providerUsageExcludedReasonCounts,
-    providerUsageExcludedRouteMeta
+    providerUsageExcludedRouteMeta,
+    anthropicStaleRecoveryCandidate
   };
+}
+
+async function refreshAnthropicCredentialUsageForEligibilityRecovery(input: {
+  credential: TokenCredential;
+  requestId: string;
+  provider: string;
+  model: string;
+}): Promise<void> {
+  const refreshedUsage = await refreshAnthropicOauthUsageWithCredentialRefresh(
+    runtime.repos.tokenCredentialProviderUsage,
+    runtime.repos.tokenCredentials,
+    input.credential,
+    { ignoreRetryBackoff: true }
+  );
+  const credentialForUsage = refreshedUsage.credential;
+  const refreshResult = refreshedUsage.outcome;
+  const usageAuthFailureStatusCode = anthropicOauthUsageAuthFailureStatusCode(refreshResult);
+
+  if (usageAuthFailureStatusCode !== null) {
+    const nextProbeAt = new Date(Date.now() + (tokenCredentialProbeIntervalMinutes() * 60 * 1000));
+    await parkAnthropicOauthCredentialAfterUsageAuthFailure(runtime.repos.tokenCredentials, credentialForUsage, {
+      statusCode: usageAuthFailureStatusCode,
+      nextProbeAt,
+      reason: `upstream_${usageAuthFailureStatusCode}_provider_usage_refresh`,
+      requestId: input.requestId,
+      attemptNo: 0
+    });
+  }
+
+  try {
+    await runtime.repos.tokenCredentials.setProviderUsageWarning(
+      credentialForUsage.id,
+      usageAuthFailureStatusCode === null
+        ? providerUsageWarningReasonFromRefreshOutcome(refreshResult)
+        : null
+    );
+  } catch (error) {
+    console.error('[token-credential] provider-usage-warning-sync-failed', {
+      request_id: input.requestId,
+      attempt_no: 0,
+      provider: input.provider,
+      model: input.model,
+      credential_id: credentialForUsage.id,
+      credential_label: credentialForUsage.debugLabel ?? null,
+      error_message: error instanceof Error ? error.message : 'unknown'
+    });
+  }
+
+  if (!refreshResult.ok) return;
+
+  const capState = readClaudeContributionCapSnapshotState({
+    credential: credentialForUsage,
+    snapshot: refreshResult.snapshot
+  });
+  if (
+    capState.fetchedAt === null
+    || capState.fiveHourUtilizationRatio === null
+    || capState.sevenDayUtilizationRatio === null
+    || capState.fiveHourSharedThresholdPercent === null
+    || capState.sevenDaySharedThresholdPercent === null
+  ) {
+    return;
+  }
+
+  try {
+    await runtime.repos.tokenCredentials.syncClaudeContributionCapLifecycle({
+      id: credentialForUsage.id,
+      orgId: credentialForUsage.orgId,
+      provider: credentialForUsage.provider,
+      snapshotFetchedAt: capState.fetchedAt,
+      fiveHourReservePercent: capState.fiveHourReservePercent,
+      fiveHourUtilizationRatio: capState.fiveHourUtilizationRatio,
+      fiveHourResetsAt: capState.fiveHourResetsAt,
+      fiveHourSharedThresholdPercent: capState.fiveHourSharedThresholdPercent,
+      fiveHourContributionCapExhausted: capState.fiveHourContributionCapExhausted,
+      sevenDayReservePercent: capState.sevenDayReservePercent,
+      sevenDayUtilizationRatio: capState.sevenDayUtilizationRatio,
+      sevenDayResetsAt: capState.sevenDayResetsAt,
+      sevenDaySharedThresholdPercent: capState.sevenDaySharedThresholdPercent,
+      sevenDayContributionCapExhausted: capState.sevenDayContributionCapExhausted
+    });
+  } catch (error) {
+    console.error('[token-credential] contribution-cap-lifecycle-sync-failed', {
+      request_id: input.requestId,
+      attempt_no: 0,
+      provider: input.provider,
+      model: input.model,
+      credential_id: credentialForUsage.id,
+      credential_label: credentialForUsage.debugLabel ?? null,
+      error_message: error instanceof Error ? error.message : 'unknown'
+    });
+  }
+}
+
+async function resolveEligibleTokenCredentialsWithAnthropicStaleRecovery(input: {
+  orgId: string;
+  provider: string;
+  requestId: string;
+  buyerKeyLabel?: string | null;
+  model: string;
+}): Promise<{
+  credentials: TokenCredential[];
+  providerUsageRouteMeta: Map<string, Record<string, unknown>>;
+  providerUsageExcludedReasonCounts: Record<string, number>;
+  providerUsageExcludedRouteMeta: Record<string, Record<string, unknown>>;
+  anthropicStaleRecoveryCandidate: TokenCredential | null;
+}> {
+  const initial = await resolveEligibleTokenCredentials(input);
+  if (
+    initial.credentials.length > 0
+    || canonicalizeProvider(input.provider) !== 'anthropic'
+    || initial.anthropicStaleRecoveryCandidate === null
+  ) {
+    return initial;
+  }
+
+  await refreshAnthropicCredentialUsageForEligibilityRecovery({
+    credential: initial.anthropicStaleRecoveryCandidate,
+    requestId: input.requestId,
+    provider: input.provider,
+    model: input.model
+  });
+
+  return resolveEligibleTokenCredentials(input);
 }
 
 function buildSellerRouteDecision(input: {
@@ -1775,6 +1917,24 @@ function looksLikeSsePayload(raw: string): boolean {
     || trimmed.includes('\n\nevent:');
 }
 
+async function peekResponseBodyPrefix(response: globalThis.Response, maxBytes = 512): Promise<string> {
+  try {
+    const body = response.clone().body;
+    if (!body) return '';
+    const reader = body.getReader();
+    try {
+      const { value, done } = await reader.read();
+      if (done || !value) return '';
+      const prefix = value instanceof Uint8Array ? value : new Uint8Array(value);
+      return new TextDecoder().decode(prefix.slice(0, maxBytes));
+    } finally {
+      void reader.cancel().catch(() => undefined);
+    }
+  } catch {
+    return '';
+  }
+}
+
 async function readUpstreamBody(input: {
   upstreamResponse: globalThis.Response;
   contentType: string;
@@ -2082,55 +2242,84 @@ function buildSyntheticAnthropicSse(data: unknown, model: string): string {
   return events.join('');
 }
 
+function extractAnthropicStreamErrorDetailsFromRecord(rawRecord: string): { errorType?: string; errorMessage?: string } {
+  const trimmed = rawRecord.trim();
+  if (trimmed.length === 0 || trimmed.startsWith(':')) return {};
+
+  let explicitEvent: string | undefined;
+  const dataLines: string[] = [];
+  for (const line of trimmed.split('\n')) {
+    if (line.startsWith('event:')) {
+      explicitEvent = line.slice(6).trim();
+      continue;
+    }
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trim());
+    }
+  }
+
+  if (dataLines.length === 0) return {};
+  const rawData = dataLines.join('\n');
+  if (rawData === '[DONE]') return {};
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(rawData);
+  } catch {
+    return {};
+  }
+
+  if (!payload || typeof payload !== 'object') return {};
+  const payloadType = typeof (payload as any).type === 'string' ? (payload as any).type : undefined;
+  if (payloadType !== 'error' && explicitEvent !== 'error') return {};
+  return extractUpstreamErrorDetails(payload);
+}
+
+function extractAnthropicStreamErrorDetails(raw: string): { errorType?: string; errorMessage?: string } {
+  const normalized = raw.replace(/\r\n/g, '\n');
+  let remaining = normalized;
+  let lastErrorDetails: { errorType?: string; errorMessage?: string } = {};
+
+  let boundaryIndex = remaining.indexOf('\n\n');
+  while (boundaryIndex >= 0) {
+    const details = extractAnthropicStreamErrorDetailsFromRecord(remaining.slice(0, boundaryIndex));
+    if (details.errorType || details.errorMessage) {
+      lastErrorDetails = details;
+    }
+    remaining = remaining.slice(boundaryIndex + 2);
+    boundaryIndex = remaining.indexOf('\n\n');
+  }
+
+  if (remaining.trim().length > 0) {
+    const details = extractAnthropicStreamErrorDetailsFromRecord(remaining);
+    if (details.errorType || details.errorMessage) {
+      lastErrorDetails = details;
+    }
+  }
+
+  return lastErrorDetails;
+}
+
 function buildSyntheticAnthropicStreamFailureSse(input: {
   id?: string;
   model: string;
   message: string;
 }): string {
-  const id = input.id ?? `msg_${Date.now()}`;
-  return [
-    `event: message_start\ndata: ${JSON.stringify({
-      type: 'message_start',
-      message: {
-        id,
-        type: 'message',
-        role: 'assistant',
-        model: input.model,
-        content: [],
-        stop_reason: null,
-        stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 0 }
-      }
-    })}\n\n`,
-    `event: content_block_start\ndata: ${JSON.stringify({
-      type: 'content_block_start',
-      index: 0,
-      content_block: { type: 'text', text: '' }
-    })}\n\n`,
-    `event: content_block_delta\ndata: ${JSON.stringify({
-      type: 'content_block_delta',
-      index: 0,
-      delta: {
-        type: 'text_delta',
-        text: `[Innies stream error: ${input.message}]`
-      }
-    })}\n\n`,
-    `event: content_block_stop\ndata: ${JSON.stringify({
-      type: 'content_block_stop',
-      index: 0
-    })}\n\n`,
-    `event: message_delta\ndata: ${JSON.stringify({
-      type: 'message_delta',
-      delta: { stop_reason: 'end_turn', stop_sequence: null },
-      usage: { input_tokens: 0, output_tokens: 0 }
-    })}\n\n`,
-    'event: message_stop\ndata: {"type":"message_stop"}\n\n'
-  ].join('');
+  return `event: error\ndata: ${JSON.stringify({
+    type: 'error',
+    error: {
+      type: 'api_error',
+      message: input.message
+    }
+  })}\n\n`;
 }
 
 function hasTerminalAnthropicStreamEvent(raw: string): boolean {
   const normalized = raw.toLowerCase();
-  return normalized.includes('event: message_stop') || normalized.includes('"type":"message_stop"');
+  return normalized.includes('event: message_stop')
+    || normalized.includes('"type":"message_stop"')
+    || normalized.includes('event: error')
+    || normalized.includes('"type":"error"');
 }
 
 function isDownstreamClientDisconnect(res: Response, error: unknown): boolean {
@@ -2142,6 +2331,98 @@ function isDownstreamClientDisconnect(res: Response, error: unknown): boolean {
 }
 
 type StreamTerminalStatus = 'completed' | 'incomplete' | 'failed' | 'missing';
+type StreamTerminalErrorMetadata = {
+  streamTerminalErrorType: string | null;
+  streamTerminalErrorCode: string | null;
+  streamTerminalErrorMessage: string | null;
+};
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function sanitizeStreamTerminalErrorValue(value: unknown, maxChars = 280): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length === 0) return null;
+  return normalized.slice(0, maxChars);
+}
+
+function parseSseObjectPayloads(raw: string): Array<Record<string, unknown>> {
+  const payloads: Array<Record<string, unknown>> = [];
+  for (const chunk of raw.split(/\n\n+/)) {
+    const dataLines = chunk
+      .split('\n')
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart());
+    if (dataLines.length === 0) continue;
+    const joined = dataLines.join('\n').trim();
+    if (joined.length === 0 || joined === '[DONE]') continue;
+    try {
+      const parsed = JSON.parse(joined);
+      const record = readRecord(parsed);
+      if (record) {
+        payloads.push(record);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return payloads;
+}
+
+function extractOpenAiResponsesStreamTerminalError(raw: string): StreamTerminalErrorMetadata | null {
+  const payloads = parseSseObjectPayloads(raw);
+  for (let index = payloads.length - 1; index >= 0; index -= 1) {
+    const payload = payloads[index];
+    if (payload.type !== 'response.failed') continue;
+    const response = readRecord(payload.response);
+    const error = readRecord(response?.error);
+    const type = sanitizeStreamTerminalErrorValue(error?.type);
+    const code = sanitizeStreamTerminalErrorValue(error?.code);
+    const message = sanitizeStreamTerminalErrorValue(error?.message);
+    if (type || code || message) {
+      return {
+        streamTerminalErrorType: type,
+        streamTerminalErrorCode: code,
+        streamTerminalErrorMessage: message
+      };
+    }
+  }
+  return null;
+}
+
+function extractAnthropicStreamTerminalError(raw: string): StreamTerminalErrorMetadata | null {
+  const payloads = parseSseObjectPayloads(raw);
+  for (let index = payloads.length - 1; index >= 0; index -= 1) {
+    const payload = payloads[index];
+    if (payload.type !== 'error') continue;
+    const error = readRecord(payload.error);
+    const type = sanitizeStreamTerminalErrorValue(error?.type);
+    const code = sanitizeStreamTerminalErrorValue(error?.code);
+    const message = sanitizeStreamTerminalErrorValue(error?.message);
+    if (type || code || message) {
+      return {
+        streamTerminalErrorType: type,
+        streamTerminalErrorCode: code,
+        streamTerminalErrorMessage: message
+      };
+    }
+  }
+  return null;
+}
+
+function extractStreamTerminalErrorMetadata(input: {
+  downstreamUsesAnthropicSse: boolean;
+  raw: string;
+}): StreamTerminalErrorMetadata | null {
+  return input.downstreamUsesAnthropicSse
+    ? extractAnthropicStreamTerminalError(input.raw)
+    : extractOpenAiResponsesStreamTerminalError(input.raw);
+}
 
 function resolveOpenAiResponsesStreamTerminalStatus(raw: string): StreamTerminalStatus {
   const normalized = raw.toLowerCase();
@@ -2154,7 +2435,9 @@ function resolveOpenAiResponsesStreamTerminalStatus(raw: string): StreamTerminal
 }
 
 function resolveAnthropicStreamTerminalStatus(raw: string): StreamTerminalStatus {
+  const normalized = raw.toLowerCase();
   if (raw.includes('[Translation error:')) return 'failed';
+  if (normalized.includes('event: error') || normalized.includes('"type":"error"')) return 'failed';
   return hasTerminalAnthropicStreamEvent(raw) ? 'completed' : 'missing';
 }
 
@@ -2328,11 +2611,12 @@ async function executeTokenModeNonStreaming(input: {
     providerUsageRouteMeta,
     providerUsageExcludedReasonCounts,
     providerUsageExcludedRouteMeta
-  } = await resolveEligibleTokenCredentials({
+  } = await resolveEligibleTokenCredentialsWithAnthropicStaleRecovery({
     orgId,
     provider,
     requestId,
-    buyerKeyLabel
+    buyerKeyLabel,
+    model
   });
   if (credentials.length === 0) {
     throw new AppError('capacity_unavailable', 429, 'No eligible token credentials available', {
@@ -3131,11 +3415,12 @@ async function executeTokenModeStreaming(input: {
     providerUsageRouteMeta,
     providerUsageExcludedReasonCounts,
     providerUsageExcludedRouteMeta
-  } = await resolveEligibleTokenCredentials({
+  } = await resolveEligibleTokenCredentialsWithAnthropicStaleRecovery({
     orgId,
     provider,
     requestId,
-    buyerKeyLabel
+    buyerKeyLabel,
+    model
   });
   if (credentials.length === 0) {
     throw new AppError('capacity_unavailable', 429, 'No eligible token credentials available', {
@@ -3606,7 +3891,13 @@ async function executeTokenModeStreaming(input: {
       }
 
       const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
-      const isStreaming = contentType.includes('text/event-stream');
+      const shouldProbeMislabelledOpenAiSse = !compatTranslation
+        && !compatModeFlag
+        && parseRelativeProxyUrl(proxiedPath).pathname === '/v1/responses'
+        && contentType.includes('application/json');
+      const mislabelledOpenAiSse = shouldProbeMislabelledOpenAiSse
+        && looksLikeSsePayload(await peekResponseBodyPrefix(upstreamResponse));
+      const isStreaming = contentType.includes('text/event-stream') || mislabelledOpenAiSse;
       if (!isStreaming) {
         const { data: rawData, rawText, looksLikeSse } = await readUpstreamBody({
           upstreamResponse,
@@ -4053,7 +4344,10 @@ async function executeTokenModeStreaming(input: {
       res.setHeader('x-request-id', requestId);
       res.setHeader('x-innies-token-credential-id', credential.id);
       res.setHeader('x-innies-attempt-no', String(attemptNo));
-      res.setHeader('content-type', compatTranslation ? 'text/event-stream; charset=utf-8' : contentType);
+      const downstreamContentType = (compatTranslation || mislabelledOpenAiSse)
+        ? 'text/event-stream; charset=utf-8'
+        : contentType;
+      res.setHeader('content-type', downstreamContentType);
       // Force pass-through semantics for SSE across reverse proxies.
       res.setHeader('cache-control', 'no-cache, no-transform');
       res.setHeader('connection', 'keep-alive');
@@ -4144,7 +4438,8 @@ async function executeTokenModeStreaming(input: {
                 attemptNo,
                 provider,
                 model,
-                first_byte_ms: firstByteAt - startedAt
+                first_byte_ms: firstByteAt - startedAt,
+                mislabelled_upstream_sse: mislabelledOpenAiSse
               });
             }
             totalBytes += buffer.length;
@@ -4203,6 +4498,9 @@ async function executeTokenModeStreaming(input: {
       const terminalStatus = downstreamUsesAnthropicSse
         ? resolveAnthropicStreamTerminalStatus(sampled)
         : resolveOpenAiResponsesStreamTerminalStatus(sampled);
+      const anthropicStreamErrorDetails = downstreamUsesAnthropicSse
+        ? extractAnthropicStreamErrorDetails(sampled)
+        : {};
       if (!pipelineError && terminalStatus === 'missing' && !(res as any).destroyed && !(res as any).writableEnded) {
         streamTruncated = true;
         if (firstDownstreamWriteAt === null) {
@@ -4256,7 +4554,41 @@ async function executeTokenModeStreaming(input: {
         ? (terminalStatus === 'failed' && !streamTruncated ? 'stream_failed_terminal' : 'stream_truncated')
         : null;
 
+      if (
+        streamFailureCode === 'stream_failed_terminal'
+        && provider === 'anthropic'
+        && providerPreference
+        && providerPreference.selectionReason !== 'cli_provider_pinned'
+        && providerPreference.preferredProvider === 'anthropic'
+        && providerPreference.effectiveProvider === 'anthropic'
+        && providerPreference.providerPlan.includes('openai')
+        && anthropicStreamErrorDetails.errorType === 'overloaded_error'
+      ) {
+        armNextPromptProviderOverride({
+          apiKeyId,
+          openclawSessionId: correlation.openclawSessionId ?? null,
+          preferredProvider: 'openai',
+          armedByRequestId: requestId
+        });
+      }
+
       if (streamFailureCode) {
+        const streamFailureRouteDecision = buildTokenRouteDecision(
+          credential,
+          correlation,
+          providerPreference,
+          compatTranslation,
+          providerUsageRouteMeta.get(credential.id)
+        );
+        if (streamFailureCode === 'stream_failed_terminal') {
+          Object.assign(
+            streamFailureRouteDecision,
+            extractStreamTerminalErrorMetadata({
+              downstreamUsesAnthropicSse,
+              raw: sampled
+            }) ?? {}
+          );
+        }
         await runtime.repos.routingEvents.insert({
           requestId,
           attemptNo,
@@ -4266,13 +4598,7 @@ async function executeTokenModeStreaming(input: {
           provider,
           model,
           streaming: true,
-          routeDecision: buildTokenRouteDecision(
-            credential,
-            correlation,
-            providerPreference,
-            compatTranslation,
-            providerUsageRouteMeta.get(credential.id)
-          ),
+          routeDecision: streamFailureRouteDecision,
           upstreamStatus: status,
           errorCode: streamFailureCode,
           latencyMs: Date.now() - startedAt,
@@ -4352,6 +4678,7 @@ async function executeTokenModeStreaming(input: {
         upstream_content_type: contentType,
         stream_mode: compatTranslation ? 'translated_passthrough' : 'passthrough',
         synthetic_stream_bridge: false,
+        mislabelled_upstream_sse: mislabelledOpenAiSse,
         metering_source: meteringSource,
         pre_upstream_ms: dispatchStartedAt - attemptStartedAt,
         upstream_ttfb_ms: firstByteAt !== null ? (firstByteAt - dispatchStartedAt) : (upstreamHeadersAt - dispatchStartedAt),
@@ -4506,13 +4833,19 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
     const requestPinSelectionReason = (readProviderPinSignal(req) || isClaudeCliPinnedRequest(req, proxiedPath))
       ? 'cli_provider_pinned'
       : null;
+    const nextPromptProviderOverride = requestPinSelectionReason
+      ? null
+      : consumeNextPromptProviderOverride({
+          apiKeyId: auth.apiKeyId,
+          openclawSessionId: correlation.openclawSessionId ?? null
+        });
     if (tokenModeEnabled) {
       const {
         providerPlan,
         preferredProvider,
         pinSelectionReason: effectivePinSelectionReason
       } = parseProviderPreferencePlan({
-        preferredProvider: auth.preferredProvider,
+        preferredProvider: nextPromptProviderOverride?.preferredProvider ?? auth.preferredProvider,
         preferredProviderSource: auth.preferredProviderSource,
         requestProvider,
         pinSelectionReason: requestPinSelectionReason

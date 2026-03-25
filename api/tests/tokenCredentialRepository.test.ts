@@ -398,6 +398,10 @@ describe('tokenCredentialRepository', () => {
       { rows: [{ id: 'old_1', status: 'active', debug_label: 'oauth-main-1' }], rowCount: 1 },
       { rows: [], rowCount: 0 },
       { rows: [{ present: true }], rowCount: 1 },
+      { rows: [], rowCount: 0 },
+      { rows: [{ present: true }], rowCount: 1 },
+      { rows: [], rowCount: 0 },
+      { rows: [{ present: true }], rowCount: 1 },
       { rows: [], rowCount: 1 },
       { rows: [], rowCount: 1 },
       { rows: [], rowCount: 1 }
@@ -449,6 +453,46 @@ describe('tokenCredentialRepository', () => {
       'shirtless',
       'old_1'
     ]);
+  });
+
+  it('rotates active credential and preserves existing contribution caps', async () => {
+    process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 14).toString('base64');
+    const db = new SequenceSqlClient([
+      { rows: [{ id: 'latest_1', rotation_version: 2 }], rowCount: 1 },
+      {
+        rows: [{
+          id: 'old_1',
+          status: 'active',
+          debug_label: 'aelix',
+          five_hour_reserve_percent: 30,
+          seven_day_reserve_percent: 40
+        }],
+        rowCount: 1
+      },
+      { rows: [], rowCount: 0 },
+      { rows: [{ present: true }], rowCount: 1 },
+      { rows: [], rowCount: 1 },
+      { rows: [], rowCount: 1 },
+      { rows: [], rowCount: 1 }
+    ]);
+    const repo = new TokenCredentialRepository(db);
+
+    await repo.rotate({
+      orgId: '00000000-0000-0000-0000-000000000001',
+      provider: 'anthropic',
+      authScheme: 'bearer',
+      accessToken: 'next-token',
+      refreshToken: 'next-refresh',
+      expiresAt: new Date('2026-03-02T00:00:00Z')
+    });
+
+    expect(db.queries[1].sql).toContain('five_hour_reserve_percent');
+    expect(db.queries[1].sql).toContain('seven_day_reserve_percent');
+    expect(db.queries[3].sql).toContain('information_schema.columns');
+    expect(db.queries[5].sql).toContain('five_hour_reserve_percent');
+    expect(db.queries[5].sql).toContain('seven_day_reserve_percent');
+    expect(db.queries[5].params?.[12]).toBe(30);
+    expect(db.queries[5].params?.[13]).toBe(40);
   });
 
   it('rotates selected maxed credential by revoking it directly', async () => {

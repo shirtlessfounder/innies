@@ -2,6 +2,7 @@ import { Writable } from 'node:stream';
 import { describe, expect, it, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { z } from 'zod';
 import { AppError } from '../src/utils/errors.js';
+import { resetNextPromptProviderOverridesForTests } from '../src/services/nextPromptProviderOverride.js';
 import { resetAnthropicUsageRetryStateForTests } from '../src/services/tokenCredentialProviderUsageRetryState.js';
 
 type RuntimeModule = typeof import('../src/services/runtime.js');
@@ -316,6 +317,31 @@ function createRoutingCredentialFixture(input: {
   } as any;
 }
 
+function createAnthropicErrorStreamResponse(input: {
+  errorType: string;
+  errorMessage: string;
+}): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(
+        `event: error\ndata: ${JSON.stringify({
+          type: 'error',
+          error: {
+            type: input.errorType,
+            message: input.errorMessage
+          }
+        })}\n\n`
+      ));
+      controller.close();
+    }
+  });
+  return new Response(body, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' }
+  });
+}
+
 function applyError(err: unknown, res: MockRes): void {
   if (err instanceof z.ZodError) {
     res.status(400).json({ code: 'invalid_request', message: 'Invalid request', issues: err.issues });
@@ -418,6 +444,10 @@ describe('proxy token-mode route behavior', () => {
     } as any);
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'clearRateLimitBackoff').mockResolvedValue(false);
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'setProviderUsageWarning').mockResolvedValue(false);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'syncClaudeContributionCapLifecycle').mockResolvedValue({
+      fiveHourTransition: null,
+      sevenDayTransition: null
+    } as any);
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentialProviderUsage, 'listByTokenCredentialIds').mockImplementation(async (ids: string[]) => (
       ids.map((id) => ({
         tokenCredentialId: id,
@@ -460,6 +490,7 @@ describe('proxy token-mode route behavior', () => {
     delete process.env.ANTHROPIC_UPSTREAM_BASE_URL;
     delete process.env.OPENAI_UPSTREAM_BASE_URL;
     delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
+    resetNextPromptProviderOverridesForTests();
     resetAnthropicUsageRetryStateForTests();
     vi.restoreAllMocks();
   });
@@ -651,8 +682,9 @@ describe('proxy token-mode route behavior', () => {
     expect(upstreamSpy).not.toHaveBeenCalled();
   });
 
-  it('excludes reserve-enabled Claude oauth tokens when the provider-usage snapshot is hard stale after 30m', async () => {
+  it('keeps reserve-enabled Claude oauth tokens excluded when the forced hard-stale refresh fails', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.ANTHROPIC_UPSTREAM_BASE_URL = 'https://anthropic.internal.test';
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
       id: '11113333-3333-4333-8333-333333333333',
       orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
@@ -686,7 +718,13 @@ describe('proxy token-mode route behavior', () => {
       createdAt: new Date('2026-03-01T00:00:00Z'),
       updatedAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
-    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      type: 'error',
+      error: { type: 'overloaded_error', message: 'busy' }
+    }), {
+      status: 503,
+      headers: { 'content-type': 'application/json' }
+    }));
 
     const req = createMockReq({
       method: 'POST',
@@ -715,11 +753,13 @@ describe('proxy token-mode route behavior', () => {
     expect((res.body as any).details?.providerUsageExcludedReasonCounts).toEqual({
       provider_usage_snapshot_hard_stale: 1
     });
-    expect(upstreamSpy).not.toHaveBeenCalled();
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    expect(String(upstreamSpy.mock.calls[0]?.[0])).toBe('https://anthropic.internal.test/api/oauth/usage');
   });
 
-  it('excludes zero-reserve Claude oauth tokens when the provider-usage snapshot is hard stale after 30m', async () => {
+  it('keeps zero-reserve Claude oauth tokens excluded when the forced hard-stale refresh fails', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.ANTHROPIC_UPSTREAM_BASE_URL = 'https://anthropic.internal.test';
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
       id: '11113336-3333-4333-8333-333333333336',
       orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
@@ -753,7 +793,13 @@ describe('proxy token-mode route behavior', () => {
       createdAt: new Date('2026-03-01T00:00:00Z'),
       updatedAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
-    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      type: 'error',
+      error: { type: 'overloaded_error', message: 'busy' }
+    }), {
+      status: 503,
+      headers: { 'content-type': 'application/json' }
+    }));
 
     const req = createMockReq({
       method: 'POST',
@@ -782,11 +828,13 @@ describe('proxy token-mode route behavior', () => {
     expect((res.body as any).details?.providerUsageExcludedReasonCounts).toEqual({
       provider_usage_snapshot_hard_stale: 1
     });
-    expect(upstreamSpy).not.toHaveBeenCalled();
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    expect(String(upstreamSpy.mock.calls[0]?.[0])).toBe('https://anthropic.internal.test/api/oauth/usage');
   });
 
-  it('excludes reserve-enabled Claude oauth tokens when the provider-usage snapshot is soft stale after 10m', async () => {
+  it('keeps reserve-enabled Claude oauth tokens excluded when the forced soft-stale refresh fails', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.ANTHROPIC_UPSTREAM_BASE_URL = 'https://anthropic.internal.test';
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
       id: '11113335-3333-4333-8333-333333333335',
       orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
@@ -820,7 +868,13 @@ describe('proxy token-mode route behavior', () => {
       createdAt: new Date('2026-03-01T00:00:00Z'),
       updatedAt: new Date('2026-03-01T00:00:00Z')
     } as any]);
-    const upstreamSpy = vi.spyOn(globalThis, 'fetch');
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      type: 'error',
+      error: { type: 'overloaded_error', message: 'busy' }
+    }), {
+      status: 503,
+      headers: { 'content-type': 'application/json' }
+    }));
 
     const req = createMockReq({
       method: 'POST',
@@ -849,7 +903,120 @@ describe('proxy token-mode route behavior', () => {
     expect((res.body as any).details?.providerUsageExcludedReasonCounts).toEqual({
       provider_usage_snapshot_soft_stale: 1
     });
-    expect(upstreamSpy).not.toHaveBeenCalled();
+    expect(upstreamSpy).toHaveBeenCalledTimes(1);
+    expect(String(upstreamSpy.mock.calls[0]?.[0])).toBe('https://anthropic.internal.test/api/oauth/usage');
+  });
+
+  it('recovers Anthropic pinned requests by forcing one usage refresh when the only credential snapshot is soft stale', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.ANTHROPIC_UPSTREAM_BASE_URL = 'https://anthropic.internal.test';
+    const credential = {
+      ...createRoutingCredentialFixture({
+        id: '11113337-3333-4333-8333-333333333337',
+        provider: 'anthropic',
+        authScheme: 'bearer',
+        accessToken: 'sk-ant-oat01-soft-stale-recover'
+      }),
+      fiveHourReservePercent: 0,
+      sevenDayReservePercent: 0
+    } as any;
+    const staleSnapshot = {
+      tokenCredentialId: credential.id,
+      orgId: credential.orgId,
+      provider: credential.provider,
+      usageSource: 'anthropic_oauth_usage',
+      fiveHourUtilizationRatio: 0.2,
+      fiveHourResetsAt: new Date('2026-03-01T05:00:00Z'),
+      sevenDayUtilizationRatio: 0.1,
+      sevenDayResetsAt: new Date('2026-03-08T00:00:00Z'),
+      rawPayload: {},
+      fetchedAt: new Date(Date.now() - (11 * 60 * 1000)),
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z')
+    } as any;
+    let currentSnapshot = staleSnapshot;
+
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([credential]);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentialProviderUsage, 'listByTokenCredentialIds').mockImplementation(async (ids: string[]) => (
+      ids.includes(credential.id) ? [currentSnapshot] : []
+    ));
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentialProviderUsage, 'upsertSnapshot').mockImplementation(async (input: any) => {
+      currentSnapshot = {
+        tokenCredentialId: input.tokenCredentialId,
+        orgId: input.orgId,
+        provider: input.provider,
+        usageSource: input.usageSource,
+        fiveHourUtilizationRatio: input.fiveHourUtilizationRatio,
+        fiveHourResetsAt: input.fiveHourResetsAt,
+        sevenDayUtilizationRatio: input.sevenDayUtilizationRatio,
+        sevenDayResetsAt: input.sevenDayResetsAt,
+        rawPayload: input.rawPayload,
+        fetchedAt: input.fetchedAt,
+        createdAt: input.fetchedAt,
+        updatedAt: input.fetchedAt
+      };
+      return currentSnapshot;
+    });
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://anthropic.internal.test/api/oauth/usage') {
+        return new Response(JSON.stringify({
+          five_hour: {
+            utilization: 21,
+            resets_at: '2026-03-25T01:00:00.582890+00:00'
+          },
+          seven_day: {
+            utilization: 79,
+            resets_at: '2026-03-27T16:00:00.582908+00:00'
+          }
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      if (url === 'https://anthropic.internal.test/v1/messages') {
+        return new Response(JSON.stringify({
+          id: 'msg_soft_stale_recovered',
+          usage: { input_tokens: 2, output_tokens: 3 }
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      throw new Error(`unexpected fetch target: ${url}`);
+    });
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-innies-provider-pin': 'true'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-3-5-sonnet-latest',
+        streaming: false,
+        payload: { model: 'claude-3-5-sonnet-latest', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('msg_soft_stale_recovered');
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe('https://anthropic.internal.test/api/oauth/usage');
+    expect(String(fetchSpy.mock.calls[1]?.[0])).toBe('https://anthropic.internal.test/v1/messages');
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls[0]?.[0]?.routeDecision;
+    expect(routeDecision?.providerUsageSnapshotState).toBe('fresh');
+    expect(routeDecision?.fiveHourUtilizationRatio).toBe(0.21);
   });
 
   it('keeps truly 100%-exhausted Claude oauth tokens excluded until reset even when the snapshot is hard stale', async () => {
@@ -3719,10 +3886,117 @@ describe('proxy token-mode route behavior', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toContain('text/event-stream');
+    expect(String(res.body)).toContain(': keepalive');
     expect(String(res.body)).toContain('data: {"type":"response.created"');
     expect(String(res.body)).toContain('"delta":"hello"');
     expect(String(res.body)).toContain('"type":"response.completed"');
-    expect(String(res.body)).not.toContain(': keepalive');
+    upstreamSpy.mockRestore();
+  });
+
+  it('starts mislabelled native codex SSE streams before the upstream body fully drains', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const oauthToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_codex_stream_delayed',
+      clientId: 'app_codex_stream_delayed'
+    });
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      supports_streaming: true
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'dddd1113-2000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: oauthToken,
+      refreshToken: 'rt_codex_stream_delayed',
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+
+    const encoder = new TextEncoder();
+    let releaseTerminalChunk: (() => void) | null = null;
+    const terminalChunkGate = new Promise<void>((resolve) => {
+      releaseTerminalChunk = resolve;
+    });
+    const upstreamStream = new ReadableStream({
+      async start(controller) {
+        controller.enqueue(encoder.encode(
+          'data: {"type":"response.created","response":{"id":"resp_upstream_delayed_1","status":"in_progress","output":[],"usage":{"input_tokens":0,"output_tokens":0}}}\n\n'
+        ));
+        controller.enqueue(encoder.encode(
+          'data: {"type":"response.output_text.delta","output_index":0,"item_id":"msg_upstream_delayed_1","content_index":0,"delta":"hello"}\n\n'
+        ));
+        await terminalChunkGate;
+        controller.enqueue(encoder.encode(
+          'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_upstream_delayed_1","role":"assistant","content":[{"type":"output_text","text":"hello"}],"status":"completed"}}\n\n'
+        ));
+        controller.enqueue(encoder.encode(
+          'data: {"type":"response.completed","response":{"id":"resp_upstream_delayed_1","status":"completed","usage":{"input_tokens":5,"output_tokens":7}}}\n\n'
+        ));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      }
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(upstreamStream, {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/responses',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-innies-provider-pin': 'true'
+      },
+      body: {
+        model: 'gpt-5.4',
+        stream: true,
+        instructions: 'Reply with one word only.',
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] }]
+      }
+    });
+    const res = createStreamingMockRes();
+
+    await invoke(handlers[0], req, res);
+    const routePromise = invoke(handlers[1], req, res);
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['content-type']).toContain('text/event-stream');
+      expect(String(res.body)).toContain(': keepalive');
+      expect(String(res.body)).toContain('data: {"type":"response.created"');
+      expect(String(res.body)).toContain('"delta":"hello"');
+      expect(String(res.body)).not.toContain('"type":"response.completed"');
+    } finally {
+      releaseTerminalChunk?.();
+      await routePromise;
+    }
+
+    expect(String(res.body)).toContain('"type":"response.completed"');
     upstreamSpy.mockRestore();
   });
 
@@ -4360,6 +4634,98 @@ describe('proxy token-mode route behavior', () => {
     upstreamSpy.mockRestore();
   });
 
+  it('records terminal codex stream error details in route decision metadata', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const oauthToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_codex_stream_terminal_error',
+      clientId: 'app_codex_stream_terminal_error'
+    });
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      supports_streaming: true
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'dddd1114-2000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: oauthToken,
+      refreshToken: 'rt_codex_stream_terminal_error',
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+
+    const encoder = new TextEncoder();
+    const upstreamStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"response.created","response":{"id":"resp_fail_1","status":"in_progress","usage":{"input_tokens":0,"output_tokens":0}}}\n\n'));
+        controller.enqueue(encoder.encode('data: {"type":"response.failed","response":{"id":"resp_fail_1","status":"failed","error":{"code":"overloaded","message":"The AI service is temporarily overloaded. Please try again in a moment."},"usage":{"input_tokens":5,"output_tokens":0}}}\n\n'));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      }
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(upstreamStream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/responses',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-innies-provider-pin': 'true'
+      },
+      body: {
+        model: 'gpt-5.4',
+        stream: true,
+        instructions: 'Reply with one word only.',
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] }]
+      }
+    });
+    const res = createRealWritableStreamingMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(String(res.body)).toContain('"type":"response.failed"');
+    expect(String(res.body)).toContain('temporarily overloaded');
+    expect(runtimeModule.runtime.repos.tokenCredentials.recordSuccess).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.services.metering.recordUsage).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.repos.tokenCredentials.addMonthlyContributionUsage).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.repos.routingEvents.insert).toHaveBeenLastCalledWith(expect.objectContaining({
+      errorCode: 'stream_failed_terminal',
+      upstreamStatus: 200
+    }));
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls.at(-1)?.[0]?.routeDecision;
+    expect(routeDecision?.streamTerminalErrorType).toBeNull();
+    expect(routeDecision?.streamTerminalErrorCode).toBe('overloaded');
+    expect(routeDecision?.streamTerminalErrorMessage).toBe('The AI service is temporarily overloaded. Please try again in a moment.');
+    upstreamSpy.mockRestore();
+  });
+
   it('terminates anthropic passthrough streams with anthropic SSE when upstream SSE drops before completion', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
@@ -4417,8 +4783,12 @@ describe('proxy token-mode route behavior', () => {
     await invoke(handlers[1], req, res);
 
     expect(res.statusCode).toBe(200);
-    expect(String(res.body)).toContain('event: message_stop');
-    expect(String(res.body)).toContain('[Innies stream error: upstream stream ended before completion]');
+    expect(String(res.body)).toContain('event: error');
+    expect(String(res.body)).toContain('"type":"error"');
+    expect(String(res.body)).toContain('"type":"api_error"');
+    expect(String(res.body)).toContain('"message":"upstream stream ended before completion"');
+    expect(String(res.body)).not.toContain('event: message_stop');
+    expect(String(res.body)).not.toContain('[Innies stream error: upstream stream ended before completion]');
     expect(String(res.body)).not.toContain('"type":"response.failed"');
     expect(runtimeModule.runtime.repos.tokenCredentials.recordSuccess).not.toHaveBeenCalled();
     expect(runtimeModule.runtime.services.metering.recordUsage).not.toHaveBeenCalled();
@@ -4427,6 +4797,79 @@ describe('proxy token-mode route behavior', () => {
       errorCode: 'stream_truncated',
       upstreamStatus: 200
     }));
+    upstreamSpy.mockRestore();
+  });
+
+  it('records terminal anthropic stream error details in route decision metadata', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'dddd1115-2000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      authScheme: 'x_api_key',
+      accessToken: 'sk-ant-oat01-stream-terminal-error',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+
+    const encoder = new TextEncoder();
+    const upstreamStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: message_start\ndata: {"type":"message_start","message":{"id":"msg_fail_1","type":"message","role":"assistant","model":"claude-3-5-sonnet-latest","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}\n\n'));
+        controller.enqueue(encoder.encode('event: error\ndata: {"type":"error","error":{"type":"api_error","message":"The AI service is temporarily overloaded. Please try again in a moment."}}\n\n'));
+        controller.close();
+      }
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(upstreamStream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        model: 'claude-3-5-sonnet-latest',
+        stream: true,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hello' }]
+      }
+    });
+    const res = createRealWritableStreamingMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(String(res.body)).toContain('event: error');
+    expect(String(res.body)).toContain('temporarily overloaded');
+    expect(runtimeModule.runtime.repos.tokenCredentials.recordSuccess).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.services.metering.recordUsage).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.repos.tokenCredentials.addMonthlyContributionUsage).not.toHaveBeenCalled();
+    expect(runtimeModule.runtime.repos.routingEvents.insert).toHaveBeenLastCalledWith(expect.objectContaining({
+      errorCode: 'stream_failed_terminal',
+      upstreamStatus: 200
+    }));
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls.at(-1)?.[0]?.routeDecision;
+    expect(routeDecision?.streamTerminalErrorType).toBe('api_error');
+    expect(routeDecision?.streamTerminalErrorCode).toBeNull();
+    expect(routeDecision?.streamTerminalErrorMessage).toBe('The AI service is temporarily overloaded. Please try again in a moment.');
     upstreamSpy.mockRestore();
   });
 
@@ -5403,6 +5846,359 @@ describe('proxy token-mode route behavior', () => {
     expect(routeDecision?.provider_fallback_from).toBe('openai');
     expect(routeDecision?.provider_fallback_reason).toBe('capacity_unavailable');
     upstreamSpy.mockRestore();
+  });
+
+  it('retries the next unpinned request on openai after an anthropic overload, then reverts', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.ANTHROPIC_UPSTREAM_BASE_URL = 'https://anthropic.internal.test';
+    process.env.OPENAI_UPSTREAM_BASE_URL = 'https://openai.internal.test';
+    process.env.COMPAT_CODEX_DEFAULT_MODEL = 'gpt-5.4';
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'anthropic'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string, model: string) => {
+      if (provider === 'anthropic' && model === 'claude-opus-4-6') {
+        return { provider: 'anthropic', model: 'claude-opus-4-6', supports_streaming: true } as any;
+      }
+      if (provider === 'openai' && model === 'gpt-5.4') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: false } as any;
+      }
+      return null as any;
+    });
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider === 'anthropic') {
+        return [createRoutingCredentialFixture({
+          id: 'retry-next-prompt-anthropic',
+          provider: 'anthropic',
+          authScheme: 'bearer',
+          accessToken: 'sk-ant-retry-next-prompt'
+        })];
+      }
+      if (provider === 'openai') {
+        return [createRoutingCredentialFixture({
+          id: 'retry-next-prompt-openai',
+          provider: 'openai',
+          authScheme: 'x_api_key',
+          accessToken: 'sk-openai-retry-next-prompt'
+        })];
+      }
+      return [];
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(createAnthropicErrorStreamResponse({
+        errorType: 'overloaded_error',
+        errorMessage: 'Overloaded'
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'resp_retry_override_openai',
+        status: 'completed',
+        usage: { input_tokens: 2, output_tokens: 3 },
+        output: [{
+          type: 'message',
+          id: 'msg_retry_override_openai',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'retried on codex' }]
+        }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_retry_override_anthropic',
+        usage: { input_tokens: 1, output_tokens: 2 },
+        content: [{ type: 'text', text: 'back on anthropic' }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const overloadedReq = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'req_overload_arm'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: true,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 32,
+          messages: [{ role: 'user', content: 'hello' }]
+        }
+      }
+    });
+    (overloadedReq as any).inniesCompatMode = true;
+    const overloadedRes = createRealWritableStreamingMockRes();
+
+    await invoke(handlers[0], overloadedReq, overloadedRes);
+    await invoke(handlers[1], overloadedReq, overloadedRes);
+
+    const retryReq = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'req_retry_once'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: false,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 32,
+          messages: [{ role: 'user', content: 'retry me' }]
+        }
+      }
+    });
+    (retryReq as any).inniesCompatMode = true;
+    const retryRes = createMockRes();
+
+    await invoke(handlers[0], retryReq, retryRes);
+    await invoke(handlers[1], retryReq, retryRes);
+
+    const normalReq = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'req_back_to_normal'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: false,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 32,
+          messages: [{ role: 'user', content: 'normal again' }]
+        }
+      }
+    });
+    (normalReq as any).inniesCompatMode = true;
+    const normalRes = createMockRes();
+
+    await invoke(handlers[0], normalReq, normalRes);
+    await invoke(handlers[1], normalReq, normalRes);
+
+    expect(overloadedRes.statusCode).toBe(200);
+    expect(String(overloadedRes.body)).toContain('\"type\":\"overloaded_error\"');
+    expect(retryRes.statusCode).toBe(200);
+    expect(normalRes.statusCode).toBe(200);
+    expect(listSpy.mock.calls.map((call) => call[1])).toEqual(['anthropic', 'openai', 'anthropic']);
+    expect(String((upstreamSpy.mock.calls[0] as [URL])[0])).toBe('https://anthropic.internal.test/v1/messages');
+    expect(String((upstreamSpy.mock.calls[1] as [URL])[0])).toBe('https://openai.internal.test/v1/responses');
+    expect(String((upstreamSpy.mock.calls[2] as [URL])[0])).toBe('https://anthropic.internal.test/v1/messages');
+
+    const routedEvents = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls
+      .map((call: any[]) => call[0])
+      .filter((entry: any) => !entry.errorCode);
+    const retryDecision = routedEvents.find((entry: any) => entry.requestId === 'req_retry_once')?.routeDecision;
+    const normalDecision = routedEvents.find((entry: any) => entry.requestId === 'req_back_to_normal')?.routeDecision;
+
+    expect(retryDecision?.provider_preferred).toBe('openai');
+    expect(retryDecision?.provider_effective).toBe('openai');
+    expect(retryDecision?.provider_plan).toEqual(['openai', 'anthropic']);
+    expect(normalDecision?.provider_preferred).toBe('anthropic');
+    expect(normalDecision?.provider_effective).toBe('anthropic');
+    expect(normalDecision?.provider_plan).toEqual(['anthropic', 'openai']);
+
+    upstreamSpy.mockRestore();
+    delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
+  });
+
+  it('does not let a pinned request consume the stored openai-first retry override', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.ANTHROPIC_UPSTREAM_BASE_URL = 'https://anthropic.internal.test';
+    process.env.OPENAI_UPSTREAM_BASE_URL = 'https://openai.internal.test';
+    process.env.COMPAT_CODEX_DEFAULT_MODEL = 'gpt-5.4';
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'anthropic'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string, model: string) => {
+      if (provider === 'anthropic' && model === 'claude-opus-4-6') {
+        return { provider: 'anthropic', model: 'claude-opus-4-6', supports_streaming: true } as any;
+      }
+      if (provider === 'openai' && model === 'gpt-5.4') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: false } as any;
+      }
+      return null as any;
+    });
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider === 'anthropic') {
+        return [createRoutingCredentialFixture({
+          id: 'retry-pinned-anthropic',
+          provider: 'anthropic',
+          authScheme: 'bearer',
+          accessToken: 'sk-ant-retry-pinned'
+        })];
+      }
+      if (provider === 'openai') {
+        return [createRoutingCredentialFixture({
+          id: 'retry-pinned-openai',
+          provider: 'openai',
+          authScheme: 'x_api_key',
+          accessToken: 'sk-openai-retry-pinned'
+        })];
+      }
+      return [];
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(createAnthropicErrorStreamResponse({
+        errorType: 'overloaded_error',
+        errorMessage: 'Overloaded'
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_retry_pinned_cli',
+        usage: { input_tokens: 1, output_tokens: 1 },
+        content: [{ type: 'text', text: 'still anthropic' }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'resp_retry_pinned_openai',
+        status: 'completed',
+        usage: { input_tokens: 2, output_tokens: 3 },
+        output: [{
+          type: 'message',
+          id: 'msg_retry_pinned_openai',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'unpinned retry uses codex' }]
+        }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const overloadedReq = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'req_overload_arm_pinned'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: true,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 32,
+          messages: [{ role: 'user', content: 'hello' }]
+        }
+      }
+    });
+    (overloadedReq as any).inniesCompatMode = true;
+    const overloadedRes = createRealWritableStreamingMockRes();
+
+    await invoke(handlers[0], overloadedReq, overloadedRes);
+    await invoke(handlers[1], overloadedReq, overloadedRes);
+
+    const pinnedReq = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-innies-provider-pin': 'true',
+        'x-request-id': 'req_pinned_should_not_consume'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: false,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 32,
+          messages: [{ role: 'user', content: 'stay on claude' }]
+        }
+      }
+    });
+    (pinnedReq as any).inniesCompatMode = true;
+    const pinnedRes = createMockRes();
+
+    await invoke(handlers[0], pinnedReq, pinnedRes);
+    await invoke(handlers[1], pinnedReq, pinnedRes);
+
+    const retryReq = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'req_unpinned_after_pinned'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: false,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 32,
+          messages: [{ role: 'user', content: 'retry after pinned' }]
+        }
+      }
+    });
+    (retryReq as any).inniesCompatMode = true;
+    const retryRes = createMockRes();
+
+    await invoke(handlers[0], retryReq, retryRes);
+    await invoke(handlers[1], retryReq, retryRes);
+
+    expect(overloadedRes.statusCode).toBe(200);
+    expect(pinnedRes.statusCode).toBe(200);
+    expect(retryRes.statusCode).toBe(200);
+    expect(listSpy.mock.calls.map((call) => call[1])).toEqual(['anthropic', 'anthropic', 'openai']);
+    expect(String((upstreamSpy.mock.calls[0] as [URL])[0])).toBe('https://anthropic.internal.test/v1/messages');
+    expect(String((upstreamSpy.mock.calls[1] as [URL])[0])).toBe('https://anthropic.internal.test/v1/messages');
+    expect(String((upstreamSpy.mock.calls[2] as [URL])[0])).toBe('https://openai.internal.test/v1/responses');
+
+    const routedEvents = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls
+      .map((call: any[]) => call[0])
+      .filter((entry: any) => !entry.errorCode);
+    const pinnedDecision = routedEvents.find((entry: any) => entry.requestId === 'req_pinned_should_not_consume')?.routeDecision;
+    const retryDecision = routedEvents.find((entry: any) => entry.requestId === 'req_unpinned_after_pinned')?.routeDecision;
+
+    expect(pinnedDecision?.reason).toBe('cli_provider_pinned');
+    expect(pinnedDecision?.provider_plan).toEqual(['anthropic']);
+    expect(retryDecision?.provider_preferred).toBe('openai');
+    expect(retryDecision?.provider_effective).toBe('openai');
+    expect(retryDecision?.provider_plan).toEqual(['openai', 'anthropic']);
+
+    upstreamSpy.mockRestore();
+    delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
   });
 
   it('does not switch provider when request includes an explicit provider pin signal', async () => {
