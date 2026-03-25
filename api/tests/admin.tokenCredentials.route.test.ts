@@ -8,6 +8,8 @@ type ProbeModule = typeof import('../src/services/tokenCredentialProbe.js');
 type ProviderUsageModule = typeof import('../src/services/tokenCredentialProviderUsage.js');
 type OauthRefreshModule = typeof import('../src/services/tokenCredentialOauthRefresh.js');
 
+const FIXED_TEST_NOW = new Date('2026-03-20T12:00:00.000Z');
+
 function encodeBase64Url(input: string): string {
   return Buffer.from(input, 'utf8')
     .toString('base64')
@@ -181,6 +183,8 @@ describe('admin token credential routes idempotent replay', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_TEST_NOW);
     vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
       id: '99999999-9999-4999-8999-999999999999',
       org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
@@ -290,6 +294,7 @@ describe('admin token credential routes idempotent replay', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
