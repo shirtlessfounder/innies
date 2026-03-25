@@ -50,6 +50,10 @@ import {
   attemptTokenCredentialRefresh,
   refreshAnthropicOauthUsageWithCredentialRefresh
 } from '../services/tokenCredentialOauthRefresh.js';
+import {
+  armNextPromptProviderOverride,
+  consumeNextPromptProviderOverride
+} from '../services/nextPromptProviderOverride.js';
 
 const router = Router();
 
@@ -2236,6 +2240,64 @@ function buildSyntheticAnthropicSse(data: unknown, model: string): string {
   );
   events.push(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
   return events.join('');
+}
+
+function extractAnthropicStreamErrorDetailsFromRecord(rawRecord: string): { errorType?: string; errorMessage?: string } {
+  const trimmed = rawRecord.trim();
+  if (trimmed.length === 0 || trimmed.startsWith(':')) return {};
+
+  let explicitEvent: string | undefined;
+  const dataLines: string[] = [];
+  for (const line of trimmed.split('\n')) {
+    if (line.startsWith('event:')) {
+      explicitEvent = line.slice(6).trim();
+      continue;
+    }
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trim());
+    }
+  }
+
+  if (dataLines.length === 0) return {};
+  const rawData = dataLines.join('\n');
+  if (rawData === '[DONE]') return {};
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(rawData);
+  } catch {
+    return {};
+  }
+
+  if (!payload || typeof payload !== 'object') return {};
+  const payloadType = typeof (payload as any).type === 'string' ? (payload as any).type : undefined;
+  if (payloadType !== 'error' && explicitEvent !== 'error') return {};
+  return extractUpstreamErrorDetails(payload);
+}
+
+function extractAnthropicStreamErrorDetails(raw: string): { errorType?: string; errorMessage?: string } {
+  const normalized = raw.replace(/\r\n/g, '\n');
+  let remaining = normalized;
+  let lastErrorDetails: { errorType?: string; errorMessage?: string } = {};
+
+  let boundaryIndex = remaining.indexOf('\n\n');
+  while (boundaryIndex >= 0) {
+    const details = extractAnthropicStreamErrorDetailsFromRecord(remaining.slice(0, boundaryIndex));
+    if (details.errorType || details.errorMessage) {
+      lastErrorDetails = details;
+    }
+    remaining = remaining.slice(boundaryIndex + 2);
+    boundaryIndex = remaining.indexOf('\n\n');
+  }
+
+  if (remaining.trim().length > 0) {
+    const details = extractAnthropicStreamErrorDetailsFromRecord(remaining);
+    if (details.errorType || details.errorMessage) {
+      lastErrorDetails = details;
+    }
+  }
+
+  return lastErrorDetails;
 }
 
 function buildSyntheticAnthropicStreamFailureSse(input: {
@@ -4436,6 +4498,9 @@ async function executeTokenModeStreaming(input: {
       const terminalStatus = downstreamUsesAnthropicSse
         ? resolveAnthropicStreamTerminalStatus(sampled)
         : resolveOpenAiResponsesStreamTerminalStatus(sampled);
+      const anthropicStreamErrorDetails = downstreamUsesAnthropicSse
+        ? extractAnthropicStreamErrorDetails(sampled)
+        : {};
       if (!pipelineError && terminalStatus === 'missing' && !(res as any).destroyed && !(res as any).writableEnded) {
         streamTruncated = true;
         if (firstDownstreamWriteAt === null) {
@@ -4488,6 +4553,24 @@ async function executeTokenModeStreaming(input: {
       const streamFailureCode = !streamCompleted
         ? (terminalStatus === 'failed' && !streamTruncated ? 'stream_failed_terminal' : 'stream_truncated')
         : null;
+
+      if (
+        streamFailureCode === 'stream_failed_terminal'
+        && provider === 'anthropic'
+        && providerPreference
+        && providerPreference.selectionReason !== 'cli_provider_pinned'
+        && providerPreference.preferredProvider === 'anthropic'
+        && providerPreference.effectiveProvider === 'anthropic'
+        && providerPreference.providerPlan.includes('openai')
+        && anthropicStreamErrorDetails.errorType === 'overloaded_error'
+      ) {
+        armNextPromptProviderOverride({
+          apiKeyId,
+          openclawSessionId: correlation.openclawSessionId ?? null,
+          preferredProvider: 'openai',
+          armedByRequestId: requestId
+        });
+      }
 
       if (streamFailureCode) {
         const streamFailureRouteDecision = buildTokenRouteDecision(
@@ -4750,13 +4833,19 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
     const requestPinSelectionReason = (readProviderPinSignal(req) || isClaudeCliPinnedRequest(req, proxiedPath))
       ? 'cli_provider_pinned'
       : null;
+    const nextPromptProviderOverride = requestPinSelectionReason
+      ? null
+      : consumeNextPromptProviderOverride({
+          apiKeyId: auth.apiKeyId,
+          openclawSessionId: correlation.openclawSessionId ?? null
+        });
     if (tokenModeEnabled) {
       const {
         providerPlan,
         preferredProvider,
         pinSelectionReason: effectivePinSelectionReason
       } = parseProviderPreferencePlan({
-        preferredProvider: auth.preferredProvider,
+        preferredProvider: nextPromptProviderOverride?.preferredProvider ?? auth.preferredProvider,
         preferredProviderSource: auth.preferredProviderSource,
         requestProvider,
         pinSelectionReason: requestPinSelectionReason

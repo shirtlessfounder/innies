@@ -2,6 +2,7 @@ import { Writable } from 'node:stream';
 import { describe, expect, it, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { z } from 'zod';
 import { AppError } from '../src/utils/errors.js';
+import { resetNextPromptProviderOverridesForTests } from '../src/services/nextPromptProviderOverride.js';
 import { resetAnthropicUsageRetryStateForTests } from '../src/services/tokenCredentialProviderUsageRetryState.js';
 
 type RuntimeModule = typeof import('../src/services/runtime.js');
@@ -316,6 +317,31 @@ function createRoutingCredentialFixture(input: {
   } as any;
 }
 
+function createAnthropicErrorStreamResponse(input: {
+  errorType: string;
+  errorMessage: string;
+}): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(
+        `event: error\ndata: ${JSON.stringify({
+          type: 'error',
+          error: {
+            type: input.errorType,
+            message: input.errorMessage
+          }
+        })}\n\n`
+      ));
+      controller.close();
+    }
+  });
+  return new Response(body, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' }
+  });
+}
+
 function applyError(err: unknown, res: MockRes): void {
   if (err instanceof z.ZodError) {
     res.status(400).json({ code: 'invalid_request', message: 'Invalid request', issues: err.issues });
@@ -464,6 +490,7 @@ describe('proxy token-mode route behavior', () => {
     delete process.env.ANTHROPIC_UPSTREAM_BASE_URL;
     delete process.env.OPENAI_UPSTREAM_BASE_URL;
     delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
+    resetNextPromptProviderOverridesForTests();
     resetAnthropicUsageRetryStateForTests();
     vi.restoreAllMocks();
   });
@@ -5819,6 +5846,359 @@ describe('proxy token-mode route behavior', () => {
     expect(routeDecision?.provider_fallback_from).toBe('openai');
     expect(routeDecision?.provider_fallback_reason).toBe('capacity_unavailable');
     upstreamSpy.mockRestore();
+  });
+
+  it('retries the next unpinned request on openai after an anthropic overload, then reverts', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.ANTHROPIC_UPSTREAM_BASE_URL = 'https://anthropic.internal.test';
+    process.env.OPENAI_UPSTREAM_BASE_URL = 'https://openai.internal.test';
+    process.env.COMPAT_CODEX_DEFAULT_MODEL = 'gpt-5.4';
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'anthropic'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string, model: string) => {
+      if (provider === 'anthropic' && model === 'claude-opus-4-6') {
+        return { provider: 'anthropic', model: 'claude-opus-4-6', supports_streaming: true } as any;
+      }
+      if (provider === 'openai' && model === 'gpt-5.4') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: false } as any;
+      }
+      return null as any;
+    });
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider === 'anthropic') {
+        return [createRoutingCredentialFixture({
+          id: 'retry-next-prompt-anthropic',
+          provider: 'anthropic',
+          authScheme: 'bearer',
+          accessToken: 'sk-ant-retry-next-prompt'
+        })];
+      }
+      if (provider === 'openai') {
+        return [createRoutingCredentialFixture({
+          id: 'retry-next-prompt-openai',
+          provider: 'openai',
+          authScheme: 'x_api_key',
+          accessToken: 'sk-openai-retry-next-prompt'
+        })];
+      }
+      return [];
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(createAnthropicErrorStreamResponse({
+        errorType: 'overloaded_error',
+        errorMessage: 'Overloaded'
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'resp_retry_override_openai',
+        status: 'completed',
+        usage: { input_tokens: 2, output_tokens: 3 },
+        output: [{
+          type: 'message',
+          id: 'msg_retry_override_openai',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'retried on codex' }]
+        }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_retry_override_anthropic',
+        usage: { input_tokens: 1, output_tokens: 2 },
+        content: [{ type: 'text', text: 'back on anthropic' }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const overloadedReq = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'req_overload_arm'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: true,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 32,
+          messages: [{ role: 'user', content: 'hello' }]
+        }
+      }
+    });
+    (overloadedReq as any).inniesCompatMode = true;
+    const overloadedRes = createRealWritableStreamingMockRes();
+
+    await invoke(handlers[0], overloadedReq, overloadedRes);
+    await invoke(handlers[1], overloadedReq, overloadedRes);
+
+    const retryReq = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'req_retry_once'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: false,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 32,
+          messages: [{ role: 'user', content: 'retry me' }]
+        }
+      }
+    });
+    (retryReq as any).inniesCompatMode = true;
+    const retryRes = createMockRes();
+
+    await invoke(handlers[0], retryReq, retryRes);
+    await invoke(handlers[1], retryReq, retryRes);
+
+    const normalReq = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'req_back_to_normal'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: false,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 32,
+          messages: [{ role: 'user', content: 'normal again' }]
+        }
+      }
+    });
+    (normalReq as any).inniesCompatMode = true;
+    const normalRes = createMockRes();
+
+    await invoke(handlers[0], normalReq, normalRes);
+    await invoke(handlers[1], normalReq, normalRes);
+
+    expect(overloadedRes.statusCode).toBe(200);
+    expect(String(overloadedRes.body)).toContain('\"type\":\"overloaded_error\"');
+    expect(retryRes.statusCode).toBe(200);
+    expect(normalRes.statusCode).toBe(200);
+    expect(listSpy.mock.calls.map((call) => call[1])).toEqual(['anthropic', 'openai', 'anthropic']);
+    expect(String((upstreamSpy.mock.calls[0] as [URL])[0])).toBe('https://anthropic.internal.test/v1/messages');
+    expect(String((upstreamSpy.mock.calls[1] as [URL])[0])).toBe('https://openai.internal.test/v1/responses');
+    expect(String((upstreamSpy.mock.calls[2] as [URL])[0])).toBe('https://anthropic.internal.test/v1/messages');
+
+    const routedEvents = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls
+      .map((call: any[]) => call[0])
+      .filter((entry: any) => !entry.errorCode);
+    const retryDecision = routedEvents.find((entry: any) => entry.requestId === 'req_retry_once')?.routeDecision;
+    const normalDecision = routedEvents.find((entry: any) => entry.requestId === 'req_back_to_normal')?.routeDecision;
+
+    expect(retryDecision?.provider_preferred).toBe('openai');
+    expect(retryDecision?.provider_effective).toBe('openai');
+    expect(retryDecision?.provider_plan).toEqual(['openai', 'anthropic']);
+    expect(normalDecision?.provider_preferred).toBe('anthropic');
+    expect(normalDecision?.provider_effective).toBe('anthropic');
+    expect(normalDecision?.provider_plan).toEqual(['anthropic', 'openai']);
+
+    upstreamSpy.mockRestore();
+    delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
+  });
+
+  it('does not let a pinned request consume the stored openai-first retry override', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.ANTHROPIC_UPSTREAM_BASE_URL = 'https://anthropic.internal.test';
+    process.env.OPENAI_UPSTREAM_BASE_URL = 'https://openai.internal.test';
+    process.env.COMPAT_CODEX_DEFAULT_MODEL = 'gpt-5.4';
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'anthropic'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockImplementation(async (provider: string, model: string) => {
+      if (provider === 'anthropic' && model === 'claude-opus-4-6') {
+        return { provider: 'anthropic', model: 'claude-opus-4-6', supports_streaming: true } as any;
+      }
+      if (provider === 'openai' && model === 'gpt-5.4') {
+        return { provider: 'openai', model: 'gpt-5.4', supports_streaming: false } as any;
+      }
+      return null as any;
+    });
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockImplementation(async (_orgId: string, provider: string) => {
+      if (provider === 'anthropic') {
+        return [createRoutingCredentialFixture({
+          id: 'retry-pinned-anthropic',
+          provider: 'anthropic',
+          authScheme: 'bearer',
+          accessToken: 'sk-ant-retry-pinned'
+        })];
+      }
+      if (provider === 'openai') {
+        return [createRoutingCredentialFixture({
+          id: 'retry-pinned-openai',
+          provider: 'openai',
+          authScheme: 'x_api_key',
+          accessToken: 'sk-openai-retry-pinned'
+        })];
+      }
+      return [];
+    });
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(createAnthropicErrorStreamResponse({
+        errorType: 'overloaded_error',
+        errorMessage: 'Overloaded'
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'msg_retry_pinned_cli',
+        usage: { input_tokens: 1, output_tokens: 1 },
+        content: [{ type: 'text', text: 'still anthropic' }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'resp_retry_pinned_openai',
+        status: 'completed',
+        usage: { input_tokens: 2, output_tokens: 3 },
+        output: [{
+          type: 'message',
+          id: 'msg_retry_pinned_openai',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'unpinned retry uses codex' }]
+        }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }));
+
+    const overloadedReq = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'req_overload_arm_pinned'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: true,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 32,
+          messages: [{ role: 'user', content: 'hello' }]
+        }
+      }
+    });
+    (overloadedReq as any).inniesCompatMode = true;
+    const overloadedRes = createRealWritableStreamingMockRes();
+
+    await invoke(handlers[0], overloadedReq, overloadedRes);
+    await invoke(handlers[1], overloadedReq, overloadedRes);
+
+    const pinnedReq = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-innies-provider-pin': 'true',
+        'x-request-id': 'req_pinned_should_not_consume'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: false,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 32,
+          messages: [{ role: 'user', content: 'stay on claude' }]
+        }
+      }
+    });
+    (pinnedReq as any).inniesCompatMode = true;
+    const pinnedRes = createMockRes();
+
+    await invoke(handlers[0], pinnedReq, pinnedRes);
+    await invoke(handlers[1], pinnedReq, pinnedRes);
+
+    const retryReq = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'req_unpinned_after_pinned'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: false,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 32,
+          messages: [{ role: 'user', content: 'retry after pinned' }]
+        }
+      }
+    });
+    (retryReq as any).inniesCompatMode = true;
+    const retryRes = createMockRes();
+
+    await invoke(handlers[0], retryReq, retryRes);
+    await invoke(handlers[1], retryReq, retryRes);
+
+    expect(overloadedRes.statusCode).toBe(200);
+    expect(pinnedRes.statusCode).toBe(200);
+    expect(retryRes.statusCode).toBe(200);
+    expect(listSpy.mock.calls.map((call) => call[1])).toEqual(['anthropic', 'anthropic', 'openai']);
+    expect(String((upstreamSpy.mock.calls[0] as [URL])[0])).toBe('https://anthropic.internal.test/v1/messages');
+    expect(String((upstreamSpy.mock.calls[1] as [URL])[0])).toBe('https://anthropic.internal.test/v1/messages');
+    expect(String((upstreamSpy.mock.calls[2] as [URL])[0])).toBe('https://openai.internal.test/v1/responses');
+
+    const routedEvents = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls
+      .map((call: any[]) => call[0])
+      .filter((entry: any) => !entry.errorCode);
+    const pinnedDecision = routedEvents.find((entry: any) => entry.requestId === 'req_pinned_should_not_consume')?.routeDecision;
+    const retryDecision = routedEvents.find((entry: any) => entry.requestId === 'req_unpinned_after_pinned')?.routeDecision;
+
+    expect(pinnedDecision?.reason).toBe('cli_provider_pinned');
+    expect(pinnedDecision?.provider_plan).toEqual(['anthropic']);
+    expect(retryDecision?.provider_preferred).toBe('openai');
+    expect(retryDecision?.provider_effective).toBe('openai');
+    expect(retryDecision?.provider_plan).toEqual(['openai', 'anthropic']);
+
+    upstreamSpy.mockRestore();
+    delete process.env.COMPAT_CODEX_DEFAULT_MODEL;
   });
 
   it('does not switch provider when request includes an explicit provider pin signal', async () => {
