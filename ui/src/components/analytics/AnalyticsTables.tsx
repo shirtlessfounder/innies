@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 
 import type {
   BuyerSortKey,
@@ -26,6 +27,48 @@ import {
   tokenProviderLabel,
 } from '../../lib/analytics/present';
 import styles from '../../app/analytics/page.module.css';
+
+export type TokenRowRemoveConfig = {
+  orgSlug: string;
+  viewerGithubLogin: string | null;
+  createdByGithubLoginByTokenId: Record<string, string | null>;
+};
+
+function readErrorMessage(body: unknown, fallback: string): string {
+  if (body && typeof body === 'object') {
+    const record = body as Record<string, unknown>;
+    if (typeof record.message === 'string' && record.message.trim().length > 0) {
+      return record.message;
+    }
+    if (typeof record.code === 'string' && record.code.trim().length > 0) {
+      return record.code;
+    }
+    if (typeof record.kind === 'string' && record.kind.trim().length > 0) {
+      return record.kind;
+    }
+  }
+  return fallback;
+}
+
+async function safeReadBody(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { message: text };
+  }
+}
+
+function canRemoveTokenRow(row: AnalyticsTokenRow, tokenRowRemoveConfig: TokenRowRemoveConfig): boolean {
+  const tokenCreatorLogin = tokenRowRemoveConfig.createdByGithubLoginByTokenId[row.credentialId] ?? null;
+  const canRemove = tokenCreatorLogin !== null && tokenCreatorLogin === tokenRowRemoveConfig.viewerGithubLogin;
+  return canRemove;
+}
+
+function buildRemoveTokenPath(row: AnalyticsTokenRow, tokenRowRemoveConfig: TokenRowRemoveConfig): string {
+  return `/api/orgs/${tokenRowRemoveConfig.orgSlug}/tokens/${row.credentialId}/remove`;
+}
 
 function sortAria(active: boolean, direction: SortDirection): 'ascending' | 'descending' | 'none' {
   if (!active) return 'none';
@@ -256,22 +299,57 @@ export function TokenTable({
   metric,
   sort,
   onSort,
+  tokenRowRemoveConfig,
 }: {
   rows: AnalyticsTokenRow[];
   hiddenIds: string[];
   metric: AnalyticsMetric;
   sort: SortState<TokenSortKey>;
   onSort: (key: TokenSortKey, defaultDirection: SortDirection) => void;
+  tokenRowRemoveConfig?: TokenRowRemoveConfig;
 }) {
+  const router = useRouter();
   const metricConfig = tokenMetricConfig(metric);
   const [statusHovered, setStatusHovered] = useState(false);
   const [statusPinned, setStatusPinned] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const [pendingRemoveTokenId, setPendingRemoveTokenId] = useState<string | null>(null);
   const statusExpanded = statusPinned || statusHovered;
   const statusColumnClass = statusColumnClassName({ expanded: statusExpanded });
 
+  async function handleRemoveToken(row: AnalyticsTokenRow) {
+    if (!tokenRowRemoveConfig || pendingRemoveTokenId) return;
+
+    setPendingRemoveTokenId(row.credentialId);
+    setRemoveError(null);
+
+    try {
+      const response = await fetch(buildRemoveTokenPath(row, tokenRowRemoveConfig), {
+        method: 'POST',
+      });
+      const body = await safeReadBody(response);
+      if (!response.ok) {
+        setRemoveError(readErrorMessage(body, 'Could not remove this token.'));
+        return;
+      }
+
+      router.refresh();
+    } catch (submitError) {
+      setRemoveError(submitError instanceof Error ? submitError.message : 'Could not remove this token.');
+    } finally {
+      setPendingRemoveTokenId(null);
+    }
+  }
+
   return (
-    <div className={styles.tableWrap}>
-      <table className={[styles.table, statusExpanded ? styles.tableStatusExpanded : ''].filter(Boolean).join(' ')}>
+    <>
+      {removeError ? (
+        <div className={styles.noticeList}>
+          <div className={styles.noticeError}>{removeError}</div>
+        </div>
+      ) : null}
+      <div className={styles.tableWrap}>
+        <table className={[styles.table, statusExpanded ? styles.tableStatusExpanded : ''].filter(Boolean).join(' ')}>
         <thead>
           <tr>
             <th aria-sort={sortAria(sort.key === 'displayKey', sort.direction)}>
@@ -361,6 +439,7 @@ export function TokenTable({
               />
             </th>
             <th className={styles.numeric}>7D RESET</th>
+            {tokenRowRemoveConfig ? <th className={styles.numeric}>REMOVE</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -376,6 +455,9 @@ export function TokenTable({
               utilizationRatio: row.sevenDayCapUsedRatio,
               exhausted: row.sevenDayContributionCapExhausted,
             });
+            const canRemove = tokenRowRemoveConfig
+              ? canRemoveTokenRow(row, tokenRowRemoveConfig)
+              : false;
 
             return (
               <tr
@@ -417,12 +499,27 @@ export function TokenTable({
                   </span>
                 </td>
                 <td className={styles.numeric}>{formatShortTimestamp(row.sevenDayResetsAt)}</td>
+                {tokenRowRemoveConfig ? (
+                  <td className={styles.numeric}>
+                    {canRemove ? (
+                        <button
+                          className={styles.managementTableActionButton}
+                          disabled={pendingRemoveTokenId === row.credentialId}
+                          onClick={() => handleRemoveToken(row)}
+                          type="button"
+                        >
+                        {pendingRemoveTokenId === row.credentialId ? '[removing]' : '[remove]'}
+                      </button>
+                    ) : '--'}
+                  </td>
+                ) : null}
               </tr>
             );
           })}
         </tbody>
-      </table>
-    </div>
+        </table>
+      </div>
+    </>
   );
 }
 

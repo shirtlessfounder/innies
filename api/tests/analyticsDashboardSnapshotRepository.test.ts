@@ -45,7 +45,7 @@ describe('AnalyticsDashboardSnapshotRepository', () => {
       { rows: [{ locked: true }], rowCount: 1 },
       {
         rows: [{
-          cache_key: 'dashboard:v3:24h:openai:_',
+          cache_key: 'dashboard:v5:24h:openai:_:_',
           dashboard_window: '24h',
           provider: 'openai',
           source: null,
@@ -84,8 +84,9 @@ describe('AnalyticsDashboardSnapshotRepository', () => {
     expect(sql.queries).toHaveLength(2);
     expect(sql.queries[0].sql).toContain('pg_try_advisory_xact_lock');
     expect(sql.queries[1].sql).toContain('insert into in_analytics_dashboard_snapshots');
+    expect(sql.queries[0].params?.[1]).toBe('dashboard:v5:24h:openai:_:_');
     expect(snapshot).toEqual({
-      cacheKey: 'dashboard:v3:24h:openai:_',
+      cacheKey: 'dashboard:v5:24h:openai:_:_',
       window: '24h',
       provider: 'openai',
       source: undefined,
@@ -101,5 +102,47 @@ describe('AnalyticsDashboardSnapshotRepository', () => {
       snapshotAt: new Date('2026-03-12T12:00:00.000Z'),
       refreshedAt: new Date('2026-03-12T12:00:01.000Z')
     });
+  });
+
+  it('includes orgId in the cache key for org-scoped dashboard snapshots', async () => {
+    const sql = new SequenceSqlClient([
+      { rows: [{ locked: true }], rowCount: 1 },
+      {
+        rows: [{
+          cache_key: 'dashboard:v5:24h:openai:_:org_1',
+          dashboard_window: '24h',
+          provider: 'openai',
+          source: null,
+          payload: {
+            window: '24h',
+            snapshotAt: '2026-03-12T12:00:00.000Z',
+            summary: { totalRequests: 1 },
+            tokens: [],
+            buyers: [],
+            anomalies: { checks: {}, ok: true },
+            events: []
+          },
+          snapshot_at: new Date('2026-03-12T12:00:00.000Z'),
+          refreshed_at: new Date('2026-03-12T12:00:01.000Z')
+        }],
+        rowCount: 1
+      }
+    ]);
+    const repo = new AnalyticsDashboardSnapshotRepository(sql);
+
+    await repo.refreshIfLockAvailable(
+      { window: '24h', provider: 'openai', orgId: 'org_1' },
+      async () => ({
+        window: '24h',
+        snapshotAt: '2026-03-12T12:00:00.000Z',
+        summary: { totalRequests: 1 },
+        tokens: [],
+        buyers: [],
+        anomalies: { checks: {}, ok: true },
+        events: []
+      })
+    );
+
+    expect(sql.queries[0].params?.[1]).toBe('dashboard:v5:24h:openai:_:org_1');
   });
 });

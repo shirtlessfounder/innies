@@ -1,0 +1,87 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const uiRoot = join(__dirname, '..');
+
+function readSource(relativePath) {
+  return readFileSync(join(uiRoot, relativePath), 'utf8');
+}
+
+test('org management tables use owner-only bracketed actions, shared analytics table sizing, and no passive active label', () => {
+  const managementSource = readSource('src/components/org/OrgManagementSections.tsx');
+  const membersSource = readSource('src/components/org/OrgDashboardMembers.tsx');
+  const tokensSource = readSource('src/components/org/OrgDashboardTokens.tsx');
+  const stylesSource = readSource('src/app/analytics/page.module.css');
+  const actionButtonBlock = stylesSource.split('.managementTableActionButton {')[1]?.split('.managementTableActionButton:disabled')[0] ?? '';
+  const bracketFieldBlock = stylesSource.split('.tableBracketField {')[1]?.split('.tableBracketField:focus-within')[0] ?? '';
+  const bracketValueBlock = stylesSource.split('.tableBracketValue {')[1]?.split('.tableWrap {')[0] ?? '';
+  const tableActionsColumnBlock = stylesSource.split('.tableActionsColumn {')[1]?.split('.sortButton {')[0] ?? '';
+
+  assert.ok(managementSource.includes('className={analyticsStyles.tableGrid}'));
+  assert.ok(!managementSource.includes('ORG MANAGEMENT'));
+  assert.ok(!managementSource.includes('TOKENS ·'));
+  assert.ok(!managementSource.includes('MEMBERS ·'));
+  assert.ok(!managementSource.includes('PENDING'));
+  assert.ok(!managementSource.includes('Phase 3 org controls stay on the same route.'));
+  assert.ok(membersSource.includes('[remove]'));
+  assert.ok(membersSource.includes('[revoke]'));
+  assert.ok(membersSource.includes('{`${formatCount(members.length)} MEMBERS`}'));
+  assert.ok(membersSource.includes('className={analyticsStyles.table}'));
+  assert.ok(!membersSource.includes('tableFillIfShorter'));
+  assert.ok(!membersSource.includes('tableFitContent'));
+  assert.ok(!membersSource.includes('tableColumnTight'));
+  assert.ok(!membersSource.includes('tableColumnStretch'));
+  assert.ok(!membersSource.includes('<colgroup>'));
+  assert.ok(!membersSource.includes('tableGrowColumn'));
+  assert.ok(!membersSource.includes('tableTightColumn'));
+  assert.ok(membersSource.includes('tableActionsColumn'));
+  assert.ok(!membersSource.includes('OWNER CONTROLS ENABLED'));
+  assert.ok(!membersSource.includes('MEMBER VIEW ONLY'));
+  assert.ok(membersSource.includes('{`${formatCount(pendingInvites.length)} PENDING`}'));
+  assert.ok(membersSource.includes('className={analyticsStyles.sectionHeader}'));
+  assert.ok(membersSource.includes('managementTableActionButton'));
+  assert.ok(!membersSource.includes("'Active'"));
+  assert.ok(tokensSource.includes('{`${formatCount(tokens.length)} TOKENS`}'));
+  assert.ok(!tokensSource.includes('OWNER CAN MANAGE ALL'));
+  assert.ok(!tokensSource.includes('CREATOR-SCOPED ACTIONS'));
+  assert.ok(tokensSource.includes('/api/orgs/${org.slug}/tokens/${token.tokenId}/reserve-floors'));
+  assert.ok(tokensSource.includes('/api/orgs/${org.slug}/tokens/${token.tokenId}/probe'));
+  assert.ok(tokensSource.includes('token.debugLabel'));
+  assert.ok(tokensSource.includes('const probeEnabled = canProbeToken(token.status);'));
+  assert.ok(tokensSource.includes('className={analyticsStyles.table}'));
+  assert.ok(!tokensSource.includes('tableFillIfShorter'));
+  assert.ok(!tokensSource.includes('tableFitContent'));
+  assert.ok(!tokensSource.includes('tableColumnTight'));
+  assert.ok(!tokensSource.includes('tableColumnStretch'));
+  assert.ok(!tokensSource.includes('<colgroup>'));
+  assert.ok(!tokensSource.includes('tableGrowColumn'));
+  assert.ok(!tokensSource.includes('tableTightColumn'));
+  assert.ok(tokensSource.includes('tableActionsColumn'));
+  assert.ok(tokensSource.includes('name="fiveHourReservePercent"'));
+  assert.ok(tokensSource.includes('name="sevenDayReservePercent"'));
+  assert.ok(tokensSource.includes('[save]'));
+  assert.ok(tokensSource.includes('probeEnabled ? ('));
+  assert.ok(tokensSource.includes('[probe]'));
+  assert.ok(!tokensSource.includes('managementFormGrid'));
+  assert.ok(!tokensSource.includes('Paste provider token'));
+  assert.ok(stylesSource.includes('.tableBracketField'));
+  assert.ok(stylesSource.includes('.tableBracketInput'));
+  assert.ok(!stylesSource.includes('.tableFillIfShorter'));
+  assert.ok(!stylesSource.includes('.tableFitContent'));
+  assert.ok(!stylesSource.includes('.tableGrowColumn'));
+  assert.ok(!stylesSource.includes('.tableTightColumn'));
+  assert.ok(stylesSource.includes('.tableActionsColumn'));
+  assert.ok(tableActionsColumnBlock.includes('width: 1%;'));
+  assert.ok(tableActionsColumnBlock.includes('text-align: right !important;'));
+  assert.ok(!bracketFieldBlock.includes('min-height: 34px;'));
+  assert.ok(!bracketValueBlock.includes('min-height: 34px;'));
+  assert.ok(stylesSource.includes('.tableNumberInput'));
+  assert.ok(stylesSource.includes('.managementTableActionButton'));
+  assert.ok(actionButtonBlock.includes('color: inherit;'));
+  assert.ok(!actionButtonBlock.includes('var(--console-accent)'));
+  assert.ok(!stylesSource.includes('.managementTableActionButton:hover'));
+});

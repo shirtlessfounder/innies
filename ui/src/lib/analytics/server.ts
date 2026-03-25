@@ -904,10 +904,15 @@ function baseCapabilities(input: {
   };
 }
 
-export async function getAnalyticsDashboardSnapshot(window: AnalyticsPageWindow): Promise<AnalyticsDashboardSnapshot> {
+export async function getAnalyticsDashboardSnapshot(
+  window: AnalyticsPageWindow,
+  input?: { orgId?: string | null },
+): Promise<AnalyticsDashboardSnapshot> {
   const effectiveWindow = pageWindowToApiWindow(window);
+  const orgId = toStringOrNull(input?.orgId) ?? undefined;
   const dashboardPayload = await fetchOptionalAdminJson<CurrentDashboardResponse>('/v1/admin/analytics/dashboard', {
     window: effectiveWindow,
+    orgId,
   });
 
   if (dashboardPayload) {
@@ -953,13 +958,13 @@ export async function getAnalyticsDashboardSnapshot(window: AnalyticsPageWindow)
   const snapshotAt = new Date().toISOString();
 
   const [system, usage, health, routing, anomalies, buyersPayload, eventsPayload] = await Promise.all([
-    fetchAdminJson<CurrentSystemResponse>('/v1/admin/analytics/system', { window: effectiveWindow }),
-    fetchAdminJson<CurrentTokensResponse<CurrentTokenUsageRow>>('/v1/admin/analytics/tokens', { window: effectiveWindow }),
-    fetchAdminJson<CurrentTokensResponse<CurrentTokenHealthRow>>('/v1/admin/analytics/tokens/health', { window: effectiveWindow }),
-    fetchAdminJson<CurrentTokensResponse<CurrentTokenRoutingRow>>('/v1/admin/analytics/tokens/routing', { window: effectiveWindow }),
-    fetchAdminJson<CurrentAnomaliesResponse>('/v1/admin/analytics/anomalies', { window: effectiveWindow }),
-    fetchOptionalAdminJson<CurrentBuyersResponse>('/v1/admin/analytics/buyers', { window: effectiveWindow }),
-    fetchOptionalAdminJson<CurrentEventsResponse>('/v1/admin/analytics/events', { window: effectiveWindow }),
+    fetchAdminJson<CurrentSystemResponse>('/v1/admin/analytics/system', { window: effectiveWindow, orgId }),
+    fetchAdminJson<CurrentTokensResponse<CurrentTokenUsageRow>>('/v1/admin/analytics/tokens', { window: effectiveWindow, orgId }),
+    fetchAdminJson<CurrentTokensResponse<CurrentTokenHealthRow>>('/v1/admin/analytics/tokens/health', { window: effectiveWindow, orgId }),
+    fetchAdminJson<CurrentTokensResponse<CurrentTokenRoutingRow>>('/v1/admin/analytics/tokens/routing', { window: effectiveWindow, orgId }),
+    fetchAdminJson<CurrentAnomaliesResponse>('/v1/admin/analytics/anomalies', { window: effectiveWindow, orgId }),
+    fetchOptionalAdminJson<CurrentBuyersResponse>('/v1/admin/analytics/buyers', { window: effectiveWindow, orgId }),
+    fetchOptionalAdminJson<CurrentEventsResponse>('/v1/admin/analytics/events', { window: effectiveWindow, orgId }),
   ]);
 
   const summary = normalizeSummary(system);
@@ -1022,13 +1027,16 @@ export async function getAnalyticsSeries(input: {
   entityId: string;
   metric: AnalyticsMetric;
   window: AnalyticsPageWindow;
+  orgId?: string | null;
 }): Promise<AnalyticsSeriesResponse> {
   const effectiveWindow = pageWindowToApiWindow(input.window);
+  const orgId = toStringOrNull(input.orgId) ?? undefined;
 
   if (input.entityType === 'token') {
     const payload = await fetchAdminJson<CurrentTokenSeriesResponse>('/v1/admin/analytics/timeseries', {
       window: effectiveWindow,
       credentialId: input.entityId,
+      orgId,
     });
 
     return {
@@ -1046,6 +1054,7 @@ export async function getAnalyticsSeries(input: {
   const payload = await fetchOptionalAdminJson<CurrentBuyerSeriesResponse>('/v1/admin/analytics/buyers/timeseries', {
     window: effectiveWindow,
     apiKeyId: input.entityId,
+    orgId,
   });
 
   if (!payload) {

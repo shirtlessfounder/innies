@@ -86,7 +86,10 @@ function applyDashboardDeltas(
   };
 }
 
-export function useAnalyticsDashboard(initialWindow: AnalyticsPageWindow = '24h'): UseAnalyticsDashboardResult {
+export function useAnalyticsDashboard(
+  initialWindow: AnalyticsPageWindow = '24h',
+  input?: { dashboardPath?: string },
+): UseAnalyticsDashboardResult {
   const [selectedWindow, setSelectedWindow] = useState<AnalyticsPageWindow>(initialWindow);
   const [snapshot, setSnapshot] = useState<AnalyticsDashboardSnapshot | null>(null);
   const [paused, setPaused] = useState(false);
@@ -127,7 +130,10 @@ export function useAnalyticsDashboard(initialWindow: AnalyticsPageWindow = '24h'
       }
 
       try {
-        const nextSnapshot = await fetchAnalyticsDashboard(selectedWindow, activeController.signal);
+        const nextSnapshot = await fetchAnalyticsDashboard(selectedWindow, {
+          dashboardPath: input?.dashboardPath,
+          signal: activeController.signal,
+        });
         if (cancelled) return;
 
         const withDeltas = applyDashboardDeltas(nextSnapshot, previousSnapshotRef.current);
@@ -171,7 +177,7 @@ export function useAnalyticsDashboard(initialWindow: AnalyticsPageWindow = '24h'
       activeController?.abort();
       if (timeoutId) globalThis.clearTimeout(timeoutId);
     };
-  }, [selectedWindow, paused, refreshNonce]);
+  }, [selectedWindow, paused, refreshNonce, input?.dashboardPath]);
 
   return {
     snapshot,

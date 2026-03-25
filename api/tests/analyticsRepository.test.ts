@@ -70,6 +70,24 @@ describe('AnalyticsRepository', () => {
     expect(usageLedgerQueries).toHaveLength(5);
   });
 
+  it('applies org filters to system summary query slices and token inventory counts', async () => {
+    const db = new MockSqlClient({ rows: [], rowCount: 0 });
+    const repo = new AnalyticsRepository(db);
+
+    await repo.getSystemSummary({ window: '24h', orgId: 'org_1' } as any);
+
+    const mainQuery = db.queries.find((query) => query.sql.includes('count(distinct re.request_id) AS total_requests'));
+    const tokenCountsQuery = db.queries.find((query) => query.sql.includes('token_inventory AS'));
+    const maxedQuery = db.queries.find((query) => query.sql.includes('FROM in_token_credential_events'));
+
+    expect(mainQuery?.sql).toContain('re.org_id = $1');
+    expect(mainQuery?.params).toEqual(['org_1']);
+    expect(tokenCountsQuery?.sql).toContain('where tc.org_id = $1');
+    expect(tokenCountsQuery?.params).toEqual(['org_1']);
+    expect(maxedQuery?.sql).toContain('AND org_id = $1');
+    expect(maxedQuery?.params).toEqual(['org_1']);
+  });
+
   it('treats active canonical OpenAI tokens with exhausted provider-usage windows as maxed in system summary counts', async () => {
     const db = new MockSqlClient({ rows: [], rowCount: 0 });
     const repo = new AnalyticsRepository(db);
@@ -229,6 +247,16 @@ describe('AnalyticsRepository', () => {
     expect(db.queries[0]?.params).toEqual(['openai']);
   });
 
+  it('applies org filters to timeseries analytics queries', async () => {
+    const db = new MockSqlClient({ rows: [], rowCount: 0 });
+    const repo = new AnalyticsRepository(db);
+
+    await repo.getTimeSeries({ window: '24h', granularity: '15m', orgId: 'org_1' } as any);
+
+    expect(db.queries[0]?.sql).toContain('re.org_id = $1');
+    expect(db.queries[0]?.params).toEqual(['org_1']);
+  });
+
   it('builds buyer inventory analytics from all buyer_proxy keys including zero-usage rows', async () => {
     const db = new MockSqlClient({ rows: [], rowCount: 0 });
     const repo = new AnalyticsRepository(db);
@@ -331,5 +359,15 @@ describe('AnalyticsRepository', () => {
     expect(db.queries[0]?.sql).toContain("WHEN tce.event_type = 'contribution_cap_exhausted'");
     expect(db.queries[0]?.sql).toContain('LIMIT $2');
     expect(db.queries[0]?.params).toEqual(['openai', 20]);
+  });
+
+  it('applies org filters to lifecycle events queries', async () => {
+    const db = new MockSqlClient({ rows: [], rowCount: 0 });
+    const repo = new AnalyticsRepository(db);
+
+    await repo.getEvents({ window: '5h', limit: 20, orgId: 'org_1' } as any);
+
+    expect(db.queries[0]?.sql).toContain('tc.org_id = $1');
+    expect(db.queries[0]?.params).toEqual(['org_1', 20]);
   });
 });

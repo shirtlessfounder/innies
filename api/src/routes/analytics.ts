@@ -3,10 +3,10 @@ import { z } from 'zod';
 import { requireApiKey } from '../middleware/auth.js';
 import type { ApiKeyRepository } from '../repos/apiKeyRepository.js';
 import type {
-  AnalyticsDashboardSnapshotPayload,
   DashboardSnapshotStore
 } from '../repos/analyticsDashboardSnapshotRepository.js';
 import { runtime } from '../services/runtime.js';
+import { buildDashboardSnapshotPayload } from '../services/analytics/dashboardSnapshot.js';
 import {
   PROVIDER_USAGE_FETCH_BACKOFF_ACTIVE_REASON,
   PROVIDER_USAGE_FETCH_FAILED_REASON,
@@ -23,33 +23,37 @@ const TOKEN_PROVIDERS = ['anthropic', 'openai'] as const;
 const TOKEN_STATUSES = ['active', 'paused', 'rotating', 'maxed', 'expired', 'revoked'] as const;
 const ANALYTICS_EVENT_SEVERITIES = ['info', 'warn', 'error'] as const;
 
-type AnalyticsSource = typeof ANALYTICS_SOURCES[number];
-type AnalyticsProvider = typeof TOKEN_PROVIDERS[number];
-type AnalyticsGranularity = '5m' | '15m' | 'hour' | 'day';
-type SourceUsageStats = { requests: number; usageUnits: number };
+export type AnalyticsSource = typeof ANALYTICS_SOURCES[number];
+export type AnalyticsProvider = typeof TOKEN_PROVIDERS[number];
+export type AnalyticsGranularity = '5m' | '15m' | 'hour' | 'day';
+export type SourceUsageStats = { requests: number; usageUnits: number };
 
 type TokenUsageFilters = {
   window: AnalyticsWindow;
   provider?: AnalyticsProvider;
   source?: AnalyticsSource;
+  orgId?: string;
 };
 
 type TokenHealthFilters = {
   window: AnalyticsWindow;
   provider?: AnalyticsProvider;
   source?: AnalyticsSource;
+  orgId?: string;
 };
 
 type TokenRoutingFilters = {
   window: AnalyticsWindow;
   provider?: AnalyticsProvider;
   source?: AnalyticsSource;
+  orgId?: string;
 };
 
 type SystemSummaryFilters = {
   window: AnalyticsWindow;
   provider?: AnalyticsProvider;
   source?: AnalyticsSource;
+  orgId?: string;
 };
 
 type TimeSeriesFilters = {
@@ -58,12 +62,14 @@ type TimeSeriesFilters = {
   provider?: AnalyticsProvider;
   source?: AnalyticsSource;
   credentialId?: string;
+  orgId?: string;
 };
 
 type BuyerFilters = {
   window: AnalyticsWindow;
   provider?: AnalyticsProvider;
   source?: AnalyticsSource;
+  orgId?: string;
 };
 
 type BuyerTimeSeriesFilters = {
@@ -72,6 +78,7 @@ type BuyerTimeSeriesFilters = {
   provider?: AnalyticsProvider;
   source?: AnalyticsSource;
   apiKeyIds?: string[];
+  orgId?: string;
 };
 
 type RecentRequestsFilters = {
@@ -88,18 +95,21 @@ type AnomaliesFilters = {
   window: AnalyticsWindow;
   provider?: AnalyticsProvider;
   source?: AnalyticsSource;
+  orgId?: string;
 };
 
-type EventFilters = {
+export type EventFilters = {
   window: AnalyticsWindow;
   provider?: AnalyticsProvider;
   limit: number;
+  orgId?: string;
 };
 
-type DashboardFilters = {
+export type DashboardFilters = {
   window: AnalyticsWindow;
   provider?: AnalyticsProvider;
   source?: AnalyticsSource;
+  orgId?: string;
 };
 
 export interface AnalyticsRouteRepository {
@@ -148,37 +158,43 @@ const analyticsGranularitySchema = z.string()
 const baseAnalyticsQuerySchema = z.object({
   window: analyticsWindowSchema.optional(),
   provider: analyticsProviderSchema.optional(),
-  source: analyticsSourceSchema.optional()
+  source: analyticsSourceSchema.optional(),
+  orgId: z.string().uuid().optional()
 });
 
 const tokenUsageQuerySchema = baseAnalyticsQuerySchema.transform((query) => ({
   window: query.window ?? '24h',
   provider: query.provider,
-  source: query.source
+  source: query.source,
+  orgId: query.orgId
 }));
 
 const tokenHealthQuerySchema = baseAnalyticsQuerySchema.transform((query) => ({
   window: query.window ?? '7d',
   provider: query.provider,
-  source: query.source
+  source: query.source,
+  orgId: query.orgId
 }));
 
 const tokenRoutingQuerySchema = baseAnalyticsQuerySchema.transform((query) => ({
   window: query.window ?? '24h',
   provider: query.provider,
-  source: query.source
+  source: query.source,
+  orgId: query.orgId
 }));
 
 const systemSummaryQuerySchema = baseAnalyticsQuerySchema.transform((query) => ({
   window: query.window ?? '24h',
   provider: query.provider,
-  source: query.source
+  source: query.source,
+  orgId: query.orgId
 }));
 
 const buyerQuerySchema = baseAnalyticsQuerySchema.transform((query) => ({
   window: query.window ?? '24h',
   provider: query.provider,
-  source: query.source
+  source: query.source,
+  orgId: query.orgId
 }));
 
 const multiUuidQuerySchema = z.preprocess((value) => {
@@ -197,7 +213,8 @@ const timeSeriesQuerySchema = baseAnalyticsQuerySchema.extend({
     provider: query.provider,
     source: query.source,
     credentialId: query.credentialId,
-    granularity: query.granularity ?? defaultGranularity(window)
+    granularity: query.granularity ?? defaultGranularity(window),
+    orgId: query.orgId
   };
 });
 
@@ -211,7 +228,8 @@ const buyerTimeSeriesQuerySchema = baseAnalyticsQuerySchema.extend({
     provider: query.provider,
     source: query.source,
     apiKeyIds: query.apiKeyId,
-    granularity: query.granularity ?? defaultGranularity(window)
+    granularity: query.granularity ?? defaultGranularity(window),
+    orgId: query.orgId
   };
 });
 
@@ -233,26 +251,30 @@ const recentRequestsQuerySchema = baseAnalyticsQuerySchema.extend({
 const anomaliesQuerySchema = baseAnalyticsQuerySchema.transform((query) => ({
   window: query.window ?? '24h',
   provider: query.provider,
-  source: query.source
+  source: query.source,
+  orgId: query.orgId
 }));
 
 const eventsQuerySchema = z.object({
   window: analyticsWindowSchema.optional(),
   provider: analyticsProviderSchema.optional(),
-  limit: z.coerce.number().int().min(1).max(200).optional()
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  orgId: z.string().uuid().optional()
 }).transform((query) => ({
   window: query.window ?? '24h',
   provider: query.provider,
-  limit: query.limit ?? 50
+  limit: query.limit ?? 50,
+  orgId: query.orgId
 }));
 
 const dashboardQuerySchema = baseAnalyticsQuerySchema.transform((query) => ({
   window: query.window ?? '24h',
   provider: query.provider,
-  source: query.source
+  source: query.source,
+  orgId: query.orgId
 }));
 
-function defaultGranularity(window: AnalyticsWindow): AnalyticsGranularity {
+export function defaultGranularity(window: AnalyticsWindow): AnalyticsGranularity {
   switch (window) {
     case '5h':
       return '5m';
@@ -419,7 +441,7 @@ function coerceExpiredTokenStatus(
     : status;
 }
 
-function deriveDashboardSummaryFromTokens(
+export function deriveDashboardSummaryFromTokens(
   summary: ReturnType<typeof normalizeSystemSummary>,
   tokens: Array<Record<string, unknown>>,
   hadTokenRows: boolean
@@ -560,7 +582,7 @@ function normalizeErrorBreakdown(value: unknown): Record<string, number> {
   return Object.fromEntries(entries);
 }
 
-function normalizeTokenUsageRows(value: unknown) {
+export function normalizeTokenUsageRows(value: unknown) {
   return readObjectArray(value, 'tokens').map((record) => ({
     credentialId: readRequiredString(record, ['credentialId', 'credential_id'], 'credentialId'),
     displayKey: readOptionalString(record, ['displayKey', 'display_key']) ?? formatDisplayKey(
@@ -580,7 +602,7 @@ function normalizeTokenUsageRows(value: unknown) {
   }));
 }
 
-function normalizeTokenHealthRows(value: unknown) {
+export function normalizeTokenHealthRows(value: unknown) {
   return readObjectArray(value, 'tokens').map((record) => {
     const credentialId = readRequiredString(record, ['credentialId', 'credential_id'], 'credentialId');
     const expiresAt = readOptionalIsoDate(record, ['expiresAt', 'expires_at']);
@@ -716,7 +738,7 @@ function normalizeProviderUsageWarningRows(value: unknown) {
   });
 }
 
-function normalizeWarnings(value: unknown): string[] {
+export function normalizeWarnings(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value
     .map((entry) => readTrimmedString(entry))
@@ -760,7 +782,7 @@ function openAiUsageExhausted(row: {
   };
 }
 
-function buildProviderUsageWarnings(
+export function buildProviderUsageWarnings(
   rawTokenHealthRows: unknown,
   now = Date.now()
 ): string[] {
@@ -953,7 +975,7 @@ function buildProviderUsageWarnings(
   return warnings;
 }
 
-function normalizeTokenRoutingRows(value: unknown) {
+export function normalizeTokenRoutingRows(value: unknown) {
   return readObjectArray(value, 'tokens').map((record) => ({
     credentialId: readRequiredString(record, ['credentialId', 'credential_id'], 'credentialId'),
     displayKey: readOptionalString(record, ['displayKey', 'display_key']) ?? formatDisplayKey(
@@ -990,7 +1012,7 @@ function normalizeTranslationOverhead(value: unknown) {
   };
 }
 
-function normalizeSystemSummary(value: unknown) {
+export function normalizeSystemSummary(value: unknown) {
   const record = readObject(value, 'system summary');
 
   return {
@@ -1020,7 +1042,7 @@ function normalizeSystemSummary(value: unknown) {
   };
 }
 
-function normalizeTimeSeries(value: unknown) {
+export function normalizeTimeSeries(value: unknown) {
   return readObjectArray(value, 'series').map((record) => ({
     date: readIsoDate(pick(record, ['date', 'bucket', 'bucketStartAt', 'bucket_start_at']), 'series.date'),
     requests: readOptionalNumber(record, ['requests', 'request_count'], 0) ?? 0,
@@ -1030,7 +1052,7 @@ function normalizeTimeSeries(value: unknown) {
   }));
 }
 
-function normalizeBuyerRows(value: unknown) {
+export function normalizeBuyerRows(value: unknown) {
   return readObjectArray(value, 'buyers').map((record) => {
     const apiKeyId = readRequiredString(record, ['apiKeyId', 'api_key_id'], 'apiKeyId');
     return {
@@ -1054,7 +1076,7 @@ function normalizeBuyerRows(value: unknown) {
   });
 }
 
-function normalizeBuyerTimeSeries(value: unknown) {
+export function normalizeBuyerTimeSeries(value: unknown) {
   return readObjectArray(value, 'series').map((record) => ({
     date: readIsoDate(pick(record, ['date', 'bucket', 'bucketStartAt', 'bucket_start_at']), 'series.date'),
     apiKeyId: readRequiredString(record, ['apiKeyId', 'api_key_id'], 'series.apiKeyId'),
@@ -1094,7 +1116,7 @@ function normalizeRecentRequests(value: unknown) {
   }));
 }
 
-function normalizeEventRows(value: unknown) {
+export function normalizeEventRows(value: unknown) {
   return readObjectArray(value, 'events').map((record) => ({
     id: readRequiredString(record, ['id'], 'event.id'),
     type: readRequiredString(record, ['type', 'eventType', 'event_type'], 'event.type'),
@@ -1110,7 +1132,7 @@ function normalizeEventRows(value: unknown) {
   }));
 }
 
-function mergeDashboardTokens(input: {
+export function mergeDashboardTokens(input: {
   usage: ReturnType<typeof normalizeTokenUsageRows>;
   health: ReturnType<typeof normalizeTokenHealthRows>;
   routing: ReturnType<typeof normalizeTokenRoutingRows>;
@@ -1320,7 +1342,7 @@ function mergeDashboardTokens(input: {
     }) as Array<Record<string, unknown>>;
 }
 
-function normalizeAnomalies(value: unknown) {
+export function normalizeAnomalies(value: unknown) {
   const record = readObject(value, 'anomalies');
   const checksRecord = readObject(pick(record, ['checks']) ?? {}, 'checks');
   const checks = {
@@ -1349,54 +1371,20 @@ function isFreshDashboardSnapshot(refreshedAt: Date, now = Date.now()): boolean 
   return now - refreshedAt.getTime() <= DASHBOARD_SNAPSHOT_FRESHNESS_MS;
 }
 
-async function buildDashboardSnapshotPayload(
-  analytics: AnalyticsRouteRepository,
-  query: DashboardFilters
-): Promise<AnalyticsDashboardSnapshotPayload> {
-  const snapshotAt = new Date().toISOString();
-  const [summaryRaw, tokenUsageRaw, tokenHealthRaw, tokenRoutingRaw, buyersRaw, anomaliesRaw, eventsRaw] = await Promise.all([
-    analytics.getSystemSummary(query),
-    analytics.getTokenUsage(query),
-    analytics.getTokenHealth(query),
-    analytics.getTokenRouting(query),
-    analytics.getBuyers(query),
-    analytics.getAnomalies(query),
-    analytics.getEvents({
-      window: query.window,
-      provider: query.provider,
-      limit: 20
-    })
-  ]);
+export const dashboardSnapshotShape = {
+  normalizeSystemSummary,
+  normalizeTokenUsageRows,
+  normalizeTokenHealthRows,
+  normalizeTokenRoutingRows,
+  normalizeBuyerRows,
+  normalizeAnomalies,
+  normalizeEventRows,
+  buildProviderUsageWarnings,
+  mergeDashboardTokens,
+  deriveDashboardSummaryFromTokens
+};
 
-  const summary = normalizeSystemSummary(summaryRaw);
-  const tokenUsage = normalizeTokenUsageRows(tokenUsageRaw);
-  const tokenHealth = normalizeTokenHealthRows(tokenHealthRaw);
-  const tokenRouting = normalizeTokenRoutingRows(tokenRoutingRaw);
-  const buyers = normalizeBuyerRows(buyersRaw);
-  const anomalies = normalizeAnomalies(anomaliesRaw);
-  const events = normalizeEventRows(eventsRaw);
-  const warnings = buildProviderUsageWarnings(tokenHealthRaw);
-  const tokens = mergeDashboardTokens({
-    usage: tokenUsage,
-    health: tokenHealth,
-    routing: tokenRouting
-  });
-
-  return {
-    window: query.window,
-    snapshotAt,
-    summary: deriveDashboardSummaryFromTokens(
-      summary,
-      tokens,
-      tokenUsage.length > 0 || tokenHealth.length > 0 || tokenRouting.length > 0
-    ),
-    tokens,
-    buyers,
-    anomalies,
-    events,
-    warnings
-  };
-}
+export type DashboardSnapshotShape = typeof dashboardSnapshotShape;
 
 export function createAnalyticsRouter(deps: AnalyticsRouteDeps): Router {
   const router = Router();
@@ -1552,7 +1540,11 @@ export function createAnalyticsRouter(deps: AnalyticsRouteDeps): Router {
 
         const refreshed = await dashboardSnapshots.refreshIfLockAvailable(
           query,
-          () => buildDashboardSnapshotPayload(analytics, query)
+          () => buildDashboardSnapshotPayload({
+            analytics,
+            query,
+            shape: dashboardSnapshotShape
+          })
         );
 
         if (refreshed) {
@@ -1572,7 +1564,11 @@ export function createAnalyticsRouter(deps: AnalyticsRouteDeps): Router {
         }
       }
 
-      const payload = await buildDashboardSnapshotPayload(analytics, query);
+      const payload = await buildDashboardSnapshotPayload({
+        analytics,
+        query,
+        shape: dashboardSnapshotShape
+      });
       res.json({
         ...payload,
         warnings: normalizeWarnings((payload as Record<string, unknown>).warnings)

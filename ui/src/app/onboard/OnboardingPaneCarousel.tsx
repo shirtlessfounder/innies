@@ -98,7 +98,7 @@ export function OnboardingPaneCarousel(input: { panes: OnboardingPane[] }) {
     <>
       <div className={styles.workspaceMeta}>
         <span className={styles.workspaceLabel}>ONBOARDING WORKSPACE</span>
-        <span className={styles.workspaceHint}>4 GUIDES LOADED · COPY AND SEND TO AGENT TO SET UP</span>
+        <span className={styles.workspaceHint}>{input.panes.length} GUIDES LOADED · COPY AND SEND TO AGENT TO SET UP</span>
 
         <div className={styles.carouselControls}>
           <button

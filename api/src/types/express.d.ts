@@ -1,3 +1,5 @@
+import type { OrgWebSession } from '../services/org/orgSessionService.js';
+
 export {};
 
 declare global {
@@ -11,6 +13,7 @@ declare global {
         preferredProvider?: 'anthropic' | 'openai' | null;
         preferredProviderSource?: 'explicit' | 'default' | null;
       };
+      orgSession?: OrgWebSession | null;
     }
   }
 }

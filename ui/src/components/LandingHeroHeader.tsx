@@ -4,11 +4,12 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { usePublicLiveMeta } from '../hooks/usePublicLiveMeta';
 import { formatLocalTimeZoneAbbreviation, formatTimestamp } from '../lib/analytics/present';
+import type { OrgHeaderOrg } from '../lib/org/types';
 import styles from '../app/page.module.css';
 
 const STATIC_HEADER_ROWS = [
-  'Get more Claude Code and Codex usage without buying new $200/month accounts.',
-  'Share unused capacity with teammates or others and earn money back.',
+  'Consolidate your Claude Code and Codex tokens into a single, optimized key.',
+  'Create orgs to pool and manage tokens with your teammates.',
 ] as const;
 const COMMAND_PREFIX = 'innies ';
 const COMMAND_SUFFIXES = ['claude', 'codex', 'openclaw'] as const;
@@ -21,12 +22,19 @@ const ANALYTICS_COMMAND_LABEL = 'watch analytics --window 24h --mode token --met
 export function LandingHeroHeader(input: {
   promptMode?: 'landing' | 'analytics';
   title?: string;
+  brandSuffix?: string;
   analyticsPromptLabel?: string;
   analyticsPromptLinkLabel?: string;
   analyticsPromptLinkHref?: string;
+  analyticsPromptSecondaryLinkLabel?: string;
+  analyticsPromptSecondaryLinkHref?: string;
   analyticsPromptSuffix?: string;
+  authGithubLogin?: string | null;
+  authStartUrl?: string | null;
+  activeOrgs?: OrgHeaderOrg[];
 }) {
   const promptMode = input.promptMode ?? 'landing';
+  const activeOrgs = input.activeOrgs ?? [];
   const analyticsPromptLabel = input.analyticsPromptLabel ?? ANALYTICS_COMMAND_LABEL;
   const analyticsPrompt = (
     <div className={styles.promptLine}>
@@ -45,6 +53,21 @@ export function LandingHeroHeader(input: {
               >
                 {input.analyticsPromptLinkLabel}
               </a>
+              {input.analyticsPromptSecondaryLinkLabel && input.analyticsPromptSecondaryLinkHref ? (
+                <>
+                  {' '}
+                  <span>in</span>
+                  {' '}
+                  <a
+                    className={styles.promptLink}
+                    href={input.analyticsPromptSecondaryLinkHref}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    {input.analyticsPromptSecondaryLinkLabel}
+                  </a>
+                </>
+              ) : null}
               {input.analyticsPromptSuffix ? (
                 <>
                   {' '}
@@ -64,6 +87,8 @@ export function LandingHeroHeader(input: {
   const [commandText, setCommandText] = useState('');
   const [phase, setPhase] = useState<'typing' | 'holding' | 'deleting'>('typing');
   const targetCommand = `${COMMAND_PREFIX}${COMMAND_SUFFIXES[commandIndex]}`;
+  const authGithubLogin = input.authGithubLogin?.trim() || null;
+  const authStartUrl = input.authStartUrl?.trim() || null;
 
   useEffect(() => {
     const timeoutId = globalThis.setTimeout(() => {
@@ -105,9 +130,26 @@ export function LandingHeroHeader(input: {
       <div className={styles.headerBlock}>
         <div className={styles.kicker}>
           <Link className={styles.homeLink} href="/">
-            INNIES.COMPUTER
+            INNIES.COMPUTER{input.brandSuffix ? ` ${input.brandSuffix}` : ''}
           </Link>
         </div>
+        {activeOrgs.length > 0 ? (
+          <div className={styles.promptLine}>
+            <span className={styles.promptPrefix}>ORGS:</span>
+            <span className={styles.promptCommand}>
+              <span className={styles.promptCommandText}>
+                {activeOrgs.map((org, index) => (
+                  <span key={org.slug}>
+                    {index > 0 ? ', ' : ''}
+                    <Link className={styles.promptLink} href={`/${org.slug}`}>
+                      {org.slug}
+                    </Link>
+                  </span>
+                ))}
+              </span>
+            </span>
+          </div>
+        ) : null}
         <h1 className={styles.consoleTitle}>{input.title ?? 'welcome to innies'}</h1>
         {promptMode === 'analytics' ? analyticsPrompt : (
           <div className={styles.promptStack}>
@@ -142,6 +184,30 @@ export function LandingHeroHeader(input: {
         </span>
         <span className={styles.liveText}>
           LAST {formatTimestamp(liveMeta.lastSuccessfulUpdateAt)} {formatLocalTimeZoneAbbreviation(liveMeta.lastSuccessfulUpdateAt)}
+        </span>
+        <span className={styles.liveTextSecondary}>
+          {authGithubLogin ? (
+            <>
+              AUTH:{' '}
+              <a
+                className={styles.liveMetaLink}
+                href={`https://github.com/${authGithubLogin}`}
+                rel="noreferrer"
+                target="_blank"
+              >
+                {authGithubLogin}
+              </a>
+            </>
+          ) : authStartUrl ? (
+            <a className={styles.liveMetaLink} href={authStartUrl}>
+              [CLICK TO LOG IN WITH GITHUB]
+            </a>
+          ) : (
+            <>
+              AUTH:{' '}
+              <span className={styles.liveMetaMuted}>None</span>
+            </>
+          )}
         </span>
       </div>
     </header>

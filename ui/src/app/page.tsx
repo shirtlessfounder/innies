@@ -1,9 +1,17 @@
 import Image from 'next/image';
-import Link from 'next/link';
 import { LandingHeroHeader } from '../components/LandingHeroHeader';
+import { OrgCreationForm } from '../components/org/OrgCreationForm';
+import { readPendingOrgName } from '../lib/org/landing';
+import { getOrgLandingState } from '../lib/org/server';
 import styles from './page.module.css';
 
-export default function DashboardIndexPage() {
+export default async function DashboardIndexPage(input: {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const searchParams = input.searchParams ? await input.searchParams : {};
+  const pendingOrgName = readPendingOrgName(searchParams);
+  const landing = await getOrgLandingState();
+
   const heroFrame = (
     <div className={styles.heroArtwork}>
       <Image
@@ -14,15 +22,17 @@ export default function DashboardIndexPage() {
         height={1778}
         priority
       />
-      <Image
-        className={styles.heroBadge}
-        src="/images/innies-eye-logo-green-square.svg"
-        alt=""
-        aria-hidden="true"
-        width={320}
-        height={320}
-        priority
-      />
+      <div className={styles.heroBadgeCluster} aria-hidden="true">
+        <Image
+          className={styles.heroBadge}
+          src="/images/innies-eye-logo-green-square.svg"
+          alt=""
+          width={320}
+          height={320}
+          priority
+        />
+        <div className={styles.heroPreviewLabel}>Click to preview</div>
+      </div>
     </div>
   );
 
@@ -30,17 +40,35 @@ export default function DashboardIndexPage() {
     <main className={styles.page}>
       <div className={styles.shell}>
         <div className={styles.console}>
-          <LandingHeroHeader />
+          <LandingHeroHeader
+            activeOrgs={landing.activeOrgs}
+            authGithubLogin={landing.authGithubLogin}
+            authStartUrl={landing.authStartUrl}
+            brandSuffix="(BETA)"
+          />
 
           <section className={styles.hero}>
             <div className={styles.heroInner}>
-              <a href="/analytics" className={styles.frame} aria-label="Open analytics">
+              <a href="/innies" className={styles.frame} aria-label="Open innies dashboard">
                 {heroFrame}
               </a>
 
-              <Link href="/onboard" className={styles.primaryCta}>
-                <span>ONBOARD YOUR INNIES</span>
-              </Link>
+              <OrgCreationForm
+                authStartUrl={landing.authStartUrl}
+                footerLinkClassName={styles.footerLink}
+                footerLinkRowClassName={styles.footerLinkRow}
+                footerLinks={[
+                  { href: '/onboard', label: '[guides]' },
+                  { external: true, href: 'https://t.me/innies_hq', label: '[telegram]' },
+                  { external: true, href: 'https://x.com/innies_computer', label: '[twitter]' },
+                  { external: true, href: 'https://github.com/shirtlessfounder/innies', label: '[github]' },
+                ]}
+                formClassName={styles.heroForm}
+                initialOrgName={pendingOrgName}
+                inputClassName={styles.heroInput}
+                signedIn={landing.signedIn}
+                submitClassName={styles.primaryCta}
+              />
             </div>
           </section>
         </div>

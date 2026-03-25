@@ -8,6 +8,8 @@ type ProbeModule = typeof import('../src/services/tokenCredentialProbe.js');
 type ProviderUsageModule = typeof import('../src/services/tokenCredentialProviderUsage.js');
 type OauthRefreshModule = typeof import('../src/services/tokenCredentialOauthRefresh.js');
 
+const FIXED_TEST_NOW = new Date('2026-03-20T12:00:00.000Z');
+
 function encodeBase64Url(input: string): string {
   return Buffer.from(input, 'utf8')
     .toString('base64')
@@ -181,6 +183,8 @@ describe('admin token credential routes idempotent replay', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_TEST_NOW);
     vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
       id: '99999999-9999-4999-8999-999999999999',
       org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
@@ -290,6 +294,7 @@ describe('admin token credential routes idempotent replay', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -1153,6 +1158,55 @@ describe('admin token credential routes idempotent replay', () => {
     expect(updateSpy).toHaveBeenCalledWith(
       '11111111-1111-4111-8111-111111111111',
       'missing-label',
+      expect.any(Object)
+    );
+    expect(commitSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 when updating the label to a duplicate provider-label pair in the same org', async () => {
+    vi.spyOn(runtimeModule.runtime.services.idempotency, 'start').mockResolvedValue({
+      replay: false,
+      input: {
+        scope: 'admin_token_credentials_label_v1',
+        tenantScope: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        idempotencyKey: 'abcdefghijklmnopqrstuvwxyz123475dup',
+        requestHash: 'label_h_duplicate'
+      }
+    } as any);
+
+    const updateSpy = vi.fn().mockRejectedValue(
+      new AppError('invalid_request', 409, 'A token with provider "openai" and label "shirtless" already exists for this org.')
+    );
+    (runtimeModule.runtime.services.tokenCredentials as any).updateDebugLabel = updateSpy;
+    const commitSpy = vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+
+    const req = createMockReq({
+      method: 'PATCH',
+      path: '/v1/admin/token-credentials/11111111-1111-4111-8111-111111111111/label',
+      headers: {
+        authorization: 'Bearer in_admin_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123475dup'
+      },
+      params: { id: '11111111-1111-4111-8111-111111111111' },
+      body: {
+        debugLabel: 'shirtless'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(labelHandlers[0], req, res);
+    await invoke(labelHandlers[1], req, res);
+
+    expect(res.statusCode).toBe(409);
+    expect((res.body as any)).toEqual({
+      code: 'invalid_request',
+      message: 'A token with provider "openai" and label "shirtless" already exists for this org.',
+      details: undefined
+    });
+    expect(updateSpy).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111',
+      'shirtless',
       expect.any(Object)
     );
     expect(commitSpy).not.toHaveBeenCalled();
