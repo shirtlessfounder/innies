@@ -138,6 +138,73 @@ function isMissingPilotAdmissionFreezeTable(error: unknown): boolean {
     && details.message?.includes('in_pilot_admission_freezes') === true;
 }
 
+async function hasTokenCredentialAccessTokenFingerprintColumn(client: TransactionContext): Promise<boolean> {
+  const result = await client.query<{ present: boolean }>(
+    `
+      select exists (
+        select 1
+        from information_schema.columns
+        where table_schema = any (current_schemas(false))
+          and table_name = $1
+          and column_name = 'access_token_sha256'
+      ) as present
+    `,
+    [TABLES.tokenCredentials]
+  );
+  return result.rowCount === 1 && result.rows[0].present === true;
+}
+
+function buildTokenCredentialInsertStatement(input: {
+  includeAccessTokenFingerprintColumn: boolean;
+}): {
+  sql: string;
+  valuesSql: string;
+} {
+  const columns = [
+    'id',
+    'org_id',
+    'provider',
+    'auth_scheme',
+    'encrypted_access_token',
+    'encrypted_refresh_token',
+    'expires_at',
+    'monthly_contribution_limit_units',
+    'monthly_contribution_used_units',
+    'monthly_window_start_at',
+    'debug_label',
+    ...(input.includeAccessTokenFingerprintColumn ? ['access_token_sha256'] : []),
+    'status',
+    'rotation_version',
+    'created_by',
+    'created_at',
+    'updated_at'
+  ];
+  const values = [
+    '$1',
+    '$2',
+    '$3',
+    '$4',
+    '$5',
+    '$6',
+    '$7',
+    '$8',
+    '0',
+    currentUtcMonthStartExpr(),
+    '$9',
+    ...(input.includeAccessTokenFingerprintColumn ? ['$10'] : []),
+    "'active'",
+    input.includeAccessTokenFingerprintColumn ? '$11' : '$10',
+    input.includeAccessTokenFingerprintColumn ? '$12' : '$11',
+    'now()',
+    'now()'
+  ];
+
+  return {
+    sql: columns.join(',\n          '),
+    valuesSql: values.join(',')
+  };
+}
+
 function tokenCredentialSelectColumns(includeContributionCapColumns: boolean): string {
   const qualified = (column: string) => `${TABLES.tokenCredentials}.${column}`;
   const contributionCapColumns = includeContributionCapColumns
@@ -419,27 +486,16 @@ export class TokenCredentialRepository {
         debugLabel: normalizedDebugLabel
       });
 
+      const includeAccessTokenFingerprintColumn = await hasTokenCredentialAccessTokenFingerprintColumn(tx);
+
       const id = newId();
+      const insertStatement = buildTokenCredentialInsertStatement({
+        includeAccessTokenFingerprintColumn
+      });
       const insertSql = `
         insert into ${TABLES.tokenCredentials} (
-          id,
-          org_id,
-          provider,
-          auth_scheme,
-          encrypted_access_token,
-          encrypted_refresh_token,
-          expires_at,
-          monthly_contribution_limit_units,
-          monthly_contribution_used_units,
-          monthly_window_start_at,
-          debug_label,
-          access_token_sha256,
-          status,
-          rotation_version,
-          created_by,
-          created_at,
-          updated_at
-        ) values ($1,$2,$3,$4,$5,$6,$7,$8,0,${currentUtcMonthStartExpr()},$9,$10,'active',$11,$12,now(),now())
+          ${insertStatement.sql}
+        ) values (${insertStatement.valuesSql})
         returning id, rotation_version
       `;
 
@@ -452,11 +508,12 @@ export class TokenCredentialRepository {
         input.refreshToken ? encryptSecret(input.refreshToken) : null,
         input.expiresAt,
         input.monthlyContributionLimitUnits ?? null,
-        normalizedDebugLabel,
-        sha256Hex(input.accessToken),
-        nextRotationVersion,
-        input.createdBy ?? null
+        normalizedDebugLabel
       ];
+      if (includeAccessTokenFingerprintColumn) {
+        params.push(sha256Hex(input.accessToken));
+      }
+      params.push(nextRotationVersion, input.createdBy ?? null);
 
       const result = await tx.query<{ id: string; rotation_version: number }>(insertSql, params);
       if (result.rowCount !== 1) throw new Error('expected one token credential row');
@@ -543,6 +600,7 @@ export class TokenCredentialRepository {
     expiresAt: Date | null;
     preserveStatus?: boolean;
   }): Promise<TokenCredential | null> {
+    const includeAccessTokenFingerprintColumn = await hasTokenCredentialAccessTokenFingerprintColumn(this.db);
     const sql = (query: {
       includeContributionCapColumns: boolean;
       includeFreezeJoin: boolean;
@@ -552,7 +610,7 @@ export class TokenCredentialRepository {
         encrypted_access_token = $2,
         encrypted_refresh_token = $3,
         expires_at = $4,
-        access_token_sha256 = $6,
+        ${includeAccessTokenFingerprintColumn ? 'access_token_sha256 = $6,' : ''}
         monthly_contribution_used_units = case
           when monthly_window_start_at < ${currentUtcMonthStartExpr()}
           then 0
@@ -620,9 +678,11 @@ export class TokenCredentialRepository {
       encryptSecret(input.accessToken),
       input.refreshToken ? encryptSecret(input.refreshToken) : null,
       input.expiresAt,
-      input.preserveStatus === true,
-      sha256Hex(input.accessToken)
+      input.preserveStatus === true
     ];
+    if (includeAccessTokenFingerprintColumn) {
+      params.push(sha256Hex(input.accessToken));
+    }
 
     const result = await queryTokenCredentialRowsWithSchemaFallback(this.db, sql, params);
     if (result.rowCount !== 1) return null;
@@ -868,6 +928,8 @@ export class TokenCredentialRepository {
         excludeId: previousCredential?.id ?? null
       });
 
+      const includeAccessTokenFingerprintColumn = await hasTokenCredentialAccessTokenFingerprintColumn(tx);
+
       if (previousCredential?.status === 'active') {
         await tx.query(
           `
@@ -880,26 +942,13 @@ export class TokenCredentialRepository {
       }
 
       const nextId = newId();
+      const insertStatement = buildTokenCredentialInsertStatement({
+        includeAccessTokenFingerprintColumn
+      });
       const insertSql = `
         insert into ${TABLES.tokenCredentials} (
-          id,
-          org_id,
-          provider,
-          auth_scheme,
-          encrypted_access_token,
-          encrypted_refresh_token,
-          expires_at,
-          monthly_contribution_limit_units,
-          monthly_contribution_used_units,
-          monthly_window_start_at,
-          debug_label,
-          access_token_sha256,
-          status,
-          rotation_version,
-          created_by,
-          created_at,
-          updated_at
-        ) values ($1,$2,$3,$4,$5,$6,$7,$8,0,${currentUtcMonthStartExpr()},$9,$10,'active',$11,$12,now(),now())
+          ${insertStatement.sql}
+        ) values (${insertStatement.valuesSql})
       `;
 
       const insertParams: SqlValue[] = [
@@ -911,11 +960,12 @@ export class TokenCredentialRepository {
         input.refreshToken ? encryptSecret(input.refreshToken) : null,
         input.expiresAt,
         input.monthlyContributionLimitUnits ?? null,
-        normalizedDebugLabel,
-        sha256Hex(input.accessToken),
-        nextRotationVersion,
-        input.createdBy ?? null
+        normalizedDebugLabel
       ];
+      if (includeAccessTokenFingerprintColumn) {
+        insertParams.push(sha256Hex(input.accessToken));
+      }
+      insertParams.push(nextRotationVersion, input.createdBy ?? null);
       await tx.query(insertSql, insertParams);
 
       if (previousCredential) {

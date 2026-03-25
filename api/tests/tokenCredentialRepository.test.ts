@@ -42,6 +42,7 @@ describe('tokenCredentialRepository', () => {
     const db = new SequenceSqlClient([
       { rows: [], rowCount: 0 },
       { rows: [], rowCount: 0 },
+      { rows: [{ present: true }], rowCount: 1 },
       { rows: [{ id: 'cred_1', rotation_version: 1 }], rowCount: 1 }
     ]);
     const repo = new TokenCredentialRepository(db);
@@ -65,12 +66,13 @@ describe('tokenCredentialRepository', () => {
       'main',
       null
     ]);
-    expect(db.queries[2].sql).toContain('insert into in_token_credentials');
-    expect(db.queries[2].sql).toContain('access_token_sha256');
-    expect(Buffer.isBuffer(db.queries[2].params?.[4])).toBe(true);
-    expect(Buffer.isBuffer(db.queries[2].params?.[5])).toBe(true);
-    expect(db.queries[2].params?.[9]).toBe(sha256Hex('access-secret'));
-    expect(String(db.queries[2].params?.[4])).not.toContain('access-secret');
+    expect(db.queries[2].sql).toContain('information_schema.columns');
+    expect(db.queries[3].sql).toContain('insert into in_token_credentials');
+    expect(db.queries[3].sql).toContain('access_token_sha256');
+    expect(Buffer.isBuffer(db.queries[3].params?.[4])).toBe(true);
+    expect(Buffer.isBuffer(db.queries[3].params?.[5])).toBe(true);
+    expect(db.queries[3].params?.[9]).toBe(sha256Hex('access-secret'));
+    expect(String(db.queries[3].params?.[4])).not.toContain('access-secret');
   });
 
   it('rejects creating a duplicate provider-label pair within the same org', async () => {
@@ -395,6 +397,7 @@ describe('tokenCredentialRepository', () => {
       { rows: [{ id: 'latest_1', rotation_version: 2 }], rowCount: 1 },
       { rows: [{ id: 'old_1', status: 'active', debug_label: 'oauth-main-1' }], rowCount: 1 },
       { rows: [], rowCount: 0 },
+      { rows: [{ present: true }], rowCount: 1 },
       { rows: [], rowCount: 1 },
       { rows: [], rowCount: 1 },
       { rows: [], rowCount: 1 }
@@ -413,11 +416,12 @@ describe('tokenCredentialRepository', () => {
     expect(rotated.rotationVersion).toBe(3);
     expect(rotated.previousId).toBe('old_1');
     expect(db.queries[2].sql).toContain('btrim(debug_label) = $3');
-    expect(db.queries[3].sql).toContain("set status = 'rotating'");
-    expect(db.queries[5].sql).toContain("set status = 'revoked'");
-    expect(db.queries[4].sql).toContain('access_token_sha256');
-    expect(db.queries[4].params?.[8]).toBe('oauth-main-1');
-    expect(db.queries[4].params?.[9]).toBe(sha256Hex('next-token'));
+    expect(db.queries[3].sql).toContain('information_schema.columns');
+    expect(db.queries[4].sql).toContain("set status = 'rotating'");
+    expect(db.queries[6].sql).toContain("set status = 'revoked'");
+    expect(db.queries[5].sql).toContain('access_token_sha256');
+    expect(db.queries[5].params?.[8]).toBe('oauth-main-1');
+    expect(db.queries[5].params?.[9]).toBe(sha256Hex('next-token'));
   });
 
   it('rejects rotating into a duplicate provider-label pair within the same org', async () => {
@@ -453,6 +457,7 @@ describe('tokenCredentialRepository', () => {
       { rows: [{ id: 'latest_1', rotation_version: 4 }], rowCount: 1 },
       { rows: [{ id: 'old_maxed_1', status: 'maxed', debug_label: 'darryn' }], rowCount: 1 },
       { rows: [], rowCount: 0 },
+      { rows: [{ present: true }], rowCount: 1 },
       { rows: [], rowCount: 1 },
       { rows: [], rowCount: 1 }
     ]);
@@ -470,12 +475,13 @@ describe('tokenCredentialRepository', () => {
 
     expect(rotated.rotationVersion).toBe(5);
     expect(rotated.previousId).toBe('old_maxed_1');
-    expect(db.queries).toHaveLength(5);
+    expect(db.queries).toHaveLength(6);
     expect(db.queries[2].sql).toContain('btrim(debug_label) = $3');
-    expect(db.queries[3].sql).toContain('insert into in_token_credentials');
-    expect(db.queries[3].params?.[8]).toBe('darryn');
-    expect(db.queries[3].params?.[9]).toBe(sha256Hex('next-token'));
-    expect(db.queries[4].sql).toContain("set status = 'revoked'");
+    expect(db.queries[3].sql).toContain('information_schema.columns');
+    expect(db.queries[4].sql).toContain('insert into in_token_credentials');
+    expect(db.queries[4].params?.[8]).toBe('darryn');
+    expect(db.queries[4].params?.[9]).toBe(sha256Hex('next-token'));
+    expect(db.queries[5].sql).toContain("set status = 'revoked'");
   });
 
   it('rotates selected expired credential by revoking it directly', async () => {
@@ -484,6 +490,7 @@ describe('tokenCredentialRepository', () => {
       { rows: [{ id: 'latest_1', rotation_version: 6 }], rowCount: 1 },
       { rows: [{ id: 'old_expired_1', status: 'expired', debug_label: 'oogway' }], rowCount: 1 },
       { rows: [], rowCount: 0 },
+      { rows: [{ present: true }], rowCount: 1 },
       { rows: [], rowCount: 1 },
       { rows: [], rowCount: 1 }
     ]);
@@ -501,13 +508,14 @@ describe('tokenCredentialRepository', () => {
 
     expect(rotated.rotationVersion).toBe(7);
     expect(rotated.previousId).toBe('old_expired_1');
-    expect(db.queries).toHaveLength(5);
+    expect(db.queries).toHaveLength(6);
     expect(db.queries[1].sql).toContain("status in ('active', 'maxed', 'expired')");
     expect(db.queries[2].sql).toContain('btrim(debug_label) = $3');
-    expect(db.queries[3].sql).toContain('insert into in_token_credentials');
-    expect(db.queries[3].params?.[8]).toBe('oogway');
-    expect(db.queries[3].params?.[9]).toBe(sha256Hex('next-token'));
-    expect(db.queries[4].sql).toContain("set status = 'revoked'");
+    expect(db.queries[3].sql).toContain('information_schema.columns');
+    expect(db.queries[4].sql).toContain('insert into in_token_credentials');
+    expect(db.queries[4].params?.[8]).toBe('oogway');
+    expect(db.queries[4].params?.[9]).toBe(sha256Hex('next-token'));
+    expect(db.queries[5].sql).toContain("set status = 'revoked'");
   });
 
   it('lists active provider poll candidates without relying on stored auth_scheme', async () => {
@@ -1192,38 +1200,41 @@ describe('tokenCredentialRepository', () => {
 
   it('refreshes a credential in place without changing rotation_version', async () => {
     process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 13).toString('base64');
-    const db = new SequenceSqlClient([{
-      rows: [{
-        id: 'cred_1',
-        org_id: '00000000-0000-0000-0000-000000000001',
-        provider: 'openai',
-        auth_scheme: 'bearer',
-        encrypted_access_token: encryptSecret('access-new'),
-        encrypted_refresh_token: encryptSecret('refresh-new'),
-        expires_at: '2026-03-02T00:00:00Z',
-        status: 'active',
-        rotation_version: 7,
-        created_at: '2026-03-01T00:00:00Z',
-        updated_at: '2026-03-01T00:00:00Z',
-        revoked_at: null,
-        monthly_contribution_limit_units: null,
-        monthly_contribution_used_units: 0,
-        monthly_window_start_at: '2026-03-01T00:00:00Z',
-        five_hour_reserve_percent: 0,
-        seven_day_reserve_percent: 0,
-        debug_label: 'codex-1',
-        consecutive_failure_count: 0,
-        consecutive_rate_limit_count: 0,
-        last_failed_status: null,
-        last_failed_at: null,
-        last_rate_limited_at: null,
-        maxed_at: null,
-        rate_limited_until: null,
-        next_probe_at: null,
-        last_probe_at: '2026-03-01T00:01:00Z'
-      }],
-      rowCount: 1
-    }]);
+    const db = new SequenceSqlClient([
+      { rows: [{ present: true }], rowCount: 1 },
+      {
+        rows: [{
+          id: 'cred_1',
+          org_id: '00000000-0000-0000-0000-000000000001',
+          provider: 'openai',
+          auth_scheme: 'bearer',
+          encrypted_access_token: encryptSecret('access-new'),
+          encrypted_refresh_token: encryptSecret('refresh-new'),
+          expires_at: '2026-03-02T00:00:00Z',
+          status: 'active',
+          rotation_version: 7,
+          created_at: '2026-03-01T00:00:00Z',
+          updated_at: '2026-03-01T00:00:00Z',
+          revoked_at: null,
+          monthly_contribution_limit_units: null,
+          monthly_contribution_used_units: 0,
+          monthly_window_start_at: '2026-03-01T00:00:00Z',
+          five_hour_reserve_percent: 0,
+          seven_day_reserve_percent: 0,
+          debug_label: 'codex-1',
+          consecutive_failure_count: 0,
+          consecutive_rate_limit_count: 0,
+          last_failed_status: null,
+          last_failed_at: null,
+          last_rate_limited_at: null,
+          maxed_at: null,
+          rate_limited_until: null,
+          next_probe_at: null,
+          last_probe_at: '2026-03-01T00:01:00Z'
+        }],
+        rowCount: 1
+      }
+    ]);
     const repo = new TokenCredentialRepository(db);
 
     const updated = await repo.refreshInPlace({
@@ -1234,53 +1245,57 @@ describe('tokenCredentialRepository', () => {
     });
 
     expect(updated?.rotationVersion).toBe(7);
-    expect(db.queries[0].sql).toContain('access_token_sha256 = $6');
-    expect(db.queries[0].params?.[5]).toBe(sha256Hex('access-new'));
-    expect(db.queries[0].sql).not.toContain('rotation_version = rotation_version + 1');
-    expect(db.queries[0].sql).toContain('consecutive_failure_count = 0');
-    expect(db.queries[0].sql).toContain('consecutive_rate_limit_count = 0');
-    expect(db.queries[0].sql).toContain('last_failed_status = null');
-    expect(db.queries[0].sql).toContain('last_failed_at = null');
-    expect(db.queries[0].sql).toContain('last_rate_limited_at = null');
-    expect(db.queries[0].sql).toContain('maxed_at = case');
-    expect(db.queries[0].sql).toContain('next_probe_at = null');
-    expect(db.queries[0].sql).toContain('last_probe_at = now()');
+    expect(db.queries[0].sql).toContain('information_schema.columns');
+    expect(db.queries[1].sql).toContain('access_token_sha256 = $6');
+    expect(db.queries[1].params?.[5]).toBe(sha256Hex('access-new'));
+    expect(db.queries[1].sql).not.toContain('rotation_version = rotation_version + 1');
+    expect(db.queries[1].sql).toContain('consecutive_failure_count = 0');
+    expect(db.queries[1].sql).toContain('consecutive_rate_limit_count = 0');
+    expect(db.queries[1].sql).toContain('last_failed_status = null');
+    expect(db.queries[1].sql).toContain('last_failed_at = null');
+    expect(db.queries[1].sql).toContain('last_rate_limited_at = null');
+    expect(db.queries[1].sql).toContain('maxed_at = case');
+    expect(db.queries[1].sql).toContain('next_probe_at = null');
+    expect(db.queries[1].sql).toContain('last_probe_at = now()');
   });
 
   it('can refresh parked credentials in place while preserving maxed status', async () => {
     process.env.SELLER_SECRET_ENC_KEY_B64 = Buffer.alloc(32, 14).toString('base64');
-    const db = new SequenceSqlClient([{
-      rows: [{
-        id: 'cred_maxed_refresh',
-        org_id: '00000000-0000-0000-0000-000000000001',
-        provider: 'openai',
-        auth_scheme: 'bearer',
-        encrypted_access_token: encryptSecret('access-new'),
-        encrypted_refresh_token: encryptSecret('refresh-new'),
-        expires_at: '2026-03-02T00:00:00Z',
-        status: 'maxed',
-        rotation_version: 7,
-        created_at: '2026-03-01T00:00:00Z',
-        updated_at: '2026-03-01T00:00:00Z',
-        revoked_at: null,
-        monthly_contribution_limit_units: null,
-        monthly_contribution_used_units: 0,
-        monthly_window_start_at: '2026-03-01T00:00:00Z',
-        five_hour_reserve_percent: 0,
-        seven_day_reserve_percent: 0,
-        debug_label: 'codex-parked',
-        consecutive_failure_count: 0,
-        consecutive_rate_limit_count: 0,
-        last_failed_status: null,
-        last_failed_at: null,
-        last_rate_limited_at: null,
-        maxed_at: '2026-03-01T00:05:00Z',
-        rate_limited_until: null,
-        next_probe_at: null,
-        last_probe_at: '2026-03-01T00:01:00Z'
-      }],
-      rowCount: 1
-    }]);
+    const db = new SequenceSqlClient([
+      { rows: [{ present: true }], rowCount: 1 },
+      {
+        rows: [{
+          id: 'cred_maxed_refresh',
+          org_id: '00000000-0000-0000-0000-000000000001',
+          provider: 'openai',
+          auth_scheme: 'bearer',
+          encrypted_access_token: encryptSecret('access-new'),
+          encrypted_refresh_token: encryptSecret('refresh-new'),
+          expires_at: '2026-03-02T00:00:00Z',
+          status: 'maxed',
+          rotation_version: 7,
+          created_at: '2026-03-01T00:00:00Z',
+          updated_at: '2026-03-01T00:00:00Z',
+          revoked_at: null,
+          monthly_contribution_limit_units: null,
+          monthly_contribution_used_units: 0,
+          monthly_window_start_at: '2026-03-01T00:00:00Z',
+          five_hour_reserve_percent: 0,
+          seven_day_reserve_percent: 0,
+          debug_label: 'codex-parked',
+          consecutive_failure_count: 0,
+          consecutive_rate_limit_count: 0,
+          last_failed_status: null,
+          last_failed_at: null,
+          last_rate_limited_at: null,
+          maxed_at: '2026-03-01T00:05:00Z',
+          rate_limited_until: null,
+          next_probe_at: null,
+          last_probe_at: '2026-03-01T00:01:00Z'
+        }],
+        rowCount: 1
+      }
+    ]);
     const repo = new TokenCredentialRepository(db);
 
     const updated = await repo.refreshInPlace({
@@ -1292,9 +1307,10 @@ describe('tokenCredentialRepository', () => {
     } as any);
 
     expect(updated?.status).toBe('maxed');
-    expect(db.queries[0].sql).toContain('access_token_sha256 = $6');
-    expect(db.queries[0].params?.[5]).toBe(sha256Hex('access-new'));
-    expect(db.queries[0].sql).toContain('status = case');
-    expect(db.queries[0].sql).toContain('maxed_at = case');
+    expect(db.queries[0].sql).toContain('information_schema.columns');
+    expect(db.queries[1].sql).toContain('access_token_sha256 = $6');
+    expect(db.queries[1].params?.[5]).toBe(sha256Hex('access-new'));
+    expect(db.queries[1].sql).toContain('status = case');
+    expect(db.queries[1].sql).toContain('maxed_at = case');
   });
 });
