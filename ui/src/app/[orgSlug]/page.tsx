@@ -175,19 +175,11 @@ export default async function OrgSlugPage(input: {
         <div className={analyticsStyles.noticeText}>
             {state.reveal.reason} · {state.reveal.org.slug}
         </div>
-        <div className={analyticsStyles.tableWrap}>
-          <table className={analyticsStyles.table}>
-            <tbody>
-              <tr>
-                <td>
-                  <div className={analyticsStyles.revealKeyRow}>
-                    <span className={analyticsStyles.revealKeyValue}>{state.reveal.buyerKey}</span>
-                    <BuyerKeyRevealCopyButton buyerKey={state.reveal.buyerKey} />
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+        <div className={analyticsStyles.revealKeyPanel}>
+          <div className={analyticsStyles.revealKeyRow}>
+            <span className={analyticsStyles.revealKeyValue}>{state.reveal.buyerKey}</span>
+            <BuyerKeyRevealCopyButton buyerKey={state.reveal.buyerKey} />
+          </div>
         </div>
         <BuyerKeyRevealPreferenceForm orgSlug={orgSlug} />
       </OrgStateModalPage>
