@@ -117,7 +117,7 @@ Behavior:
 - `innies-diagnose-local-replay` also prints `in_routing_events`, `in_usage_ledger`, and `in_request_log` rows when `DATABASE_URL` + `psql` are available
 - `innies-diagnose-direct-anthropic` picks its bearer token from `CLAUDE_CODE_OAUTH_TOKEN`, then `ANTHROPIC_OAUTH_ACCESS_TOKEN`, then `ANTHROPIC_ACCESS_TOKEN`
 - `innies-diagnose-direct-anthropic caller_plus_oauth` is the closest direct-OAuth comparison lane to the working OpenClaw path
-- `innies-diagnose-prod-journal` defaults to `https://admin.spicefi.xyz`, `env=prod`, `unit=innies-api`; `--since` is optional and trailing args are treated as local `rg`/`grep` patterns
+- `innies-diagnose-prod-journal` defaults to `env=prod` and `unit=innies-api`; set `DEVOPS_JOURNAL_HOST` in your ignored local env or pass `--host`; `--since` is optional and trailing args are treated as local `rg`/`grep` patterns
 - `innies-diagnose-prod-journal` reads credentials from `DEVOPS_JOURNAL_USER` / `DEVOPS_JOURNAL_PASSWORD` when set, otherwise prompts
 - `innies-diagnose-*` commands are the supported names; the `innies-issue80-*` names remain as compatibility aliases
 - `innies-diagnose-loop` is the preferred command to ask an agent to use, because it gives a single command prefix for future permission approval
@@ -149,4 +149,4 @@ For `innies-buyer-preference-check`:
 For `innies-diagnose-prod-journal`:
 - `DEVOPS_JOURNAL_USER` is optional, but avoids the username prompt
 - `DEVOPS_JOURNAL_PASSWORD` is optional, but avoids the password prompt
-- `DEVOPS_JOURNAL_HOST` is optional; default is `https://admin.spicefi.xyz`
+- `DEVOPS_JOURNAL_HOST` is required unless you pass `--host`; put your personal default in `~/.config/innies/.env` to keep it out of git
