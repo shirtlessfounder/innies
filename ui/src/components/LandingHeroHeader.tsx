@@ -133,23 +133,6 @@ export function LandingHeroHeader(input: {
             INNIES.COMPUTER{input.brandSuffix ? ` ${input.brandSuffix}` : ''}
           </Link>
         </div>
-        {activeOrgs.length > 0 ? (
-          <div className={styles.promptLine}>
-            <span className={styles.promptPrefix}>ORGS:</span>
-            <span className={styles.promptCommand}>
-              <span className={styles.promptCommandText}>
-                {activeOrgs.map((org, index) => (
-                  <span key={org.slug}>
-                    {index > 0 ? ', ' : ''}
-                    <Link className={styles.promptLink} href={`/${org.slug}`}>
-                      {org.slug}
-                    </Link>
-                  </span>
-                ))}
-              </span>
-            </span>
-          </div>
-        ) : null}
         <h1 className={styles.consoleTitle}>{input.title ?? 'welcome to innies'}</h1>
         {promptMode === 'analytics' ? analyticsPrompt : (
           <div className={styles.promptStack}>
@@ -199,15 +182,31 @@ export function LandingHeroHeader(input: {
               </a>
             </>
           ) : authStartUrl ? (
-            <a className={styles.liveMetaLink} href={authStartUrl}>
-              [CLICK TO LOG IN WITH GITHUB]
-            </a>
+            <>
+              AUTH:{' '}
+              <a className={styles.liveMetaLink} href={authStartUrl}>
+                [CLICK TO LOG IN WITH GITHUB]
+              </a>
+            </>
           ) : (
             <>
               AUTH:{' '}
               <span className={styles.liveMetaMuted}>None</span>
             </>
           )}
+          {activeOrgs.length > 0 ? (
+            <>
+              ; ORGS:{' '}
+              {activeOrgs.map((org, index) => (
+                <span key={org.slug}>
+                  {index > 0 ? ', ' : ''}
+                  <Link className={styles.liveMetaLink} href={`/${org.slug}`}>
+                    {org.slug}
+                  </Link>
+                </span>
+              ))}
+            </>
+          ) : null}
         </span>
       </div>
     </header>
