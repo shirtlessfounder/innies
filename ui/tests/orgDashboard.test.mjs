@@ -69,7 +69,7 @@ test('org cookie helpers derive a shared parent domain and org-scoped reveal-coo
   assert.ok(sessionCookieSource.includes('readOrgRevealCookie'));
   assert.ok(sessionCookieSource.includes('buyerKey'));
   assert.ok(sessionCookieSource.includes('reason'));
-  assert.ok(routeSource.includes('/api/orgs/${orgSlug}/reveal/dismiss'));
+  assert.ok(routeSource.includes('BuyerKeyRevealPreferenceForm'));
 });
 
 test('root page uses a single org creation entry point with OAuth continuation support', () => {
@@ -145,6 +145,33 @@ test('invite acceptance keeps inline errors and redirects only on success', () =
   assert.ok(cardSource.includes('setError'));
   assert.ok(cardSource.includes('className={analyticsStyles.managementPrimaryButton}'));
   assert.ok(!cardSource.includes('className={analyticsStyles.controlButton}'));
+});
+
+test('buyer key reveal exposes an inline copy control', () => {
+  const orgPageSource = readSource('src/app/[orgSlug]/page.tsx');
+  const copyButtonSource = readSource('src/components/org/BuyerKeyRevealCopyButton.tsx');
+  const preferenceFormSource = readSource('src/components/org/BuyerKeyRevealPreferenceForm.tsx');
+  const analyticsStylesSource = readSource('src/app/analytics/page.module.css');
+
+  assert.ok(orgPageSource.includes('BuyerKeyRevealCopyButton'));
+  assert.ok(orgPageSource.includes('BuyerKeyRevealPreferenceForm'));
+  assert.ok(orgPageSource.includes('buyerKey={state.reveal.buyerKey}'));
+  assert.ok(orgPageSource.includes('orgSlug={orgSlug}'));
+  assert.ok(copyButtonSource.includes("'use client'"));
+  assert.ok(copyButtonSource.includes('navigator.clipboard.writeText'));
+  assert.ok(copyButtonSource.includes('Copy buyer key'));
+  assert.ok(copyButtonSource.includes('TbCopy'));
+  assert.ok(copyButtonSource.includes('TbCheck'));
+  assert.ok(preferenceFormSource.includes("'use client'"));
+  assert.ok(preferenceFormSource.includes('OpenClaw Pref'));
+  assert.ok(preferenceFormSource.includes('defaultValue="openai"'));
+  assert.ok(preferenceFormSource.includes('LOCKED IN'));
+  assert.ok(preferenceFormSource.includes('/api/orgs/${input.orgSlug}/buyer-key/provider-preference'));
+  assert.ok(preferenceFormSource.includes('router.refresh()'));
+  assert.ok(analyticsStylesSource.includes('.revealKeyRow {'));
+  assert.ok(analyticsStylesSource.includes('.revealKeyValue {'));
+  assert.ok(analyticsStylesSource.includes('.revealCopyButton {'));
+  assert.ok(analyticsStylesSource.includes('.revealCopyIcon {'));
 });
 
 test('org dashboard sections expose reserve inputs, token attribution, and role-aware member controls', () => {
@@ -329,7 +356,9 @@ test('org route pages render sign-in, invite, reveal, dashboard, and innies cont
   assert.ok(orgPageSource.includes('className={analyticsStyles.modalFormStack}'));
   assert.ok(orgPageSource.includes('Sign in with GitHub'));
   assert.ok(orgPageSource.includes('You must be whitelisted to view this org route. Continue to verify your identity.'));
-  assert.ok(orgPageSource.includes('Dismiss reveal'));
+  assert.ok(orgPageSource.includes('Choose your OpenClaw Pref'));
+  assert.ok(orgPageSource.includes('BuyerKeyRevealPreferenceForm'));
+  assert.ok(!orgPageSource.includes('Dismiss reveal'));
   assert.ok(!orgPageSource.includes('A pending org invite matches the current GitHub login.'));
   assert.ok(!orgPageSource.includes('/ ORG /'));
   assert.ok(modalShellSource.includes('modalScope'));

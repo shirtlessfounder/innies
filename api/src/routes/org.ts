@@ -11,6 +11,8 @@ type OrgRouteDeps = {
   orgAccess: typeof runtime.repos.orgAccess;
   orgInvites: typeof runtime.repos.orgInvites;
   orgTokens: typeof runtime.repos.orgTokens;
+  orgBuyerKeys: typeof runtime.repos.orgBuyerKeys;
+  apiKeys: typeof runtime.repos.apiKeys;
   orgMemberships: typeof runtime.services.orgMemberships;
   orgTokenManagement: typeof runtime.services.orgTokenManagement;
   analytics: typeof runtime.repos.analytics;
@@ -32,6 +34,8 @@ export function createOrgRouter(deps: OrgRouteDeps): Router {
     orgAccess: deps.orgAccess,
     orgInvites: deps.orgInvites,
     orgTokens: deps.orgTokens,
+    orgBuyerKeys: deps.orgBuyerKeys,
+    apiKeys: deps.apiKeys,
     orgMemberships: deps.orgMemberships,
     orgTokenManagement: deps.orgTokenManagement
   }));
@@ -49,6 +53,8 @@ export default createOrgRouter({
   orgAccess: runtime.repos.orgAccess,
   orgInvites: runtime.repos.orgInvites,
   orgTokens: runtime.repos.orgTokens,
+  orgBuyerKeys: runtime.repos.orgBuyerKeys,
+  apiKeys: runtime.repos.apiKeys,
   orgMemberships: runtime.services.orgMemberships,
   orgTokenManagement: runtime.services.orgTokenManagement,
   analytics: runtime.repos.analytics

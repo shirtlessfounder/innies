@@ -19,6 +19,9 @@ Use this page as the short version of how Innies works right now.
 - Each org membership gets its own buyer key.
 - Buyer keys are org-specific. One key does not unlock every org you belong to.
 - After you create an org or accept an invite, the new buyer key is shown once.
+- On the one-time buyer key reveal, you choose an `OpenClaw Pref` for that buyer key: Claude or Codex.
+- The buyer key reveal defaults `OpenClaw Pref` to Codex in beta.
+- Clicking `LOCKED IN` stores that OpenClaw preference on the buyer key and exits the one-time reveal.
 - If you lose that key, contact Innies support or the admin for now.
 
 ## Roles And Permissions
