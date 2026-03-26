@@ -1,107 +1,102 @@
 # Innies
 
-API proxy and credential router for LLM providers. Pool OAuth tokens from Claude and Codex, route requests to the best available credential, and let buyers use a single API key without managing provider auth themselves.
+Innies is a hosted router and org dashboard for pooling Claude Code and Codex OAuth tokens behind a single buyer key.
 
-## What it does
+Hosted version: [innies.computer](https://innies.computer)  
+API base: [api.innies.computer](https://api.innies.computer)
 
-- **Token pooling** — Multiple OAuth credentials (Claude, Codex) in a shared pool. Innies picks the best available credential per request.
-- **Automatic failover** — If a credential is rate-limited, expired, or maxed, Innies routes to the next one. If an entire provider's pool is exhausted, falls back to the other provider.
-- **Buyer preference** — Buyers set a preferred provider (anthropic or openai). Innies honors it when possible, falls back transparently when not.
-- **Anthropic compat mode** — Clients like OpenClaw send standard Anthropic Messages API requests. Innies handles everything behind that interface, including cross-provider translation (in progress).
-- **Credential lifecycle** — Auto-quarantine failing credentials, reprobe and reactivate when healthy, track per-token usage and yield.
+## Links
 
-## Architecture
+- Product: [innies.computer](https://innies.computer)
+- API: [api.innies.computer](https://api.innies.computer)
+- Guides: [innies.computer/onboard](https://innies.computer/onboard)
+- Telegram: [t.me/innies_hq](https://t.me/innies_hq)
+- X / Twitter: [x.com/innies_computer](https://x.com/innies_computer)
+- GitHub: [github.com/shirtlessfounder/innies](https://github.com/shirtlessfounder/innies)
 
-```
-Buyer (OpenClaw, CLI, etc.)
-  │
-  ├─ POST /v1/messages  (Anthropic compat mode)
-  └─ POST /v1/proxy/*   (native proxy mode)
-        │
-     Innies API
-        │
-        ├─ Auth (buyer key → org → preference)
-        ├─ Provider selection (preference → fallback → credential)
-        ├─ Token credential pool (active/maxed/probe lifecycle)
-        │
-        ├─ Anthropic upstream (api.anthropic.com)
-        └─ Codex upstream (chatgpt.com/backend-api)
-```
+## What Innies Does
 
-## Repo structure
+- Pools Claude Code and Codex OAuth tokens into a shared org-managed supply.
+- Issues buyer keys so end users can route through Innies without handling upstream provider auth directly.
+- Routes requests to the best available token, with automatic failover when a token is maxed, paused, expired, or unhealthy.
+- Supports org onboarding flows for creating orgs, inviting members, accepting invites, and revealing per-org buyer keys.
+- Exposes live analytics and management UI for tokens, buyers, request volume, latency, error rate, and routing health.
 
-```
-api/          Express API server
-  src/
-    routes/     proxy.ts (core routing), anthropicCompat.ts, admin.ts
-    middleware/  auth, rate limiting
-    repos/      DB repositories (credentials, keys, usage)
-    services/   runtime, token lifecycle
-    jobs/       credential health probes
-    utils/      OAuth, provider helpers
-cli/          CLI wrappers (innies claude, innies codex) [Phase 1]
-ui/           Internal dashboard [Phase 1]
-docs/         API contract, onboarding, planning, specs
-scripts/      Operator scripts (add/rotate tokens, check preference)
+## Core Product Surfaces
+
+- Hosted web app at [`innies.computer`](https://innies.computer)
+- Hosted API at [`api.innies.computer`](https://api.innies.computer)
+- Anthropic-compatible messages endpoint for model-agnostic clients like OpenClaw
+- Provider-pinned CLI entrypoints like `innies claude` and `innies codex`
+- Org dashboard for token management, reserve controls, probing, invites, and buyer-key operations
+
+## High-Level Flow
+
+```text
+Buyer / client
+  -> Innies buyer key
+  -> Innies API
+  -> provider selection + token routing
+  -> Claude Code or Codex upstream session token
 ```
 
-## Setup
+Innies sits between your clients and your pooled upstream OAuth/session tokens. Org owners add tokens, manage reserve floors and caps, and control who can access the org. Buyers use Innies keys instead of raw upstream credentials.
+
+## Repo Structure
+
+```text
+api/      Express API server and routing logic
+ui/       Next.js web app for onboarding, org dashboards, and analytics
+cli/      CLI wrappers and local entrypoints
+docs/     onboarding docs, API docs, specs, plans, and ops notes
+scripts/  operator scripts and local install helpers
+```
+
+## Local Development
 
 ### Requirements
+
 - Node.js 22+
 - PostgreSQL
-- OAuth tokens from Claude and/or Codex
+- OAuth/session credentials for Claude Code and/or Codex
 
-### Environment
+### Basic Setup
+
 ```bash
 mkdir -p ~/.config/innies
 cp scripts/innies-env.example ~/.config/innies/.env
-# Fill in DATABASE_URL, admin secret, and at least one OAuth token
 ```
 
-Operator scripts also accept checkout-local overrides in `scripts/.env.local`.
+Fill in the required env vars, including your database config and API secrets.
 
-### Run
+### Run The API
+
 ```bash
-cd api && npm install && npm run dev
+cd api
+npm install
+npm run dev
 ```
 
-### Add a token
+### Run The UI
+
 ```bash
-./scripts/innies-token-add.sh
+cd ui
+pnpm install
+pnpm dev
 ```
-
-### Set buyer preference
-```bash
-./scripts/innies-buyer-preference-set.sh
-```
-
-## API
-
-### `POST /v1/messages` (Anthropic compat)
-Drop-in replacement for Anthropic's Messages API. Authenticate with `x-api-key: in_live_...` header. Innies routes to the best available credential based on buyer preference.
-
-### `POST /v1/proxy/*` (native proxy)
-Direct proxy with explicit provider selection. Used by CLI wrappers.
-
-### Admin endpoints
-Token management, buyer key management, preference configuration. See `docs/API_CONTRACT.md`.
 
 ## Docs
 
 - [API Contract](docs/API_CONTRACT.md)
-- [Roadmap](docs/planning/ROADMAP.md)
 - [OpenClaw Onboarding](docs/onboarding/OPENCLAW_ONBOARDING.md)
 - [CLI Onboarding](docs/onboarding/CLI_ONBOARDING.md)
-- [Codex OAuth Guide](docs/onboarding/CLAUDE_CODEX_OAUTH_TOKENS.md)
-- [Phase 1 Scope](docs/planning/PHASE1_IMPLEMENTATION_SCOPE.md)
+- [Claude / Codex OAuth Token Guide](docs/onboarding/CLAUDE_CODEX_OAUTH_TOKENS.md)
+- [Innies Beta Decisions](docs/onboarding/INNIES_BETA_DECISIONS.md)
 
-## Current status
+## Status
 
-**Phase 0 complete.** Anthropic token routing is live. OAuth credential lifecycle (quarantine, reprobe, reactivation) is operational.
-
-**Phase 1 in progress.** Codex token support, buyer preference routing, compat-mode provider translation, CLI wrappers, internal dashboard.
+Innies is live as a hosted product at [innies.computer](https://innies.computer). This repo contains the API, web app, onboarding flows, routing logic, analytics surfaces, and operator tooling behind the hosted service.
 
 ## License
 
-Private. Internal use only.
+[MIT](LICENSE)
