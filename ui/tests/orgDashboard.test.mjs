@@ -168,6 +168,10 @@ test('buyer key reveal exposes an inline copy control', () => {
   assert.ok(preferenceFormSource.includes('LOCKED IN'));
   assert.ok(preferenceFormSource.includes('/api/orgs/${input.orgSlug}/buyer-key/provider-preference'));
   assert.ok(preferenceFormSource.includes('router.refresh()'));
+  assert.ok(orgPageSource.includes('className={analyticsStyles.revealKeyPanel}'));
+  assert.ok(!orgPageSource.includes('className={analyticsStyles.tableWrap}'));
+  assert.ok(!orgPageSource.includes('className={analyticsStyles.table}'));
+  assert.ok(analyticsStylesSource.includes('.revealKeyPanel {'));
   assert.ok(analyticsStylesSource.includes('.revealKeyRow {'));
   assert.ok(analyticsStylesSource.includes('.revealKeyValue {'));
   assert.ok(analyticsStylesSource.includes('.revealCopyButton {'));

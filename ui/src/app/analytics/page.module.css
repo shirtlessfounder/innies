@@ -893,15 +893,24 @@
   line-height: inherit;
 }
 
+.revealKeyPanel {
+  padding: 14px 16px;
+  border: 1px solid var(--console-line);
+  background:
+    linear-gradient(180deg, rgba(248, 251, 253, 0.32) 0%, rgba(248, 251, 253, 0.18) 100%);
+}
+
 .revealKeyRow {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
 }
 
 .revealKeyValue {
   min-width: 0;
+  font-size: 12px;
+  line-height: 1.6;
   overflow-wrap: anywhere;
 }
 
@@ -918,6 +927,12 @@
 .revealCopyIcon {
   width: 15px;
   height: 15px;
+}
+
+@media (max-width: 640px) {
+  .revealKeyRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .tableWrap {
