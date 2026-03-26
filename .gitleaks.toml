@@ -1,0 +1,60 @@
+title = "Innies gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Env allowlist fixture assignments are not secrets"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = [
+  '''process\.env\.TOKEN_MODE_ENABLED_ORGS = '.*''''
+]
+
+[[allowlists]]
+description = "Public Anthropic OAuth client id default is not a secret"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = [
+  '''DEFAULT_ANTHROPIC_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e''''
+]
+
+[[allowlists]]
+description = "Analytics SQL auth failure aliases are not secrets"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = [
+  '''af\.auth_failures_24h,\s+\w+'''
+]
+
+[[allowlists]]
+description = "Documented placeholder API key headers are not secrets"
+targetRules = ["curl-auth-header"]
+regexTarget = "match"
+regexes = [
+  '''x-api-key: <token>''',
+  '''x-api-key: in_live_REPLACE_ME''',
+  '''x-api-key: \$ADMIN_TOKEN'''
+]
+
+[[allowlists]]
+description = "Documented credential label examples are not secrets"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = [
+  '''credentialLabel": "[^"]+"'''
+]
+
+[[allowlists]]
+description = "Analytics table sort keys are not secrets"
+targetRules = ["generic-api-key"]
+paths = [
+  '''^ui/src/components/analytics/AnalyticsTables\.tsx$'''
+]
+
+[[allowlists]]
+description = "Idempotency key format fixtures are not secrets"
+targetRules = ["generic-api-key"]
+paths = [
+  '''^api/tests/idempotencyKey\.test\.ts$'''
+]
