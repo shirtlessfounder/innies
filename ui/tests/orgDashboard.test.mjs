@@ -283,7 +283,14 @@ test('org dashboard sections expose reserve inputs, token attribution, and role-
   assert.ok(analyticsClientSource.includes('buyerSectionTitle?: string'));
   assert.ok(analyticsClientSource.includes('AUTH:'));
   assert.ok(analyticsClientSource.includes('ORGS:'));
+  assert.ok(analyticsClientSource.includes('; ORGS:'));
   assert.ok(analyticsClientSource.includes('activeOrgs'));
+  assert.match(
+    analyticsClientSource,
+    /<div className=\{styles\.liveMeta\}>[\s\S]*AUTH:[\s\S]*; ORGS:/
+  );
+  assert.ok(analyticsClientSource.indexOf('AUTH:') < analyticsClientSource.indexOf('; ORGS:'));
+  assert.ok(analyticsClientSource.indexOf('<div className={styles.liveMeta}>') < analyticsClientSource.indexOf('; ORGS:'));
   assert.equal(existsSync(join(uiRoot, 'src/components/org/orgDashboard.module.css')), false);
 });
 
@@ -314,6 +321,11 @@ test('org route pages render sign-in, invite, reveal, dashboard, and innies cont
   assert.ok(orgPageSource.includes('INNIES.COMPUTER'));
   assert.ok(orgPageSource.includes('href="/"'));
   assert.ok(orgPageSource.includes('{input.orgSlug.toUpperCase()}'));
+  assert.ok(orgPageSource.includes('authGithubLogin={headerMeta.authGithubLogin}'));
+  assert.match(
+    orgPageSource,
+    /<div className=\{analyticsStyles\.liveMeta\}>[\s\S]*AUTH:[\s\S]*; ORGS:/
+  );
   assert.ok(orgPageSource.includes('className={analyticsStyles.modalFormStack}'));
   assert.ok(orgPageSource.includes('Sign in with GitHub'));
   assert.ok(orgPageSource.includes('You must be whitelisted to view this org route. Continue to verify your identity.'));

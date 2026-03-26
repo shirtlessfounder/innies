@@ -30,9 +30,16 @@ test('org session/header plumbing exposes all active org links instead of a sing
   assert.ok(headerSource.includes('activeOrgs'));
   assert.ok(headerSource.includes("index > 0 ? ', ' : ''"));
   assert.ok(headerSource.includes('AUTH:'));
+  assert.ok(headerSource.includes('; ORGS:'));
   assert.ok(headerSource.includes('[CLICK TO LOG IN WITH GITHUB]'));
   assert.ok(headerSource.includes('authGithubLogin'));
   assert.ok(headerSource.includes('authStartUrl'));
+  assert.match(
+    headerSource,
+    /<div className=\{styles\.liveMeta\}>[\s\S]*AUTH:[\s\S]*; ORGS:/
+  );
+  assert.ok(headerSource.indexOf('AUTH:') < headerSource.indexOf('; ORGS:'));
+  assert.ok(headerSource.indexOf('<div className={styles.liveMeta}>') < headerSource.indexOf('; ORGS:'));
 
   assert.ok(rootPageSource.includes('activeOrgs={landing.activeOrgs}'));
   assert.ok(rootPageSource.includes('authGithubLogin={landing.authGithubLogin}'));
@@ -41,9 +48,17 @@ test('org session/header plumbing exposes all active org links instead of a sing
   assert.ok(onboardPageSource.includes('authGithubLogin={landing.authGithubLogin}'));
   assert.ok(onboardPageSource.includes("authStartUrl={buildOrgAuthStartUrl('/onboard')}"));
   assert.ok(orgPageSource.includes('activeOrgs={headerMeta.activeOrgs}'));
+  assert.ok(orgPageSource.includes('authGithubLogin={headerMeta.authGithubLogin}'));
   assert.ok(inniesPageSource.includes('activeOrgs={headerMeta.activeOrgs}'));
 
   assert.ok(dashboardSource.includes('activeOrgs'));
   assert.ok(dashboardSource.includes('ORGS:'));
+  assert.ok(dashboardSource.includes('; ORGS:'));
   assert.ok(dashboardSource.includes("index > 0 ? ', ' : ''"));
+  assert.match(
+    dashboardSource,
+    /<div className=\{analyticsStyles\.liveMeta\}>[\s\S]*AUTH:[\s\S]*; ORGS:/
+  );
+  assert.ok(dashboardSource.indexOf('AUTH:') < dashboardSource.indexOf('; ORGS:'));
+  assert.ok(dashboardSource.indexOf('<div className={analyticsStyles.liveMeta}>') < dashboardSource.indexOf('; ORGS:'));
 });

@@ -80,23 +80,6 @@ function OwnerManagementView(input: {
                 </Link>
                 <span>{` / ${orgSlug.toUpperCase()}`}</span>
               </div>
-              {activeOrgs.length > 0 ? (
-                <div className={analyticsStyles.promptLine}>
-                  <span className={analyticsStyles.promptPrefix}>ORGS:</span>
-                  <span className={analyticsStyles.promptCommand}>
-                    <span className={analyticsStyles.promptCommandText}>
-                      {activeOrgs.map((org, index) => (
-                        <span key={org.slug}>
-                          {index > 0 ? ', ' : ''}
-                          <Link className={analyticsStyles.liveMetaLink} href={`/${org.slug}`}>
-                            {org.slug}
-                          </Link>
-                        </span>
-                      ))}
-                    </span>
-                  </span>
-                </div>
-              ) : null}
               <h1 className={analyticsStyles.title}>{dashboardTitle}</h1>
               <div className={analyticsStyles.promptLine}>
                 <span className={analyticsStyles.promptPrefix}>innies:~$</span>
@@ -127,6 +110,19 @@ function OwnerManagementView(input: {
                 >
                   {data.membership.githubLogin}
                 </a>
+                {activeOrgs.length > 0 ? (
+                  <>
+                    ; ORGS:{' '}
+                    {activeOrgs.map((org, index) => (
+                      <span key={org.slug}>
+                        {index > 0 ? ', ' : ''}
+                        <Link className={analyticsStyles.liveMetaLink} href={`/${org.slug}`}>
+                          {org.slug}
+                        </Link>
+                      </span>
+                    ))}
+                  </>
+                ) : null}
               </span>
             </div>
           </header>

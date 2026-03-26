@@ -11,8 +11,10 @@ export const dynamic = 'force-dynamic';
 
 function OrgStateBackdrop(input: {
   orgSlug: string;
+  authGithubLogin: string | null;
   activeOrgs: OrgHeaderOrg[];
 }) {
+  const authGithubLogin = input.authGithubLogin?.trim() || null;
   return (
     <div className={analyticsStyles.console} aria-hidden="true">
       <header className={analyticsStyles.consoleHeader}>
@@ -23,24 +25,37 @@ function OrgStateBackdrop(input: {
             </Link>
             <span>{` / ${input.orgSlug.toUpperCase()}`}</span>
           </div>
-          {input.activeOrgs.length > 0 ? (
-            <div className={analyticsStyles.promptLine}>
-              <span className={analyticsStyles.promptPrefix}>ORGS:</span>
-              <span className={analyticsStyles.promptCommand}>
-                <span className={analyticsStyles.promptCommandText}>
-                  {input.activeOrgs.map((org, index) => (
-                    <span key={org.slug}>
-                      {index > 0 ? ', ' : ''}
-                      <Link className={analyticsStyles.liveMetaLink} href={`/${org.slug}`}>
-                        {org.slug}
-                      </Link>
-                    </span>
-                  ))}
-                </span>
-              </span>
-            </div>
-          ) : null}
           <h1 className={analyticsStyles.title}>{input.orgSlug}</h1>
+        </div>
+        <div className={analyticsStyles.liveMeta}>
+          <span className={analyticsStyles.liveTextSecondary}>
+            AUTH:{' '}
+            {authGithubLogin ? (
+              <a
+                className={analyticsStyles.liveMetaLink}
+                href={`https://github.com/${authGithubLogin}`}
+                rel="noreferrer"
+                target="_blank"
+              >
+                {authGithubLogin}
+              </a>
+            ) : (
+              <span className={analyticsStyles.liveMetaMuted}>None</span>
+            )}
+            {input.activeOrgs.length > 0 ? (
+              <>
+                ; ORGS:{' '}
+                {input.activeOrgs.map((org, index) => (
+                  <span key={org.slug}>
+                    {index > 0 ? ', ' : ''}
+                    <Link className={analyticsStyles.liveMetaLink} href={`/${org.slug}`}>
+                      {org.slug}
+                    </Link>
+                  </span>
+                ))}
+              </>
+            ) : null}
+          </span>
         </div>
       </header>
     </div>
@@ -49,6 +64,7 @@ function OrgStateBackdrop(input: {
 
 function OrgStateModalPage(input: {
   orgSlug: string;
+  authGithubLogin: string | null;
   activeOrgs: OrgHeaderOrg[];
   eyebrow: string;
   title: string;
@@ -59,7 +75,11 @@ function OrgStateModalPage(input: {
   return (
     <main className={analyticsStyles.page}>
       <div className={analyticsStyles.shell}>
-        <OrgStateBackdrop activeOrgs={input.activeOrgs} orgSlug={input.orgSlug} />
+        <OrgStateBackdrop
+          activeOrgs={input.activeOrgs}
+          authGithubLogin={input.authGithubLogin}
+          orgSlug={input.orgSlug}
+        />
         <OrgModalShell eyebrow={input.eyebrow} title={input.title}>
           {input.lede ? (
             <div className={analyticsStyles.noticeList}>
@@ -97,6 +117,7 @@ export default async function OrgSlugPage(input: {
     return (
       <OrgStateModalPage
         activeOrgs={headerMeta.activeOrgs}
+        authGithubLogin={headerMeta.authGithubLogin}
         actions={<a className={analyticsStyles.controlButton} href={state.authStartUrl}>Sign in with GitHub</a>}
         eyebrow="Sign in"
         orgSlug={state.org.slug}
@@ -110,6 +131,7 @@ export default async function OrgSlugPage(input: {
     return (
       <OrgStateModalPage
         activeOrgs={headerMeta.activeOrgs}
+        authGithubLogin={headerMeta.authGithubLogin}
         eyebrow="Access blocked"
         orgSlug={state.org.slug}
         lede="You are signed in, but this GitHub account does not have an active invite or membership for this org."
@@ -122,6 +144,7 @@ export default async function OrgSlugPage(input: {
     return (
       <OrgStateModalPage
         activeOrgs={headerMeta.activeOrgs}
+        authGithubLogin={headerMeta.authGithubLogin}
         eyebrow="Accept invite"
         orgSlug={state.invite.org.slug}
         title={state.invite.org.name}
@@ -141,6 +164,7 @@ export default async function OrgSlugPage(input: {
     return (
       <OrgStateModalPage
         activeOrgs={headerMeta.activeOrgs}
+        authGithubLogin={headerMeta.authGithubLogin}
         eyebrow="Buyer key"
         orgSlug={state.reveal.org.slug}
         lede="This buyer key is shown exactly once after org creation or invite acceptance. Dismiss the reveal to return to the normal dashboard."
