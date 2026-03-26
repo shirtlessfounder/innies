@@ -327,6 +327,45 @@ function createDeps() {
     removeOrgToken: vi.fn().mockResolvedValue(undefined)
   };
 
+  const orgBuyerKeys = {
+    listOrgKeysWithMembers: vi.fn(async (orgId: string) => {
+      if (orgId === 'org_1') {
+        return [
+          {
+            apiKeyId: 'buyer_owner',
+            membershipId: 'membership_owner',
+            userId: 'user_owner',
+            githubLogin: 'owner-login',
+            revokedAt: null
+          },
+          {
+            apiKeyId: 'buyer_member_old',
+            membershipId: 'membership_member',
+            userId: 'user_member',
+            githubLogin: 'member-login',
+            revokedAt: '2026-03-24T00:00:00.000Z'
+          }
+        ];
+      }
+      if (orgId === 'org_3') {
+        return [
+          {
+            apiKeyId: 'buyer_internal',
+            membershipId: 'membership_internal',
+            userId: 'user_owner',
+            githubLogin: 'owner-login',
+            revokedAt: null
+          }
+        ];
+      }
+      return [];
+    })
+  };
+
+  const apiKeys = {
+    setBuyerProviderPreference: vi.fn().mockResolvedValue(true)
+  };
+
   const analytics = {
     getSystemSummary: vi.fn().mockResolvedValue({
       total_requests: 3,
@@ -415,6 +454,8 @@ function createDeps() {
       orgAccess,
       orgInvites,
       orgTokens,
+      orgBuyerKeys,
+      apiKeys,
       orgMemberships,
       orgTokenManagement,
       analytics
@@ -424,6 +465,8 @@ function createDeps() {
     orgAccess,
     orgInvites,
     orgTokens,
+    orgBuyerKeys,
+    apiKeys,
     orgMemberships,
     orgTokenManagement,
     analytics
@@ -808,6 +851,36 @@ describe('org routes', () => {
     expect(acceptRes.body).toEqual({ orgSlug: 'acme' });
     expect(String(acceptRes.headers['set-cookie'])).toContain(`${ORG_REVEAL_COOKIE_NAME}=`);
     expect(JSON.stringify(acceptRes.body)).not.toContain('in_live_member');
+  });
+
+  it('lets an active member lock in their own buyer-key OpenClaw preference', async () => {
+    const { deps, apiKeys, orgBuyerKeys } = createDeps();
+    const router = createOrgManagementRouter(deps as any);
+    const headers = { cookie: `${ORG_SESSION_COOKIE_NAME}=signed-org-session` };
+    const res = createMockRes();
+
+    await invokeHandlers(getRouteHandlers(router as any, '/v1/orgs/:slug/buyer-key/provider-preference', 'post'), createMockReq({
+      method: 'POST',
+      path: '/v1/orgs/team-seller/buyer-key/provider-preference',
+      headers,
+      params: { slug: 'team-seller' },
+      body: { preferredProvider: 'codex' }
+    }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(orgBuyerKeys.listOrgKeysWithMembers).toHaveBeenCalledWith('org_3');
+    expect(apiKeys.setBuyerProviderPreference).toHaveBeenCalledWith({
+      id: 'buyer_internal',
+      preferredProvider: 'openai'
+    });
+    expect(res.body).toEqual({
+      ok: true,
+      apiKeyId: 'buyer_internal',
+      orgId: 'org_3',
+      preferredProvider: 'openai',
+      effectiveProvider: 'openai',
+      source: 'explicit'
+    });
   });
 
   it('returns duplicate invite acceptance without a reveal cookie', async () => {

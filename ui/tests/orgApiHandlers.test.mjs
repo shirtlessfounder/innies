@@ -304,6 +304,52 @@ test('invite accept proxy only forwards Set-Cookie when the upstream sends one',
   );
 });
 
+test('buyer key preference lock-in proxy forwards the chosen provider and clears the reveal cookie on success', async () => {
+  process.env.INNIES_API_BASE_URL = 'https://api.innies.test';
+  const { POST } = await importUiModule('src/app/api/orgs/[orgSlug]/buyer-key/provider-preference/route.ts');
+
+  await withMockFetch(
+    () => jsonResponse(
+      {
+        ok: true,
+        apiKeyId: 'buyer_owner',
+        orgId: 'org_1',
+        preferredProvider: 'openai',
+        effectiveProvider: 'openai',
+        source: 'explicit',
+      },
+      { status: 200 },
+    ),
+    async (calls) => {
+      const response = await POST(new Request('https://www.innies.test/api/orgs/acme/buyer-key/provider-preference', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          cookie: 'innies_org_session=session-token; innies_org_reveal=reveal-token',
+        },
+        body: JSON.stringify({ preferredProvider: 'openai' }),
+      }));
+
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].url, 'https://api.innies.test/v1/orgs/acme/buyer-key/provider-preference');
+      assert.equal(calls[0].init.method, 'POST');
+      assert.equal(calls[0].init.headers.cookie, 'innies_org_session=session-token; innies_org_reveal=reveal-token');
+      assert.deepEqual(JSON.parse(String(calls[0].init.body)), { preferredProvider: 'openai' });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await readJson(response), {
+        ok: true,
+        apiKeyId: 'buyer_owner',
+        orgId: 'org_1',
+        preferredProvider: 'openai',
+        effectiveProvider: 'openai',
+        source: 'explicit',
+      });
+      assert.match(String(response.headers.get('set-cookie')), /innies_org_reveal=.*Path=\/acme/);
+      assert.match(String(response.headers.get('set-cookie')), /Max-Age=0/);
+    },
+  );
+});
+
 test('token add proxy preserves debug label, token, refresh token, and optional reserve values in the proxied payload', async () => {
   process.env.INNIES_API_BASE_URL = 'https://api.innies.test';
   const { POST } = await importUiModule('src/app/api/orgs/[orgSlug]/tokens/add/route.ts');

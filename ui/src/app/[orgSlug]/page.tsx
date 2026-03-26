@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import analyticsStyles from '../analytics/page.module.css';
+import { BuyerKeyRevealCopyButton } from '../../components/org/BuyerKeyRevealCopyButton';
+import { BuyerKeyRevealPreferenceForm } from '../../components/org/BuyerKeyRevealPreferenceForm';
 import { InviteAcceptanceCard } from '../../components/org/InviteAcceptanceCard';
 import { OrgDashboardSections } from '../../components/org/OrgDashboardSections';
 import { OrgModalShell } from '../../components/org/OrgModalShell';
@@ -167,7 +169,7 @@ export default async function OrgSlugPage(input: {
         authGithubLogin={headerMeta.authGithubLogin}
         eyebrow="Buyer key"
         orgSlug={state.reveal.org.slug}
-        lede="This buyer key is shown exactly once after org creation or invite acceptance. Dismiss the reveal to return to the normal dashboard."
+        lede="This buyer key is shown exactly once after org creation or invite acceptance. Choose your OpenClaw Pref, copy the key, then lock it in to continue."
         title={state.reveal.org.name}
       >
         <div className={analyticsStyles.noticeText}>
@@ -177,16 +179,17 @@ export default async function OrgSlugPage(input: {
           <table className={analyticsStyles.table}>
             <tbody>
               <tr>
-                <td>{state.reveal.buyerKey}</td>
+                <td>
+                  <div className={analyticsStyles.revealKeyRow}>
+                    <span className={analyticsStyles.revealKeyValue}>{state.reveal.buyerKey}</span>
+                    <BuyerKeyRevealCopyButton buyerKey={state.reveal.buyerKey} />
+                  </div>
+                </td>
               </tr>
             </tbody>
           </table>
         </div>
-        <div className={analyticsStyles.managementActionRow}>
-          <form action={`/api/orgs/${orgSlug}/reveal/dismiss`} method="post">
-            <button className={analyticsStyles.managementPrimaryButton} type="submit">Dismiss reveal</button>
-          </form>
-        </div>
+        <BuyerKeyRevealPreferenceForm orgSlug={orgSlug} />
       </OrgStateModalPage>
     );
   }

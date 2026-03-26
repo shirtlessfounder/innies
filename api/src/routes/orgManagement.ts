@@ -3,6 +3,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { readOrgSession, requireOrgSession } from '../middleware/auth.js';
+import { isMissingBuyerProviderPreferenceColumn } from '../repos/apiKeyRepository.js';
 import { resolveOrgRouteSlug } from '../services/org/orgRouteSlug.js';
 import { runtime } from '../services/runtime.js';
 import { buildOrgRevealCookie } from '../services/org/orgSessionCookie.js';
@@ -54,6 +55,21 @@ type OrgManagementDeps = {
       fiveHourReservePercent: number;
       sevenDayReservePercent: number;
     }>>;
+  };
+  orgBuyerKeys: {
+    listOrgKeysWithMembers(orgId: string): Promise<Array<{
+      apiKeyId: string;
+      membershipId: string;
+      userId: string;
+      githubLogin: string;
+      revokedAt: string | null;
+    }>>;
+  };
+  apiKeys: {
+    setBuyerProviderPreference(input: {
+      id: string;
+      preferredProvider: 'anthropic' | 'openai' | null;
+    }): Promise<boolean>;
   };
   orgMemberships: {
     createOrg(input: {
@@ -150,6 +166,15 @@ const createInviteSchema = z.object({
 
 const revokeInviteSchema = z.object({
   inviteId: z.string().trim().min(1)
+});
+
+const buyerProviderPreferenceSchema = z.preprocess(
+  (value) => (typeof value === 'string' ? value.trim().toLowerCase() : value),
+  z.enum(['anthropic', 'openai', 'codex'])
+).transform((provider) => (provider === 'codex' ? 'openai' : provider));
+
+const updateBuyerKeyPreferenceSchema = z.object({
+  preferredProvider: buyerProviderPreferenceSchema
 });
 
 const reservePercentSchema = z.preprocess((value) => {
@@ -323,6 +348,47 @@ export function createOrgManagementRouter(deps: OrgManagementDeps): Router {
       }
 
       throw new AppError('invite_no_longer_valid', 409, 'Invite is no longer valid');
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/v1/orgs/:slug/buyer-key/provider-preference', requireOrgSession(deps.orgSessions), async (req, res, next) => {
+    try {
+      const context = await resolveActiveMembershipContext(req as never, deps);
+      const body = updateBuyerKeyPreferenceSchema.parse(req.body ?? {});
+      const buyerKey = (await deps.orgBuyerKeys.listOrgKeysWithMembers(context.org.id))
+        .find((entry) => entry.membershipId === context.membership.membershipId && entry.revokedAt === null);
+
+      if (!buyerKey) {
+        throw new AppError('not_found', 404, 'Buyer key not found');
+      }
+
+      let updated: boolean;
+      try {
+        updated = await deps.apiKeys.setBuyerProviderPreference({
+          id: buyerKey.apiKeyId,
+          preferredProvider: body.preferredProvider
+        });
+      } catch (error) {
+        if (isMissingBuyerProviderPreferenceColumn(error)) {
+          throw new AppError('conflict', 409, 'Buyer provider preference migration not applied');
+        }
+        throw error;
+      }
+
+      if (!updated) {
+        throw new AppError('not_found', 404, 'Buyer key not found');
+      }
+
+      res.json({
+        ok: true,
+        apiKeyId: buyerKey.apiKeyId,
+        orgId: context.org.id,
+        preferredProvider: body.preferredProvider,
+        effectiveProvider: body.preferredProvider,
+        source: 'explicit'
+      });
     } catch (error) {
       next(error);
     }
@@ -533,6 +599,8 @@ export default createOrgManagementRouter({
   orgAccess: runtime.repos.orgAccess,
   orgInvites: runtime.repos.orgInvites,
   orgTokens: runtime.repos.orgTokens,
+  orgBuyerKeys: runtime.repos.orgBuyerKeys,
+  apiKeys: runtime.repos.apiKeys,
   orgMemberships: runtime.services.orgMemberships,
   orgTokenManagement: runtime.services.orgTokenManagement
 });

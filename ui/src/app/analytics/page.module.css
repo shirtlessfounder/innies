@@ -893,6 +893,33 @@
   line-height: inherit;
 }
 
+.revealKeyRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.revealKeyValue {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.revealCopyButton {
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.revealCopyButtonCopied {
+  border-color: rgba(15, 81, 50, 0.24);
+  color: var(--console-live);
+}
+
+.revealCopyIcon {
+  width: 15px;
+  height: 15px;
+}
+
 .tableWrap {
   overflow: auto;
   max-height: 626px;
