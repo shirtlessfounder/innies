@@ -12,6 +12,7 @@ DATABASE_URL=postgres://user:pass@host:5432/dbname?sslmode=verify-full
 BUYER_PROVIDER_PREFERENCE_DEFAULT=anthropic
 
 # Optional, used by innies-diagnose-prod-journal for non-interactive auth
+DEVOPS_JOURNAL_HOST=https://journal.example
 DEVOPS_JOURNAL_USER=replace_me
 DEVOPS_JOURNAL_PASSWORD=replace_me
 

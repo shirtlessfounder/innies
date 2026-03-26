@@ -25,6 +25,16 @@ build_journal_url() {
   printf '%s' "$url"
 }
 
+resolve_journal_host() {
+  local host="${1:-${DEVOPS_JOURNAL_HOST:-}}"
+  host="$(trim "$host")"
+  if [[ -z "$host" ]]; then
+    echo 'error: DEVOPS_JOURNAL_HOST or --host is required' >&2
+    return 1
+  fi
+  printf '%s' "$host"
+}
+
 usage() {
   cat >&2 <<'EOF'
 usage: issue80-prod-journal.sh [options] [pattern...]
@@ -34,7 +44,7 @@ optionally filter locally by request id / process / error pattern.
 
 options:
   --since <iso8601>    optional server-side lower bound
-  --host <url>         default: https://admin.spicefi.xyz
+  --host <url>         required unless DEVOPS_JOURNAL_HOST is set
   --env <name>         default: prod
   --unit <name>        default: innies-api
   --out <file>         save raw journal to this path
@@ -108,7 +118,7 @@ filter_output() {
 }
 
 main() {
-  local host="${DEVOPS_JOURNAL_HOST:-https://admin.spicefi.xyz}"
+  local host=''
   local env_name='prod'
   local unit_name='innies-api'
   local since_value=''
@@ -163,6 +173,8 @@ main() {
         ;;
     esac
   done
+
+  host="$(resolve_journal_host "$host")"
 
   ensure_devops_user
   ensure_devops_password
