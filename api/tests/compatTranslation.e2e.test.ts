@@ -215,6 +215,12 @@ describe('compat translation e2e', () => {
       }
     } as any);
     vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+    vi.spyOn(runtimeModule.runtime.services.requestArchive, 'archiveAttempt').mockResolvedValue({
+      archiveId: 'archive_default',
+      requestMessageCount: 0,
+      responseMessageCount: 0,
+      rawBlobRoles: []
+    });
   });
 
   afterEach(() => {

@@ -1320,6 +1320,21 @@ async function resolveEligibleTokenCredentials(input: {
   };
 }
 
+function isCompatProviderUsageFailOpenReason(reason: string): boolean {
+  return reason === 'provider_usage_snapshot_missing'
+    || reason === 'provider_usage_snapshot_soft_stale'
+    || reason === 'provider_usage_snapshot_hard_stale';
+}
+
+function shouldCompatFailOpenProviderUsage(input: {
+  allowCompatProviderUsageFailOpen?: boolean;
+  excludedReasonCounts: Record<string, number>;
+}): boolean {
+  if (!input.allowCompatProviderUsageFailOpen) return false;
+  const reasons = Object.keys(input.excludedReasonCounts);
+  return reasons.length > 0 && reasons.every(isCompatProviderUsageFailOpenReason);
+}
+
 async function refreshAnthropicCredentialUsageForEligibilityRecovery(input: {
   credential: TokenCredential;
   requestId: string;
@@ -1418,6 +1433,7 @@ async function resolveEligibleTokenCredentialsWithAnthropicStaleRecovery(input: 
   requestId: string;
   buyerKeyLabel?: string | null;
   model: string;
+  allowCompatProviderUsageFailOpen?: boolean;
 }): Promise<{
   credentials: TokenCredential[];
   providerUsageRouteMeta: Map<string, Record<string, unknown>>;
@@ -1426,6 +1442,29 @@ async function resolveEligibleTokenCredentialsWithAnthropicStaleRecovery(input: 
   anthropicStaleRecoveryCandidate: TokenCredential | null;
 }> {
   const initial = await resolveEligibleTokenCredentials(input);
+  if (shouldCompatFailOpenProviderUsage({
+    allowCompatProviderUsageFailOpen: input.allowCompatProviderUsageFailOpen,
+    excludedReasonCounts: initial.providerUsageExcludedReasonCounts
+  })) {
+    const seededCredentials = orderCredentialsForRequest(
+      await runtime.repos.tokenCredentials.listActiveForRouting(input.orgId, input.provider),
+      input.requestId
+    );
+    if (seededCredentials.length > 0) {
+      for (const credential of seededCredentials) {
+        const routeMeta = initial.providerUsageRouteMeta.get(credential.id);
+        if (!routeMeta) continue;
+        initial.providerUsageRouteMeta.set(credential.id, {
+          ...routeMeta,
+          providerUsageCompatFailOpen: true
+        });
+      }
+      return {
+        ...initial,
+        credentials: seededCredentials
+      };
+    }
+  }
   if (
     initial.credentials.length > 0
     || canonicalizeProvider(input.provider) !== 'anthropic'
@@ -2894,7 +2933,8 @@ async function executeTokenModeNonStreaming(input: {
     provider,
     requestId,
     buyerKeyLabel,
-    model
+    model,
+    allowCompatProviderUsageFailOpen: Boolean(strictUpstreamPassthrough || compatTranslation)
   });
   if (credentials.length === 0) {
     throw new AppError('capacity_unavailable', 429, 'No eligible token credentials available', {
@@ -3724,7 +3764,8 @@ async function executeTokenModeStreaming(input: {
     provider,
     requestId,
     buyerKeyLabel,
-    model
+    model,
+    allowCompatProviderUsageFailOpen: Boolean(strictUpstreamPassthrough || compatTranslation || compatModeFlag)
   });
   if (credentials.length === 0) {
     throw new AppError('capacity_unavailable', 429, 'No eligible token credentials available', {
