@@ -1,5 +1,6 @@
 import type { SqlClient, SqlValue } from './sqlClient.js';
 import { TABLES } from './tableNames.js';
+import { assertIdempotentReplayMatches } from './idempotentReplay.js';
 
 export type RequestAttemptMessageSide = 'request' | 'response';
 
@@ -56,13 +57,21 @@ export class RequestAttemptMessageRepository {
         content_type
       ) values ${values.join(', ')}
       on conflict (request_attempt_archive_id, side, ordinal)
-      do update set
-        message_blob_id = excluded.message_blob_id,
-        role = excluded.role,
-        content_type = excluded.content_type
+      do nothing
     `;
 
-    await this.db.query(sql, params);
+    const result = await this.db.query(sql, params);
+    if (result.rowCount === input.length) {
+      return;
+    }
+
+    for (const link of input) {
+      const existing = await this.findLink(link);
+      if (!existing) {
+        throw new Error('expected one request attempt message row');
+      }
+      assertRequestAttemptMessageReplayMatches(link, existing);
+    }
   }
 
   async listByArchiveId(
@@ -89,4 +98,35 @@ export class RequestAttemptMessageRepository {
     const result = await this.db.query<RequestAttemptMessageRow>(sql, params);
     return result.rows;
   }
+
+  private async findLink(input: Pick<RequestAttemptMessageLinkInput, 'requestAttemptArchiveId' | 'side' | 'ordinal'>): Promise<RequestAttemptMessageRow | null> {
+    const sql = `
+      select *
+      from ${TABLES.requestAttemptMessages}
+      where request_attempt_archive_id = $1
+        and side = $2
+        and ordinal = $3
+      limit 1
+    `;
+    const result = await this.db.query<RequestAttemptMessageRow>(sql, [
+      input.requestAttemptArchiveId,
+      input.side,
+      input.ordinal
+    ]);
+    return result.rowCount === 1 ? result.rows[0] : null;
+  }
+}
+
+function assertRequestAttemptMessageReplayMatches(
+  input: RequestAttemptMessageLinkInput,
+  row: RequestAttemptMessageRow
+): void {
+  assertIdempotentReplayMatches('request attempt message', [
+    { field: 'requestAttemptArchiveId', expected: input.requestAttemptArchiveId, actual: row.request_attempt_archive_id },
+    { field: 'side', expected: input.side, actual: row.side },
+    { field: 'ordinal', expected: input.ordinal, actual: row.ordinal },
+    { field: 'messageBlobId', expected: input.messageBlobId, actual: row.message_blob_id },
+    { field: 'role', expected: input.role ?? null, actual: row.role },
+    { field: 'contentType', expected: input.contentType, actual: row.content_type }
+  ]);
 }

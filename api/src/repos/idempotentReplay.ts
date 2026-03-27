@@ -19,6 +19,12 @@ function valuesEqual(left: unknown, right: unknown): boolean {
     return left == null && right == null;
   }
 
+  if (isBinaryLike(left) || isBinaryLike(right)) {
+    return isBinaryLike(left)
+      && isBinaryLike(right)
+      && Buffer.from(left).equals(Buffer.from(right));
+  }
+
   if (isNumericLike(left) && isNumericLike(right)) {
     return BigInt(String(left)) === BigInt(String(right));
   }
@@ -39,6 +45,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object'
     && value !== null
     && !Array.isArray(value);
+}
+
+function isBinaryLike(value: unknown): value is Buffer | Uint8Array {
+  return Buffer.isBuffer(value) || value instanceof Uint8Array;
 }
 
 function normalizeJson(value: unknown): unknown {

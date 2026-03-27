@@ -1,6 +1,7 @@
 import type { SqlClient, SqlValue } from './sqlClient.js';
 import { type IdFactory, uuidV4 } from './idFactory.js';
 import { TABLES } from './tableNames.js';
+import { assertIdempotentReplayMatches } from './idempotentReplay.js';
 
 export type MessageBlobKind = 'message' | 'part';
 
@@ -65,6 +66,7 @@ export class MessageBlobRepository {
 
     const existing = await this.findByContentHash(input.contentHash);
     if (existing) {
+      assertMessageBlobReplayMatches(input, existing);
       return existing;
     }
 
@@ -81,4 +83,19 @@ export class MessageBlobRepository {
     const result = await this.db.query<MessageBlobRow>(sql, [contentHash]);
     return result.rowCount === 1 ? result.rows[0] : null;
   }
+}
+
+function assertMessageBlobReplayMatches(input: MessageBlobInput, row: MessageBlobRow): void {
+  assertIdempotentReplayMatches('message blob', [
+    { field: 'contentHash', expected: input.contentHash, actual: row.content_hash },
+    { field: 'kind', expected: input.kind, actual: row.kind },
+    { field: 'role', expected: input.role ?? null, actual: row.role },
+    { field: 'contentType', expected: input.contentType, actual: row.content_type },
+    { field: 'normalizedPayload', expected: input.normalizedPayload, actual: row.normalized_payload },
+    {
+      field: 'normalizedPayloadCodecVersion',
+      expected: input.normalizedPayloadCodecVersion ?? 1,
+      actual: row.normalized_payload_codec_version
+    }
+  ]);
 }
