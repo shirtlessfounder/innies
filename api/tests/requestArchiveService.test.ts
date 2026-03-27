@@ -513,6 +513,23 @@ describe('RequestArchiveService', () => {
     expect(new Set(state.attemptMessages.map((record) => record.messageBlobId))).toEqual(new Set(['blob_1']));
   });
 
+  it('persists archived api_key_id for downstream buyer-key analysis', async () => {
+    const { service, state } = createService();
+
+    await service.archiveAttempt(baseAttempt({
+      requestId: 'req_api_key_archive',
+      apiKeyId: 'buyer_key_analytics'
+    }));
+
+    expect(state.attempts).toEqual([
+      expect.objectContaining({
+        requestId: 'req_api_key_archive',
+        apiKeyId: 'buyer_key_analytics'
+      })
+    ]);
+    expect(toAttemptRow(state.attempts[0]!).api_key_id).toBe('buyer_key_analytics');
+  });
+
   it('preserves first-class system, user, assistant, tool-call, tool-result, and structured JSON content', async () => {
     const { service, state } = createService();
 
@@ -587,7 +604,7 @@ describe('RequestArchiveService', () => {
         role: 'user',
         content: [
           { type: 'text', text: 'look up innies' },
-          { type: 'json', value: { type: 'json', data: { repo: 'innies', limit: 1 } } }
+          { type: 'json', value: { repo: 'innies', limit: 1 } }
         ]
       },
       {
@@ -608,7 +625,7 @@ describe('RequestArchiveService', () => {
         role: 'assistant',
         content: [
           { type: 'text', text: 'Repository located.' },
-          { type: 'json', value: { type: 'json', data: { full_name: 'dylanvu/innies' } } }
+          { type: 'json', value: { full_name: 'dylanvu/innies' } }
         ]
       },
       {
@@ -726,26 +743,53 @@ describe('RequestArchiveService', () => {
     ]);
   });
 
-  it('gzip-compresses raw request and response payloads and records blob metadata', async () => {
+  it('gzip-compresses raw request, response, and stream payloads and records exact blob metadata', async () => {
     const { service, state } = createService();
     const rawRequest = JSON.stringify({ kind: 'request', body: 'x'.repeat(512) });
     const rawResponse = JSON.stringify({ kind: 'response', body: 'y'.repeat(512) });
+    const rawStream = [
+      'data: {"type":"response.output_text.delta","delta":"working"}',
+      '',
+      'data: [DONE]',
+      ''
+    ].join('\n');
 
     await service.archiveAttempt(baseAttempt({
       rawRequest,
-      rawResponse
+      rawResponse,
+      rawStream
     }));
 
-    expect(state.rawBlobs).toHaveLength(2);
-    expect(state.rawBlobs.map((record) => record.encoding)).toEqual(['gzip', 'gzip']);
-    expect(state.rawBlobs[0].bytesUncompressed).toBe(Buffer.byteLength(rawRequest));
-    expect(state.rawBlobs[1].bytesUncompressed).toBe(Buffer.byteLength(rawResponse));
-    expect(state.rawBlobs[0].bytesCompressed).toBe(state.rawBlobs[0].payload.length);
-    expect(state.rawBlobs[1].bytesCompressed).toBe(state.rawBlobs[1].payload.length);
-    expect(state.rawBlobs[0].bytesCompressed).toBeLessThan(state.rawBlobs[0].bytesUncompressed);
-    expect(state.rawBlobs[1].bytesCompressed).toBeLessThan(state.rawBlobs[1].bytesUncompressed);
-    expect(decodeBuffer(state.rawBlobs[0].payload)).toBe(rawRequest);
-    expect(decodeBuffer(state.rawBlobs[1].payload)).toBe(rawResponse);
+    expect(state.rawBlobs).toHaveLength(3);
+    expect(state.attemptRawBlobs).toEqual([
+      { requestAttemptArchiveId: 'archive_1', blobRole: 'request', rawBlobId: 'raw_1' },
+      { requestAttemptArchiveId: 'archive_1', blobRole: 'response', rawBlobId: 'raw_2' },
+      { requestAttemptArchiveId: 'archive_1', blobRole: 'stream', rawBlobId: 'raw_3' }
+    ]);
+
+    const byKind = Object.fromEntries(state.rawBlobs.map((record) => [record.blobKind, record]));
+
+    expect(byKind.raw_request).toEqual(expect.objectContaining({
+      encoding: 'gzip',
+      bytesCompressed: byKind.raw_request.payload.length,
+      bytesUncompressed: Buffer.byteLength(rawRequest)
+    }));
+    expect(byKind.raw_response).toEqual(expect.objectContaining({
+      encoding: 'gzip',
+      bytesCompressed: byKind.raw_response.payload.length,
+      bytesUncompressed: Buffer.byteLength(rawResponse)
+    }));
+    expect(byKind.raw_stream).toEqual(expect.objectContaining({
+      encoding: 'gzip',
+      bytesCompressed: byKind.raw_stream.payload.length,
+      bytesUncompressed: Buffer.byteLength(rawStream)
+    }));
+
+    expect(byKind.raw_request.bytesCompressed).toBeLessThan(byKind.raw_request.bytesUncompressed);
+    expect(byKind.raw_response.bytesCompressed).toBeLessThan(byKind.raw_response.bytesUncompressed);
+    expect(decodeBuffer(byKind.raw_request.payload)).toBe(rawRequest);
+    expect(decodeBuffer(byKind.raw_response.payload)).toBe(rawResponse);
+    expect(decodeBuffer(byKind.raw_stream.payload)).toBe(rawStream);
   });
 
   it('rolls back the archive transaction without orphaned rows when a raw blob write fails', async () => {

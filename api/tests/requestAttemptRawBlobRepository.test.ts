@@ -47,8 +47,31 @@ describe('RequestAttemptRawBlobRepository', () => {
 
     expect(rows).toHaveLength(1);
     expect(db.queries[0].sql).toContain('where request_attempt_archive_id = $1');
-    expect(db.queries[0].sql).toContain('order by blob_role asc');
+    expect(db.queries[0].sql).toContain("case blob_role when 'request' then 0 when 'response' then 1 when 'stream' then 2 else 3 end");
     expect(db.queries[0].params).toEqual(['archive_1']);
+  });
+
+  it('reads a raw blob link back by exact blob_role', async () => {
+    const db = new MockSqlClient({
+      rows: [{
+        request_attempt_archive_id: 'archive_1',
+        blob_role: 'response',
+        raw_blob_id: 'raw_res_1'
+      }],
+      rowCount: 1
+    });
+    const repo = new RequestAttemptRawBlobRepository(db);
+
+    const row = await repo.findByArchiveIdAndRole('archive_1', 'response');
+
+    expect(row).toEqual(expect.objectContaining({
+      request_attempt_archive_id: 'archive_1',
+      blob_role: 'response',
+      raw_blob_id: 'raw_res_1'
+    }));
+    expect(db.queries[0].sql).toContain('where request_attempt_archive_id = $1');
+    expect(db.queries[0].sql).toContain('and blob_role = $2');
+    expect(db.queries[0].params).toEqual(['archive_1', 'response']);
   });
 
   it('rejects duplicate raw blob links when the stored raw blob id differs', async () => {

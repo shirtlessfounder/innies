@@ -17,6 +17,9 @@ export type RequestAttemptRawBlobRow = {
   created_at: string | Date;
 };
 
+const REQUEST_ATTEMPT_RAW_BLOB_ORDER =
+  "case blob_role when 'request' then 0 when 'response' then 1 when 'stream' then 2 else 3 end";
+
 export class RequestAttemptRawBlobRepository {
   constructor(private readonly db: SqlClient) {}
 
@@ -43,7 +46,7 @@ export class RequestAttemptRawBlobRepository {
       return result.rows[0];
     }
 
-    const existing = await this.findLink(input);
+    const existing = await this.findByArchiveIdAndRole(input.requestAttemptArchiveId, input.blobRole);
     if (!existing) {
       throw new Error('expected one request attempt raw blob row');
     }
@@ -57,14 +60,15 @@ export class RequestAttemptRawBlobRepository {
       select *
       from ${TABLES.requestAttemptRawBlobs}
       where request_attempt_archive_id = $1
-      order by blob_role asc
+      order by ${REQUEST_ATTEMPT_RAW_BLOB_ORDER}
     `;
     const result = await this.db.query<RequestAttemptRawBlobRow>(sql, [requestAttemptArchiveId]);
     return result.rows;
   }
 
-  private async findLink(
-    input: Pick<RequestAttemptRawBlobLinkInput, 'requestAttemptArchiveId' | 'blobRole'>
+  async findByArchiveIdAndRole(
+    requestAttemptArchiveId: string,
+    blobRole: RequestAttemptRawBlobRole
   ): Promise<RequestAttemptRawBlobRow | null> {
     const sql = `
       select *
@@ -74,8 +78,8 @@ export class RequestAttemptRawBlobRepository {
       limit 1
     `;
     const result = await this.db.query<RequestAttemptRawBlobRow>(sql, [
-      input.requestAttemptArchiveId,
-      input.blobRole
+      requestAttemptArchiveId,
+      blobRole
     ]);
     return result.rowCount === 1 ? result.rows[0] : null;
   }

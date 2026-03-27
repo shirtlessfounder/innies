@@ -42,6 +42,22 @@ function tryParseJsonString(value: unknown): unknown {
   }
 }
 
+function normalizeStructuredJsonPart(value: Record<string, unknown>): NormalizedArchiveContentPart | null {
+  if (value.type !== 'json' && value.type !== 'input_json' && value.type !== 'output_json') {
+    return null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(value, 'value')) {
+    return { type: 'json', value: value.value };
+  }
+
+  if (Object.prototype.hasOwnProperty.call(value, 'data')) {
+    return { type: 'json', value: value.data };
+  }
+
+  return { type: 'json', value };
+}
+
 function summarizeContentType(parts: NormalizedArchiveContentPart[]): string {
   const uniqueTypes = Array.from(new Set(parts.map((part) => part.type)));
   return uniqueTypes.length === 1 ? uniqueTypes[0] : 'mixed';
@@ -73,6 +89,11 @@ function normalizeAnthropicBlock(value: unknown): NormalizedArchiveContentPart[]
 
   if (!isRecord(value)) {
     return value == null ? [] : [{ type: 'json', value }];
+  }
+
+  const structuredJsonPart = normalizeStructuredJsonPart(value);
+  if (structuredJsonPart) {
+    return [structuredJsonPart];
   }
 
   switch (value.type) {
@@ -181,6 +202,11 @@ function normalizeOpenAiMessageContent(value: unknown): NormalizedArchiveContent
         return part == null ? [] : [{ type: 'json', value: part }];
       }
 
+      const structuredJsonPart = normalizeStructuredJsonPart(part);
+      if (structuredJsonPart) {
+        return [structuredJsonPart];
+      }
+
       if ((part.type === 'input_text' || part.type === 'output_text' || part.type === 'text') && typeof part.text === 'string') {
         return [{ type: 'text', text: part.text }];
       }
@@ -191,6 +217,17 @@ function normalizeOpenAiMessageContent(value: unknown): NormalizedArchiveContent
 
   if (value == null) {
     return [];
+  }
+
+  if (isRecord(value)) {
+    const structuredJsonPart = normalizeStructuredJsonPart(value);
+    if (structuredJsonPart) {
+      return [structuredJsonPart];
+    }
+
+    if ((value.type === 'input_text' || value.type === 'output_text' || value.type === 'text') && typeof value.text === 'string') {
+      return [{ type: 'text', text: value.text }];
+    }
   }
 
   return [{ type: 'json', value }];

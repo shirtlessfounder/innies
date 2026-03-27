@@ -23,6 +23,9 @@ export type RequestAttemptMessageRow = {
   created_at: string | Date;
 };
 
+const REQUEST_ATTEMPT_MESSAGE_SEQUENCE_ORDER =
+  "case side when 'request' then 0 when 'response' then 1 else 2 end, ordinal asc";
+
 export class RequestAttemptMessageRepository {
   constructor(private readonly db: SqlClient) {}
 
@@ -80,7 +83,7 @@ export class RequestAttemptMessageRepository {
   ): Promise<RequestAttemptMessageRow[]> {
     const params: SqlValue[] = [requestAttemptArchiveId];
     const where = ['request_attempt_archive_id = $1'];
-    let orderBy = 'side asc, ordinal asc';
+    let orderBy = REQUEST_ATTEMPT_MESSAGE_SEQUENCE_ORDER;
 
     if (side) {
       params.push(side);
