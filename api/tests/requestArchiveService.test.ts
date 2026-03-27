@@ -618,6 +618,114 @@ describe('RequestArchiveService', () => {
     ]);
   });
 
+  it('archives one user request message for openai responses string input', async () => {
+    const { service, state } = createService();
+
+    const result = await service.archiveAttempt(baseAttempt({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      status: 'failed',
+      upstreamStatus: 429,
+      errorCode: 'capacity_unavailable',
+      response: null,
+      rawResponse: null,
+      request: {
+        format: 'openai_responses',
+        payload: {
+          model: 'gpt-5.4',
+          input: 'hello'
+        }
+      }
+    }));
+
+    expect(result).toEqual(expect.objectContaining({
+      requestMessageCount: 1,
+      responseMessageCount: 0
+    }) satisfies Partial<RequestArchiveServiceResult>);
+    expect(state.attemptMessages.filter((record) => record.side === 'request')).toHaveLength(1);
+    expect(state.messageBlobs.map((record) => record.normalizedPayload)).toEqual([
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'hello' }]
+      }
+    ]);
+  });
+
+  it('archives both system and user request messages for openai responses instructions plus string input', async () => {
+    const { service, state } = createService();
+
+    const result = await service.archiveAttempt(baseAttempt({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      status: 'failed',
+      upstreamStatus: 429,
+      errorCode: 'capacity_unavailable',
+      response: null,
+      rawResponse: null,
+      request: {
+        format: 'openai_responses',
+        payload: {
+          model: 'gpt-5.4',
+          instructions: 'be concise',
+          input: 'hello'
+        }
+      }
+    }));
+
+    expect(result).toEqual(expect.objectContaining({
+      requestMessageCount: 2,
+      responseMessageCount: 0
+    }) satisfies Partial<RequestArchiveServiceResult>);
+    expect(state.attemptMessages.filter((record) => record.side === 'request')).toHaveLength(2);
+    expect(state.messageBlobs.map((record) => record.normalizedPayload)).toEqual([
+      {
+        role: 'system',
+        content: [{ type: 'text', text: 'be concise' }]
+      },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'hello' }]
+      }
+    ]);
+  });
+
+  it('archives user request messages for plain-string items inside openai responses input arrays', async () => {
+    const { service, state } = createService();
+
+    const result = await service.archiveAttempt(baseAttempt({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      status: 'failed',
+      upstreamStatus: 429,
+      errorCode: 'capacity_unavailable',
+      response: null,
+      rawResponse: null,
+      request: {
+        format: 'openai_responses',
+        payload: {
+          model: 'gpt-5.4',
+          input: ['hello', 'from array']
+        }
+      }
+    }));
+
+    expect(result).toEqual(expect.objectContaining({
+      requestMessageCount: 2,
+      responseMessageCount: 0
+    }) satisfies Partial<RequestArchiveServiceResult>);
+    expect(state.attemptMessages.filter((record) => record.side === 'request')).toHaveLength(2);
+    expect(state.messageBlobs.map((record) => record.normalizedPayload)).toEqual([
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'hello' }]
+      },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'from array' }]
+      }
+    ]);
+  });
+
   it('gzip-compresses raw request and response payloads and records blob metadata', async () => {
     const { service, state } = createService();
     const rawRequest = JSON.stringify({ kind: 'request', body: 'x'.repeat(512) });
