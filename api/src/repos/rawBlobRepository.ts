@@ -1,6 +1,7 @@
 import type { SqlClient, SqlValue } from './sqlClient.js';
 import { type IdFactory, uuidV4 } from './idFactory.js';
 import { TABLES } from './tableNames.js';
+import { assertIdempotentReplayMatches } from './idempotentReplay.js';
 
 export type RawBlobKind = 'raw_request' | 'raw_response' | 'raw_stream';
 export type RawBlobEncoding = 'gzip' | 'none';
@@ -66,6 +67,7 @@ export class RawBlobRepository {
 
     const existing = await this.findByContentHashAndKind(input.contentHash, input.blobKind);
     if (existing) {
+      assertRawBlobReplayMatches(input, existing);
       return existing;
     }
 
@@ -83,4 +85,15 @@ export class RawBlobRepository {
     const result = await this.db.query<RawBlobRow>(sql, [contentHash, blobKind]);
     return result.rowCount === 1 ? result.rows[0] : null;
   }
+}
+
+function assertRawBlobReplayMatches(input: RawBlobInput, row: RawBlobRow): void {
+  assertIdempotentReplayMatches('raw blob', [
+    { field: 'contentHash', expected: input.contentHash, actual: row.content_hash },
+    { field: 'blobKind', expected: input.blobKind, actual: row.blob_kind },
+    { field: 'encoding', expected: input.encoding, actual: row.encoding },
+    { field: 'bytesCompressed', expected: input.bytesCompressed, actual: row.bytes_compressed },
+    { field: 'bytesUncompressed', expected: input.bytesUncompressed, actual: row.bytes_uncompressed },
+    { field: 'payload', expected: input.payload, actual: row.payload }
+  ]);
 }

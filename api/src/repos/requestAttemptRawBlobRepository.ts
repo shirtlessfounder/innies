@@ -1,5 +1,6 @@
 import type { SqlClient } from './sqlClient.js';
 import { TABLES } from './tableNames.js';
+import { assertIdempotentReplayMatches } from './idempotentReplay.js';
 
 export type RequestAttemptRawBlobRole = 'request' | 'response' | 'stream';
 
@@ -29,8 +30,7 @@ export class RequestAttemptRawBlobRepository {
         $1,$2,$3
       )
       on conflict (request_attempt_archive_id, blob_role)
-      do update set
-        raw_blob_id = excluded.raw_blob_id
+      do nothing
       returning *
     `;
 
@@ -39,10 +39,17 @@ export class RequestAttemptRawBlobRepository {
       input.blobRole,
       input.rawBlobId
     ]);
-    if (result.rowCount !== 1) {
+    if (result.rowCount === 1) {
+      return result.rows[0];
+    }
+
+    const existing = await this.findLink(input);
+    if (!existing) {
       throw new Error('expected one request attempt raw blob row');
     }
-    return result.rows[0];
+
+    assertRequestAttemptRawBlobReplayMatches(input, existing);
+    return existing;
   }
 
   async listByArchiveId(requestAttemptArchiveId: string): Promise<RequestAttemptRawBlobRow[]> {
@@ -55,4 +62,32 @@ export class RequestAttemptRawBlobRepository {
     const result = await this.db.query<RequestAttemptRawBlobRow>(sql, [requestAttemptArchiveId]);
     return result.rows;
   }
+
+  private async findLink(
+    input: Pick<RequestAttemptRawBlobLinkInput, 'requestAttemptArchiveId' | 'blobRole'>
+  ): Promise<RequestAttemptRawBlobRow | null> {
+    const sql = `
+      select *
+      from ${TABLES.requestAttemptRawBlobs}
+      where request_attempt_archive_id = $1
+        and blob_role = $2
+      limit 1
+    `;
+    const result = await this.db.query<RequestAttemptRawBlobRow>(sql, [
+      input.requestAttemptArchiveId,
+      input.blobRole
+    ]);
+    return result.rowCount === 1 ? result.rows[0] : null;
+  }
+}
+
+function assertRequestAttemptRawBlobReplayMatches(
+  input: RequestAttemptRawBlobLinkInput,
+  row: RequestAttemptRawBlobRow
+): void {
+  assertIdempotentReplayMatches('request attempt raw blob', [
+    { field: 'requestAttemptArchiveId', expected: input.requestAttemptArchiveId, actual: row.request_attempt_archive_id },
+    { field: 'blobRole', expected: input.blobRole, actual: row.blob_role },
+    { field: 'rawBlobId', expected: input.rawBlobId, actual: row.raw_blob_id }
+  ]);
 }

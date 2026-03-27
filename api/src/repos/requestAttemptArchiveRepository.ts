@@ -1,6 +1,7 @@
 import type { SqlClient, SqlValue } from './sqlClient.js';
 import { type IdFactory, uuidV4 } from './idFactory.js';
 import { TABLES } from './tableNames.js';
+import { assertIdempotentReplayMatches } from './idempotentReplay.js';
 
 export type RequestAttemptRouteKind = 'seller_key' | 'token_credential';
 export type RequestAttemptArchiveStatus = 'success' | 'failed' | 'partial';
@@ -87,24 +88,7 @@ export class RequestAttemptArchiveRepository {
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
       )
       on conflict (org_id, request_id, attempt_no)
-      do update set
-        api_key_id = coalesce(excluded.api_key_id, ${TABLES.requestAttemptArchives}.api_key_id),
-        route_kind = excluded.route_kind,
-        seller_key_id = coalesce(excluded.seller_key_id, ${TABLES.requestAttemptArchives}.seller_key_id),
-        token_credential_id = coalesce(excluded.token_credential_id, ${TABLES.requestAttemptArchives}.token_credential_id),
-        provider = excluded.provider,
-        model = excluded.model,
-        streaming = excluded.streaming,
-        status = excluded.status,
-        upstream_status = coalesce(excluded.upstream_status, ${TABLES.requestAttemptArchives}.upstream_status),
-        error_code = coalesce(excluded.error_code, ${TABLES.requestAttemptArchives}.error_code),
-        started_at = least(${TABLES.requestAttemptArchives}.started_at, excluded.started_at),
-        completed_at = coalesce(excluded.completed_at, ${TABLES.requestAttemptArchives}.completed_at),
-        openclaw_run_id = coalesce(excluded.openclaw_run_id, ${TABLES.requestAttemptArchives}.openclaw_run_id),
-        openclaw_session_id = coalesce(excluded.openclaw_session_id, ${TABLES.requestAttemptArchives}.openclaw_session_id),
-        routing_event_id = coalesce(excluded.routing_event_id, ${TABLES.requestAttemptArchives}.routing_event_id),
-        usage_ledger_id = coalesce(excluded.usage_ledger_id, ${TABLES.requestAttemptArchives}.usage_ledger_id),
-        metering_event_id = coalesce(excluded.metering_event_id, ${TABLES.requestAttemptArchives}.metering_event_id)
+      do nothing
       returning *
     `;
 
@@ -133,10 +117,21 @@ export class RequestAttemptArchiveRepository {
     ];
 
     const result = await this.db.query<RequestAttemptArchiveRow>(sql, params);
-    if (result.rowCount !== 1) {
+    if (result.rowCount === 1) {
+      return result.rows[0];
+    }
+
+    const existing = await this.findByOrgRequestAttempt({
+      orgId: input.orgId,
+      requestId: input.requestId,
+      attemptNo: input.attemptNo
+    });
+    if (!existing) {
       throw new Error('expected one request attempt archive row');
     }
-    return result.rows[0];
+
+    assertRequestAttemptArchiveReplayMatches(input, existing);
+    return existing;
   }
 
   async findByOrgRequestAttempt(input: {
@@ -159,4 +154,39 @@ export class RequestAttemptArchiveRepository {
     ]);
     return result.rowCount === 1 ? result.rows[0] : null;
   }
+}
+
+function assertRequestAttemptArchiveReplayMatches(
+  input: RequestAttemptArchiveInput,
+  row: RequestAttemptArchiveRow
+): void {
+  assertIdempotentReplayMatches('request attempt archive', [
+    { field: 'requestId', expected: input.requestId, actual: row.request_id },
+    { field: 'attemptNo', expected: input.attemptNo, actual: row.attempt_no },
+    { field: 'orgId', expected: input.orgId, actual: row.org_id },
+    { field: 'apiKeyId', expected: input.apiKeyId ?? null, actual: row.api_key_id },
+    { field: 'routeKind', expected: input.routeKind, actual: row.route_kind },
+    { field: 'sellerKeyId', expected: input.sellerKeyId ?? null, actual: row.seller_key_id },
+    { field: 'tokenCredentialId', expected: input.tokenCredentialId ?? null, actual: row.token_credential_id },
+    { field: 'provider', expected: input.provider, actual: row.provider },
+    { field: 'model', expected: input.model, actual: row.model },
+    { field: 'streaming', expected: input.streaming, actual: row.streaming },
+    { field: 'status', expected: input.status, actual: row.status },
+    { field: 'upstreamStatus', expected: input.upstreamStatus ?? null, actual: row.upstream_status },
+    { field: 'errorCode', expected: input.errorCode ?? null, actual: row.error_code },
+    { field: 'startedAt', expected: normalizeTimestamp(input.startedAt), actual: normalizeTimestamp(row.started_at) },
+    { field: 'completedAt', expected: normalizeTimestamp(input.completedAt ?? null), actual: normalizeTimestamp(row.completed_at) },
+    { field: 'openclawRunId', expected: input.openclawRunId ?? null, actual: row.openclaw_run_id },
+    { field: 'openclawSessionId', expected: input.openclawSessionId ?? null, actual: row.openclaw_session_id },
+    { field: 'routingEventId', expected: input.routingEventId ?? null, actual: row.routing_event_id },
+    { field: 'usageLedgerId', expected: input.usageLedgerId ?? null, actual: row.usage_ledger_id },
+    { field: 'meteringEventId', expected: input.meteringEventId ?? null, actual: row.metering_event_id }
+  ]);
+}
+
+function normalizeTimestamp(value: string | Date | null): string | null {
+  if (value == null) {
+    return null;
+  }
+  return new Date(value).toISOString();
 }

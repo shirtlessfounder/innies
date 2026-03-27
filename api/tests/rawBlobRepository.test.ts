@@ -24,7 +24,12 @@ describe('RawBlobRepository', () => {
         rows: [{
           id: 'raw_existing',
           content_hash: 'hash_raw_response_1',
-          blob_kind: 'raw_response'
+          blob_kind: 'raw_response',
+          encoding: 'gzip',
+          bytes_compressed: 42,
+          bytes_uncompressed: 128,
+          payload: sampleRawBlob.payload,
+          created_at: '2026-03-26T03:00:05Z'
         }],
         rowCount: 1
       }
@@ -62,6 +67,28 @@ describe('RawBlobRepository', () => {
     expect(db.queries[0].params).toContain(42);
     expect(db.queries[0].params).toContain(128);
     expect(db.queries[0].params).toContain(sampleRawBlob.payload);
+  });
+
+  it('rejects duplicate hash replays when the stored raw blob differs', async () => {
+    const db = new SequenceSqlClient([
+      { rows: [], rowCount: 0 },
+      {
+        rows: [{
+          id: 'raw_existing',
+          content_hash: 'hash_raw_response_1',
+          blob_kind: 'raw_response',
+          encoding: 'gzip',
+          bytes_compressed: 42,
+          bytes_uncompressed: 128,
+          payload: Buffer.from('drifted-wire-payload'),
+          created_at: '2026-03-26T03:00:05Z'
+        }],
+        rowCount: 1
+      }
+    ]);
+    const repo = new RawBlobRepository(db, () => 'raw_new');
+
+    await expect(repo.upsertBlob(sampleRawBlob)).rejects.toThrow('raw blob idempotent replay mismatch');
   });
 
   it('defines raw blob dedupe in both migration variants', () => {

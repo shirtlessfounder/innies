@@ -26,7 +26,13 @@ describe('MessageBlobRepository', () => {
       {
         rows: [{
           id: 'blob_existing',
-          content_hash: 'hash_message_1'
+          content_hash: 'hash_message_1',
+          kind: 'message',
+          role: 'assistant',
+          content_type: 'text',
+          normalized_payload: sampleBlob.normalizedPayload,
+          normalized_payload_codec_version: 1,
+          created_at: '2026-03-26T03:00:05Z'
         }],
         rowCount: 1
       }
@@ -66,6 +72,31 @@ describe('MessageBlobRepository', () => {
     expect(db.queries[0].params).toContain('assistant');
     expect(db.queries[0].params).toContain('text');
     expect(db.queries[0].params).toContain(1);
+  });
+
+  it('rejects duplicate hash replays when the stored message blob differs', async () => {
+    const db = new SequenceSqlClient([
+      { rows: [], rowCount: 0 },
+      {
+        rows: [{
+          id: 'blob_existing',
+          content_hash: 'hash_message_1',
+          kind: 'message',
+          role: 'assistant',
+          content_type: 'json',
+          normalized_payload: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'drifted' }]
+          },
+          normalized_payload_codec_version: 2,
+          created_at: '2026-03-26T03:00:05Z'
+        }],
+        rowCount: 1
+      }
+    ]);
+    const repo = new MessageBlobRepository(db, () => 'blob_new');
+
+    await expect(repo.upsertBlob(sampleBlob)).rejects.toThrow('message blob idempotent replay mismatch');
   });
 
   it('defines global content-hash dedupe in both migration variants', () => {
