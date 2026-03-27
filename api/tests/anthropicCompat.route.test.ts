@@ -524,6 +524,92 @@ describe('anthropic compat route', () => {
     }));
   });
 
+  it('archives translated compat streaming success through the shared proxy flow', async () => {
+    setupTranslatedCompatOpenAiRoute(runtimeModule);
+    const archiveSpy = vi.spyOn(runtimeModule.runtime.services.requestArchive, 'archiveAttempt').mockResolvedValue({
+      archiveId: 'archive_compat_stream_shared',
+      requestMessageCount: 1,
+      responseMessageCount: 1,
+      rawBlobRoles: ['request', 'stream']
+    });
+    const upstreamSse = [
+      'data: {"type":"response.created","response":{"id":"resp_compat_stream_archive","status":"in_progress","usage":{"input_tokens":0,"output_tokens":0}}}\n\n',
+      'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_compat_stream_archive","role":"assistant","content":[{"type":"output_text","text":"hello from codex"}],"status":"completed"}}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_compat_stream_archive","status":"completed","usage":{"input_tokens":6,"output_tokens":4}}}\n\n',
+      'data: [DONE]\n\n'
+    ].join('');
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(upstreamSse, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+    }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123462',
+        'x-request-id': 'req_compat_stream_archive'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        stream: true,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'translate me' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(req.inniesCompatMode).toBe(true);
+    expect(req.inniesProxiedPath).toBe('/v1/messages');
+    expect(archiveSpy).toHaveBeenCalledTimes(1);
+    expect(archiveSpy).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: 'req_compat_stream_archive',
+      routeKind: 'token_credential',
+      provider: 'openai',
+      model: 'gpt-5.4',
+      streaming: true,
+      status: 'success',
+      upstreamStatus: 200,
+      request: {
+        format: 'anthropic_messages',
+        payload: {
+          model: 'claude-opus-4-6',
+          stream: true,
+          max_tokens: 16,
+          messages: [{ role: 'user', content: 'translate me' }]
+        }
+      },
+      response: expect.objectContaining({
+        format: 'anthropic_messages',
+        payload: expect.objectContaining({
+          id: 'resp_compat_stream_archive',
+          role: 'assistant',
+          model: 'claude-opus-4-6',
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 6, output_tokens: 4 },
+          content: [{ type: 'text', text: 'hello from codex' }]
+        })
+      }),
+      rawRequest: {
+        model: 'claude-opus-4-6',
+        stream: true,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'translate me' }]
+      },
+      rawStream: String(res.body).replace(/^: keepalive\n\n/, '')
+    }));
+    expect((archiveSpy.mock.calls[0]?.[0] as any)?.rawResponse).toBeNull();
+  });
+
   it('maps translated openai 401 responses into anthropic authentication_error envelopes', async () => {
     setupTranslatedCompatOpenAiRoute(runtimeModule);
     const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({

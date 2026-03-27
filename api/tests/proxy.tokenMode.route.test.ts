@@ -4879,6 +4879,188 @@ describe('proxy token-mode route behavior', () => {
     upstreamSpy.mockRestore();
   });
 
+  it('archives token-mode non-stream success with normalized request and response, raw blobs, and unchanged previews', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const requestLogSpy = vi.spyOn(runtimeModule.runtime.repos.requestLog, 'insert').mockResolvedValue(undefined);
+    const archiveSpy = vi.spyOn(runtimeModule.runtime.services.requestArchive, 'archiveAttempt').mockResolvedValue({
+      archiveId: 'archive_token_non_stream_ok',
+      requestMessageCount: 1,
+      responseMessageCount: 1,
+      rawBlobRoles: ['request', 'response']
+    });
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([
+      createRoutingCredentialFixture({
+        id: 'cred_token_archive_ok',
+        provider: 'anthropic',
+        authScheme: 'x_api_key',
+        accessToken: 'sk-ant-token-archive-ok'
+      })
+    ]);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      id: 'msg_token_archive_ok',
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'archived answer' }],
+      usage: { input_tokens: 5, output_tokens: 7 }
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123457',
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'req_token_archive_ok'
+      },
+      body: {
+        model: 'claude-3-5-sonnet-latest',
+        stream: false,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hello from buyer' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(requestLogSpy).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: 'req_token_archive_ok',
+      attemptNo: 1,
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'anthropic',
+      model: 'claude-3-5-sonnet-latest',
+      promptPreview: 'hello from buyer',
+      responsePreview: 'archived answer'
+    }));
+    expect(archiveSpy).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: 'req_token_archive_ok',
+      attemptNo: 1,
+      routeKind: 'token_credential',
+      tokenCredentialId: 'cred_token_archive_ok',
+      provider: 'anthropic',
+      model: 'claude-3-5-sonnet-latest',
+      streaming: false,
+      status: 'success',
+      upstreamStatus: 200,
+      request: {
+        format: 'anthropic_messages',
+        payload: {
+          model: 'claude-3-5-sonnet-latest',
+          stream: false,
+          max_tokens: 16,
+          messages: [{ role: 'user', content: 'hello from buyer' }]
+        }
+      },
+      response: {
+        format: 'anthropic_messages',
+        payload: {
+          id: 'msg_token_archive_ok',
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'archived answer' }],
+          usage: { input_tokens: 5, output_tokens: 7 }
+        }
+      },
+      rawRequest: {
+        model: 'claude-3-5-sonnet-latest',
+        stream: false,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hello from buyer' }]
+      },
+      rawResponse: {
+        id: 'msg_token_archive_ok',
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'archived answer' }],
+        usage: { input_tokens: 5, output_tokens: 7 }
+      }
+    }));
+  });
+
+  it('archives failed token-mode non-stream attempts with request content, failure metadata, and raw request', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const archiveSpy = vi.spyOn(runtimeModule.runtime.services.requestArchive, 'archiveAttempt').mockResolvedValue({
+      archiveId: 'archive_token_non_stream_failed',
+      requestMessageCount: 1,
+      responseMessageCount: 0,
+      rawBlobRoles: ['request']
+    });
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([
+      createRoutingCredentialFixture({
+        id: 'cred_token_archive_fail',
+        provider: 'anthropic',
+        authScheme: 'x_api_key',
+        accessToken: 'sk-ant-token-archive-fail'
+      })
+    ]);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      type: 'error',
+      error: { type: 'rate_limit_error', message: 'slow down' }
+    }), {
+      status: 429,
+      headers: { 'content-type': 'application/json' }
+    }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123458',
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'req_token_archive_fail'
+      },
+      body: {
+        model: 'claude-3-5-sonnet-latest',
+        stream: false,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'please fail' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(429);
+    expect(archiveSpy).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: 'req_token_archive_fail',
+      attemptNo: 1,
+      routeKind: 'token_credential',
+      tokenCredentialId: 'cred_token_archive_fail',
+      provider: 'anthropic',
+      model: 'claude-3-5-sonnet-latest',
+      streaming: false,
+      status: 'failed',
+      upstreamStatus: 429,
+      errorCode: 'rate_limited',
+      request: {
+        format: 'anthropic_messages',
+        payload: {
+          model: 'claude-3-5-sonnet-latest',
+          stream: false,
+          max_tokens: 16,
+          messages: [{ role: 'user', content: 'please fail' }]
+        }
+      },
+      response: null,
+      rawRequest: {
+        model: 'claude-3-5-sonnet-latest',
+        stream: false,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'please fail' }]
+      }
+    }));
+  });
+
   it('archives token-mode streaming finalization exactly once', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     const archiveSpy = vi.spyOn(runtimeModule.runtime.services.requestArchive, 'archiveAttempt').mockResolvedValue({
@@ -4944,17 +5126,48 @@ describe('proxy token-mode route behavior', () => {
     await invoke(handlers[1], req, res);
 
     expect(res.statusCode).toBe(200);
-    expect(String(res.body)).toContain('event: message_stop');
+    expect(String(res.body)).toBe(
+      ': keepalive\n\n'
+      + 'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_archive_ok","type":"message","role":"assistant","model":"claude-3-5-sonnet-latest","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":4,"output_tokens":0}}}\n\n'
+      + 'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}\n\n'
+      + 'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":4,"output_tokens":3}}\n\n'
+      + 'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+    );
     expect(archiveSpy).toHaveBeenCalledTimes(1);
     expect(archiveSpy).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: expect.any(String),
       routeKind: 'token_credential',
       tokenCredentialId: 'dddd1115-3000-4000-8000-000000000000',
+      provider: 'anthropic',
+      model: 'claude-3-5-sonnet-latest',
       streaming: true,
       status: 'success',
+      upstreamStatus: 200,
       request: expect.objectContaining({
-        format: 'anthropic_messages'
-      })
+        format: 'anthropic_messages',
+        payload: {
+          model: 'claude-3-5-sonnet-latest',
+          stream: true,
+          max_tokens: 16,
+          messages: [{ role: 'user', content: 'hello' }]
+        }
+      }),
+      response: expect.objectContaining({
+        format: 'anthropic_messages',
+        payload: expect.objectContaining({
+          role: 'assistant',
+          content: [{ type: 'text', text: 'hello' }]
+        })
+      }),
+      rawRequest: {
+        model: 'claude-3-5-sonnet-latest',
+        stream: true,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hello' }]
+      },
+      rawStream: String(res.body).replace(/^: keepalive\n\n/, '')
     }));
+    expect((archiveSpy.mock.calls[0]?.[0] as any)?.rawResponse).toBeNull();
     upstreamSpy.mockRestore();
   });
 
@@ -4989,7 +5202,7 @@ describe('proxy token-mode route behavior', () => {
       start(controller) {
         controller.enqueue(encoder.encode('event: message_start\ndata: {"type":"message_start","message":{"id":"msg_archive_partial","type":"message","role":"assistant","model":"claude-3-5-sonnet-latest","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}\n\n'));
         controller.enqueue(encoder.encode('event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}\n\n'));
-        controller.error(new Error('upstream reset'));
+        controller.close();
       }
     });
     const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -5027,8 +5240,23 @@ describe('proxy token-mode route behavior', () => {
       routeKind: 'token_credential',
       tokenCredentialId: 'dddd1115-4000-4000-8000-000000000000',
       streaming: true,
-      status: 'partial'
+      status: 'partial',
+      response: expect.objectContaining({
+        format: 'anthropic_messages',
+        payload: expect.objectContaining({
+          role: 'assistant',
+          content: [{ type: 'text', text: 'partial' }]
+        })
+      }),
+      rawRequest: {
+        model: 'claude-3-5-sonnet-latest',
+        stream: true,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hello' }]
+      },
+      rawStream: String(res.body).replace(/^: keepalive\n\n/, '')
     }));
+    expect((archiveSpy.mock.calls[0]?.[0] as any)?.rawResponse).toBeNull();
     upstreamSpy.mockRestore();
   });
 

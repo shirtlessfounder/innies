@@ -293,11 +293,14 @@ describe('proxy seller-mode route behavior', () => {
     const archiveSpy = vi.spyOn(runtimeModule.runtime.services.requestArchive, 'archiveAttempt').mockResolvedValue({
       archiveId: 'archive_seller_non_stream',
       requestMessageCount: 1,
-      responseMessageCount: 0,
+      responseMessageCount: 1,
       rawBlobRoles: ['request', 'response']
     });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       id: 'resp_seller_archive_ok',
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'seller archived reply' }],
       usage: { input_tokens: 9, output_tokens: 4 }
     }), {
       status: 200,
@@ -311,7 +314,8 @@ describe('proxy seller-mode route behavior', () => {
         authorization: 'Bearer in_test_token',
         'content-type': 'application/json',
         'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123457',
-        'anthropic-version': '2023-06-01'
+        'anthropic-version': '2023-06-01',
+        'x-request-id': 'req_seller_archive_ok'
       },
       body: {
         provider: 'anthropic',
@@ -332,13 +336,45 @@ describe('proxy seller-mode route behavior', () => {
     expect(res.statusCode).toBe(200);
     expect(archiveSpy).toHaveBeenCalledTimes(1);
     expect(archiveSpy).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: 'req_seller_archive_ok',
+      attemptNo: 1,
       routeKind: 'seller_key',
       sellerKeyId: 'seller-key-1',
+      provider: 'anthropic',
+      model: 'claude-opus-4-6',
       streaming: false,
       status: 'success',
+      upstreamStatus: 200,
       request: expect.objectContaining({
-        format: 'anthropic_messages'
-      })
+        format: 'anthropic_messages',
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 16,
+          messages: [{ role: 'user', content: 'archive me' }]
+        }
+      }),
+      response: {
+        format: 'anthropic_messages',
+        payload: {
+          id: 'resp_seller_archive_ok',
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'seller archived reply' }],
+          usage: { input_tokens: 9, output_tokens: 4 }
+        }
+      },
+      rawRequest: {
+        model: 'claude-opus-4-6',
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'archive me' }]
+      },
+      rawResponse: {
+        id: 'resp_seller_archive_ok',
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'seller archived reply' }],
+        usage: { input_tokens: 9, output_tokens: 4 }
+      }
     }));
   });
 

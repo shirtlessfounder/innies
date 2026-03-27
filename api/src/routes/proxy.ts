@@ -172,6 +172,14 @@ type ProxyArchiveHookInput = {
   correlation: OpenClawCorrelation;
 };
 
+type ProxyFailureArchiveInput = Omit<
+  ProxyArchiveHookInput,
+  'status' | 'upstreamStatus' | 'errorCode'
+> & {
+  failure: AttemptFailure;
+  status?: 'failed' | 'partial';
+};
+
 function requestSeed(requestId: string): number {
   let seed = 0;
   for (let i = 0; i < requestId.length; i += 1) {
@@ -1753,13 +1761,40 @@ function buildArchiveAttemptInput(input: ProxyArchiveHookInput): ArchiveAttemptI
       ? null
       : buildArchivePayloadSource(input.requestPath, input.responsePayload),
     rawRequest: input.rawRequest ?? input.requestPayload ?? null,
-    rawResponse: input.rawResponse ?? input.responsePayload ?? null,
+    rawResponse: input.rawResponse ?? (input.streaming ? null : (input.responsePayload ?? null)),
     rawStream: input.rawStream ?? null
   };
 }
 
 async function archiveProxyAttempt(input: ProxyArchiveHookInput): Promise<void> {
   await runtime.services.requestArchive.archiveAttempt(buildArchiveAttemptInput(input));
+}
+
+async function archiveFailedProxyAttempt(input: ProxyFailureArchiveInput): Promise<void> {
+  await archiveProxyAttempt({
+    requestId: input.requestId,
+    attemptNo: input.attemptNo,
+    orgId: input.orgId,
+    apiKeyId: input.apiKeyId,
+    routeKind: input.routeKind,
+    sellerKeyId: input.sellerKeyId ?? null,
+    tokenCredentialId: input.tokenCredentialId ?? null,
+    provider: input.provider,
+    model: input.model,
+    streaming: input.streaming,
+    status: input.status ?? 'failed',
+    upstreamStatus: input.failure.statusCode ?? null,
+    errorCode: inferErrorCode(input.failure),
+    requestPath: input.requestPath,
+    requestPayload: input.requestPayload,
+    responsePayload: input.responsePayload,
+    rawRequest: input.rawRequest,
+    rawResponse: input.rawResponse,
+    rawStream: input.rawStream,
+    startedAtMs: input.startedAtMs,
+    completedAtMs: input.completedAtMs,
+    correlation: input.correlation
+  });
 }
 
 function resolveCompatUpstreamRequest(input: {
@@ -2446,6 +2481,173 @@ function parseSseObjectPayloads(raw: string): Array<Record<string, unknown>> {
   return payloads;
 }
 
+function readStreamOrdinal(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
+function cloneSseRecord(value: Record<string, unknown>): Record<string, unknown> {
+  return { ...value };
+}
+
+function createAnthropicContentBlockFromDelta(delta: Record<string, unknown>): Record<string, unknown> {
+  switch (delta.type) {
+    case 'text_delta':
+      return { type: 'text', text: '' };
+    case 'input_json_delta':
+      return { type: 'tool_use', input: {} };
+    case 'thinking_delta':
+      return { type: 'thinking', thinking: '' };
+    case 'signature_delta':
+      return { type: 'thinking', thinking: '', signature: '' };
+    default:
+      return {};
+  }
+}
+
+function parseJsonFragment(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function applyAnthropicContentDelta(input: {
+  block: Record<string, unknown>;
+  delta: Record<string, unknown>;
+  index: number;
+  toolInputFragments: Map<number, string>;
+}): void {
+  const { block, delta, index, toolInputFragments } = input;
+  switch (delta.type) {
+    case 'text_delta':
+      block.type = 'text';
+      block.text = `${typeof block.text === 'string' ? block.text : ''}${typeof delta.text === 'string' ? delta.text : ''}`;
+      break;
+    case 'input_json_delta': {
+      block.type = 'tool_use';
+      const nextFragment = `${toolInputFragments.get(index) ?? ''}${typeof delta.partial_json === 'string' ? delta.partial_json : ''}`;
+      toolInputFragments.set(index, nextFragment);
+      block.input = parseJsonFragment(nextFragment);
+      break;
+    }
+    case 'thinking_delta':
+      block.type = 'thinking';
+      block.thinking = `${typeof block.thinking === 'string' ? block.thinking : ''}${typeof delta.thinking === 'string' ? delta.thinking : ''}`;
+      break;
+    case 'signature_delta':
+      if (typeof delta.signature === 'string') {
+        block.signature = `${typeof block.signature === 'string' ? block.signature : ''}${delta.signature}`;
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+function extractAnthropicMessageFromSse(raw: string): Record<string, unknown> | null {
+  const payloads = parseSseObjectPayloads(raw);
+  let message: Record<string, unknown> | null = null;
+  const contentBlocks = new Map<number, Record<string, unknown>>();
+  const toolInputFragments = new Map<number, string>();
+
+  for (const payload of payloads) {
+    switch (payload.type) {
+      case 'message_start': {
+        const startedMessage = readRecord(payload.message);
+        if (!startedMessage) break;
+        message = cloneSseRecord(startedMessage);
+        const startedContent = Array.isArray(startedMessage.content) ? startedMessage.content : [];
+        for (const [index, block] of startedContent.entries()) {
+          const record = readRecord(block);
+          if (!record) continue;
+          contentBlocks.set(index, cloneSseRecord(record));
+        }
+        break;
+      }
+      case 'content_block_start': {
+        const index = readStreamOrdinal(payload.index);
+        const block = readRecord(payload.content_block);
+        if (index === null || !block) break;
+        contentBlocks.set(index, cloneSseRecord(block));
+        break;
+      }
+      case 'content_block_delta': {
+        const index = readStreamOrdinal(payload.index);
+        const delta = readRecord(payload.delta);
+        if (index === null || !delta) break;
+        const block = contentBlocks.get(index) ?? createAnthropicContentBlockFromDelta(delta);
+        applyAnthropicContentDelta({
+          block,
+          delta,
+          index,
+          toolInputFragments
+        });
+        contentBlocks.set(index, block);
+        break;
+      }
+      case 'message_delta': {
+        if (!message) {
+          message = { role: 'assistant', content: [] };
+        }
+        const delta = readRecord(payload.delta);
+        if (delta) {
+          if (Object.prototype.hasOwnProperty.call(delta, 'stop_reason')) {
+            message.stop_reason = delta.stop_reason ?? null;
+          }
+          if (Object.prototype.hasOwnProperty.call(delta, 'stop_sequence')) {
+            message.stop_sequence = delta.stop_sequence ?? null;
+          }
+        }
+        const usage = readRecord(payload.usage);
+        if (usage) {
+          message.usage = {
+            ...(readRecord(message.usage) ?? {}),
+            ...usage
+          };
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  if (!message && contentBlocks.size === 0) {
+    return null;
+  }
+
+  const content = Array.from(contentBlocks.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([index, block]) => {
+      const nextBlock = cloneSseRecord(block);
+      if (nextBlock.type === 'tool_use' && toolInputFragments.has(index)) {
+        nextBlock.input = parseJsonFragment(toolInputFragments.get(index) ?? '');
+      }
+      return nextBlock;
+    });
+
+  const nextMessage = message ?? { role: 'assistant' };
+  if (content.length > 0) {
+    nextMessage.content = content;
+  } else if (!Array.isArray(nextMessage.content)) {
+    nextMessage.content = [];
+  }
+
+  return nextMessage;
+}
+
+function extractArchiveResponsePayloadFromStream(input: {
+  rawStream: string;
+  downstreamUsesAnthropicSse: boolean;
+}): unknown | null {
+  return input.downstreamUsesAnthropicSse
+    ? extractAnthropicMessageFromSse(input.rawStream)
+    : extractTerminalOpenAiResponseFromSse(input.rawStream);
+}
+
 function extractOpenAiResponsesStreamTerminalError(raw: string): StreamTerminalErrorMetadata | null {
   const payloads = parseSseObjectPayloads(raw);
   for (let index = payloads.length - 1; index >= 0; index -= 1) {
@@ -2650,6 +2852,8 @@ async function executeTokenModeNonStreaming(input: {
   model: string;
   payload: unknown;
   proxiedPath: string;
+  archiveRequestPayload: unknown;
+  archiveRequestPath: string;
   anthropicVersion: string;
   anthropicBeta?: string;
   startedAt: number;
@@ -2669,6 +2873,8 @@ async function executeTokenModeNonStreaming(input: {
     model,
     payload,
     proxiedPath,
+    archiveRequestPayload,
+    archiveRequestPath,
     anthropicVersion,
     anthropicBeta,
     startedAt,
@@ -2765,7 +2971,11 @@ async function executeTokenModeNonStreaming(input: {
         });
       }
 
-      const logAttemptFailure = async (failure: AttemptFailure, ttfb?: number | null) => {
+      const logAttemptFailure = async (
+        failure: AttemptFailure,
+        ttfb?: number | null,
+        options?: { archive?: boolean }
+      ) => {
         await runtime.repos.routingEvents.insert({
           requestId,
           attemptNo,
@@ -2791,6 +3001,24 @@ async function executeTokenModeNonStreaming(input: {
           latencyMs: Date.now() - startedAt,
           ttfbMs: ttfb ?? null
         });
+        if (options?.archive !== false) {
+          await archiveFailedProxyAttempt({
+            requestId,
+            attemptNo,
+            orgId,
+            apiKeyId,
+            routeKind: 'token_credential',
+            tokenCredentialId: credential.id,
+            provider,
+            model,
+            streaming: false,
+            requestPath: archiveRequestPath,
+            requestPayload: archiveRequestPayload,
+            startedAtMs: startedAt,
+            correlation,
+            failure
+          });
+        }
       };
 
       const upstreamResponse = await fetch(targetUrl, {
@@ -3347,7 +3575,7 @@ async function executeTokenModeNonStreaming(input: {
           await logAttemptFailure({
             kind: 'metering_degraded',
             message: 'monthly contribution increment could not be recorded after successful upstream response'
-          });
+          }, undefined, { archive: false });
         }
       }
 
@@ -3575,7 +3803,11 @@ async function executeTokenModeStreaming(input: {
       }
       const dispatchStartedAt = Date.now();
 
-      const logAttemptFailure = async (failure: AttemptFailure, ttfb?: number | null) => {
+      const logAttemptFailure = async (
+        failure: AttemptFailure,
+        ttfb?: number | null,
+        options?: { archive?: boolean }
+      ) => {
         await runtime.repos.routingEvents.insert({
           requestId,
           attemptNo,
@@ -3597,6 +3829,24 @@ async function executeTokenModeStreaming(input: {
           latencyMs: Date.now() - startedAt,
           ttfbMs: ttfb ?? null
         });
+        if (options?.archive !== false) {
+          await archiveFailedProxyAttempt({
+            requestId,
+            attemptNo,
+            orgId,
+            apiKeyId,
+            routeKind: 'token_credential',
+            tokenCredentialId: credential.id,
+            provider,
+            model,
+            streaming: true,
+            requestPath: archiveRequestPath,
+            requestPayload: archiveRequestPayload,
+            startedAtMs: startedAt,
+            correlation,
+            failure
+          });
+        }
       };
 
       const upstreamResponse = await fetch(targetUrl, {
@@ -4118,6 +4368,10 @@ async function executeTokenModeStreaming(input: {
 
           const useAnthropicSse = !!(compatTranslation || compatModeFlag);
           if (!useAnthropicSse && looksLikeSse) {
+            const archivedStreamResponsePayload = extractArchiveResponsePayloadFromStream({
+              rawStream: rawText,
+              downstreamUsesAnthropicSse: false
+            });
             await archiveProxyAttempt({
               requestId,
               attemptNo,
@@ -4132,6 +4386,7 @@ async function executeTokenModeStreaming(input: {
               upstreamStatus: status,
               requestPath: archiveRequestPath,
               requestPayload: archiveRequestPayload,
+              responsePayload: archivedStreamResponsePayload,
               rawStream: rawText,
               startedAtMs: startedAt,
               correlation
@@ -4188,7 +4443,7 @@ async function executeTokenModeStreaming(input: {
                   await logAttemptFailure({
                     kind: 'metering_degraded',
                     message: 'monthly contribution increment could not be recorded after buffered SSE passthrough'
-                  });
+                  }, undefined, { archive: false });
                 }
               }
 
@@ -4309,7 +4564,6 @@ async function executeTokenModeStreaming(input: {
             requestPath: archiveRequestPath,
             requestPayload: archiveRequestPayload,
             responsePayload: downstreamData,
-            rawResponse: downstreamData,
             rawStream: syntheticPayload,
             startedAtMs: startedAt,
             correlation
@@ -4353,7 +4607,7 @@ async function executeTokenModeStreaming(input: {
                 await logAttemptFailure({
                   kind: 'metering_degraded',
                   message: 'monthly contribution increment could not be recorded after successful upstream non-stream response'
-                });
+                }, undefined, { archive: false });
               }
             }
 
@@ -4749,7 +5003,7 @@ async function executeTokenModeStreaming(input: {
             await logAttemptFailure({
               kind: 'metering_degraded',
               message: 'monthly contribution increment could not be recorded after successful upstream stream'
-            });
+            }, undefined, { archive: false });
           }
 
           await runtime.services.metering.recordUsage({
@@ -4826,6 +5080,10 @@ async function executeTokenModeStreaming(input: {
         });
       }
 
+      const archivedStreamResponsePayload = extractArchiveResponsePayloadFromStream({
+        rawStream: sampled,
+        downstreamUsesAnthropicSse
+      });
       await archiveProxyAttempt({
         requestId,
         attemptNo,
@@ -4843,6 +5101,7 @@ async function executeTokenModeStreaming(input: {
         errorCode: streamFailureCode,
         requestPath: archiveRequestPath,
         requestPayload: archiveRequestPayload,
+        responsePayload: archivedStreamResponsePayload,
         rawStream: sampled,
         startedAtMs: startedAt,
         correlation
@@ -5059,6 +5318,8 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               model: upstreamRequest.model,
               payload: upstreamRequest.payload,
               proxiedPath: upstreamRequest.proxiedPath,
+              archiveRequestPayload: parsed.payload ?? {},
+              archiveRequestPath: proxiedPath,
               anthropicVersion,
               anthropicBeta,
               startedAt,
@@ -5132,7 +5393,11 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
             correlation,
             pinSelectionReason: requestPinSelectionReason
           });
-          const logAttemptFailure = async (failure: AttemptFailure, ttfb?: number | null) => {
+          const logAttemptFailure = async (
+            failure: AttemptFailure,
+            ttfb?: number | null,
+            options?: { archive?: boolean }
+          ) => {
             await runtime.repos.routingEvents.insert({
               requestId,
               attemptNo: decision.attemptNo,
@@ -5148,6 +5413,24 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               latencyMs: Date.now() - startedAt,
               ttfbMs: ttfb ?? null
             });
+            if (options?.archive !== false) {
+              await archiveFailedProxyAttempt({
+                requestId,
+                attemptNo: decision.attemptNo,
+                orgId,
+                apiKeyId: auth.apiKeyId,
+                routeKind: 'seller_key',
+                sellerKeyId: decision.sellerKeyId,
+                provider: requestProvider,
+                model: parsed.model,
+                streaming: parsed.streaming,
+                requestPath: proxiedPath,
+                requestPayload: parsed.payload ?? {},
+                startedAtMs: startedAt,
+                correlation,
+                failure
+              });
+            }
           };
 
           const sellerKey = await runtime.repos.sellerKeys.getSecret(decision.sellerKeyId);
@@ -5305,6 +5588,10 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               errorCode: shouldRecordServedStream ? null : `upstream_${upstreamResponse.status}`,
               requestPath: proxiedPath,
               requestPayload: payload,
+              responsePayload: extractArchiveResponsePayloadFromStream({
+                rawStream: sampled,
+                downstreamUsesAnthropicSse: requestProvider === 'anthropic'
+              }),
               rawStream: sampled,
               startedAtMs: startedAt,
               correlation
