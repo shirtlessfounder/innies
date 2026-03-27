@@ -316,6 +316,12 @@ describe('anthropic compat route', () => {
       }
     } as any);
     vi.spyOn(runtimeModule.runtime.services.idempotency, 'commit').mockResolvedValue(undefined);
+    vi.spyOn(runtimeModule.runtime.services.requestArchive, 'archiveAttempt').mockResolvedValue({
+      archiveId: 'archive_default',
+      requestMessageCount: 0,
+      responseMessageCount: 0,
+      rawBlobRoles: []
+    });
   });
 
   afterEach(() => {
@@ -464,6 +470,58 @@ describe('anthropic compat route', () => {
     expect(routeDecision.provider_effective).toBe('openai');
     expect(routeDecision.provider_plan).toEqual(['openai', 'anthropic']);
     upstreamSpy.mockRestore();
+  });
+
+  it('archives compat /v1/messages requests through the shared proxy flow', async () => {
+    const archiveSpy = vi.spyOn(runtimeModule.runtime.services.requestArchive, 'archiveAttempt').mockResolvedValue({
+      archiveId: 'archive_compat_shared',
+      requestMessageCount: 1,
+      responseMessageCount: 0,
+      rawBlobRoles: ['request', 'response']
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      id: 'resp_compat_archive_ok',
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'ok' }],
+      usage: { input_tokens: 7, output_tokens: 2 }
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123461',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        model: 'claude-opus-4-6',
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'archive compat request' }]
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+    await invoke(handlers[2], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(req.inniesCompatMode).toBe(true);
+    expect(req.inniesProxiedPath).toBe('/v1/messages');
+    expect(archiveSpy).toHaveBeenCalledTimes(1);
+    expect(archiveSpy).toHaveBeenCalledWith(expect.objectContaining({
+      routeKind: 'token_credential',
+      streaming: false,
+      request: expect.objectContaining({
+        format: 'anthropic_messages'
+      })
+    }));
   });
 
   it('maps translated openai 401 responses into anthropic authentication_error envelopes', async () => {

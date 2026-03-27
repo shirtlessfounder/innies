@@ -6,6 +6,7 @@ import { requireApiKey } from '../middleware/auth.js';
 import type { TokenCredential } from '../repos/tokenCredentialRepository.js';
 import type { TokenCredentialProviderUsageSnapshot } from '../repos/tokenCredentialProviderUsageRepository.js';
 import { runtime } from '../services/runtime.js';
+import type { ArchiveAttemptInput, ArchivePayloadFormat, ArchivePayloadSource } from '../services/archive/archiveTypes.js';
 import type { IdempotencySession } from '../services/idempotencyService.js';
 import { AppError } from '../utils/errors.js';
 import { sha256Hex, stableJson } from '../utils/hash.js';
@@ -144,6 +145,31 @@ type RescueFailureSnapshot = {
 
 type RescueTracker = {
   firstFailure: RescueFailureSnapshot | null;
+};
+
+type ProxyArchiveHookInput = {
+  requestId: string;
+  attemptNo: number;
+  orgId: string;
+  apiKeyId: string;
+  routeKind: 'seller_key' | 'token_credential';
+  sellerKeyId?: string | null;
+  tokenCredentialId?: string | null;
+  provider: string;
+  model: string;
+  streaming: boolean;
+  status: 'success' | 'failed' | 'partial';
+  upstreamStatus?: number | null;
+  errorCode?: string | null;
+  requestPath: string;
+  requestPayload: unknown;
+  responsePayload?: unknown;
+  rawRequest?: unknown;
+  rawResponse?: unknown;
+  rawStream?: unknown;
+  startedAtMs: number;
+  completedAtMs?: number;
+  correlation: OpenClawCorrelation;
 };
 
 function requestSeed(requestId: string): number {
@@ -1688,6 +1714,52 @@ function mapAuthHeader(authScheme: TokenCredential['authScheme'], accessToken: s
 
 function parseRelativeProxyUrl(proxiedPath: string): URL {
   return new URL(proxiedPath, 'https://innies.invalid');
+}
+
+function archivePayloadFormatForPath(proxiedPath: string): ArchivePayloadFormat {
+  return parseRelativeProxyUrl(proxiedPath).pathname === '/v1/responses'
+    ? 'openai_responses'
+    : 'anthropic_messages';
+}
+
+function buildArchivePayloadSource(proxiedPath: string, payload: unknown): ArchivePayloadSource {
+  return {
+    format: archivePayloadFormatForPath(proxiedPath),
+    payload
+  };
+}
+
+function buildArchiveAttemptInput(input: ProxyArchiveHookInput): ArchiveAttemptInput {
+  return {
+    requestId: input.requestId,
+    attemptNo: input.attemptNo,
+    orgId: input.orgId,
+    apiKeyId: input.apiKeyId,
+    routeKind: input.routeKind,
+    sellerKeyId: input.sellerKeyId ?? null,
+    tokenCredentialId: input.tokenCredentialId ?? null,
+    provider: input.provider,
+    model: input.model,
+    streaming: input.streaming,
+    status: input.status,
+    upstreamStatus: input.upstreamStatus ?? null,
+    errorCode: input.errorCode ?? null,
+    startedAt: new Date(input.startedAtMs),
+    completedAt: new Date(input.completedAtMs ?? Date.now()),
+    openclawRunId: input.correlation.openclawRunId,
+    openclawSessionId: input.correlation.openclawSessionId ?? null,
+    request: buildArchivePayloadSource(input.requestPath, input.requestPayload),
+    response: input.responsePayload == null
+      ? null
+      : buildArchivePayloadSource(input.requestPath, input.responsePayload),
+    rawRequest: input.rawRequest ?? input.requestPayload ?? null,
+    rawResponse: input.rawResponse ?? input.responsePayload ?? null,
+    rawStream: input.rawStream ?? null
+  };
+}
+
+async function archiveProxyAttempt(input: ProxyArchiveHookInput): Promise<void> {
+  await runtime.services.requestArchive.archiveAttempt(buildArchiveAttemptInput(input));
 }
 
 function resolveCompatUpstreamRequest(input: {
@@ -3375,6 +3447,8 @@ async function executeTokenModeStreaming(input: {
   model: string;
   payload: unknown;
   proxiedPath: string;
+  archiveRequestPayload: unknown;
+  archiveRequestPath: string;
   anthropicVersion: string;
   anthropicBeta?: string;
   startedAt: number;
@@ -3397,6 +3471,8 @@ async function executeTokenModeStreaming(input: {
     model,
     payload,
     proxiedPath,
+    archiveRequestPayload,
+    archiveRequestPath,
     anthropicVersion,
     anthropicBeta,
     startedAt,
@@ -4042,6 +4118,24 @@ async function executeTokenModeStreaming(input: {
 
           const useAnthropicSse = !!(compatTranslation || compatModeFlag);
           if (!useAnthropicSse && looksLikeSse) {
+            await archiveProxyAttempt({
+              requestId,
+              attemptNo,
+              orgId,
+              apiKeyId,
+              routeKind: 'token_credential',
+              tokenCredentialId: credential.id,
+              provider,
+              model,
+              streaming: true,
+              status: 'success',
+              upstreamStatus: status,
+              requestPath: archiveRequestPath,
+              requestPayload: archiveRequestPayload,
+              rawStream: rawText,
+              startedAtMs: startedAt,
+              correlation
+            });
             firstDownstreamWriteAt = Date.now();
             (res as any).write(rawText);
             if ((res as any).body === undefined) {
@@ -4200,6 +4294,26 @@ async function executeTokenModeStreaming(input: {
             : `: keepalive\n\n${buildSyntheticOpenAiResponsesSse(syntheticMessage)}`;
           const streamMode = useAnthropicSse ? 'synthetic_bridge' : 'synthetic_openai_responses_bridge';
           const syntheticFormat = useAnthropicSse ? 'anthropic' : 'openai_responses';
+          await archiveProxyAttempt({
+            requestId,
+            attemptNo,
+            orgId,
+            apiKeyId,
+            routeKind: 'token_credential',
+            tokenCredentialId: credential.id,
+            provider,
+            model,
+            streaming: true,
+            status: 'success',
+            upstreamStatus: status,
+            requestPath: archiveRequestPath,
+            requestPayload: archiveRequestPayload,
+            responsePayload: downstreamData,
+            rawResponse: downstreamData,
+            rawStream: syntheticPayload,
+            startedAtMs: startedAt,
+            correlation
+          });
           firstDownstreamWriteAt = Date.now();
           (res as any).write(syntheticPayload);
           if ((res as any).body === undefined) {
@@ -4712,6 +4826,28 @@ async function executeTokenModeStreaming(input: {
         });
       }
 
+      await archiveProxyAttempt({
+        requestId,
+        attemptNo,
+        orgId,
+        apiKeyId,
+        routeKind: 'token_credential',
+        tokenCredentialId: credential.id,
+        provider,
+        model,
+        streaming: true,
+        status: streamFailureCode
+          ? (streamFailureCode === 'stream_failed_terminal' ? 'failed' : 'partial')
+          : 'success',
+        upstreamStatus: status,
+        errorCode: streamFailureCode,
+        requestPath: archiveRequestPath,
+        requestPayload: archiveRequestPayload,
+        rawStream: sampled,
+        startedAtMs: startedAt,
+        correlation
+      });
+
       return null;
     }
   }
@@ -4896,6 +5032,8 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               model: upstreamRequest.model,
               payload: upstreamRequest.payload,
               proxiedPath: upstreamRequest.proxiedPath,
+              archiveRequestPayload: parsed.payload ?? {},
+              archiveRequestPath: proxiedPath,
               anthropicVersion,
               anthropicBeta,
               startedAt,
@@ -5152,6 +5290,26 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               });
             }
 
+            await archiveProxyAttempt({
+              requestId,
+              attemptNo: decision.attemptNo,
+              orgId,
+              apiKeyId: auth.apiKeyId,
+              routeKind: 'seller_key',
+              sellerKeyId: decision.sellerKeyId,
+              provider: requestProvider,
+              model: parsed.model,
+              streaming: true,
+              status: shouldRecordServedStream ? 'success' : 'failed',
+              upstreamStatus: upstreamResponse.status,
+              errorCode: shouldRecordServedStream ? null : `upstream_${upstreamResponse.status}`,
+              requestPath: proxiedPath,
+              requestPayload: payload,
+              rawStream: sampled,
+              startedAtMs: startedAt,
+              correlation
+            });
+
             return {
               upstreamStatus: upstreamResponse.status,
               contentType,
@@ -5239,6 +5397,39 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
         });
       }
     }
+
+    const archiveStatus = result.upstreamStatus >= 200 && result.upstreamStatus < 300
+      ? 'success'
+      : 'failed';
+    const archivedProvider = result.routeKind === 'token_credential'
+      && typeof result.routeDecision?.provider_effective === 'string'
+      ? String(result.routeDecision.provider_effective)
+      : requestProvider;
+    const archivedModel = result.routeKind === 'token_credential'
+      && typeof result.routeDecision?.translated_model === 'string'
+      ? String(result.routeDecision.translated_model)
+      : parsed.model;
+    await archiveProxyAttempt({
+      requestId: result.requestId,
+      attemptNo: result.attemptNo,
+      orgId,
+      apiKeyId: auth.apiKeyId,
+      routeKind: result.routeKind,
+      sellerKeyId: result.routeKind === 'seller_key' ? result.keyId : null,
+      tokenCredentialId: result.routeKind === 'token_credential' ? result.keyId : null,
+      provider: archivedProvider,
+      model: archivedModel,
+      streaming: parsed.streaming,
+      status: archiveStatus,
+      upstreamStatus: result.upstreamStatus,
+      errorCode: archiveStatus === 'success' ? null : `upstream_${result.upstreamStatus}`,
+      requestPath: proxiedPath,
+      requestPayload: parsed.payload ?? null,
+      responsePayload: result.data ?? null,
+      rawResponse: result.data ?? null,
+      startedAtMs: startedAt,
+      correlation
+    });
 
     if (idemStart && !idemStart.replay) {
       await commitProxyMetadataIdempotency(idemStart, result.requestId, {

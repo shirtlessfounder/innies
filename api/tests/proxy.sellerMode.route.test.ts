@@ -223,6 +223,12 @@ describe('proxy seller-mode route behavior', () => {
       id: 'usage_1',
       entry_type: 'usage'
     } as any);
+    vi.spyOn(runtimeModule.runtime.services.requestArchive, 'archiveAttempt').mockResolvedValue({
+      archiveId: 'archive_default',
+      requestMessageCount: 0,
+      responseMessageCount: 0,
+      rawBlobRoles: []
+    });
     vi.spyOn(runtimeModule.runtime.services.wallets, 'ensurePaidAdmissionEligible').mockResolvedValue({
       walletId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
       balanceMinor: 100,
@@ -280,6 +286,104 @@ describe('proxy seller-mode route behavior', () => {
         request_source: 'openclaw',
         openclaw_run_id: 'oc_run_123'
       })
+    }));
+  });
+
+  it('archives seller-mode non-stream finalization once through the shared proxy flow', async () => {
+    const archiveSpy = vi.spyOn(runtimeModule.runtime.services.requestArchive, 'archiveAttempt').mockResolvedValue({
+      archiveId: 'archive_seller_non_stream',
+      requestMessageCount: 1,
+      responseMessageCount: 0,
+      rawBlobRoles: ['request', 'response']
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      id: 'resp_seller_archive_ok',
+      usage: { input_tokens: 9, output_tokens: 4 }
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123457',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: false,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 16,
+          messages: [{ role: 'user', content: 'archive me' }]
+        }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(archiveSpy).toHaveBeenCalledTimes(1);
+    expect(archiveSpy).toHaveBeenCalledWith(expect.objectContaining({
+      routeKind: 'seller_key',
+      sellerKeyId: 'seller-key-1',
+      streaming: false,
+      status: 'success',
+      request: expect.objectContaining({
+        format: 'anthropic_messages'
+      })
+    }));
+  });
+
+  it('surfaces seller-mode archive write failures instead of swallowing them', async () => {
+    const archiveSpy = vi.spyOn(runtimeModule.runtime.services.requestArchive, 'archiveAttempt').mockRejectedValue(
+      new Error('archive write failed')
+    );
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      id: 'resp_seller_archive_fail',
+      usage: { input_tokens: 8, output_tokens: 2 }
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/messages',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123458',
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        streaming: false,
+        payload: {
+          model: 'claude-opus-4-6',
+          max_tokens: 16,
+          messages: [{ role: 'user', content: 'break archive' }]
+        }
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(archiveSpy).toHaveBeenCalledTimes(1);
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toEqual(expect.objectContaining({
+      code: 'internal_error',
+      message: 'archive write failed'
     }));
   });
 
