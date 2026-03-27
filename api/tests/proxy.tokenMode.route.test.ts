@@ -4942,6 +4942,7 @@ describe('proxy token-mode route behavior', () => {
     expect(archiveSpy).toHaveBeenCalledWith(expect.objectContaining({
       requestId: 'req_token_archive_ok',
       attemptNo: 1,
+      apiKeyId: '11111111-1111-4111-8111-111111111111',
       routeKind: 'token_credential',
       tokenCredentialId: 'cred_token_archive_ok',
       provider: 'anthropic',
@@ -5034,6 +5035,7 @@ describe('proxy token-mode route behavior', () => {
     expect(archiveSpy).toHaveBeenCalledWith(expect.objectContaining({
       requestId: 'req_token_archive_fail',
       attemptNo: 1,
+      apiKeyId: '11111111-1111-4111-8111-111111111111',
       routeKind: 'token_credential',
       tokenCredentialId: 'cred_token_archive_fail',
       provider: 'anthropic',

@@ -60,6 +60,24 @@ describe('RequestAttemptMessageRepository', () => {
     expect(db.queries[0].params).toEqual(['archive_1', 'response']);
   });
 
+  it('uses deterministic request-then-response ordering for full-sequence reconstruction', async () => {
+    const db = new MockSqlClient({
+      rows: [{
+        request_attempt_archive_id: 'archive_1',
+        side: 'request',
+        ordinal: 0
+      }],
+      rowCount: 1
+    });
+    const repo = new RequestAttemptMessageRepository(db);
+
+    await repo.listByArchiveId('archive_1');
+
+    expect(db.queries[0].sql).toContain("case side when 'request' then 0 when 'response' then 1 else 2 end");
+    expect(db.queries[0].sql).toContain('ordinal asc');
+    expect(db.queries[0].params).toEqual(['archive_1']);
+  });
+
   it('rejects duplicate attempt-message edges when the stored link differs', async () => {
     const db = new SequenceSqlClient([
       { rows: [], rowCount: 0 },
