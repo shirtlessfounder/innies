@@ -21,6 +21,11 @@ import { WalletLedgerRepository } from '../repos/walletLedgerRepository.js';
 import { AnalyticsRepository } from '../repos/analyticsRepository.js';
 import { AnalyticsDashboardSnapshotRepository } from '../repos/analyticsDashboardSnapshotRepository.js';
 import { RequestLogRepository } from '../repos/requestLogRepository.js';
+import { RequestAttemptArchiveRepository } from '../repos/requestAttemptArchiveRepository.js';
+import { MessageBlobRepository } from '../repos/messageBlobRepository.js';
+import { RequestAttemptMessageRepository } from '../repos/requestAttemptMessageRepository.js';
+import { RawBlobRepository } from '../repos/rawBlobRepository.js';
+import { RequestAttemptRawBlobRepository } from '../repos/requestAttemptRawBlobRepository.js';
 import { PilotIdentityRepository } from '../repos/pilotIdentityRepository.js';
 import { PilotAdmissionFreezeRepository } from '../repos/pilotAdmissionFreezeRepository.js';
 import { PaymentProfileRepository } from '../repos/paymentProfileRepository.js';
@@ -43,6 +48,7 @@ import { UsageMeteringWriter } from './metering/usageMeteringWriter.js';
 import { EarningsProjectorService } from './earnings/earningsProjectorService.js';
 import { WithdrawalService } from './earnings/withdrawalService.js';
 import { TokenCredentialService } from './tokenCredentialService.js';
+import { RequestArchiveService } from './archive/requestArchiveService.js';
 import { OrgSessionService } from './org/orgSessionService.js';
 import { OrgGithubAuthService } from './org/orgGithubAuthService.js';
 import { OrgMembershipService } from './org/orgMembershipService.js';
@@ -102,6 +108,11 @@ export const runtime = {
     analyticsDashboardSnapshots: new AnalyticsDashboardSnapshotRepository(sql),
     earningsLedger: new EarningsLedgerRepository(sql),
     requestLog: new RequestLogRepository(sql),
+    requestAttemptArchives: new RequestAttemptArchiveRepository(sql),
+    messageBlobs: new MessageBlobRepository(sql),
+    requestAttemptMessages: new RequestAttemptMessageRepository(sql),
+    rawBlobs: new RawBlobRepository(sql),
+    requestAttemptRawBlobs: new RequestAttemptRawBlobRepository(sql),
     pilotIdentity: new PilotIdentityRepository(sql),
     pilotAdmissionFreezes: new PilotAdmissionFreezeRepository(sql),
     withdrawalRequests: new WithdrawalRequestRepository(sql),
@@ -130,6 +141,7 @@ export const runtime = {
     pilotGithubAuth: undefined as unknown as PilotGithubAuthService,
     pilotSessions: undefined as unknown as PilotSessionService,
     payments: undefined as unknown as PaymentService,
+    requestArchive: undefined as unknown as RequestArchiveService,
     routerEngine: new RouterEngine(),
     routingService: undefined as unknown as RoutingService,
     tokenCredentials: undefined as unknown as TokenCredentialService,
@@ -213,6 +225,9 @@ runtime.services.routingService = new RoutingService(
   runtime.services.keyPool,
   runtime.services.routerEngine
 );
+runtime.services.requestArchive = new RequestArchiveService({
+  sql: runtime.sql
+});
 runtime.services.payments = new PaymentService({
   paymentProfiles: runtime.repos.paymentProfiles,
   paymentMethods: runtime.repos.paymentMethods,
