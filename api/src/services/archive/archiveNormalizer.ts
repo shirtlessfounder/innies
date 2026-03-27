@@ -242,6 +242,24 @@ function normalizeOpenAiItem(
   }
 }
 
+function normalizeOpenAiRequestInput(value: unknown): NormalizedArchiveMessageEntry[] {
+  if (typeof value === 'string') {
+    return buildMessage('user', [{ type: 'text', text: value }]);
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => {
+      if (typeof item === 'string') {
+        return buildMessage('user', [{ type: 'text', text: item }]);
+      }
+
+      return normalizeOpenAiItem(item, 'request');
+    });
+  }
+
+  return [];
+}
+
 function extractOpenAiFallbackText(payload: Record<string, unknown>): string | null {
   const candidates = [
     payload.output_text,
@@ -273,7 +291,14 @@ function normalizeOpenAiPayload(
     messages.push(...buildMessage('system', [{ type: 'text', text: payload.instructions }]));
   }
 
-  const items = side === 'request' ? asArray(payload.input) : asArray(payload.output);
+  if (side === 'request') {
+    const requestMessages = normalizeOpenAiRequestInput(payload.input);
+    if (requestMessages.length > 0) {
+      return messages.concat(requestMessages);
+    }
+  }
+
+  const items = asArray(payload.output);
   if (items.length > 0) {
     return messages.concat(items.flatMap((item) => normalizeOpenAiItem(item, side)));
   }
