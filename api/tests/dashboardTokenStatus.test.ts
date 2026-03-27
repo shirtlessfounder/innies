@@ -174,7 +174,7 @@ describe('deriveDashboardTokenStatusRow', () => {
       fiveHourReservePercent: 20,
       providerUsageFetchedAt: '2026-03-12T12:00:00.000Z',
       fiveHourUtilizationRatio: 0.5,
-      now: '2026-03-12T12:20:01.000Z'
+      now: '2026-03-12T12:30:01.000Z'
     })).toEqual({
       rawStatus: 'active',
       compactStatus: 'active*',

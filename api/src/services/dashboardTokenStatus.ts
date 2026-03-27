@@ -1,5 +1,4 @@
-import { evaluateClaudeCredentialAvailability } from './claudeCredentialAvailability.js';
-import { CLAUDE_REPEATED_429_LOCAL_BACKOFF_REASON } from './tokenCredentialProviderUsage.js';
+import { readTokenCredentialProviderUsageSoftStaleMs } from './tokenCredentialProviderUsage.js';
 
 export type DashboardCompactStatus =
   | 'active'
@@ -51,6 +50,8 @@ export type DashboardTokenStatusOutput = {
   hidden: boolean;
 };
 
+const DEFAULT_CLAUDE_REPEATED_429_THRESHOLD = 10;
+
 function parseOptionalDate(value: Date | string | null | undefined): Date | null {
   if (!value) return null;
   if (value instanceof Date) {
@@ -92,6 +93,47 @@ function buildAuthDetailSuffix(input: Pick<DashboardTokenStatusInput, 'authDiagn
 function isActiveCooldown(rateLimitedUntil: Date | string | null | undefined, now: Date): boolean {
   const until = parseOptionalDate(rateLimitedUntil);
   return until !== null && until.getTime() > now.getTime();
+}
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function readClaudeRepeated429Threshold(): number {
+  return readPositiveIntEnv('TOKEN_CREDENTIAL_RATE_LIMIT_CONSECUTIVE_FAILURES', DEFAULT_CLAUDE_REPEATED_429_THRESHOLD);
+}
+
+function hasAnthropicRepeated429Escalation(
+  input: Pick<DashboardTokenStatusInput, 'consecutiveRateLimitCount'>,
+  cooldownActive: boolean
+): boolean {
+  return cooldownActive && Number(input.consecutiveRateLimitCount ?? 0) >= readClaudeRepeated429Threshold();
+}
+
+function deriveAnthropicSnapshotExclusionReason(
+  input: Pick<
+    DashboardTokenStatusInput,
+    'fiveHourReservePercent' | 'sevenDayReservePercent' | 'providerUsageFetchedAt'
+  >,
+  now: Date
+): Extract<DashboardExclusionReason, 'snapshot_missing' | 'snapshot_stale'> | null {
+  const reserveConfigured = (input.fiveHourReservePercent ?? 0) > 0 || (input.sevenDayReservePercent ?? 0) > 0;
+  if (!reserveConfigured) {
+    return null;
+  }
+
+  const fetchedAt = parseOptionalDate(input.providerUsageFetchedAt);
+  if (fetchedAt === null) {
+    return 'snapshot_missing';
+  }
+
+  const ageMs = Math.max(0, now.getTime() - fetchedAt.getTime());
+  return ageMs > readTokenCredentialProviderUsageSoftStaleMs()
+    ? 'snapshot_stale'
+    : null;
 }
 
 function hasOpenAiUsageExhausted(input: Pick<
@@ -171,29 +213,7 @@ export function deriveDashboardTokenStatusRow(
   }
 
   if (provider === 'anthropic') {
-    const availability = evaluateClaudeCredentialAvailability({
-      credential: {
-        provider,
-        status: rawStatus,
-        fiveHourReservePercent: input.fiveHourReservePercent,
-        sevenDayReservePercent: input.sevenDayReservePercent,
-        consecutiveFailureCount: input.consecutiveFailures,
-        consecutiveRateLimitCount: input.consecutiveRateLimitCount,
-        lastFailedStatus: input.lastFailedStatus,
-        rateLimitedUntil: input.rateLimitedUntil,
-        nextProbeAt: input.nextProbeAt
-      },
-      snapshot: {
-        fetchedAt: input.providerUsageFetchedAt,
-        fiveHourUtilizationRatio: input.fiveHourUtilizationRatio,
-        fiveHourResetsAt: input.fiveHourResetsAt,
-        sevenDayUtilizationRatio: input.sevenDayUtilizationRatio,
-        sevenDayResetsAt: input.sevenDayResetsAt
-      },
-      now
-    });
-
-    if (availability.repeated429LocalBackoffActive) {
+    if (hasAnthropicRepeated429Escalation(input, cooldownActive)) {
       return buildStatusOutput({
         rawStatus,
         compactStatus: 'active*',
@@ -211,7 +231,9 @@ export function deriveDashboardTokenStatusRow(
       });
     }
 
-    if (availability.blockReason === 'provider_usage_snapshot_missing') {
+    const snapshotExclusionReason = deriveAnthropicSnapshotExclusionReason(input, now);
+
+    if (snapshotExclusionReason === 'snapshot_missing') {
       return buildStatusOutput({
         rawStatus,
         compactStatus: 'active*',
@@ -220,7 +242,7 @@ export function deriveDashboardTokenStatusRow(
       });
     }
 
-    if (availability.blockReason === 'provider_usage_snapshot_hard_stale') {
+    if (snapshotExclusionReason === 'snapshot_stale') {
       return buildStatusOutput({
         rawStatus,
         compactStatus: 'active*',
