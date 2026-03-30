@@ -133,7 +133,7 @@ export function LandingHeroHeader(input: {
             INNIES.COMPUTER{input.brandSuffix ? ` ${input.brandSuffix}` : ''}
           </Link>
         </div>
-        <h1 className={styles.consoleTitle}>{input.title ?? 'welcome to innies'}</h1>
+        <h1 className={styles.consoleTitle}>{input.title ?? 'welcome to innies computer'}</h1>
         {promptMode === 'analytics' ? analyticsPrompt : (
           <div className={styles.promptStack}>
             {STATIC_HEADER_ROWS.map((line) => (
