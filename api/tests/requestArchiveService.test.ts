@@ -68,12 +68,21 @@ type AttemptRawBlobRecord = {
   rawBlobId: string;
 };
 
+type SessionProjectionOutboxRecord = {
+  requestAttemptArchiveId: string;
+  requestId: string;
+  attemptNo: number;
+  orgId: string;
+  apiKeyId: string | null;
+};
+
 type HarnessState = {
   attempts: AttemptRecord[];
   messageBlobs: MessageBlobRecord[];
   attemptMessages: AttemptMessageRecord[];
   rawBlobs: RawBlobRecord[];
   attemptRawBlobs: AttemptRawBlobRecord[];
+  sessionProjectionOutbox: SessionProjectionOutboxRecord[];
 };
 
 type HarnessTx = TransactionContext & {
@@ -82,6 +91,7 @@ type HarnessTx = TransactionContext & {
 
 function createArchiveHarness(options?: {
   failOnRawBlobKind?: 'raw_request' | 'raw_response' | 'raw_stream';
+  failOnOutbox?: boolean;
 }): {
   sql: {
     transaction<T>(run: (tx: HarnessTx) => Promise<T>): Promise<T>;
@@ -94,7 +104,8 @@ function createArchiveHarness(options?: {
     messageBlobs: [],
     attemptMessages: [],
     rawBlobs: [],
-    attemptRawBlobs: []
+    attemptRawBlobs: [],
+    sessionProjectionOutbox: []
   };
 
   const sql = {
@@ -113,6 +124,7 @@ function createArchiveHarness(options?: {
       state.attemptMessages = draft.attemptMessages;
       state.rawBlobs = draft.rawBlobs;
       state.attemptRawBlobs = draft.attemptRawBlobs;
+      state.sessionProjectionOutbox = draft.sessionProjectionOutbox;
       return result;
     }
   };
@@ -128,6 +140,7 @@ function createArchiveHarness(options?: {
             && candidate.attemptNo === input.attemptNo
           );
           if (existing) {
+            assertAttemptReplayMatches(existing, input);
             return toAttemptRow(existing);
           }
 
@@ -266,6 +279,64 @@ function createArchiveHarness(options?: {
           };
         }
       };
+    },
+    sessionProjectionOutbox(tx) {
+      return {
+        async enqueueAttempt(input) {
+          if (options?.failOnOutbox) {
+            throw new Error('forced outbox failure');
+          }
+
+          const stateRef = readState(tx);
+          const existing = stateRef.sessionProjectionOutbox.find((candidate) =>
+            candidate.requestAttemptArchiveId === input.requestAttemptArchiveId
+          );
+          if (existing) {
+            assertSessionProjectionReplayMatches(existing, input);
+            return {
+              id: `outbox_${stateRef.sessionProjectionOutbox.indexOf(existing) + 1}`,
+              request_attempt_archive_id: existing.requestAttemptArchiveId,
+              request_id: existing.requestId,
+              attempt_no: existing.attemptNo,
+              org_id: existing.orgId,
+              api_key_id: existing.apiKeyId,
+              projection_state: 'pending_projection',
+              retry_count: 0,
+              next_attempt_at: new Date('2026-03-26T00:00:00Z').toISOString(),
+              last_attempted_at: null,
+              processed_at: null,
+              last_error: null,
+              created_at: new Date('2026-03-26T00:00:00Z').toISOString(),
+              updated_at: new Date('2026-03-26T00:00:00Z').toISOString()
+            };
+          }
+
+          const record: SessionProjectionOutboxRecord = {
+            requestAttemptArchiveId: input.requestAttemptArchiveId,
+            requestId: input.requestId,
+            attemptNo: input.attemptNo,
+            orgId: input.orgId,
+            apiKeyId: input.apiKeyId
+          };
+          stateRef.sessionProjectionOutbox.push(record);
+          return {
+            id: `outbox_${stateRef.sessionProjectionOutbox.length}`,
+            request_attempt_archive_id: record.requestAttemptArchiveId,
+            request_id: record.requestId,
+            attempt_no: record.attemptNo,
+            org_id: record.orgId,
+            api_key_id: record.apiKeyId,
+            projection_state: 'pending_projection',
+            retry_count: 0,
+            next_attempt_at: new Date('2026-03-26T00:00:00Z').toISOString(),
+            last_attempted_at: null,
+            processed_at: null,
+            last_error: null,
+            created_at: new Date('2026-03-26T00:00:00Z').toISOString(),
+            updated_at: new Date('2026-03-26T00:00:00Z').toISOString()
+          };
+        }
+      };
     }
   };
 
@@ -292,9 +363,62 @@ function cloneState(state: HarnessState): HarnessState {
       ...record,
       payload: Buffer.from(record.payload)
     })),
-    attemptRawBlobs: state.attemptRawBlobs.map((record) => ({ ...record }))
+    attemptRawBlobs: state.attemptRawBlobs.map((record) => ({ ...record })),
+    sessionProjectionOutbox: state.sessionProjectionOutbox.map((record) => ({ ...record }))
   };
 }
+
+function assertAttemptReplayMatches(existing: AttemptRecord, input: AttemptRecordLike): void {
+  const mismatch = [
+    existing.requestId === input.requestId,
+    existing.attemptNo === input.attemptNo,
+    existing.orgId === input.orgId,
+    existing.apiKeyId === (input.apiKeyId ?? null),
+    existing.routeKind === input.routeKind,
+    existing.sellerKeyId === (input.sellerKeyId ?? null),
+    existing.tokenCredentialId === (input.tokenCredentialId ?? null),
+    existing.provider === input.provider,
+    existing.model === input.model,
+    existing.streaming === input.streaming,
+    existing.status === input.status,
+    existing.upstreamStatus === (input.upstreamStatus ?? null),
+    existing.errorCode === (input.errorCode ?? null),
+    existing.startedAt.toISOString() === input.startedAt.toISOString(),
+    (existing.completedAt?.toISOString() ?? null) === (input.completedAt?.toISOString() ?? null),
+    existing.openclawRunId === (input.openclawRunId ?? null),
+    existing.openclawSessionId === (input.openclawSessionId ?? null),
+    existing.routingEventId === (input.routingEventId ?? null),
+    existing.usageLedgerId === (input.usageLedgerId ?? null),
+    existing.meteringEventId === (input.meteringEventId ?? null)
+  ].every(Boolean);
+
+  if (!mismatch) {
+    throw new Error('request attempt archive idempotent replay mismatch');
+  }
+}
+
+function assertSessionProjectionReplayMatches(
+  existing: SessionProjectionOutboxRecord,
+  input: {
+    requestAttemptArchiveId: string;
+    requestId: string;
+    attemptNo: number;
+    orgId: string;
+    apiKeyId: string | null;
+  }
+): void {
+  const matches = existing.requestAttemptArchiveId === input.requestAttemptArchiveId
+    && existing.requestId === input.requestId
+    && existing.attemptNo === input.attemptNo
+    && existing.orgId === input.orgId
+    && existing.apiKeyId === input.apiKeyId;
+
+  if (!matches) {
+    throw new Error('admin session projection outbox idempotent replay mismatch');
+  }
+}
+
+type AttemptRecordLike = Omit<AttemptRecord, 'id'>;
 
 function toAttemptRow(record: AttemptRecord) {
   return {
@@ -351,6 +475,7 @@ function toRawBlobRow(record: RawBlobRecord) {
 
 function createService(options?: {
   failOnRawBlobKind?: 'raw_request' | 'raw_response' | 'raw_stream';
+  failOnOutbox?: boolean;
 }): {
   service: RequestArchiveService;
   state: HarnessState;
@@ -528,6 +653,64 @@ describe('RequestArchiveService', () => {
       })
     ]);
     expect(toAttemptRow(state.attempts[0]!).api_key_id).toBe('buyer_key_analytics');
+  });
+
+  it('enqueues one session projection outbox row in the same transaction as the archive write', async () => {
+    const { service, state } = createService();
+
+    await service.archiveAttempt(baseAttempt({
+      requestId: 'req_projection_enqueue',
+      attemptNo: 2
+    }));
+
+    expect(state.attempts).toHaveLength(1);
+    expect(state.sessionProjectionOutbox).toEqual([
+      {
+        requestAttemptArchiveId: 'archive_1',
+        requestId: 'req_projection_enqueue',
+        attemptNo: 2,
+        orgId: 'org_1',
+        apiKeyId: 'api_key_1'
+      }
+    ]);
+  });
+
+  it('keeps a duplicate replay from enqueueing a second projection outbox row', async () => {
+    const { service, state } = createService();
+
+    await service.archiveAttempt(baseAttempt({
+      requestId: 'req_projection_replay',
+      attemptNo: 3
+    }));
+    await service.archiveAttempt(baseAttempt({
+      requestId: 'req_projection_replay',
+      attemptNo: 3
+    }));
+
+    expect(state.attempts).toHaveLength(1);
+    expect(state.sessionProjectionOutbox).toHaveLength(1);
+    expect(state.sessionProjectionOutbox[0]).toEqual({
+      requestAttemptArchiveId: 'archive_1',
+      requestId: 'req_projection_replay',
+      attemptNo: 3,
+      orgId: 'org_1',
+      apiKeyId: 'api_key_1'
+    });
+  });
+
+  it('rolls back archive rows when the projection outbox enqueue fails', async () => {
+    const { service, state } = createService({ failOnOutbox: true });
+
+    await expect(service.archiveAttempt(baseAttempt({
+      requestId: 'req_projection_rollback'
+    }))).rejects.toThrow('forced outbox failure');
+
+    expect(state.attempts).toEqual([]);
+    expect(state.messageBlobs).toEqual([]);
+    expect(state.attemptMessages).toEqual([]);
+    expect(state.rawBlobs).toEqual([]);
+    expect(state.attemptRawBlobs).toEqual([]);
+    expect(state.sessionProjectionOutbox).toEqual([]);
   });
 
   it('preserves first-class system, user, assistant, tool-call, tool-result, and structured JSON content', async () => {

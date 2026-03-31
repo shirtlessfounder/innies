@@ -19,6 +19,7 @@ import type {
   RequestAttemptRawBlobRole,
   RequestAttemptRawBlobRow
 } from '../../repos/requestAttemptRawBlobRepository.js';
+import type { AdminSessionProjectionOutboxRow } from '../../repos/adminSessionProjectionOutboxRepository.js';
 import type { SqlClient, TransactionContext } from '../../repos/sqlClient.js';
 
 export const ARCHIVE_NORMALIZED_PAYLOAD_CODEC_VERSION = 1;
@@ -102,12 +103,23 @@ export interface RequestAttemptRawBlobRepositoryLike {
   upsertLink(input: RequestAttemptRawBlobLinkInput): Promise<RequestAttemptRawBlobRow>;
 }
 
+export interface SessionProjectionOutboxRepositoryLike {
+  enqueueAttempt(input: {
+    requestAttemptArchiveId: string;
+    requestId: string;
+    attemptNo: number;
+    orgId: string;
+    apiKeyId: string | null;
+  }): Promise<AdminSessionProjectionOutboxRow>;
+}
+
 export type RequestArchiveServiceRepoFactory = {
   requestAttemptArchives(tx: TransactionContext): RequestAttemptArchiveRepositoryLike;
   messageBlobs(tx: TransactionContext): MessageBlobRepositoryLike;
   requestAttemptMessages(tx: TransactionContext): RequestAttemptMessageRepositoryLike;
   rawBlobs(tx: TransactionContext): RawBlobRepositoryLike;
   requestAttemptRawBlobs(tx: TransactionContext): RequestAttemptRawBlobRepositoryLike;
+  sessionProjectionOutbox(tx: TransactionContext): SessionProjectionOutboxRepositoryLike;
 };
 
 export type RequestArchiveServiceDeps = {

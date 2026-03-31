@@ -1,5 +1,6 @@
 import { MessageBlobRepository } from '../../repos/messageBlobRepository.js';
 import { RawBlobRepository } from '../../repos/rawBlobRepository.js';
+import { AdminSessionProjectionOutboxRepository } from '../../repos/adminSessionProjectionOutboxRepository.js';
 import { RequestAttemptArchiveRepository } from '../../repos/requestAttemptArchiveRepository.js';
 import { RequestAttemptMessageRepository } from '../../repos/requestAttemptMessageRepository.js';
 import { RequestAttemptRawBlobRepository } from '../../repos/requestAttemptRawBlobRepository.js';
@@ -32,6 +33,9 @@ const defaultRepoFactory: RequestArchiveServiceRepoFactory = {
   },
   requestAttemptRawBlobs(tx: TransactionContext) {
     return new RequestAttemptRawBlobRepository(tx as never);
+  },
+  sessionProjectionOutbox(tx: TransactionContext) {
+    return new AdminSessionProjectionOutboxRepository(tx as never);
   }
 };
 
@@ -53,7 +57,8 @@ export class RequestArchiveService {
         messageBlobs: this.repoFactory.messageBlobs(tx),
         requestAttemptMessages: this.repoFactory.requestAttemptMessages(tx),
         rawBlobs: this.repoFactory.rawBlobs(tx),
-        requestAttemptRawBlobs: this.repoFactory.requestAttemptRawBlobs(tx)
+        requestAttemptRawBlobs: this.repoFactory.requestAttemptRawBlobs(tx),
+        sessionProjectionOutbox: this.repoFactory.sessionProjectionOutbox(tx)
       };
 
       const archive = await repos.requestAttemptArchives.upsertArchive({
@@ -77,6 +82,14 @@ export class RequestArchiveService {
         routingEventId: input.routingEventId ?? null,
         usageLedgerId: input.usageLedgerId ?? null,
         meteringEventId: input.meteringEventId ?? null
+      });
+
+      await repos.sessionProjectionOutbox.enqueueAttempt({
+        requestAttemptArchiveId: archive.id,
+        requestId: archive.request_id,
+        attemptNo: archive.attempt_no,
+        orgId: archive.org_id,
+        apiKeyId: archive.api_key_id
       });
 
       await this.persistMessages(archive.id, 'request', normalizedRequest, repos);
