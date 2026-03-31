@@ -768,6 +768,262 @@ Response example:
 }
 ```
 
+### `GET /v1/admin/analytics/sessions`
+Admin-only unified session summary feed.
+
+Query params:
+- `window`: `5h|24h|7d|1m|all|30d` (`30d` normalizes to `1m`; default `7d`)
+- `limit`: `1..200` (default `20`)
+- `provider`: `anthropic|openai|codex` (`codex` normalizes to `openai`)
+- `sessionType`: `cli|openclaw`
+- `source`: compatibility alias only; `openclaw -> sessionType=openclaw`, `cli-claude|cli-codex -> sessionType=cli`
+- `source=direct`: rejected with `400` for this unified session endpoint
+- `orgId`: UUID filter
+- `model`: exact model filter
+- `status`: `success|failed|partial`
+- `cursor`: base64url-encoded pagination cursor for `{ lastActivityAt, sessionKey }`
+
+Notes:
+- backed by the persisted admin session projection in `in_admin_sessions`
+- returns one Innies-owned `sessionKey` for both CLI and OpenClaw traffic
+- `previewSample` stays on the safe-preview boundary; use `/v1/admin/archive/...` for full-fidelity reads
+
+Response example:
+```json
+{
+  "window": "7d",
+  "limit": 20,
+  "nextCursor": "eyJsYXN0QWN0aXZpdHlBdCI6IjIwMjYtMDMtMzFUMjI6MDU6MDAuMDAwWiIsInNlc3Npb25LZXkiOiJvcGVuY2xhdzpzZXNzaW9uOm9jX3Nlc3Npb25fMTIzIn0",
+  "sessions": [
+    {
+      "sessionKey": "openclaw:session:oc_session_123",
+      "sessionType": "openclaw",
+      "groupingBasis": "explicit_session_id",
+      "startedAt": "2026-03-31T21:00:00.000Z",
+      "endedAt": "2026-03-31T22:05:00.000Z",
+      "durationMs": 3900000,
+      "requestCount": 8,
+      "attemptCount": 10,
+      "inputTokens": 18000,
+      "outputTokens": 2300,
+      "providerSet": ["anthropic", "openai"],
+      "modelSet": ["claude-opus-4-6", "gpt-5.2"],
+      "statusSummary": {
+        "success": 8,
+        "failed": 2
+      },
+      "previewSample": {
+        "promptPreview": "fix this bug",
+        "responsePreview": "here is a patch"
+      }
+    }
+  ]
+}
+```
+
+### `GET /v1/admin/archive/sessions`
+Admin-only archive session index for full-fidelity consumers.
+
+Query params:
+- `window`: `24h|7d|1m|all` (default `7d`)
+- `limit`: `1..200` (default `20`)
+- `sessionType`: `cli|openclaw`
+- `orgId`: UUID filter
+- `provider`: exact provider membership filter against `providerSet`
+- `model`: exact model membership filter against `modelSet`
+- `status`: `success|failed|partial`
+- `cursor`: base64url-encoded pagination cursor for `{ lastActivityAt, sessionKey }`
+
+Notes:
+- admin scope required; buyer keys are rejected
+- reads the same session projection as analytics, but includes source correlation metadata
+
+Response example:
+```json
+{
+  "window": "7d",
+  "limit": 20,
+  "nextCursor": null,
+  "sessions": [
+    {
+      "sessionKey": "cli:idle:org:api:req_1",
+      "sessionType": "cli",
+      "groupingBasis": "idle_gap",
+      "sourceSessionId": null,
+      "sourceRunId": null,
+      "orgId": "818d0cc7-7ed2-469f-b690-a977e72a921d",
+      "startedAt": "2026-03-31T22:00:00.000Z",
+      "endedAt": "2026-03-31T22:05:00.000Z",
+      "durationMs": 300000,
+      "requestCount": 2,
+      "attemptCount": 2,
+      "inputTokens": 10,
+      "outputTokens": 20,
+      "providerSet": ["anthropic"],
+      "modelSet": ["claude-opus-4-1"],
+      "statusSummary": {
+        "success": 2
+      },
+      "previewSample": {
+        "promptPreview": "hello",
+        "responsePreview": "world"
+      }
+    }
+  ]
+}
+```
+
+### `GET /v1/admin/archive/sessions/:sessionKey`
+Admin-only session header lookup.
+
+Notes:
+- returns the projected session summary plus `firstRequestRef` / `lastRequestRef`
+- `404 not_found` when the session key does not exist
+
+Response example:
+```json
+{
+  "session": {
+    "sessionKey": "openclaw:run:run_1",
+    "sessionType": "openclaw",
+    "groupingBasis": "explicit_run_id",
+    "sourceSessionId": null,
+    "sourceRunId": "run_1",
+    "orgId": "818d0cc7-7ed2-469f-b690-a977e72a921d",
+    "startedAt": "2026-03-31T22:00:00.000Z",
+    "endedAt": "2026-03-31T22:10:00.000Z",
+    "durationMs": 600000,
+    "requestCount": 3,
+    "attemptCount": 3,
+    "inputTokens": 1200,
+    "outputTokens": 340,
+    "providerSet": ["openai"],
+    "modelSet": ["gpt-5.4"],
+    "statusSummary": {
+      "success": 3
+    },
+    "previewSample": {
+      "promptPreview": "build the endpoint",
+      "responsePreview": "here is the patch"
+    },
+    "firstRequestRef": {
+      "requestId": "req_1",
+      "attemptNo": 1
+    },
+    "lastRequestRef": {
+      "requestId": "req_3",
+      "attemptNo": 1
+    }
+  }
+}
+```
+
+### `GET /v1/admin/archive/sessions/:sessionKey/events`
+Admin-only reconstructed session playback feed.
+
+Query params:
+- `limit`: `1..200` (default `100`)
+- `cursor`: base64url-encoded pagination cursor for `{ eventTime, requestId, attemptNo, sortOrdinal }`
+
+Notes:
+- reconstructs playback server-side from archive tables; clients do not join blob tables directly
+- emits one synthetic `attempt_status` event per archived attempt, then ordered request/response message events
+- `404 not_found` when the session key does not exist
+
+Response example:
+```json
+{
+  "sessionKey": "openclaw:run:run_1",
+  "nextCursor": null,
+  "events": [
+    {
+      "eventType": "attempt_status",
+      "eventTime": "2026-03-31T22:00:05.000Z",
+      "requestId": "req_1",
+      "attemptNo": 1,
+      "ordinal": -1,
+      "side": null,
+      "role": null,
+      "contentType": null,
+      "content": null,
+      "provider": "openai",
+      "model": "gpt-5.4",
+      "streaming": true,
+      "status": "success",
+      "upstreamStatus": 200
+    }
+  ]
+}
+```
+
+### `GET /v1/admin/archive/requests/:requestId/attempts/:attemptNo`
+Admin-only exact archived-attempt drill-down.
+
+Notes:
+- returns the archived attempt header, normalized request messages, normalized response messages, and raw artifact metadata
+- current `raw[*]` metadata includes internal blob references for admin diagnostics: `rawBlobId`, `contentHash`, `encoding`, and compressed/uncompressed byte counts
+- `404 not_found` when the archived attempt does not exist
+
+Response example:
+```json
+{
+  "attempt": {
+    "requestId": "req_1",
+    "attemptNo": 1,
+    "orgId": "818d0cc7-7ed2-469f-b690-a977e72a921d",
+    "apiKeyId": "99999999-9999-4999-8999-999999999999",
+    "routeKind": "token",
+    "sellerKeyId": null,
+    "tokenCredentialId": "11111111-1111-4111-8111-111111111111",
+    "provider": "openai",
+    "model": "gpt-5.4",
+    "streaming": true,
+    "status": "success",
+    "upstreamStatus": 200,
+    "errorCode": null,
+    "startedAt": "2026-03-31T22:00:00.000Z",
+    "completedAt": "2026-03-31T22:00:05.000Z",
+    "openclawRunId": "run_1",
+    "openclawSessionId": "session_1",
+    "requestSource": "openclaw",
+    "providerSelectionReason": "preferred_provider_selected"
+  },
+  "request": [
+    {
+      "side": "request",
+      "ordinal": 0,
+      "role": "user",
+      "contentType": "input_text",
+      "content": {
+        "text": "hi"
+      }
+    }
+  ],
+  "response": [
+    {
+      "side": "response",
+      "ordinal": 0,
+      "role": "assistant",
+      "contentType": "output_text",
+      "content": {
+        "text": "hello"
+      }
+    }
+  ],
+  "raw": [
+    {
+      "blobRole": "response",
+      "rawBlobId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "blobKind": "raw_response",
+      "contentHash": "sha256:abc123",
+      "encoding": "gzip+base64",
+      "bytesCompressed": 512,
+      "bytesUncompressed": 2048
+    }
+  ]
+}
+```
+
 ### `GET /v1/admin/analytics/events`
 Admin-only token lifecycle event feed.
 

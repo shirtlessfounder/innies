@@ -10,16 +10,28 @@ Current-state reference for Innies background jobs and core dataflow in producti
 4. Upstream call executes with retry/failover policy.
 5. Routing attempt/outcome is written to `in_routing_events`.
 6. Usage/metering writes append rows to `in_usage_ledger`.
-7. Aggregate/reconciliation jobs roll up and validate data.
+7. Request preview rows land in `in_request_log`; full archive writes land in the archive tables.
+8. Archive writes enqueue one row in `in_admin_session_projection_outbox` in the same transaction.
+9. The admin session projector job upserts `in_admin_sessions` + `in_admin_session_attempts`.
+10. Aggregate/reconciliation jobs roll up and validate data.
 
 ## Core Tables
 From `api/src/repos/tableNames.ts`:
 
 - `in_api_keys`
+- `in_admin_session_projection_outbox`
+- `in_admin_sessions`
+- `in_admin_session_attempts`
 - `in_seller_keys`
 - `in_token_credentials`
 - `in_routing_events`
 - `in_usage_ledger`
+- `in_request_log`
+- `in_request_attempt_archives`
+- `in_request_attempt_messages`
+- `in_message_blobs`
+- `in_request_attempt_raw_blobs`
+- `in_raw_blobs`
 - `in_daily_aggregates`
 - `in_reconciliation_runs`
 - `in_idempotency_keys`
@@ -55,6 +67,16 @@ Registered in `api/src/jobs/registry.ts`.
   - `TOKEN_CREDENTIAL_PROBE_INTERVAL_MINUTES`
   - `TOKEN_CREDENTIAL_PROBE_MODEL`
 
+### `admin-session-projector`
+- Source: `adminSessionProjectorJob.ts`
+- Default cadence: every 30 seconds; also runs on startup
+- Action: drains `in_admin_session_projection_outbox`, projects CLI/OpenClaw archived attempts into unified admin sessions, marks retries/operator-correction state
+- Main env knobs:
+  - `ADMIN_SESSION_PROJECTOR_SCHEDULE_MS`
+  - `ADMIN_SESSION_PROJECTOR_RETRY_DELAY_MS`
+  - `ADMIN_SESSION_PROJECTOR_MAX_RETRIES`
+  - `ADMIN_SESSION_PROJECTOR_BATCH_SIZE`
+
 ### `daily-aggregates-incremental-5m`
 - Source: `dailyAggregatesJob.ts`
 - Default cadence: every 5 minutes
@@ -75,6 +97,26 @@ Registered in `api/src/jobs/registry.ts`.
 - Default maxing behavior is conservative (`401` only) with threshold-based transition.
 - `maxed` credentials are excluded from active routing until probe job reactivates them.
 - Source of contract details/env behavior: `docs/API_CONTRACT.md`.
+
+## Prompt Archive + Session Projection
+- Canonical write-side truth for prompts/responses/raw artifacts lives in:
+  - `in_request_attempt_archives`
+  - `in_request_attempt_messages`
+  - `in_message_blobs`
+  - `in_request_attempt_raw_blobs`
+  - `in_raw_blobs`
+- The archive write path transactionally enqueues projection work in `in_admin_session_projection_outbox`.
+- The projector currently creates unified sessions only for `openclaw`, `cli-claude`, and `cli-codex` request sources.
+- Session grouping precedence:
+  - explicit source session id
+  - explicit source run id
+  - idle-gap grouping in the same `(org_id, api_key_id, session_type)` lane
+  - request fallback
+- `direct` traffic is ignored by the v1 projector.
+- Read surfaces:
+  - `GET /v1/admin/analytics/sessions` reads projection summaries from `in_admin_sessions`
+  - `GET /v1/admin/archive/sessions*` uses the same projection for indexing/detail
+  - `GET /v1/admin/archive/sessions/:sessionKey/events` and `GET /v1/admin/archive/requests/:requestId/attempts/:attemptNo` reconstruct payloads server-side from archive tables
 
 ## Observability
 Primary signals:

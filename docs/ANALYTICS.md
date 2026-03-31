@@ -147,10 +147,12 @@ Current expectation:
   - can include still-open cycles with `clearedAt = null`
 
 - `/sessions`
-  - approximate coding-session analytics from routing + safe previews
-  - aggregates requests, attempts, usage, providers, models, credentials
+  - unified session analytics from the persisted admin session projection (`in_admin_sessions`)
+  - one session surface for both CLI and OpenClaw traffic via `sessionType = cli|openclaw`
   - returns bounded preview samples only
-  - exposes `groupingBasis` so callers can distinguish explicit markers from idle-gap heuristics
+  - exposes `sessionKey` + `groupingBasis` so callers can distinguish explicit markers from idle-gap heuristics
+  - still accepts legacy `source` aliases for compatibility (`openclaw`, `cli-claude`, `cli-codex`)
+  - rejects `source=direct` because direct traffic is not projected into the unified session model
 
 - `/events`
   - token lifecycle event feed
@@ -186,4 +188,11 @@ For the admin content feeds specifically:
 - `/requests`, `/daily-trends`, `/cap-history`, and `/sessions` stay on the safe-preview boundary
 - they read routing, usage, lifecycle, and request-preview storage only
 - they do not expose archived full prompts or full responses
-- `/sessions` is heuristic, not a canonical persisted session model
+- `/sessions` is now projection-backed, not heuristic, but it still only returns summary data plus safe preview samples
+
+For full-fidelity admin playback/debug feeds:
+
+- `/v1/admin/archive/sessions`, `/v1/admin/archive/sessions/:sessionKey`, `/v1/admin/archive/sessions/:sessionKey/events`, and `/v1/admin/archive/requests/:requestId/attempts/:attemptNo` are separate admin-only archive endpoints
+- they reconstruct content server-side from `in_request_attempt_archives`, `in_request_attempt_messages`, `in_message_blobs`, `in_request_attempt_raw_blobs`, and `in_raw_blobs`
+- the session index/detail layer is accelerated by the small projection tables `in_admin_sessions`, `in_admin_session_attempts`, and `in_admin_session_projection_outbox`
+- those archive routes are the right surface for operators or trusted internal agents that need exact prompt/response playback rather than preview analytics
