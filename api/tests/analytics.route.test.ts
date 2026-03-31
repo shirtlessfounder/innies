@@ -151,6 +151,7 @@ function createAnalyticsRepo() {
     getRecentRequests: vi.fn().mockResolvedValue([]),
     getDailyTrends: vi.fn().mockResolvedValue([]),
     getCapHistory: vi.fn().mockResolvedValue({ cycles: [], nextCursor: null }),
+    getSessions: vi.fn().mockResolvedValue({ sessions: [], nextCursor: null }),
     getEvents: vi.fn().mockResolvedValue([]),
     getAnomalies: vi.fn().mockResolvedValue({ checks: {}, ok: true })
   };
@@ -695,6 +696,101 @@ describe('analytics routes', () => {
           usageUnitsBeforeCap: 1200,
           requestsBeforeCap: 25,
           exhaustionReason: 'reserve_exhausted'
+        }
+      ]
+    });
+  });
+
+  it('returns session analytics with normalized filters and preview samples', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    const cursor = Buffer.from(JSON.stringify({
+      startedAt: '2026-03-08T14:59:00.000Z',
+      sessionKey: 'idle_gap:818d0cc7-7ed2-469f-b690-a977e72a921d:4'
+    }), 'utf8').toString('base64url');
+    analytics.getSessions.mockResolvedValue({
+      sessions: [
+        {
+          session_key: 'explicit_session_marker:oc_session_123',
+          grouping_basis: 'explicit_session_marker',
+          started_at: '2026-03-08T15:00:00.000Z',
+          ended_at: '2026-03-08T16:05:00.000Z',
+          duration_minutes: 65,
+          request_count: 8,
+          attempt_count: 10,
+          usage_units: 4200,
+          input_tokens: 18000,
+          output_tokens: 2300,
+          providers: ['anthropic', 'openai'],
+          models: ['claude-opus-4-6', 'gpt-5.2'],
+          credential_ids: [
+            '11111111-1111-4111-8111-111111111111',
+            '22222222-2222-4222-8222-222222222222'
+          ],
+          provider_switch_count: 1,
+          sample_prompt_previews: ['fix this bug', 'now refactor it'],
+          sample_response_previews: ['here is a patch', 'tests are green']
+        }
+      ],
+      nextCursor: cursor
+    });
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/sessions', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/sessions',
+      headers: {
+        authorization: 'Bearer admin_token'
+      },
+      query: {
+        window: '30d',
+        provider: 'codex',
+        source: 'openclaw',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        limit: '15',
+        idleMinutes: '45',
+        cursor
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(analytics.getSessions).toHaveBeenCalledWith({
+      window: '1m',
+      provider: 'openai',
+      source: 'openclaw',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      limit: 15,
+      idleMinutes: 45,
+      cursor
+    });
+    expect(res.body).toEqual({
+      window: '1m',
+      idleMinutes: 45,
+      nextCursor: cursor,
+      sessions: [
+        {
+          sessionKey: 'explicit_session_marker:oc_session_123',
+          groupingBasis: 'explicit_session_marker',
+          startedAt: '2026-03-08T15:00:00.000Z',
+          endedAt: '2026-03-08T16:05:00.000Z',
+          durationMinutes: 65,
+          requestCount: 8,
+          attemptCount: 10,
+          usageUnits: 4200,
+          inputTokens: 18000,
+          outputTokens: 2300,
+          providers: ['anthropic', 'openai'],
+          models: ['claude-opus-4-6', 'gpt-5.2'],
+          credentialIds: [
+            '11111111-1111-4111-8111-111111111111',
+            '22222222-2222-4222-8222-222222222222'
+          ],
+          providerSwitchCount: 1,
+          samplePromptPreviews: ['fix this bug', 'now refactor it'],
+          sampleResponsePreviews: ['here is a patch', 'tests are green']
         }
       ]
     });
@@ -2835,5 +2931,29 @@ describe('analytics routes', () => {
     expect(res.statusCode).toBe(400);
     expect((res.body as any).code).toBe('invalid_request');
     expect(analytics.getRecentRequests).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid sessions cursors', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/sessions', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/sessions',
+      headers: {
+        authorization: 'Bearer admin_token'
+      },
+      query: {
+        cursor: 'not-base64url-json'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any).code).toBe('invalid_request');
+    expect(analytics.getSessions).not.toHaveBeenCalled();
   });
 });

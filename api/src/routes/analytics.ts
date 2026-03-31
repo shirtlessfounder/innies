@@ -22,6 +22,7 @@ const ANALYTICS_SOURCES = ['openclaw', 'cli-claude', 'cli-codex', 'direct'] as c
 const TOKEN_PROVIDERS = ['anthropic', 'openai'] as const;
 const TOKEN_STATUSES = ['active', 'paused', 'rotating', 'maxed', 'expired', 'revoked'] as const;
 const ANALYTICS_EVENT_SEVERITIES = ['info', 'warn', 'error'] as const;
+const SESSION_GROUPING_BASES = ['explicit_session_marker', 'explicit_run_marker', 'request_id', 'idle_gap'] as const;
 
 export type AnalyticsSource = typeof ANALYTICS_SOURCES[number];
 export type AnalyticsProvider = typeof TOKEN_PROVIDERS[number];
@@ -108,6 +109,16 @@ type CapHistoryFilters = {
   cursor?: string;
 };
 
+type SessionFilters = {
+  window: AnalyticsWindow;
+  provider?: AnalyticsProvider;
+  source?: AnalyticsSource;
+  orgId?: string;
+  limit: number;
+  cursor?: string;
+  idleMinutes: number;
+};
+
 type AnomaliesFilters = {
   window: AnalyticsWindow;
   provider?: AnalyticsProvider;
@@ -140,6 +151,7 @@ export interface AnalyticsRouteRepository {
   getRecentRequests(filters: RecentRequestsFilters): Promise<unknown>;
   getDailyTrends(filters: DailyTrendsFilters): Promise<unknown>;
   getCapHistory(filters: CapHistoryFilters): Promise<unknown>;
+  getSessions(filters: SessionFilters): Promise<unknown>;
   getEvents(filters: EventFilters): Promise<unknown>;
   getAnomalies(filters: AnomaliesFilters): Promise<unknown>;
 }
@@ -263,6 +275,25 @@ const capHistoryCursorSchema = z.string().trim().min(1).transform((value, ctx) =
   }
 });
 
+const sessionCursorPayloadSchema = z.object({
+  startedAt: z.string().datetime({ offset: true }),
+  sessionKey: z.string().trim().min(1)
+});
+
+const sessionCursorSchema = z.string().trim().min(1).transform((value, ctx) => {
+  try {
+    const decoded = Buffer.from(value, 'base64url').toString('utf8');
+    sessionCursorPayloadSchema.parse(JSON.parse(decoded));
+    return value;
+  } catch {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Invalid sessions cursor'
+    });
+    return z.NEVER;
+  }
+});
+
 const timeSeriesQuerySchema = baseAnalyticsQuerySchema.extend({
   granularity: analyticsGranularitySchema.optional(),
   credentialId: z.string().uuid().optional()
@@ -333,6 +364,20 @@ const capHistoryQuerySchema = z.object({
   cursor: query.cursor
 }));
 
+const sessionsQuerySchema = baseAnalyticsQuerySchema.extend({
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  cursor: sessionCursorSchema.optional(),
+  idleMinutes: z.coerce.number().int().min(1).max(240).optional()
+}).transform((query) => ({
+  window: query.window ?? '7d',
+  provider: query.provider,
+  source: query.source,
+  orgId: query.orgId,
+  limit: query.limit ?? 20,
+  cursor: query.cursor,
+  idleMinutes: query.idleMinutes ?? 30
+}));
+
 const anomaliesQuerySchema = baseAnalyticsQuerySchema.transform((query) => ({
   window: query.window ?? '24h',
   provider: query.provider,
@@ -393,6 +438,7 @@ const missingAnalyticsRepository: AnalyticsRouteRepository = {
   getRecentRequests: failMissingRepository as AnalyticsRouteRepository['getRecentRequests'],
   getDailyTrends: failMissingRepository as AnalyticsRouteRepository['getDailyTrends'],
   getCapHistory: failMissingRepository as AnalyticsRouteRepository['getCapHistory'],
+  getSessions: failMissingRepository as AnalyticsRouteRepository['getSessions'],
   getEvents: failMissingRepository as AnalyticsRouteRepository['getEvents'],
   getAnomalies: failMissingRepository as AnalyticsRouteRepository['getAnomalies']
 };
@@ -435,6 +481,22 @@ function readRequiredString(record: Record<string, unknown>, keys: string[], fie
 
 function readOptionalString(record: Record<string, unknown>, keys: string[]): string | null {
   return readTrimmedString(pick(record, keys));
+}
+
+function readStringArray(record: Record<string, unknown>, keys: string[], field: string): string[] {
+  const value = pick(record, keys);
+  if (value === null || value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new AppError('internal_error', 500, `Analytics repository returned invalid ${field}`);
+  }
+
+  return value.map((entry, index) => {
+    const stringValue = readTrimmedString(entry);
+    if (!stringValue) {
+      throw new AppError('internal_error', 500, `Analytics repository returned invalid ${field}[${index}]`);
+    }
+    return stringValue;
+  });
 }
 
 function readNumberLike(value: unknown): number | null {
@@ -505,6 +567,14 @@ function normalizeProvider(value: unknown, field: string): AnalyticsProvider {
 function normalizeOptionalProvider(value: unknown): AnalyticsProvider | null {
   if (value === null || value === undefined) return null;
   return normalizeProvider(value, 'provider');
+}
+
+function normalizeSessionGroupingBasis(value: unknown): typeof SESSION_GROUPING_BASES[number] {
+  const normalized = readTrimmedString(value)?.toLowerCase();
+  if (normalized && (SESSION_GROUPING_BASES as readonly string[]).includes(normalized)) {
+    return normalized as typeof SESSION_GROUPING_BASES[number];
+  }
+  throw new AppError('internal_error', 500, 'Analytics repository returned invalid session.groupingBasis');
 }
 
 function normalizeTokenStatus(value: unknown, field: string): typeof TOKEN_STATUSES[number] {
@@ -1263,6 +1333,42 @@ function normalizeCapHistoryResult(value: unknown) {
   };
 }
 
+function normalizeSessionsRows(value: unknown) {
+  return readObjectArray(value, 'sessions').map((record) => ({
+    sessionKey: readRequiredString(record, ['sessionKey', 'session_key'], 'session.sessionKey'),
+    groupingBasis: normalizeSessionGroupingBasis(pick(record, ['groupingBasis', 'grouping_basis'])),
+    startedAt: readIsoDate(pick(record, ['startedAt', 'started_at']), 'session.startedAt'),
+    endedAt: readIsoDate(pick(record, ['endedAt', 'ended_at']), 'session.endedAt'),
+    durationMinutes: readOptionalNumber(record, ['durationMinutes', 'duration_minutes'], 0) ?? 0,
+    requestCount: readOptionalNumber(record, ['requestCount', 'request_count'], 0) ?? 0,
+    attemptCount: readOptionalNumber(record, ['attemptCount', 'attempt_count'], 0) ?? 0,
+    usageUnits: readOptionalNumber(record, ['usageUnits', 'usage_units'], 0) ?? 0,
+    inputTokens: readOptionalNumber(record, ['inputTokens', 'input_tokens'], 0) ?? 0,
+    outputTokens: readOptionalNumber(record, ['outputTokens', 'output_tokens'], 0) ?? 0,
+    providers: readStringArray(record, ['providers'], 'session.providers').map((provider) => normalizeProvider(provider, 'session.providers')),
+    models: readStringArray(record, ['models'], 'session.models'),
+    credentialIds: readStringArray(record, ['credentialIds', 'credential_ids'], 'session.credentialIds'),
+    providerSwitchCount: readOptionalNumber(record, ['providerSwitchCount', 'provider_switch_count'], 0) ?? 0,
+    samplePromptPreviews: readStringArray(record, ['samplePromptPreviews', 'sample_prompt_previews'], 'session.samplePromptPreviews'),
+    sampleResponsePreviews: readStringArray(record, ['sampleResponsePreviews', 'sample_response_previews'], 'session.sampleResponsePreviews')
+  }));
+}
+
+function normalizeSessionsResult(value: unknown) {
+  if (Array.isArray(value)) {
+    return {
+      sessions: normalizeSessionsRows(value),
+      nextCursor: null
+    };
+  }
+
+  const record = readObject(value, 'sessionsResult');
+  return {
+    sessions: normalizeSessionsRows(pick(record, ['sessions']) ?? []),
+    nextCursor: readOptionalString(record, ['nextCursor', 'next_cursor'])
+  };
+}
+
 export function normalizeEventRows(value: unknown) {
   return readObjectArray(value, 'events').map((record) => ({
     id: readRequiredString(record, ['id'], 'event.id'),
@@ -1670,6 +1776,22 @@ export function createAnalyticsRouter(deps: AnalyticsRouteDeps): Router {
         limit: query.limit,
         nextCursor: normalized.nextCursor,
         cycles: normalized.cycles
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/v1/admin/analytics/sessions', requireApiKey(deps.apiKeys, ['admin']), async (req, res, next) => {
+    try {
+      const query = sessionsQuerySchema.parse(req.query);
+      const sessions = await analytics.getSessions(query);
+      const normalized = normalizeSessionsResult(sessions);
+      res.json({
+        window: query.window,
+        idleMinutes: query.idleMinutes,
+        nextCursor: normalized.nextCursor,
+        sessions: normalized.sessions
       });
     } catch (error) {
       next(error);
