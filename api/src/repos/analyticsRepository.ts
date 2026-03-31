@@ -27,6 +27,24 @@ type EventFilters = {
   orgId?: string;
 };
 
+type RecentRequestCursor = {
+  createdAt: string;
+  requestId: string;
+  attemptNo: number;
+};
+
+type CapHistoryCursor = {
+  exhaustedAt: string;
+  credentialId: string;
+  windowKind: string;
+  eventId: string;
+};
+
+type SessionCursor = {
+  startedAt: string;
+  sessionKey: string;
+};
+
 function windowSql(window: AnalyticsWindow, alias = 're'): string {
   switch (window) {
     case '5h':  return `${alias}.created_at >= now() - interval '5 hours'`;
@@ -57,6 +75,28 @@ function dayWindowSql(window: AnalyticsWindow, col = 'day'): string {
     case '1m':  return `${col} >= ((now() at time zone 'utc') - interval '30 days')::date`;
     case 'all': return '1=1';
     default:    return '1=1';
+  }
+}
+
+function dayWindowStartSql(window: AnalyticsWindow): string {
+  switch (window) {
+    case '5h':  return "((now() at time zone 'utc') - interval '5 hours')::date";
+    case '24h': return "((now() at time zone 'utc') - interval '24 hours')::date";
+    case '7d':  return "((now() at time zone 'utc') - interval '7 days')::date";
+    case '1m':  return "((now() at time zone 'utc') - interval '30 days')::date";
+    case 'all': return "((now() at time zone 'utc') - interval '30 days')::date";
+    default:    return "((now() at time zone 'utc') - interval '30 days')::date";
+  }
+}
+
+function windowStartTimestampSql(window: AnalyticsWindow): string {
+  switch (window) {
+    case '5h':  return "now() - interval '5 hours'";
+    case '24h': return "now() - interval '24 hours'";
+    case '7d':  return "now() - interval '7 days'";
+    case '1m':  return "now() - interval '30 days'";
+    case 'all': return "now() - interval '30 days'";
+    default:    return "now() - interval '30 days'";
   }
 }
 
@@ -147,6 +187,77 @@ function applyCanonicalCredentialProviderFilter(
 
   params.push(provider);
   where.push(`${column} = $${params.length}`);
+}
+
+function decodeRecentRequestCursor(cursor: string | undefined): RecentRequestCursor | null {
+  if (!cursor) return null;
+
+  const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
+  const createdAt = typeof parsed.createdAt === 'string' ? parsed.createdAt : null;
+  const requestId = typeof parsed.requestId === 'string' ? parsed.requestId : null;
+  const attemptNo = typeof parsed.attemptNo === 'number'
+    ? parsed.attemptNo
+    : (typeof parsed.attemptNo === 'string' ? Number(parsed.attemptNo) : NaN);
+
+  if (!createdAt || !requestId || !Number.isInteger(attemptNo) || attemptNo < 1) {
+    throw new Error('Invalid recent-request cursor');
+  }
+
+  return {
+    createdAt,
+    requestId,
+    attemptNo
+  };
+}
+
+function encodeRecentRequestCursor(cursor: RecentRequestCursor): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+}
+
+function decodeCapHistoryCursor(cursor: string | undefined): CapHistoryCursor | null {
+  if (!cursor) return null;
+
+  const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
+  const exhaustedAt = typeof parsed.exhaustedAt === 'string' ? parsed.exhaustedAt : null;
+  const credentialId = typeof parsed.credentialId === 'string' ? parsed.credentialId : null;
+  const windowKind = typeof parsed.windowKind === 'string' ? parsed.windowKind : null;
+  const eventId = typeof parsed.eventId === 'string' ? parsed.eventId : null;
+
+  if (!exhaustedAt || !credentialId || !windowKind || !eventId) {
+    throw new Error('Invalid cap-history cursor');
+  }
+
+  return {
+    exhaustedAt,
+    credentialId,
+    windowKind,
+    eventId
+  };
+}
+
+function encodeCapHistoryCursor(cursor: CapHistoryCursor): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+}
+
+function decodeSessionCursor(cursor: string | undefined): SessionCursor | null {
+  if (!cursor) return null;
+
+  const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
+  const startedAt = typeof parsed.startedAt === 'string' ? parsed.startedAt : null;
+  const sessionKey = typeof parsed.sessionKey === 'string' ? parsed.sessionKey : null;
+
+  if (!startedAt || !sessionKey) {
+    throw new Error('Invalid sessions cursor');
+  }
+
+  return {
+    startedAt,
+    sessionKey
+  };
+}
+
+function encodeSessionCursor(cursor: SessionCursor): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
 }
 
 function isMissingReserveColumn(error: unknown): boolean {
@@ -1290,6 +1401,7 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
     credentialId?: string;
     model?: string;
     minLatencyMs?: number;
+    cursor?: string;
   }): Promise<unknown> {
     const params: SqlValue[] = [];
     const where: string[] = [];
@@ -1310,8 +1422,14 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
       where.push(`re.latency_ms >= $${params.length}`);
     }
 
+    const cursor = decodeRecentRequestCursor(filters.cursor);
+    if (cursor) {
+      params.push(cursor.createdAt, cursor.requestId, cursor.attemptNo);
+      where.push(`(re.created_at, re.request_id, re.attempt_no) < ($${params.length - 2}::timestamptz, $${params.length - 1}::text, $${params.length}::int)`);
+    }
+
     const limit = Math.max(1, Math.min(200, filters.limit));
-    params.push(limit);
+    params.push(limit + 1);
 
     const sql = `
       SELECT
@@ -1356,12 +1474,12 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         AND rl.request_id = re.request_id
         AND rl.attempt_no = re.attempt_no
       WHERE ${where.join(' AND ')}
-      ORDER BY re.created_at DESC
+      ORDER BY re.created_at DESC, re.request_id DESC, re.attempt_no DESC
       LIMIT $${params.length}
     `;
 
     const result = await this.db.query(sql, params);
-    return result.rows.map((row: any) => ({
+    const rows = result.rows.map((row: any) => ({
       request_id: row.request_id,
       attempt_no: row.attempt_no,
       created_at: row.created_at,
@@ -1387,6 +1505,515 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
       prompt_preview: row.prompt_preview,
       response_preview: row.response_preview
     }));
+
+    const requests = rows.slice(0, limit);
+    const hasNextPage = rows.length > limit;
+    const last = requests[requests.length - 1];
+
+    return {
+      requests,
+      nextCursor: hasNextPage && last
+        ? encodeRecentRequestCursor({
+          createdAt: new Date(last.created_at).toISOString(),
+          requestId: String(last.request_id),
+          attemptNo: Number(last.attempt_no)
+        })
+        : null
+    };
+  }
+
+  async getDailyTrends(filters: BaseFilters): Promise<unknown> {
+    const params: SqlValue[] = [];
+    const where: string[] = [];
+    applyBaseFilters(where, params, filters);
+
+    const startDaySql = dayWindowStartSql(filters.window);
+    const sql = `
+      WITH filtered_events AS (
+        SELECT
+          (${usageDaySql('re')}) AS day,
+          re.request_id,
+          re.attempt_no,
+          re.provider,
+          (${SOURCE_CASE}) AS source,
+          re.latency_ms,
+          re.upstream_status,
+          re.error_code,
+          coalesce(ul.usage_units, 0) AS usage_units,
+          coalesce(ul.input_tokens, 0) AS input_tokens,
+          coalesce(ul.output_tokens, 0) AS output_tokens
+        FROM ${TABLES.routingEvents} re
+        LEFT JOIN ${TABLES.usageLedger} ul
+          ON ul.org_id = re.org_id
+          AND ul.request_id = re.request_id
+          AND ul.attempt_no = re.attempt_no
+          AND ul.entry_type = 'usage'
+        WHERE ${where.join(' AND ')}
+      ),
+      days AS (
+        SELECT generate_series(${startDaySql}, (now() at time zone 'utc')::date, interval '1 day')::date AS day
+      ),
+      day_totals AS (
+        SELECT
+          fe.day,
+          count(DISTINCT fe.request_id) AS requests,
+          count(*) AS attempts,
+          coalesce(sum(fe.usage_units), 0) AS usage_units,
+          coalesce(sum(fe.input_tokens), 0) AS input_tokens,
+          coalesce(sum(fe.output_tokens), 0) AS output_tokens,
+          CASE
+            WHEN count(*) > 0
+              THEN round(count(*) FILTER (WHERE fe.upstream_status >= 400 OR fe.error_code IS NOT NULL)::numeric / count(*), 4)
+            ELSE 0
+          END AS error_rate,
+          round(avg(fe.latency_ms)::numeric, 2) AS avg_latency_ms
+        FROM filtered_events fe
+        GROUP BY fe.day
+      ),
+      provider_totals AS (
+        SELECT
+          fe.day,
+          fe.provider,
+          count(DISTINCT fe.request_id) AS requests,
+          coalesce(sum(fe.usage_units), 0) AS usage_units
+        FROM filtered_events fe
+        GROUP BY fe.day, fe.provider
+      ),
+      source_totals AS (
+        SELECT
+          fe.day,
+          fe.source,
+          count(DISTINCT fe.request_id) AS requests,
+          coalesce(sum(fe.usage_units), 0) AS usage_units
+        FROM filtered_events fe
+        GROUP BY fe.day, fe.source
+      )
+      SELECT
+        d.day,
+        coalesce(dt.requests, 0) AS requests,
+        coalesce(dt.attempts, 0) AS attempts,
+        coalesce(dt.usage_units, 0) AS usage_units,
+        coalesce(dt.input_tokens, 0) AS input_tokens,
+        coalesce(dt.output_tokens, 0) AS output_tokens,
+        coalesce(dt.error_rate, 0) AS error_rate,
+        dt.avg_latency_ms,
+        coalesce((
+          SELECT jsonb_object_agg(
+            pt.provider,
+            jsonb_build_object(
+              'requests', pt.requests,
+              'usageUnits', pt.usage_units
+            )
+          )
+          FROM provider_totals pt
+          WHERE pt.day = d.day
+        ), '{}'::jsonb) AS provider_split,
+        coalesce((
+          SELECT jsonb_object_agg(
+            st.source,
+            jsonb_build_object(
+              'requests', st.requests,
+              'usageUnits', st.usage_units
+            )
+          )
+          FROM source_totals st
+          WHERE st.day = d.day
+        ), '{}'::jsonb) AS source_split
+      FROM days d
+      LEFT JOIN day_totals dt
+        ON dt.day = d.day
+      ORDER BY d.day ASC
+    `;
+
+    const result = await this.db.query(sql, params);
+    return result.rows;
+  }
+
+  async getCapHistory(filters: {
+    window: AnalyticsWindow;
+    provider?: string;
+    orgId?: string;
+    credentialId?: string;
+    limit: number;
+    cursor?: string;
+  }): Promise<unknown> {
+    const params: SqlValue[] = [];
+    const where: string[] = [
+      windowSqlRaw(filters.window, 'ce.created_at'),
+      `ce.event_type = 'contribution_cap_exhausted'`
+    ];
+
+    applyCanonicalCredentialProviderFilter(where, params, filters.provider, 'ce.provider');
+    applyOrgIdFilter(where, params, filters.orgId, 'tc.org_id');
+
+    if (filters.credentialId) {
+      params.push(filters.credentialId);
+      where.push(`ce.token_credential_id = $${params.length}::uuid`);
+    }
+
+    const cursor = decodeCapHistoryCursor(filters.cursor);
+    const windowStartSql = windowStartTimestampSql(filters.window);
+    const limit = Math.max(1, Math.min(200, filters.limit));
+
+    let outerWhere = '';
+    if (cursor) {
+      params.push(cursor.exhaustedAt, cursor.credentialId, cursor.windowKind, cursor.eventId);
+      outerWhere = `WHERE (cycles.exhausted_at, cycles.credential_id, cycles.window_kind, cycles.event_id) < ($${params.length - 3}::timestamptz, $${params.length - 2}::text, $${params.length - 1}::text, $${params.length}::uuid)`;
+    }
+
+    params.push(limit + 1);
+
+    const sql = `
+      WITH cycles AS (
+        SELECT
+          ce.id AS event_id,
+          ce.token_credential_id::text AS credential_id,
+          tc.debug_label AS credential_label,
+          ce.provider,
+          coalesce(ce.metadata->>'window', 'unknown') AS window_kind,
+          ce.created_at AS exhausted_at,
+          (
+            SELECT cc.created_at
+            FROM ${TABLES.tokenCredentialEvents} cc
+            WHERE cc.event_type = 'contribution_cap_cleared'
+              AND cc.token_credential_id = ce.token_credential_id
+              AND coalesce(cc.metadata->>'window', 'unknown') = coalesce(ce.metadata->>'window', 'unknown')
+              AND cc.created_at > ce.created_at
+            ORDER BY cc.created_at ASC
+            LIMIT 1
+          ) AS cleared_at,
+          CASE
+            WHEN (
+              SELECT cc.created_at
+              FROM ${TABLES.tokenCredentialEvents} cc
+              WHERE cc.event_type = 'contribution_cap_cleared'
+                AND cc.token_credential_id = ce.token_credential_id
+                AND coalesce(cc.metadata->>'window', 'unknown') = coalesce(ce.metadata->>'window', 'unknown')
+                AND cc.created_at > ce.created_at
+              ORDER BY cc.created_at ASC
+              LIMIT 1
+            ) IS NULL THEN null
+            ELSE round(extract(epoch from ((
+              SELECT cc.created_at
+              FROM ${TABLES.tokenCredentialEvents} cc
+              WHERE cc.event_type = 'contribution_cap_cleared'
+                AND cc.token_credential_id = ce.token_credential_id
+                AND coalesce(cc.metadata->>'window', 'unknown') = coalesce(ce.metadata->>'window', 'unknown')
+                AND cc.created_at > ce.created_at
+              ORDER BY cc.created_at ASC
+              LIMIT 1
+            ) - ce.created_at)) / 60.0)::int
+          END AS recovery_minutes,
+          coalesce((
+            SELECT sum(ul.usage_units)
+            FROM ${TABLES.routingEvents} re
+            LEFT JOIN ${TABLES.usageLedger} ul
+              ON ul.org_id = re.org_id
+              AND ul.request_id = re.request_id
+              AND ul.attempt_no = re.attempt_no
+              AND ul.entry_type = 'usage'
+            WHERE re.route_decision->>'tokenCredentialId' = ce.token_credential_id::text
+              AND re.created_at > coalesce((
+                SELECT max(cc.created_at)
+                FROM ${TABLES.tokenCredentialEvents} cc
+                WHERE cc.event_type = 'contribution_cap_cleared'
+                  AND cc.token_credential_id = ce.token_credential_id
+                  AND coalesce(cc.metadata->>'window', 'unknown') = coalesce(ce.metadata->>'window', 'unknown')
+                  AND cc.created_at < ce.created_at
+              ), ${windowStartSql})
+              AND re.created_at <= ce.created_at
+          ), 0) AS usage_units_before_cap,
+          (
+            SELECT count(DISTINCT re.request_id)
+            FROM ${TABLES.routingEvents} re
+            WHERE re.route_decision->>'tokenCredentialId' = ce.token_credential_id::text
+              AND re.created_at > coalesce((
+                SELECT max(cc.created_at)
+                FROM ${TABLES.tokenCredentialEvents} cc
+                WHERE cc.event_type = 'contribution_cap_cleared'
+                  AND cc.token_credential_id = ce.token_credential_id
+                  AND coalesce(cc.metadata->>'window', 'unknown') = coalesce(ce.metadata->>'window', 'unknown')
+                  AND cc.created_at < ce.created_at
+              ), ${windowStartSql})
+              AND re.created_at <= ce.created_at
+          ) AS requests_before_cap,
+          coalesce(ce.reason, ce.metadata->>'reason') AS exhaustion_reason
+        FROM ${TABLES.tokenCredentialEvents} ce
+        LEFT JOIN ${TABLES.tokenCredentials} tc
+          ON tc.id = ce.token_credential_id
+        WHERE ${where.join(' AND ')}
+      )
+      SELECT
+        cycles.event_id,
+        cycles.credential_id,
+        cycles.credential_label,
+        cycles.provider,
+        cycles.window_kind,
+        cycles.exhausted_at,
+        cycles.cleared_at,
+        cycles.recovery_minutes,
+        cycles.usage_units_before_cap,
+        cycles.requests_before_cap,
+        cycles.exhaustion_reason
+      FROM cycles
+      ${outerWhere}
+      ORDER BY cycles.exhausted_at DESC, cycles.credential_id DESC, cycles.window_kind DESC, cycles.event_id DESC
+      LIMIT $${params.length}
+    `;
+
+    const result = await this.db.query(sql, params);
+    const cycles = result.rows.slice(0, limit);
+    const hasNextPage = result.rows.length > limit;
+    const last = cycles[cycles.length - 1] as Record<string, unknown> | undefined;
+
+    return {
+      cycles,
+      nextCursor: hasNextPage && last
+        ? encodeCapHistoryCursor({
+          exhaustedAt: new Date(String(last.exhausted_at)).toISOString(),
+          credentialId: String(last.credential_id),
+          windowKind: String(last.window_kind),
+          eventId: String(last.event_id)
+        })
+        : null
+    };
+  }
+
+  async getSessions(filters: BaseFilters & {
+    limit: number;
+    cursor?: string;
+    idleMinutes: number;
+  }): Promise<unknown> {
+    const params: SqlValue[] = [];
+    const where: string[] = [];
+    applyBaseFilters(where, params, filters);
+
+    params.push(filters.idleMinutes);
+    const idleMinutesParam = `$${params.length}::int`;
+
+    const cursor = decodeSessionCursor(filters.cursor);
+    let outerWhere = '';
+    if (cursor) {
+      params.push(cursor.startedAt, cursor.sessionKey);
+      outerWhere = `WHERE (sessions.started_at, sessions.session_key) < ($${params.length - 1}::timestamptz, $${params.length}::text)`;
+    }
+
+    const limit = Math.max(1, Math.min(200, filters.limit));
+    params.push(limit + 1);
+
+    const sql = `
+      WITH attempts AS (
+        SELECT
+          re.org_id,
+          re.api_key_id::text AS api_key_id,
+          re.request_id,
+          re.attempt_no,
+          re.created_at,
+          re.provider,
+          re.model,
+          (${SOURCE_CASE}) AS source,
+          re.route_decision->>'tokenCredentialId' AS credential_id,
+          nullif(re.route_decision->>'openclaw_session_id', '') AS openclaw_session_id,
+          nullif(re.route_decision->>'openclaw_run_id', '') AS openclaw_run_id,
+          coalesce(ul.usage_units, 0) AS usage_units,
+          coalesce(ul.input_tokens, 0) AS input_tokens,
+          coalesce(ul.output_tokens, 0) AS output_tokens,
+          rl.prompt_preview,
+          rl.response_preview
+        FROM ${TABLES.routingEvents} re
+        LEFT JOIN ${TABLES.usageLedger} ul
+          ON ul.org_id = re.org_id
+          AND ul.request_id = re.request_id
+          AND ul.attempt_no = re.attempt_no
+          AND ul.entry_type = 'usage'
+        LEFT JOIN ${TABLES.requestLog} rl
+          ON rl.org_id = re.org_id
+          AND rl.request_id = re.request_id
+          AND rl.attempt_no = re.attempt_no
+        WHERE ${where.join(' AND ')}
+      ),
+      request_rollups AS (
+        SELECT
+          a.org_id,
+          a.api_key_id,
+          a.source,
+          a.request_id,
+          min(a.created_at) AS started_at,
+          max(a.created_at) AS ended_at,
+          max(a.openclaw_session_id) AS openclaw_session_id,
+          max(a.openclaw_run_id) AS openclaw_run_id
+        FROM attempts a
+        GROUP BY a.org_id, a.api_key_id, a.source, a.request_id
+      ),
+      idle_gap_inputs AS (
+        SELECT
+          rr.*,
+          lag(rr.ended_at) OVER (
+            PARTITION BY rr.org_id, rr.api_key_id, rr.source
+            ORDER BY rr.started_at ASC, rr.request_id ASC
+          ) AS previous_ended_at
+        FROM request_rollups rr
+        WHERE rr.openclaw_session_id IS NULL
+          AND rr.openclaw_run_id IS NULL
+      ),
+      idle_gap_groups AS (
+        SELECT
+          igi.*,
+          sum(
+            CASE
+              WHEN igi.previous_ended_at IS NULL THEN 1
+              WHEN igi.started_at - igi.previous_ended_at > interval '1 minute' * ${idleMinutesParam} THEN 1
+              ELSE 0
+            END
+          ) OVER (
+            PARTITION BY igi.org_id, igi.api_key_id, igi.source
+            ORDER BY igi.started_at ASC, igi.request_id ASC
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+          ) AS idle_cluster_index
+        FROM idle_gap_inputs igi
+      ),
+      idle_gap_clustered AS (
+        SELECT
+          igg.*,
+          count(*) OVER (
+            PARTITION BY igg.org_id, igg.api_key_id, igg.source, igg.idle_cluster_index
+          ) AS idle_cluster_request_count
+        FROM idle_gap_groups igg
+      ),
+      request_sessions AS (
+        SELECT
+          rr.org_id,
+          rr.api_key_id,
+          rr.source,
+          rr.request_id,
+          CASE
+            WHEN rr.openclaw_session_id IS NOT NULL THEN 'explicit_session_marker'
+            WHEN rr.openclaw_run_id IS NOT NULL THEN 'explicit_run_marker'
+            WHEN igc.idle_cluster_request_count > 1 THEN 'idle_gap'
+            ELSE 'request_id'
+          END AS grouping_basis,
+          CASE
+            WHEN rr.openclaw_session_id IS NOT NULL THEN 'explicit_session_marker:' || rr.openclaw_session_id
+            WHEN rr.openclaw_run_id IS NOT NULL THEN 'explicit_run_marker:' || rr.openclaw_run_id
+            WHEN igc.idle_cluster_request_count > 1
+              THEN concat_ws(':', 'idle_gap', rr.org_id::text, coalesce(rr.api_key_id, 'none'), rr.source, igc.idle_cluster_index::text)
+            ELSE 'request_id:' || rr.request_id
+          END AS session_key
+        FROM request_rollups rr
+        LEFT JOIN idle_gap_clustered igc
+          ON igc.org_id = rr.org_id
+          AND igc.api_key_id IS NOT DISTINCT FROM rr.api_key_id
+          AND igc.source = rr.source
+          AND igc.request_id = rr.request_id
+      ),
+      attempt_sessions AS (
+        SELECT
+          a.request_id,
+          a.attempt_no,
+          a.created_at,
+          a.provider,
+          a.model,
+          a.credential_id,
+          a.usage_units,
+          a.input_tokens,
+          a.output_tokens,
+          a.prompt_preview,
+          a.response_preview,
+          rs.session_key,
+          rs.grouping_basis
+        FROM attempts a
+        JOIN request_sessions rs
+          ON rs.org_id = a.org_id
+          AND rs.api_key_id IS NOT DISTINCT FROM a.api_key_id
+          AND rs.source = a.source
+          AND rs.request_id = a.request_id
+      ),
+      ordered_attempts AS (
+        SELECT
+          sess.*,
+          lag(sess.provider) OVER (
+            PARTITION BY sess.session_key
+            ORDER BY sess.created_at ASC, sess.request_id ASC, sess.attempt_no ASC
+          ) AS previous_provider
+        FROM attempt_sessions sess
+      ),
+      sessions AS (
+        SELECT
+          oa.session_key,
+          oa.grouping_basis,
+          min(oa.created_at) AS started_at,
+          max(oa.created_at) AS ended_at,
+          round(extract(epoch from (max(oa.created_at) - min(oa.created_at))) / 60.0)::int AS duration_minutes,
+          count(DISTINCT oa.request_id) AS request_count,
+          count(*) AS attempt_count,
+          coalesce(sum(oa.usage_units), 0) AS usage_units,
+          coalesce(sum(oa.input_tokens), 0) AS input_tokens,
+          coalesce(sum(oa.output_tokens), 0) AS output_tokens,
+          coalesce(array_agg(DISTINCT oa.provider ORDER BY oa.provider), '{}'::text[]) AS providers,
+          coalesce(array_agg(DISTINCT oa.model ORDER BY oa.model) FILTER (WHERE oa.model IS NOT NULL), '{}'::text[]) AS models,
+          coalesce(
+            array_agg(DISTINCT oa.credential_id ORDER BY oa.credential_id)
+              FILTER (WHERE oa.credential_id IS NOT NULL AND oa.credential_id <> ''),
+            '{}'::text[]
+          ) AS credential_ids,
+          count(*) FILTER (
+            WHERE oa.previous_provider IS NOT NULL
+              AND oa.previous_provider IS DISTINCT FROM oa.provider
+          ) AS provider_switch_count,
+          coalesce(
+            (
+              array_agg(oa.prompt_preview ORDER BY oa.created_at ASC, oa.request_id ASC, oa.attempt_no ASC)
+                FILTER (WHERE oa.prompt_preview IS NOT NULL AND oa.prompt_preview <> '')
+            )[1:3],
+            '{}'::text[]
+          ) AS sample_prompt_previews,
+          coalesce(
+            (
+              array_agg(oa.response_preview ORDER BY oa.created_at ASC, oa.request_id ASC, oa.attempt_no ASC)
+                FILTER (WHERE oa.response_preview IS NOT NULL AND oa.response_preview <> '')
+            )[1:3],
+            '{}'::text[]
+          ) AS sample_response_previews
+        FROM ordered_attempts oa
+        GROUP BY oa.session_key, oa.grouping_basis
+      )
+      SELECT
+        sessions.session_key,
+        sessions.grouping_basis,
+        sessions.started_at,
+        sessions.ended_at,
+        sessions.duration_minutes,
+        sessions.request_count,
+        sessions.attempt_count,
+        sessions.usage_units,
+        sessions.input_tokens,
+        sessions.output_tokens,
+        sessions.providers,
+        sessions.models,
+        sessions.credential_ids,
+        sessions.provider_switch_count,
+        sessions.sample_prompt_previews,
+        sessions.sample_response_previews
+      FROM sessions
+      ${outerWhere}
+      ORDER BY sessions.started_at DESC, sessions.session_key DESC
+      LIMIT $${params.length}
+    `;
+
+    const result = await this.db.query(sql, params);
+    const sessions = result.rows.slice(0, limit);
+    const hasNextPage = result.rows.length > limit;
+    const last = sessions[sessions.length - 1] as Record<string, unknown> | undefined;
+
+    return {
+      sessions,
+      nextCursor: hasNextPage && last
+        ? encodeSessionCursor({
+          startedAt: new Date(String(last.started_at)).toISOString(),
+          sessionKey: String(last.session_key)
+        })
+        : null
+    };
   }
 
   async getEvents(filters: EventFilters): Promise<unknown> {

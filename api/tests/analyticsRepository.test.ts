@@ -296,6 +296,27 @@ describe('AnalyticsRepository', () => {
     await repo.getRecentRequests({ window: '24h', limit: 25 });
 
     expect(db.queries[0]?.sql).toContain("AND ul.entry_type = 'usage'");
+    expect(db.queries[0]?.sql).toContain('ORDER BY re.created_at DESC, re.request_id DESC, re.attempt_no DESC');
+  });
+
+  it('applies descending cursor pagination to recent-request analytics', async () => {
+    const db = new MockSqlClient({ rows: [], rowCount: 0 });
+    const repo = new AnalyticsRepository(db);
+    const cursor = Buffer.from(JSON.stringify({
+      createdAt: '2026-03-08T14:59:00.000Z',
+      requestId: 'req_122',
+      attemptNo: 1
+    }), 'utf8').toString('base64url');
+
+    await repo.getRecentRequests({ window: '24h', limit: 25, cursor } as any);
+
+    expect(db.queries[0]?.sql).toContain('(re.created_at, re.request_id, re.attempt_no) < ($1::timestamptz, $2::text, $3::int)');
+    expect(db.queries[0]?.params).toEqual([
+      '2026-03-08T14:59:00.000Z',
+      'req_122',
+      1,
+      26
+    ]);
   });
 
   it('returns rescued-request metadata from final routing rows in recent-request analytics', async () => {
@@ -330,19 +351,213 @@ describe('AnalyticsRepository', () => {
     });
     const repo = new AnalyticsRepository(db);
 
-    const rows = await repo.getRecentRequests({ window: '24h', limit: 25 }) as Array<Record<string, unknown>>;
+    const result = await repo.getRecentRequests({ window: '24h', limit: 25 }) as Record<string, unknown>;
 
     expect(db.queries[0]?.sql).toContain(`CASE WHEN re.route_decision->>'rescued' = 'true' THEN true ELSE false END AS rescued`);
     expect(db.queries[0]?.sql).toContain(`re.route_decision->>'rescue_scope' AS rescue_scope`);
-    expect(rows).toEqual([expect.objectContaining({
-      request_id: 'req_rescued_1',
-      rescued: true,
-      rescue_scope: 'cross_provider',
-      rescue_initial_provider: 'openai',
-      rescue_initial_credential_id: '22222222-2222-4222-8222-222222222222',
-      rescue_initial_failure_code: 'upstream_400',
-      rescue_initial_failure_status: 400
-    })]);
+    expect(result).toEqual({
+      nextCursor: null,
+      requests: [expect.objectContaining({
+        request_id: 'req_rescued_1',
+        rescued: true,
+        rescue_scope: 'cross_provider',
+        rescue_initial_provider: 'openai',
+        rescue_initial_credential_id: '22222222-2222-4222-8222-222222222222',
+        rescue_initial_failure_code: 'upstream_400',
+        rescue_initial_failure_status: 400
+      })]
+    });
+  });
+
+  it('builds daily trends from raw routing and usage tables with provider/source/org filters', async () => {
+    const db = new MockSqlClient({ rows: [], rowCount: 0 });
+    const repo = new AnalyticsRepository(db);
+
+    await (repo as any).getDailyTrends({
+      window: '1m',
+      provider: 'openai',
+      source: 'openclaw',
+      orgId: 'org_1'
+    });
+
+    expect(db.queries[0]?.sql).toContain('generate_series(');
+    expect(db.queries[0]?.sql).toContain('FROM in_routing_events re');
+    expect(db.queries[0]?.sql).toContain('LEFT JOIN in_usage_ledger ul');
+    expect(db.queries[0]?.sql).toContain("AND ul.entry_type = 'usage'");
+    expect(db.queries[0]?.sql).toContain("re.provider = $1");
+    expect(db.queries[0]?.sql).toContain("coalesce(");
+    expect(db.queries[0]?.sql).toContain("re.org_id = $3");
+    expect(db.queries[0]?.params).toEqual(['openai', 'openclaw', 'org_1']);
+  });
+
+  it('builds cap history with canonical provider and credential filters', async () => {
+    const db = new MockSqlClient({ rows: [], rowCount: 0 });
+    const repo = new AnalyticsRepository(db);
+
+    await (repo as any).getCapHistory({
+      window: '7d',
+      provider: 'openai',
+      credentialId: '11111111-1111-4111-8111-111111111111',
+      limit: 10
+    });
+
+    expect(db.queries[0]?.sql).toContain("ce.event_type = 'contribution_cap_exhausted'");
+    expect(db.queries[0]?.sql).toContain("cc.event_type = 'contribution_cap_cleared'");
+    expect(db.queries[0]?.sql).toContain('LEFT JOIN in_token_credentials tc');
+    expect(db.queries[0]?.sql).toContain('ce.provider = ANY($1::text[])');
+    expect(db.queries[0]?.sql).toContain('ce.token_credential_id = $2::uuid');
+    expect(db.queries[0]?.params).toEqual([
+      ['openai', 'codex'],
+      '11111111-1111-4111-8111-111111111111',
+      11
+    ]);
+  });
+
+  it('returns open cap-history cycles with null recovery metadata', async () => {
+    const db = new MockSqlClient({
+      rows: [{
+        credential_id: '11111111-1111-4111-8111-111111111111',
+        credential_label: 'alpha',
+        provider: 'anthropic',
+        window_kind: '5h',
+        exhausted_at: '2026-03-08T15:00:00.000Z',
+        cleared_at: null,
+        recovery_minutes: null,
+        usage_units_before_cap: 1200,
+        requests_before_cap: 25,
+        exhaustion_reason: 'reserve_exhausted'
+      }],
+      rowCount: 1
+    });
+    const repo = new AnalyticsRepository(db);
+
+    const result = await (repo as any).getCapHistory({
+      window: '7d',
+      limit: 10
+    });
+
+    expect(result).toEqual({
+      nextCursor: null,
+      cycles: [expect.objectContaining({
+        credential_id: '11111111-1111-4111-8111-111111111111',
+        cleared_at: null,
+        recovery_minutes: null,
+        usage_units_before_cap: 1200,
+        requests_before_cap: 25
+      })]
+    });
+  });
+
+  it('builds hybrid sessions with explicit marker priority and idle-gap fallback', async () => {
+    const db = new MockSqlClient({ rows: [], rowCount: 0 });
+    const repo = new AnalyticsRepository(db);
+    const cursor = Buffer.from(JSON.stringify({
+      startedAt: '2026-03-08T14:59:00.000Z',
+      sessionKey: 'idle_gap:org_1:key_1:openclaw:4'
+    }), 'utf8').toString('base64url');
+
+    await (repo as any).getSessions({
+      window: '7d',
+      provider: 'openai',
+      source: 'openclaw',
+      orgId: 'org_1',
+      limit: 20,
+      idleMinutes: 45,
+      cursor
+    });
+
+    expect(db.queries[0]?.sql).toContain("re.route_decision->>'openclaw_session_id'");
+    expect(db.queries[0]?.sql).toContain("re.route_decision->>'openclaw_run_id'");
+    expect(db.queries[0]?.sql).toContain('PARTITION BY rr.org_id, rr.api_key_id, rr.source');
+    expect(db.queries[0]?.sql).toContain('lag(rr.ended_at)');
+    expect(db.queries[0]?.sql).toContain("interval '1 minute' * $4::int");
+    expect(db.queries[0]?.sql).toContain('LEFT JOIN in_usage_ledger ul');
+    expect(db.queries[0]?.sql).toContain('LEFT JOIN in_request_log rl');
+    expect(db.queries[0]?.sql).toContain("AND ul.entry_type = 'usage'");
+    expect(db.queries[0]?.sql).toContain('(sessions.started_at, sessions.session_key) < ($5::timestamptz, $6::text)');
+    expect(db.queries[0]?.params).toEqual([
+      'openai',
+      'openclaw',
+      'org_1',
+      45,
+      '2026-03-08T14:59:00.000Z',
+      'idle_gap:org_1:key_1:openclaw:4',
+      21
+    ]);
+  });
+
+  it('returns session rollups with nextCursor and preview samples', async () => {
+    const db = new MockSqlClient({
+      rows: [
+        {
+          session_key: 'explicit_session_marker:oc_session_123',
+          grouping_basis: 'explicit_session_marker',
+          started_at: '2026-03-08T15:00:00.000Z',
+          ended_at: '2026-03-08T16:05:00.000Z',
+          duration_minutes: 65,
+          request_count: 8,
+          attempt_count: 10,
+          usage_units: 4200,
+          input_tokens: 18000,
+          output_tokens: 2300,
+          providers: ['anthropic', 'openai'],
+          models: ['claude-opus-4-6', 'gpt-5.2'],
+          credential_ids: [
+            '11111111-1111-4111-8111-111111111111',
+            '22222222-2222-4222-8222-222222222222'
+          ],
+          provider_switch_count: 1,
+          sample_prompt_previews: ['fix this bug', 'now refactor it'],
+          sample_response_previews: ['here is a patch', 'tests are green']
+        },
+        {
+          session_key: 'request_id:req_122',
+          grouping_basis: 'request_id',
+          started_at: '2026-03-08T14:59:00.000Z',
+          ended_at: '2026-03-08T15:02:00.000Z',
+          duration_minutes: 3,
+          request_count: 1,
+          attempt_count: 1,
+          usage_units: 120,
+          input_tokens: 500,
+          output_tokens: 60,
+          providers: ['openai'],
+          models: ['gpt-5.2'],
+          credential_ids: ['22222222-2222-4222-8222-222222222222'],
+          provider_switch_count: 0,
+          sample_prompt_previews: ['quick follow-up'],
+          sample_response_previews: ['done']
+        }
+      ],
+      rowCount: 2
+    });
+    const repo = new AnalyticsRepository(db);
+
+    const result = await (repo as any).getSessions({
+      window: '7d',
+      limit: 1,
+      idleMinutes: 30
+    });
+
+    expect(result).toEqual({
+      nextCursor: Buffer.from(JSON.stringify({
+        startedAt: '2026-03-08T15:00:00.000Z',
+        sessionKey: 'explicit_session_marker:oc_session_123'
+      }), 'utf8').toString('base64url'),
+      sessions: [expect.objectContaining({
+        session_key: 'explicit_session_marker:oc_session_123',
+        grouping_basis: 'explicit_session_marker',
+        providers: ['anthropic', 'openai'],
+        models: ['claude-opus-4-6', 'gpt-5.2'],
+        credential_ids: [
+          '11111111-1111-4111-8111-111111111111',
+          '22222222-2222-4222-8222-222222222222'
+        ],
+        provider_switch_count: 1,
+        sample_prompt_previews: ['fix this bug', 'now refactor it'],
+        sample_response_previews: ['here is a patch', 'tests are green']
+      })]
+    });
   });
 
   it('reads lifecycle events with window/provider filters and limits', async () => {

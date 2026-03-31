@@ -149,6 +149,9 @@ function createAnalyticsRepo() {
     getBuyers: vi.fn().mockResolvedValue([]),
     getBuyerTimeSeries: vi.fn().mockResolvedValue([]),
     getRecentRequests: vi.fn().mockResolvedValue([]),
+    getDailyTrends: vi.fn().mockResolvedValue([]),
+    getCapHistory: vi.fn().mockResolvedValue({ cycles: [], nextCursor: null }),
+    getSessions: vi.fn().mockResolvedValue({ sessions: [], nextCursor: null }),
     getEvents: vi.fn().mockResolvedValue([]),
     getAnomalies: vi.fn().mockResolvedValue({ checks: {}, ok: true })
   };
@@ -448,34 +451,42 @@ describe('analytics routes', () => {
   it('returns request-log previews with normalized filters', async () => {
     const apiKeys = createApiKeysRepo();
     const analytics = createAnalyticsRepo();
-    analytics.getRecentRequests.mockResolvedValue([
-      {
-        request_id: 'req_123',
-        attempt_no: 2,
-        created_at: '2026-03-08T15:00:00.000Z',
-        credential_id: '11111111-1111-4111-8111-111111111111',
-        credential_label: 'alpha',
-        provider: 'anthropic',
-        model: 'claude-opus-4-6',
-        source: 'openclaw',
-        translated: true,
-        rescued: true,
-        rescue_scope: 'cross_provider',
-        rescue_initial_provider: 'openai',
-        rescue_initial_credential_id: '22222222-2222-4222-8222-222222222222',
-        rescue_initial_failure_code: 'upstream_400',
-        rescue_initial_failure_status: 400,
-        streaming: true,
-        upstream_status: 200,
-        latency_ms: 450,
-        ttfb_ms: 120,
-        input_tokens: 1000,
-        output_tokens: 50,
-        usage_units: 200,
-        prompt_preview: 'hello',
-        response_preview: 'world'
-      }
-    ]);
+    const cursor = Buffer.from(JSON.stringify({
+      createdAt: '2026-03-08T14:59:00.000Z',
+      requestId: 'req_122',
+      attemptNo: 1
+    }), 'utf8').toString('base64url');
+    analytics.getRecentRequests.mockResolvedValue({
+      requests: [
+        {
+          request_id: 'req_123',
+          attempt_no: 2,
+          created_at: '2026-03-08T15:00:00.000Z',
+          credential_id: '11111111-1111-4111-8111-111111111111',
+          credential_label: 'alpha',
+          provider: 'anthropic',
+          model: 'claude-opus-4-6',
+          source: 'openclaw',
+          translated: true,
+          rescued: true,
+          rescue_scope: 'cross_provider',
+          rescue_initial_provider: 'openai',
+          rescue_initial_credential_id: '22222222-2222-4222-8222-222222222222',
+          rescue_initial_failure_code: 'upstream_400',
+          rescue_initial_failure_status: 400,
+          streaming: true,
+          upstream_status: 200,
+          latency_ms: 450,
+          ttfb_ms: 120,
+          input_tokens: 1000,
+          output_tokens: 50,
+          usage_units: 200,
+          prompt_preview: 'hello',
+          response_preview: 'world'
+        }
+      ],
+      nextCursor: cursor
+    });
 
     const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
     const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/requests', 'get');
@@ -488,7 +499,8 @@ describe('analytics routes', () => {
       query: {
         limit: '20',
         minLatencyMs: '250',
-        credentialId: '11111111-1111-4111-8111-111111111111'
+        credentialId: '11111111-1111-4111-8111-111111111111',
+        cursor
       }
     });
     const res = createMockRes();
@@ -502,11 +514,13 @@ describe('analytics routes', () => {
       credentialId: '11111111-1111-4111-8111-111111111111',
       limit: 20,
       model: undefined,
-      minLatencyMs: 250
+      minLatencyMs: 250,
+      cursor
     });
     expect(res.body).toEqual({
       window: '24h',
       limit: 20,
+      nextCursor: cursor,
       requests: [
         {
           requestId: 'req_123',
@@ -531,8 +545,252 @@ describe('analytics routes', () => {
           inputTokens: 1000,
           outputTokens: 50,
           usageUnits: 200,
-          prompt: 'hello',
-          response: 'world'
+          promptPreview: 'hello',
+          responsePreview: 'world'
+        }
+      ]
+    });
+  });
+
+  it('returns daily trends with normalized filters', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    analytics.getDailyTrends.mockResolvedValue([
+      {
+        day: '2026-03-08',
+        requests: 42,
+        attempts: 45,
+        usage_units: 12345,
+        input_tokens: 6789,
+        output_tokens: 321,
+        error_rate: 0.12,
+        avg_latency_ms: 512,
+        provider_split: {
+          anthropic: { requests: 30, usageUnits: 9000 },
+          openai: { requests: 12, usageUnits: 3345 }
+        },
+        source_split: {
+          openclaw: { requests: 40, usageUnits: 12000 },
+          direct: { requests: 2, usageUnits: 345 }
+        }
+      }
+    ]);
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/daily-trends', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/daily-trends',
+      headers: {
+        authorization: 'Bearer admin_token'
+      },
+      query: {
+        window: '30d',
+        provider: 'codex',
+        source: 'openclaw',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(analytics.getDailyTrends).toHaveBeenCalledWith({
+      window: '1m',
+      provider: 'openai',
+      source: 'openclaw',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d'
+    });
+    expect(res.body).toEqual({
+      window: '1m',
+      days: [
+        {
+          day: '2026-03-08',
+          requests: 42,
+          attempts: 45,
+          usageUnits: 12345,
+          inputTokens: 6789,
+          outputTokens: 321,
+          errorRate: 0.12,
+          avgLatencyMs: 512,
+          providerSplit: {
+            anthropic: { requests: 30, usageUnits: 9000 },
+            openai: { requests: 12, usageUnits: 3345 }
+          },
+          sourceSplit: {
+            openclaw: { requests: 40, usageUnits: 12000 },
+            direct: { requests: 2, usageUnits: 345 }
+          }
+        }
+      ]
+    });
+  });
+
+  it('returns cap history with normalized filters and pagination', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    const cursor = Buffer.from(JSON.stringify({
+      exhaustedAt: '2026-03-08T14:59:00.000Z',
+      credentialId: '11111111-1111-4111-8111-111111111111',
+      windowKind: '5h',
+      eventId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    }), 'utf8').toString('base64url');
+    analytics.getCapHistory.mockResolvedValue({
+      cycles: [
+        {
+          credential_id: '11111111-1111-4111-8111-111111111111',
+          credential_label: 'alpha',
+          provider: 'anthropic',
+          window_kind: '5h',
+          exhausted_at: '2026-03-08T15:00:00.000Z',
+          cleared_at: null,
+          recovery_minutes: null,
+          usage_units_before_cap: 1200,
+          requests_before_cap: 25,
+          exhaustion_reason: 'reserve_exhausted'
+        }
+      ],
+      nextCursor: cursor
+    });
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/cap-history', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/cap-history',
+      headers: {
+        authorization: 'Bearer admin_token'
+      },
+      query: {
+        provider: 'codex',
+        credentialId: '11111111-1111-4111-8111-111111111111',
+        limit: '10',
+        cursor
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(analytics.getCapHistory).toHaveBeenCalledWith({
+      window: '7d',
+      provider: 'openai',
+      orgId: undefined,
+      credentialId: '11111111-1111-4111-8111-111111111111',
+      limit: 10,
+      cursor
+    });
+    expect(res.body).toEqual({
+      window: '7d',
+      limit: 10,
+      nextCursor: cursor,
+      cycles: [
+        {
+          credentialId: '11111111-1111-4111-8111-111111111111',
+          credentialLabel: 'alpha',
+          provider: 'anthropic',
+          windowKind: '5h',
+          exhaustedAt: '2026-03-08T15:00:00.000Z',
+          clearedAt: null,
+          recoveryMinutes: null,
+          usageUnitsBeforeCap: 1200,
+          requestsBeforeCap: 25,
+          exhaustionReason: 'reserve_exhausted'
+        }
+      ]
+    });
+  });
+
+  it('returns session analytics with normalized filters and preview samples', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    const cursor = Buffer.from(JSON.stringify({
+      startedAt: '2026-03-08T14:59:00.000Z',
+      sessionKey: 'idle_gap:818d0cc7-7ed2-469f-b690-a977e72a921d:4'
+    }), 'utf8').toString('base64url');
+    analytics.getSessions.mockResolvedValue({
+      sessions: [
+        {
+          session_key: 'explicit_session_marker:oc_session_123',
+          grouping_basis: 'explicit_session_marker',
+          started_at: '2026-03-08T15:00:00.000Z',
+          ended_at: '2026-03-08T16:05:00.000Z',
+          duration_minutes: 65,
+          request_count: 8,
+          attempt_count: 10,
+          usage_units: 4200,
+          input_tokens: 18000,
+          output_tokens: 2300,
+          providers: ['anthropic', 'openai'],
+          models: ['claude-opus-4-6', 'gpt-5.2'],
+          credential_ids: [
+            '11111111-1111-4111-8111-111111111111',
+            '22222222-2222-4222-8222-222222222222'
+          ],
+          provider_switch_count: 1,
+          sample_prompt_previews: ['fix this bug', 'now refactor it'],
+          sample_response_previews: ['here is a patch', 'tests are green']
+        }
+      ],
+      nextCursor: cursor
+    });
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/sessions', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/sessions',
+      headers: {
+        authorization: 'Bearer admin_token'
+      },
+      query: {
+        window: '30d',
+        provider: 'codex',
+        source: 'openclaw',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+        limit: '15',
+        idleMinutes: '45',
+        cursor
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(analytics.getSessions).toHaveBeenCalledWith({
+      window: '1m',
+      provider: 'openai',
+      source: 'openclaw',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      limit: 15,
+      idleMinutes: 45,
+      cursor
+    });
+    expect(res.body).toEqual({
+      window: '1m',
+      idleMinutes: 45,
+      nextCursor: cursor,
+      sessions: [
+        {
+          sessionKey: 'explicit_session_marker:oc_session_123',
+          groupingBasis: 'explicit_session_marker',
+          startedAt: '2026-03-08T15:00:00.000Z',
+          endedAt: '2026-03-08T16:05:00.000Z',
+          durationMinutes: 65,
+          requestCount: 8,
+          attemptCount: 10,
+          usageUnits: 4200,
+          inputTokens: 18000,
+          outputTokens: 2300,
+          providers: ['anthropic', 'openai'],
+          models: ['claude-opus-4-6', 'gpt-5.2'],
+          credentialIds: [
+            '11111111-1111-4111-8111-111111111111',
+            '22222222-2222-4222-8222-222222222222'
+          ],
+          providerSwitchCount: 1,
+          samplePromptPreviews: ['fix this bug', 'now refactor it'],
+          sampleResponsePreviews: ['here is a patch', 'tests are green']
         }
       ]
     });
@@ -2649,5 +2907,53 @@ describe('analytics routes', () => {
     expect(res.statusCode).toBe(400);
     expect((res.body as any).code).toBe('invalid_request');
     expect(analytics.getRecentRequests).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid request-log cursors', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/requests', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/requests',
+      headers: {
+        authorization: 'Bearer admin_token'
+      },
+      query: {
+        cursor: 'not-base64url-json'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any).code).toBe('invalid_request');
+    expect(analytics.getRecentRequests).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid sessions cursors', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/sessions', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/sessions',
+      headers: {
+        authorization: 'Bearer admin_token'
+      },
+      query: {
+        cursor: 'not-base64url-json'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any).code).toBe('invalid_request');
+    expect(analytics.getSessions).not.toHaveBeenCalled();
   });
 });

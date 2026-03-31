@@ -131,8 +131,26 @@ Current expectation:
   - multi-buyer fan-in via repeated `apiKeyId`
 
 - `/requests`
-  - recent request drilldown with previews
+  - paginated recent request drilldown with safe previews only
   - attempt-level rows with `attemptNo`
+  - stable descending cursor pagination with `nextCursor`
+  - preview fields exposed as `promptPreview` / `responsePreview`
+
+- `/daily-trends`
+  - UTC-day aggregates over recent windows
+  - requests, attempts, usage, tokens, error rate, latency
+  - per-day `providerSplit` and `sourceSplit`
+
+- `/cap-history`
+  - token contribution-cap exhaustion history
+  - `usageUnitsBeforeCap`, `requestsBeforeCap`, `recoveryMinutes`
+  - can include still-open cycles with `clearedAt = null`
+
+- `/sessions`
+  - approximate coding-session analytics from routing + safe previews
+  - aggregates requests, attempts, usage, providers, models, credentials
+  - returns bounded preview samples only
+  - exposes `groupingBasis` so callers can distinguish explicit markers from idle-gap heuristics
 
 - `/events`
   - token lifecycle event feed
@@ -162,3 +180,10 @@ If the question is:
   - partially
   - we can drive current-state reserve enforcement and current-token quota visibility
   - we still cannot reconstruct historical provider quota usage over time
+
+For the admin content feeds specifically:
+
+- `/requests`, `/daily-trends`, `/cap-history`, and `/sessions` stay on the safe-preview boundary
+- they read routing, usage, lifecycle, and request-preview storage only
+- they do not expose archived full prompts or full responses
+- `/sessions` is heuristic, not a canonical persisted session model

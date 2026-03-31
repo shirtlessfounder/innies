@@ -22,6 +22,7 @@ const ANALYTICS_SOURCES = ['openclaw', 'cli-claude', 'cli-codex', 'direct'] as c
 const TOKEN_PROVIDERS = ['anthropic', 'openai'] as const;
 const TOKEN_STATUSES = ['active', 'paused', 'rotating', 'maxed', 'expired', 'revoked'] as const;
 const ANALYTICS_EVENT_SEVERITIES = ['info', 'warn', 'error'] as const;
+const SESSION_GROUPING_BASES = ['explicit_session_marker', 'explicit_run_marker', 'request_id', 'idle_gap'] as const;
 
 export type AnalyticsSource = typeof ANALYTICS_SOURCES[number];
 export type AnalyticsProvider = typeof TOKEN_PROVIDERS[number];
@@ -89,6 +90,33 @@ type RecentRequestsFilters = {
   credentialId?: string;
   model?: string;
   minLatencyMs?: number;
+  cursor?: string;
+};
+
+type DailyTrendsFilters = {
+  window: AnalyticsWindow;
+  provider?: AnalyticsProvider;
+  source?: AnalyticsSource;
+  orgId?: string;
+};
+
+type CapHistoryFilters = {
+  window: AnalyticsWindow;
+  provider?: AnalyticsProvider;
+  orgId?: string;
+  credentialId?: string;
+  limit: number;
+  cursor?: string;
+};
+
+type SessionFilters = {
+  window: AnalyticsWindow;
+  provider?: AnalyticsProvider;
+  source?: AnalyticsSource;
+  orgId?: string;
+  limit: number;
+  cursor?: string;
+  idleMinutes: number;
 };
 
 type AnomaliesFilters = {
@@ -121,6 +149,9 @@ export interface AnalyticsRouteRepository {
   getBuyers(filters: BuyerFilters): Promise<unknown>;
   getBuyerTimeSeries(filters: BuyerTimeSeriesFilters): Promise<unknown>;
   getRecentRequests(filters: RecentRequestsFilters): Promise<unknown>;
+  getDailyTrends(filters: DailyTrendsFilters): Promise<unknown>;
+  getCapHistory(filters: CapHistoryFilters): Promise<unknown>;
+  getSessions(filters: SessionFilters): Promise<unknown>;
   getEvents(filters: EventFilters): Promise<unknown>;
   getAnomalies(filters: AnomaliesFilters): Promise<unknown>;
 }
@@ -203,6 +234,66 @@ const multiUuidQuerySchema = z.preprocess((value) => {
   return undefined;
 }, z.array(z.string().uuid()).optional());
 
+const requestCursorPayloadSchema = z.object({
+  createdAt: z.string().datetime({ offset: true }),
+  requestId: z.string().trim().min(1),
+  attemptNo: z.coerce.number().int().min(1)
+});
+
+const requestCursorSchema = z.string().trim().min(1).transform((value, ctx) => {
+  try {
+    const decoded = Buffer.from(value, 'base64url').toString('utf8');
+    requestCursorPayloadSchema.parse(JSON.parse(decoded));
+    return value;
+  } catch {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Invalid request cursor'
+    });
+    return z.NEVER;
+  }
+});
+
+const capHistoryCursorPayloadSchema = z.object({
+  exhaustedAt: z.string().datetime({ offset: true }),
+  credentialId: z.string().uuid(),
+  windowKind: z.enum(['5h', '7d', 'unknown']),
+  eventId: z.string().uuid()
+});
+
+const capHistoryCursorSchema = z.string().trim().min(1).transform((value, ctx) => {
+  try {
+    const decoded = Buffer.from(value, 'base64url').toString('utf8');
+    capHistoryCursorPayloadSchema.parse(JSON.parse(decoded));
+    return value;
+  } catch {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Invalid cap-history cursor'
+    });
+    return z.NEVER;
+  }
+});
+
+const sessionCursorPayloadSchema = z.object({
+  startedAt: z.string().datetime({ offset: true }),
+  sessionKey: z.string().trim().min(1)
+});
+
+const sessionCursorSchema = z.string().trim().min(1).transform((value, ctx) => {
+  try {
+    const decoded = Buffer.from(value, 'base64url').toString('utf8');
+    sessionCursorPayloadSchema.parse(JSON.parse(decoded));
+    return value;
+  } catch {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Invalid sessions cursor'
+    });
+    return z.NEVER;
+  }
+});
+
 const timeSeriesQuerySchema = baseAnalyticsQuerySchema.extend({
   granularity: analyticsGranularitySchema.optional(),
   credentialId: z.string().uuid().optional()
@@ -235,6 +326,7 @@ const buyerTimeSeriesQuerySchema = baseAnalyticsQuerySchema.extend({
 
 const recentRequestsQuerySchema = baseAnalyticsQuerySchema.extend({
   credentialId: z.string().uuid().optional(),
+  cursor: requestCursorSchema.optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
   model: z.string().trim().min(1).max(200).optional(),
   minLatencyMs: z.coerce.number().int().nonnegative().optional()
@@ -243,9 +335,47 @@ const recentRequestsQuerySchema = baseAnalyticsQuerySchema.extend({
   provider: query.provider,
   source: query.source,
   credentialId: query.credentialId,
+  cursor: query.cursor,
   limit: query.limit ?? 50,
   model: query.model,
   minLatencyMs: query.minLatencyMs
+}));
+
+const dailyTrendsQuerySchema = baseAnalyticsQuerySchema.transform((query) => ({
+  window: query.window ?? '7d',
+  provider: query.provider,
+  source: query.source,
+  orgId: query.orgId
+}));
+
+const capHistoryQuerySchema = z.object({
+  window: analyticsWindowSchema.optional(),
+  provider: analyticsProviderSchema.optional(),
+  orgId: z.string().uuid().optional(),
+  credentialId: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  cursor: capHistoryCursorSchema.optional()
+}).transform((query) => ({
+  window: query.window ?? '7d',
+  provider: query.provider,
+  orgId: query.orgId,
+  credentialId: query.credentialId,
+  limit: query.limit ?? 50,
+  cursor: query.cursor
+}));
+
+const sessionsQuerySchema = baseAnalyticsQuerySchema.extend({
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  cursor: sessionCursorSchema.optional(),
+  idleMinutes: z.coerce.number().int().min(1).max(240).optional()
+}).transform((query) => ({
+  window: query.window ?? '7d',
+  provider: query.provider,
+  source: query.source,
+  orgId: query.orgId,
+  limit: query.limit ?? 20,
+  cursor: query.cursor,
+  idleMinutes: query.idleMinutes ?? 30
 }));
 
 const anomaliesQuerySchema = baseAnalyticsQuerySchema.transform((query) => ({
@@ -306,6 +436,9 @@ const missingAnalyticsRepository: AnalyticsRouteRepository = {
   getBuyers: failMissingRepository as AnalyticsRouteRepository['getBuyers'],
   getBuyerTimeSeries: failMissingRepository as AnalyticsRouteRepository['getBuyerTimeSeries'],
   getRecentRequests: failMissingRepository as AnalyticsRouteRepository['getRecentRequests'],
+  getDailyTrends: failMissingRepository as AnalyticsRouteRepository['getDailyTrends'],
+  getCapHistory: failMissingRepository as AnalyticsRouteRepository['getCapHistory'],
+  getSessions: failMissingRepository as AnalyticsRouteRepository['getSessions'],
   getEvents: failMissingRepository as AnalyticsRouteRepository['getEvents'],
   getAnomalies: failMissingRepository as AnalyticsRouteRepository['getAnomalies']
 };
@@ -348,6 +481,22 @@ function readRequiredString(record: Record<string, unknown>, keys: string[], fie
 
 function readOptionalString(record: Record<string, unknown>, keys: string[]): string | null {
   return readTrimmedString(pick(record, keys));
+}
+
+function readStringArray(record: Record<string, unknown>, keys: string[], field: string): string[] {
+  const value = pick(record, keys);
+  if (value === null || value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new AppError('internal_error', 500, `Analytics repository returned invalid ${field}`);
+  }
+
+  return value.map((entry, index) => {
+    const stringValue = readTrimmedString(entry);
+    if (!stringValue) {
+      throw new AppError('internal_error', 500, `Analytics repository returned invalid ${field}[${index}]`);
+    }
+    return stringValue;
+  });
 }
 
 function readNumberLike(value: unknown): number | null {
@@ -418,6 +567,14 @@ function normalizeProvider(value: unknown, field: string): AnalyticsProvider {
 function normalizeOptionalProvider(value: unknown): AnalyticsProvider | null {
   if (value === null || value === undefined) return null;
   return normalizeProvider(value, 'provider');
+}
+
+function normalizeSessionGroupingBasis(value: unknown): typeof SESSION_GROUPING_BASES[number] {
+  const normalized = readTrimmedString(value)?.toLowerCase();
+  if (normalized && (SESSION_GROUPING_BASES as readonly string[]).includes(normalized)) {
+    return normalized as typeof SESSION_GROUPING_BASES[number];
+  }
+  throw new AppError('internal_error', 500, 'Analytics repository returned invalid session.groupingBasis');
 }
 
 function normalizeTokenStatus(value: unknown, field: string): typeof TOKEN_STATUSES[number] {
@@ -1111,9 +1268,105 @@ function normalizeRecentRequests(value: unknown) {
     inputTokens: readOptionalNumber(record, ['inputTokens', 'input_tokens'], 0) ?? 0,
     outputTokens: readOptionalNumber(record, ['outputTokens', 'output_tokens'], 0) ?? 0,
     usageUnits: readOptionalNumber(record, ['usageUnits', 'usage_units'], 0) ?? 0,
-    prompt: readOptionalString(record, ['prompt', 'promptPreview', 'prompt_preview']),
-    response: readOptionalString(record, ['response', 'responsePreview', 'response_preview'])
+    promptPreview: readOptionalString(record, ['promptPreview', 'prompt_preview', 'prompt']),
+    responsePreview: readOptionalString(record, ['responsePreview', 'response_preview', 'response'])
   }));
+}
+
+function normalizeRecentRequestResult(value: unknown) {
+  if (Array.isArray(value)) {
+    return {
+      requests: normalizeRecentRequests(value),
+      nextCursor: null
+    };
+  }
+
+  const record = readObject(value, 'requestsResult');
+  return {
+    requests: normalizeRecentRequests(pick(record, ['requests']) ?? []),
+    nextCursor: readOptionalString(record, ['nextCursor', 'next_cursor'])
+  };
+}
+
+function normalizeDailyTrends(value: unknown) {
+  return readObjectArray(value, 'days').map((record) => ({
+    day: readIsoDate(pick(record, ['day', 'date']), 'day'),
+    requests: readOptionalNumber(record, ['requests', 'request_count'], 0) ?? 0,
+    attempts: readOptionalNumber(record, ['attempts', 'attempt_count'], 0) ?? 0,
+    usageUnits: readOptionalNumber(record, ['usageUnits', 'usage_units'], 0) ?? 0,
+    inputTokens: readOptionalNumber(record, ['inputTokens', 'input_tokens'], 0) ?? 0,
+    outputTokens: readOptionalNumber(record, ['outputTokens', 'output_tokens'], 0) ?? 0,
+    errorRate: readOptionalNumber(record, ['errorRate', 'error_rate'], 0) ?? 0,
+    avgLatencyMs: readOptionalNumber(record, ['avgLatencyMs', 'avg_latency_ms']),
+    providerSplit: readJsonRecord(record, ['providerSplit', 'provider_split']),
+    sourceSplit: readJsonRecord(record, ['sourceSplit', 'source_split'])
+  }));
+}
+
+function normalizeCapHistoryRows(value: unknown) {
+  return readObjectArray(value, 'cycles').map((record) => ({
+    credentialId: readRequiredString(record, ['credentialId', 'credential_id'], 'cycle.credentialId'),
+    credentialLabel: readOptionalString(record, ['credentialLabel', 'credential_label', 'debugLabel', 'debug_label']),
+    provider: normalizeProvider(pick(record, ['provider']), 'cycle.provider'),
+    windowKind: readRequiredString(record, ['windowKind', 'window_kind'], 'cycle.windowKind'),
+    exhaustedAt: readIsoDate(pick(record, ['exhaustedAt', 'exhausted_at']), 'cycle.exhaustedAt'),
+    clearedAt: readOptionalIsoDate(record, ['clearedAt', 'cleared_at']),
+    recoveryMinutes: readOptionalNumber(record, ['recoveryMinutes', 'recovery_minutes']),
+    usageUnitsBeforeCap: readOptionalNumber(record, ['usageUnitsBeforeCap', 'usage_units_before_cap'], 0) ?? 0,
+    requestsBeforeCap: readOptionalNumber(record, ['requestsBeforeCap', 'requests_before_cap'], 0) ?? 0,
+    exhaustionReason: readOptionalString(record, ['exhaustionReason', 'exhaustion_reason'])
+  }));
+}
+
+function normalizeCapHistoryResult(value: unknown) {
+  if (Array.isArray(value)) {
+    return {
+      cycles: normalizeCapHistoryRows(value),
+      nextCursor: null
+    };
+  }
+
+  const record = readObject(value, 'capHistoryResult');
+  return {
+    cycles: normalizeCapHistoryRows(pick(record, ['cycles']) ?? []),
+    nextCursor: readOptionalString(record, ['nextCursor', 'next_cursor'])
+  };
+}
+
+function normalizeSessionsRows(value: unknown) {
+  return readObjectArray(value, 'sessions').map((record) => ({
+    sessionKey: readRequiredString(record, ['sessionKey', 'session_key'], 'session.sessionKey'),
+    groupingBasis: normalizeSessionGroupingBasis(pick(record, ['groupingBasis', 'grouping_basis'])),
+    startedAt: readIsoDate(pick(record, ['startedAt', 'started_at']), 'session.startedAt'),
+    endedAt: readIsoDate(pick(record, ['endedAt', 'ended_at']), 'session.endedAt'),
+    durationMinutes: readOptionalNumber(record, ['durationMinutes', 'duration_minutes'], 0) ?? 0,
+    requestCount: readOptionalNumber(record, ['requestCount', 'request_count'], 0) ?? 0,
+    attemptCount: readOptionalNumber(record, ['attemptCount', 'attempt_count'], 0) ?? 0,
+    usageUnits: readOptionalNumber(record, ['usageUnits', 'usage_units'], 0) ?? 0,
+    inputTokens: readOptionalNumber(record, ['inputTokens', 'input_tokens'], 0) ?? 0,
+    outputTokens: readOptionalNumber(record, ['outputTokens', 'output_tokens'], 0) ?? 0,
+    providers: readStringArray(record, ['providers'], 'session.providers').map((provider) => normalizeProvider(provider, 'session.providers')),
+    models: readStringArray(record, ['models'], 'session.models'),
+    credentialIds: readStringArray(record, ['credentialIds', 'credential_ids'], 'session.credentialIds'),
+    providerSwitchCount: readOptionalNumber(record, ['providerSwitchCount', 'provider_switch_count'], 0) ?? 0,
+    samplePromptPreviews: readStringArray(record, ['samplePromptPreviews', 'sample_prompt_previews'], 'session.samplePromptPreviews'),
+    sampleResponsePreviews: readStringArray(record, ['sampleResponsePreviews', 'sample_response_previews'], 'session.sampleResponsePreviews')
+  }));
+}
+
+function normalizeSessionsResult(value: unknown) {
+  if (Array.isArray(value)) {
+    return {
+      sessions: normalizeSessionsRows(value),
+      nextCursor: null
+    };
+  }
+
+  const record = readObject(value, 'sessionsResult');
+  return {
+    sessions: normalizeSessionsRows(pick(record, ['sessions']) ?? []),
+    nextCursor: readOptionalString(record, ['nextCursor', 'next_cursor'])
+  };
 }
 
 export function normalizeEventRows(value: unknown) {
@@ -1488,10 +1741,57 @@ export function createAnalyticsRouter(deps: AnalyticsRouteDeps): Router {
     try {
       const query = recentRequestsQuerySchema.parse(req.query);
       const requests = await analytics.getRecentRequests(query);
+      const normalized = normalizeRecentRequestResult(requests);
       res.json({
         window: query.window,
         limit: query.limit,
-        requests: normalizeRecentRequests(requests)
+        nextCursor: normalized.nextCursor,
+        requests: normalized.requests
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/v1/admin/analytics/daily-trends', requireApiKey(deps.apiKeys, ['admin']), async (req, res, next) => {
+    try {
+      const query = dailyTrendsQuerySchema.parse(req.query);
+      const days = await analytics.getDailyTrends(query);
+      res.json({
+        window: query.window,
+        days: normalizeDailyTrends(days)
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/v1/admin/analytics/cap-history', requireApiKey(deps.apiKeys, ['admin']), async (req, res, next) => {
+    try {
+      const query = capHistoryQuerySchema.parse(req.query);
+      const cycles = await analytics.getCapHistory(query);
+      const normalized = normalizeCapHistoryResult(cycles);
+      res.json({
+        window: query.window,
+        limit: query.limit,
+        nextCursor: normalized.nextCursor,
+        cycles: normalized.cycles
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/v1/admin/analytics/sessions', requireApiKey(deps.apiKeys, ['admin']), async (req, res, next) => {
+    try {
+      const query = sessionsQuerySchema.parse(req.query);
+      const sessions = await analytics.getSessions(query);
+      const normalized = normalizeSessionsResult(sessions);
+      res.json({
+        window: query.window,
+        idleMinutes: query.idleMinutes,
+        nextCursor: normalized.nextCursor,
+        sessions: normalized.sessions
       });
     } catch (error) {
       next(error);
