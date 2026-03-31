@@ -41,7 +41,7 @@ type CapHistoryCursor = {
 };
 
 type SessionCursor = {
-  startedAt: string;
+  lastActivityAt: string;
   sessionKey: string;
 };
 
@@ -243,15 +243,15 @@ function decodeSessionCursor(cursor: string | undefined): SessionCursor | null {
   if (!cursor) return null;
 
   const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
-  const startedAt = typeof parsed.startedAt === 'string' ? parsed.startedAt : null;
+  const lastActivityAt = typeof parsed.lastActivityAt === 'string' ? parsed.lastActivityAt : null;
   const sessionKey = typeof parsed.sessionKey === 'string' ? parsed.sessionKey : null;
 
-  if (!startedAt || !sessionKey) {
+  if (!lastActivityAt || !sessionKey) {
     throw new Error('Invalid sessions cursor');
   }
 
   return {
-    startedAt,
+    lastActivityAt,
     sessionKey
   };
 }
@@ -1782,222 +1782,83 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
   async getSessions(filters: BaseFilters & {
     limit: number;
     cursor?: string;
-    idleMinutes: number;
+    sessionType?: 'cli' | 'openclaw';
+    model?: string;
+    status?: 'success' | 'failed' | 'partial';
   }): Promise<unknown> {
     const params: SqlValue[] = [];
-    const where: string[] = [];
-    applyBaseFilters(where, params, filters);
+    const where = [windowSqlRaw(filters.window, 'last_activity_at')];
 
-    params.push(filters.idleMinutes);
-    const idleMinutesParam = `$${params.length}::int`;
+    if (filters.sessionType) {
+      params.push(filters.sessionType);
+      where.push(`session_type = $${params.length}`);
+    } else if (filters.source === 'openclaw') {
+      params.push('openclaw');
+      where.push(`session_type = $${params.length}`);
+    } else if (filters.source === 'cli-claude' || filters.source === 'cli-codex') {
+      params.push('cli');
+      where.push(`session_type = $${params.length}`);
+    } else if (filters.source === 'direct') {
+      params.push('__never__');
+      where.push(`session_type = $${params.length}`);
+    }
+
+    if (filters.provider) {
+      params.push(filters.provider);
+      where.push(`$${params.length} = any(provider_set)`);
+    }
+
+    if (filters.model) {
+      params.push(filters.model);
+      where.push(`$${params.length} = any(model_set)`);
+    }
+
+    if (filters.status) {
+      params.push(filters.status);
+      where.push(`coalesce((status_summary ->> $${params.length})::int, 0) > 0`);
+    }
+
+    if (filters.orgId) {
+      params.push(filters.orgId);
+      where.push(`org_id = $${params.length}`);
+    }
 
     const cursor = decodeSessionCursor(filters.cursor);
-    let outerWhere = '';
     if (cursor) {
-      params.push(cursor.startedAt, cursor.sessionKey);
-      outerWhere = `WHERE (sessions.started_at, sessions.session_key) < ($${params.length - 1}::timestamptz, $${params.length}::text)`;
+      params.push(cursor.lastActivityAt);
+      const timeIndex = params.length;
+      params.push(cursor.sessionKey);
+      const keyIndex = params.length;
+      where.push(`(
+        last_activity_at < $${timeIndex}::timestamptz
+        or (last_activity_at = $${timeIndex}::timestamptz and session_key < $${keyIndex})
+      )`);
     }
 
     const limit = Math.max(1, Math.min(200, filters.limit));
     params.push(limit + 1);
 
     const sql = `
-      WITH attempts AS (
-        SELECT
-          re.org_id,
-          re.api_key_id::text AS api_key_id,
-          re.request_id,
-          re.attempt_no,
-          re.created_at,
-          re.provider,
-          re.model,
-          (${SOURCE_CASE}) AS source,
-          re.route_decision->>'tokenCredentialId' AS credential_id,
-          nullif(re.route_decision->>'openclaw_session_id', '') AS openclaw_session_id,
-          nullif(re.route_decision->>'openclaw_run_id', '') AS openclaw_run_id,
-          coalesce(ul.usage_units, 0) AS usage_units,
-          coalesce(ul.input_tokens, 0) AS input_tokens,
-          coalesce(ul.output_tokens, 0) AS output_tokens,
-          rl.prompt_preview,
-          rl.response_preview
-        FROM ${TABLES.routingEvents} re
-        LEFT JOIN ${TABLES.usageLedger} ul
-          ON ul.org_id = re.org_id
-          AND ul.request_id = re.request_id
-          AND ul.attempt_no = re.attempt_no
-          AND ul.entry_type = 'usage'
-        LEFT JOIN ${TABLES.requestLog} rl
-          ON rl.org_id = re.org_id
-          AND rl.request_id = re.request_id
-          AND rl.attempt_no = re.attempt_no
-        WHERE ${where.join(' AND ')}
-      ),
-      request_rollups AS (
-        SELECT
-          a.org_id,
-          a.api_key_id,
-          a.source,
-          a.request_id,
-          min(a.created_at) AS started_at,
-          max(a.created_at) AS ended_at,
-          max(a.openclaw_session_id) AS openclaw_session_id,
-          max(a.openclaw_run_id) AS openclaw_run_id
-        FROM attempts a
-        GROUP BY a.org_id, a.api_key_id, a.source, a.request_id
-      ),
-      idle_gap_inputs AS (
-        SELECT
-          rr.*,
-          lag(rr.ended_at) OVER (
-            PARTITION BY rr.org_id, rr.api_key_id, rr.source
-            ORDER BY rr.started_at ASC, rr.request_id ASC
-          ) AS previous_ended_at
-        FROM request_rollups rr
-        WHERE rr.openclaw_session_id IS NULL
-          AND rr.openclaw_run_id IS NULL
-      ),
-      idle_gap_groups AS (
-        SELECT
-          igi.*,
-          sum(
-            CASE
-              WHEN igi.previous_ended_at IS NULL THEN 1
-              WHEN igi.started_at - igi.previous_ended_at > interval '1 minute' * ${idleMinutesParam} THEN 1
-              ELSE 0
-            END
-          ) OVER (
-            PARTITION BY igi.org_id, igi.api_key_id, igi.source
-            ORDER BY igi.started_at ASC, igi.request_id ASC
-            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-          ) AS idle_cluster_index
-        FROM idle_gap_inputs igi
-      ),
-      idle_gap_clustered AS (
-        SELECT
-          igg.*,
-          count(*) OVER (
-            PARTITION BY igg.org_id, igg.api_key_id, igg.source, igg.idle_cluster_index
-          ) AS idle_cluster_request_count
-        FROM idle_gap_groups igg
-      ),
-      request_sessions AS (
-        SELECT
-          rr.org_id,
-          rr.api_key_id,
-          rr.source,
-          rr.request_id,
-          CASE
-            WHEN rr.openclaw_session_id IS NOT NULL THEN 'explicit_session_marker'
-            WHEN rr.openclaw_run_id IS NOT NULL THEN 'explicit_run_marker'
-            WHEN igc.idle_cluster_request_count > 1 THEN 'idle_gap'
-            ELSE 'request_id'
-          END AS grouping_basis,
-          CASE
-            WHEN rr.openclaw_session_id IS NOT NULL THEN 'explicit_session_marker:' || rr.openclaw_session_id
-            WHEN rr.openclaw_run_id IS NOT NULL THEN 'explicit_run_marker:' || rr.openclaw_run_id
-            WHEN igc.idle_cluster_request_count > 1
-              THEN concat_ws(':', 'idle_gap', rr.org_id::text, coalesce(rr.api_key_id, 'none'), rr.source, igc.idle_cluster_index::text)
-            ELSE 'request_id:' || rr.request_id
-          END AS session_key
-        FROM request_rollups rr
-        LEFT JOIN idle_gap_clustered igc
-          ON igc.org_id = rr.org_id
-          AND igc.api_key_id IS NOT DISTINCT FROM rr.api_key_id
-          AND igc.source = rr.source
-          AND igc.request_id = rr.request_id
-      ),
-      attempt_sessions AS (
-        SELECT
-          a.request_id,
-          a.attempt_no,
-          a.created_at,
-          a.provider,
-          a.model,
-          a.credential_id,
-          a.usage_units,
-          a.input_tokens,
-          a.output_tokens,
-          a.prompt_preview,
-          a.response_preview,
-          rs.session_key,
-          rs.grouping_basis
-        FROM attempts a
-        JOIN request_sessions rs
-          ON rs.org_id = a.org_id
-          AND rs.api_key_id IS NOT DISTINCT FROM a.api_key_id
-          AND rs.source = a.source
-          AND rs.request_id = a.request_id
-      ),
-      ordered_attempts AS (
-        SELECT
-          sess.*,
-          lag(sess.provider) OVER (
-            PARTITION BY sess.session_key
-            ORDER BY sess.created_at ASC, sess.request_id ASC, sess.attempt_no ASC
-          ) AS previous_provider
-        FROM attempt_sessions sess
-      ),
-      sessions AS (
-        SELECT
-          oa.session_key,
-          oa.grouping_basis,
-          min(oa.created_at) AS started_at,
-          max(oa.created_at) AS ended_at,
-          round(extract(epoch from (max(oa.created_at) - min(oa.created_at))) / 60.0)::int AS duration_minutes,
-          count(DISTINCT oa.request_id) AS request_count,
-          count(*) AS attempt_count,
-          coalesce(sum(oa.usage_units), 0) AS usage_units,
-          coalesce(sum(oa.input_tokens), 0) AS input_tokens,
-          coalesce(sum(oa.output_tokens), 0) AS output_tokens,
-          coalesce(array_agg(DISTINCT oa.provider ORDER BY oa.provider), '{}'::text[]) AS providers,
-          coalesce(array_agg(DISTINCT oa.model ORDER BY oa.model) FILTER (WHERE oa.model IS NOT NULL), '{}'::text[]) AS models,
-          coalesce(
-            array_agg(DISTINCT oa.credential_id ORDER BY oa.credential_id)
-              FILTER (WHERE oa.credential_id IS NOT NULL AND oa.credential_id <> ''),
-            '{}'::text[]
-          ) AS credential_ids,
-          count(*) FILTER (
-            WHERE oa.previous_provider IS NOT NULL
-              AND oa.previous_provider IS DISTINCT FROM oa.provider
-          ) AS provider_switch_count,
-          coalesce(
-            (
-              array_agg(oa.prompt_preview ORDER BY oa.created_at ASC, oa.request_id ASC, oa.attempt_no ASC)
-                FILTER (WHERE oa.prompt_preview IS NOT NULL AND oa.prompt_preview <> '')
-            )[1:3],
-            '{}'::text[]
-          ) AS sample_prompt_previews,
-          coalesce(
-            (
-              array_agg(oa.response_preview ORDER BY oa.created_at ASC, oa.request_id ASC, oa.attempt_no ASC)
-                FILTER (WHERE oa.response_preview IS NOT NULL AND oa.response_preview <> '')
-            )[1:3],
-            '{}'::text[]
-          ) AS sample_response_previews
-        FROM ordered_attempts oa
-        GROUP BY oa.session_key, oa.grouping_basis
-      )
-      SELECT
-        sessions.session_key,
-        sessions.grouping_basis,
-        sessions.started_at,
-        sessions.ended_at,
-        sessions.duration_minutes,
-        sessions.request_count,
-        sessions.attempt_count,
-        sessions.usage_units,
-        sessions.input_tokens,
-        sessions.output_tokens,
-        sessions.providers,
-        sessions.models,
-        sessions.credential_ids,
-        sessions.provider_switch_count,
-        sessions.sample_prompt_previews,
-        sessions.sample_response_previews
-      FROM sessions
-      ${outerWhere}
-      ORDER BY sessions.started_at DESC, sessions.session_key DESC
-      LIMIT $${params.length}
+      select
+        session_key,
+        session_type,
+        grouping_basis,
+        started_at,
+        ended_at,
+        round(extract(epoch from (ended_at - started_at)) * 1000)::bigint as duration_ms,
+        request_count,
+        attempt_count,
+        input_tokens,
+        output_tokens,
+        provider_set,
+        model_set,
+        status_summary,
+        preview_sample,
+        last_activity_at
+      from ${TABLES.adminSessions}
+      where ${where.join(' and ')}
+      order by last_activity_at desc, session_key desc
+      limit $${params.length}
     `;
 
     const result = await this.db.query(sql, params);
@@ -2009,7 +1870,7 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
       sessions,
       nextCursor: hasNextPage && last
         ? encodeSessionCursor({
-          startedAt: new Date(String(last.started_at)).toISOString(),
+          lastActivityAt: new Date(String(last.last_activity_at)).toISOString(),
           sessionKey: String(last.session_key)
         })
         : null

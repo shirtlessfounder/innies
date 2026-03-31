@@ -448,85 +448,88 @@ describe('AnalyticsRepository', () => {
     });
   });
 
-  it('builds hybrid sessions with explicit marker priority and idle-gap fallback', async () => {
+  it('reads unified session summaries from admin session projections', async () => {
     const db = new MockSqlClient({ rows: [], rowCount: 0 });
     const repo = new AnalyticsRepository(db);
     const cursor = Buffer.from(JSON.stringify({
-      startedAt: '2026-03-08T14:59:00.000Z',
-      sessionKey: 'idle_gap:org_1:key_1:openclaw:4'
+      lastActivityAt: '2026-03-08T16:05:00.000Z',
+      sessionKey: 'openclaw:session:oc_session_123'
     }), 'utf8').toString('base64url');
 
     await (repo as any).getSessions({
       window: '7d',
       provider: 'openai',
-      source: 'openclaw',
+      sessionType: 'openclaw',
+      model: 'gpt-5.2',
+      status: 'success',
       orgId: 'org_1',
       limit: 20,
-      idleMinutes: 45,
       cursor
     });
 
-    expect(db.queries[0]?.sql).toContain("re.route_decision->>'openclaw_session_id'");
-    expect(db.queries[0]?.sql).toContain("re.route_decision->>'openclaw_run_id'");
-    expect(db.queries[0]?.sql).toContain('PARTITION BY rr.org_id, rr.api_key_id, rr.source');
-    expect(db.queries[0]?.sql).toContain('lag(rr.ended_at)');
-    expect(db.queries[0]?.sql).toContain("interval '1 minute' * $4::int");
-    expect(db.queries[0]?.sql).toContain('LEFT JOIN in_usage_ledger ul');
-    expect(db.queries[0]?.sql).toContain('LEFT JOIN in_request_log rl');
-    expect(db.queries[0]?.sql).toContain("AND ul.entry_type = 'usage'");
-    expect(db.queries[0]?.sql).toContain('(sessions.started_at, sessions.session_key) < ($5::timestamptz, $6::text)');
+    expect(db.queries[0]?.sql).toContain('from in_admin_sessions');
+    expect(db.queries[0]?.sql).toContain("last_activity_at >= now() - interval '7 days'");
+    expect(db.queries[0]?.sql).toContain('session_type = $1');
+    expect(db.queries[0]?.sql).toContain('$2 = any(provider_set)');
+    expect(db.queries[0]?.sql).toContain('$3 = any(model_set)');
+    expect(db.queries[0]?.sql).toContain("coalesce((status_summary ->> $4)::int, 0) > 0");
+    expect(db.queries[0]?.sql).toContain('org_id = $5');
+    expect(db.queries[0]?.sql).toContain('(last_activity_at = $6::timestamptz and session_key < $7)');
+    expect(db.queries[0]?.sql).toContain('order by last_activity_at desc, session_key desc');
     expect(db.queries[0]?.params).toEqual([
-      'openai',
       'openclaw',
+      'openai',
+      'gpt-5.2',
+      'success',
       'org_1',
-      45,
-      '2026-03-08T14:59:00.000Z',
-      'idle_gap:org_1:key_1:openclaw:4',
+      '2026-03-08T16:05:00.000Z',
+      'openclaw:session:oc_session_123',
       21
     ]);
   });
 
-  it('returns session rollups with nextCursor and preview samples', async () => {
+  it('returns projection-backed session rollups with nextCursor', async () => {
     const db = new MockSqlClient({
       rows: [
         {
-          session_key: 'explicit_session_marker:oc_session_123',
-          grouping_basis: 'explicit_session_marker',
+          session_key: 'openclaw:session:oc_session_123',
+          session_type: 'openclaw',
+          grouping_basis: 'explicit_session_id',
           started_at: '2026-03-08T15:00:00.000Z',
           ended_at: '2026-03-08T16:05:00.000Z',
-          duration_minutes: 65,
+          duration_ms: 3900000,
           request_count: 8,
           attempt_count: 10,
-          usage_units: 4200,
           input_tokens: 18000,
           output_tokens: 2300,
-          providers: ['anthropic', 'openai'],
-          models: ['claude-opus-4-6', 'gpt-5.2'],
-          credential_ids: [
-            '11111111-1111-4111-8111-111111111111',
-            '22222222-2222-4222-8222-222222222222'
-          ],
-          provider_switch_count: 1,
-          sample_prompt_previews: ['fix this bug', 'now refactor it'],
-          sample_response_previews: ['here is a patch', 'tests are green']
+          provider_set: ['anthropic', 'openai'],
+          model_set: ['claude-opus-4-6', 'gpt-5.2'],
+          status_summary: { success: 8, failed: 2 },
+          preview_sample: {
+            promptPreview: 'fix this bug',
+            responsePreview: 'here is a patch'
+          },
+          last_activity_at: '2026-03-08T16:05:00.000Z'
         },
         {
-          session_key: 'request_id:req_122',
-          grouping_basis: 'request_id',
+          session_key: 'cli:idle:org_1:api_1:req_122',
+          session_type: 'cli',
+          grouping_basis: 'idle_gap',
           started_at: '2026-03-08T14:59:00.000Z',
           ended_at: '2026-03-08T15:02:00.000Z',
-          duration_minutes: 3,
+          duration_ms: 180000,
           request_count: 1,
           attempt_count: 1,
-          usage_units: 120,
           input_tokens: 500,
           output_tokens: 60,
-          providers: ['openai'],
-          models: ['gpt-5.2'],
-          credential_ids: ['22222222-2222-4222-8222-222222222222'],
-          provider_switch_count: 0,
-          sample_prompt_previews: ['quick follow-up'],
-          sample_response_previews: ['done']
+          provider_set: ['openai'],
+          model_set: ['gpt-5.2'],
+          status_summary: { success: 1 },
+          preview_sample: {
+            promptPreview: 'quick follow-up',
+            responsePreview: 'done'
+          },
+          last_activity_at: '2026-03-08T15:02:00.000Z'
         }
       ],
       rowCount: 2
@@ -535,27 +538,25 @@ describe('AnalyticsRepository', () => {
 
     const result = await (repo as any).getSessions({
       window: '7d',
-      limit: 1,
-      idleMinutes: 30
+      limit: 1
     });
 
     expect(result).toEqual({
       nextCursor: Buffer.from(JSON.stringify({
-        startedAt: '2026-03-08T15:00:00.000Z',
-        sessionKey: 'explicit_session_marker:oc_session_123'
+        lastActivityAt: '2026-03-08T16:05:00.000Z',
+        sessionKey: 'openclaw:session:oc_session_123'
       }), 'utf8').toString('base64url'),
       sessions: [expect.objectContaining({
-        session_key: 'explicit_session_marker:oc_session_123',
-        grouping_basis: 'explicit_session_marker',
-        providers: ['anthropic', 'openai'],
-        models: ['claude-opus-4-6', 'gpt-5.2'],
-        credential_ids: [
-          '11111111-1111-4111-8111-111111111111',
-          '22222222-2222-4222-8222-222222222222'
-        ],
-        provider_switch_count: 1,
-        sample_prompt_previews: ['fix this bug', 'now refactor it'],
-        sample_response_previews: ['here is a patch', 'tests are green']
+        session_key: 'openclaw:session:oc_session_123',
+        session_type: 'openclaw',
+        grouping_basis: 'explicit_session_id',
+        provider_set: ['anthropic', 'openai'],
+        model_set: ['claude-opus-4-6', 'gpt-5.2'],
+        status_summary: { success: 8, failed: 2 },
+        preview_sample: {
+          promptPreview: 'fix this bug',
+          responsePreview: 'here is a patch'
+        }
       })]
     });
   });
