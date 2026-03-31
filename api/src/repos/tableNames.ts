@@ -1,4 +1,7 @@
 export const TABLES = {
+  adminSessionAttempts: 'in_admin_session_attempts',
+  adminSessionProjectionOutbox: 'in_admin_session_projection_outbox',
+  adminSessions: 'in_admin_sessions',
   analyticsDashboardSnapshots: 'in_analytics_dashboard_snapshots',
   autoRechargeSettings: 'in_auto_recharge_settings',
   auditLogEvents: 'in_audit_log_events',
