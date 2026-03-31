@@ -149,6 +149,8 @@ function createAnalyticsRepo() {
     getBuyers: vi.fn().mockResolvedValue([]),
     getBuyerTimeSeries: vi.fn().mockResolvedValue([]),
     getRecentRequests: vi.fn().mockResolvedValue([]),
+    getDailyTrends: vi.fn().mockResolvedValue([]),
+    getCapHistory: vi.fn().mockResolvedValue({ cycles: [], nextCursor: null }),
     getEvents: vi.fn().mockResolvedValue([]),
     getAnomalies: vi.fn().mockResolvedValue({ checks: {}, ok: true })
   };
@@ -544,6 +546,155 @@ describe('analytics routes', () => {
           usageUnits: 200,
           promptPreview: 'hello',
           responsePreview: 'world'
+        }
+      ]
+    });
+  });
+
+  it('returns daily trends with normalized filters', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    analytics.getDailyTrends.mockResolvedValue([
+      {
+        day: '2026-03-08',
+        requests: 42,
+        attempts: 45,
+        usage_units: 12345,
+        input_tokens: 6789,
+        output_tokens: 321,
+        error_rate: 0.12,
+        avg_latency_ms: 512,
+        provider_split: {
+          anthropic: { requests: 30, usageUnits: 9000 },
+          openai: { requests: 12, usageUnits: 3345 }
+        },
+        source_split: {
+          openclaw: { requests: 40, usageUnits: 12000 },
+          direct: { requests: 2, usageUnits: 345 }
+        }
+      }
+    ]);
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/daily-trends', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/daily-trends',
+      headers: {
+        authorization: 'Bearer admin_token'
+      },
+      query: {
+        window: '30d',
+        provider: 'codex',
+        source: 'openclaw',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(analytics.getDailyTrends).toHaveBeenCalledWith({
+      window: '1m',
+      provider: 'openai',
+      source: 'openclaw',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d'
+    });
+    expect(res.body).toEqual({
+      window: '1m',
+      days: [
+        {
+          day: '2026-03-08',
+          requests: 42,
+          attempts: 45,
+          usageUnits: 12345,
+          inputTokens: 6789,
+          outputTokens: 321,
+          errorRate: 0.12,
+          avgLatencyMs: 512,
+          providerSplit: {
+            anthropic: { requests: 30, usageUnits: 9000 },
+            openai: { requests: 12, usageUnits: 3345 }
+          },
+          sourceSplit: {
+            openclaw: { requests: 40, usageUnits: 12000 },
+            direct: { requests: 2, usageUnits: 345 }
+          }
+        }
+      ]
+    });
+  });
+
+  it('returns cap history with normalized filters and pagination', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    const cursor = Buffer.from(JSON.stringify({
+      exhaustedAt: '2026-03-08T14:59:00.000Z',
+      credentialId: '11111111-1111-4111-8111-111111111111',
+      windowKind: '5h',
+      eventId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    }), 'utf8').toString('base64url');
+    analytics.getCapHistory.mockResolvedValue({
+      cycles: [
+        {
+          credential_id: '11111111-1111-4111-8111-111111111111',
+          credential_label: 'alpha',
+          provider: 'anthropic',
+          window_kind: '5h',
+          exhausted_at: '2026-03-08T15:00:00.000Z',
+          cleared_at: null,
+          recovery_minutes: null,
+          usage_units_before_cap: 1200,
+          requests_before_cap: 25,
+          exhaustion_reason: 'reserve_exhausted'
+        }
+      ],
+      nextCursor: cursor
+    });
+
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/cap-history', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/cap-history',
+      headers: {
+        authorization: 'Bearer admin_token'
+      },
+      query: {
+        provider: 'codex',
+        credentialId: '11111111-1111-4111-8111-111111111111',
+        limit: '10',
+        cursor
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(analytics.getCapHistory).toHaveBeenCalledWith({
+      window: '7d',
+      provider: 'openai',
+      orgId: undefined,
+      credentialId: '11111111-1111-4111-8111-111111111111',
+      limit: 10,
+      cursor
+    });
+    expect(res.body).toEqual({
+      window: '7d',
+      limit: 10,
+      nextCursor: cursor,
+      cycles: [
+        {
+          credentialId: '11111111-1111-4111-8111-111111111111',
+          credentialLabel: 'alpha',
+          provider: 'anthropic',
+          windowKind: '5h',
+          exhaustedAt: '2026-03-08T15:00:00.000Z',
+          clearedAt: null,
+          recoveryMinutes: null,
+          usageUnitsBeforeCap: 1200,
+          requestsBeforeCap: 25,
+          exhaustionReason: 'reserve_exhausted'
         }
       ]
     });

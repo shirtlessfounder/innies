@@ -369,6 +369,85 @@ describe('AnalyticsRepository', () => {
     });
   });
 
+  it('builds daily trends from raw routing and usage tables with provider/source/org filters', async () => {
+    const db = new MockSqlClient({ rows: [], rowCount: 0 });
+    const repo = new AnalyticsRepository(db);
+
+    await (repo as any).getDailyTrends({
+      window: '1m',
+      provider: 'openai',
+      source: 'openclaw',
+      orgId: 'org_1'
+    });
+
+    expect(db.queries[0]?.sql).toContain('generate_series(');
+    expect(db.queries[0]?.sql).toContain('FROM in_routing_events re');
+    expect(db.queries[0]?.sql).toContain('LEFT JOIN in_usage_ledger ul');
+    expect(db.queries[0]?.sql).toContain("AND ul.entry_type = 'usage'");
+    expect(db.queries[0]?.sql).toContain("re.provider = $1");
+    expect(db.queries[0]?.sql).toContain("coalesce(");
+    expect(db.queries[0]?.sql).toContain("re.org_id = $3");
+    expect(db.queries[0]?.params).toEqual(['openai', 'openclaw', 'org_1']);
+  });
+
+  it('builds cap history with canonical provider and credential filters', async () => {
+    const db = new MockSqlClient({ rows: [], rowCount: 0 });
+    const repo = new AnalyticsRepository(db);
+
+    await (repo as any).getCapHistory({
+      window: '7d',
+      provider: 'openai',
+      credentialId: '11111111-1111-4111-8111-111111111111',
+      limit: 10
+    });
+
+    expect(db.queries[0]?.sql).toContain("ce.event_type = 'contribution_cap_exhausted'");
+    expect(db.queries[0]?.sql).toContain("cc.event_type = 'contribution_cap_cleared'");
+    expect(db.queries[0]?.sql).toContain('LEFT JOIN in_token_credentials tc');
+    expect(db.queries[0]?.sql).toContain('ce.provider = ANY($1::text[])');
+    expect(db.queries[0]?.sql).toContain('ce.token_credential_id = $2::uuid');
+    expect(db.queries[0]?.params).toEqual([
+      ['openai', 'codex'],
+      '11111111-1111-4111-8111-111111111111',
+      11
+    ]);
+  });
+
+  it('returns open cap-history cycles with null recovery metadata', async () => {
+    const db = new MockSqlClient({
+      rows: [{
+        credential_id: '11111111-1111-4111-8111-111111111111',
+        credential_label: 'alpha',
+        provider: 'anthropic',
+        window_kind: '5h',
+        exhausted_at: '2026-03-08T15:00:00.000Z',
+        cleared_at: null,
+        recovery_minutes: null,
+        usage_units_before_cap: 1200,
+        requests_before_cap: 25,
+        exhaustion_reason: 'reserve_exhausted'
+      }],
+      rowCount: 1
+    });
+    const repo = new AnalyticsRepository(db);
+
+    const result = await (repo as any).getCapHistory({
+      window: '7d',
+      limit: 10
+    });
+
+    expect(result).toEqual({
+      nextCursor: null,
+      cycles: [expect.objectContaining({
+        credential_id: '11111111-1111-4111-8111-111111111111',
+        cleared_at: null,
+        recovery_minutes: null,
+        usage_units_before_cap: 1200,
+        requests_before_cap: 25
+      })]
+    });
+  });
+
   it('reads lifecycle events with window/provider filters and limits', async () => {
     const db = new MockSqlClient({ rows: [], rowCount: 0 });
     const repo = new AnalyticsRepository(db);

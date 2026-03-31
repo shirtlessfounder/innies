@@ -92,6 +92,22 @@ type RecentRequestsFilters = {
   cursor?: string;
 };
 
+type DailyTrendsFilters = {
+  window: AnalyticsWindow;
+  provider?: AnalyticsProvider;
+  source?: AnalyticsSource;
+  orgId?: string;
+};
+
+type CapHistoryFilters = {
+  window: AnalyticsWindow;
+  provider?: AnalyticsProvider;
+  orgId?: string;
+  credentialId?: string;
+  limit: number;
+  cursor?: string;
+};
+
 type AnomaliesFilters = {
   window: AnalyticsWindow;
   provider?: AnalyticsProvider;
@@ -122,6 +138,8 @@ export interface AnalyticsRouteRepository {
   getBuyers(filters: BuyerFilters): Promise<unknown>;
   getBuyerTimeSeries(filters: BuyerTimeSeriesFilters): Promise<unknown>;
   getRecentRequests(filters: RecentRequestsFilters): Promise<unknown>;
+  getDailyTrends(filters: DailyTrendsFilters): Promise<unknown>;
+  getCapHistory(filters: CapHistoryFilters): Promise<unknown>;
   getEvents(filters: EventFilters): Promise<unknown>;
   getAnomalies(filters: AnomaliesFilters): Promise<unknown>;
 }
@@ -224,6 +242,27 @@ const requestCursorSchema = z.string().trim().min(1).transform((value, ctx) => {
   }
 });
 
+const capHistoryCursorPayloadSchema = z.object({
+  exhaustedAt: z.string().datetime({ offset: true }),
+  credentialId: z.string().uuid(),
+  windowKind: z.enum(['5h', '7d', 'unknown']),
+  eventId: z.string().uuid()
+});
+
+const capHistoryCursorSchema = z.string().trim().min(1).transform((value, ctx) => {
+  try {
+    const decoded = Buffer.from(value, 'base64url').toString('utf8');
+    capHistoryCursorPayloadSchema.parse(JSON.parse(decoded));
+    return value;
+  } catch {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Invalid cap-history cursor'
+    });
+    return z.NEVER;
+  }
+});
+
 const timeSeriesQuerySchema = baseAnalyticsQuerySchema.extend({
   granularity: analyticsGranularitySchema.optional(),
   credentialId: z.string().uuid().optional()
@@ -269,6 +308,29 @@ const recentRequestsQuerySchema = baseAnalyticsQuerySchema.extend({
   limit: query.limit ?? 50,
   model: query.model,
   minLatencyMs: query.minLatencyMs
+}));
+
+const dailyTrendsQuerySchema = baseAnalyticsQuerySchema.transform((query) => ({
+  window: query.window ?? '7d',
+  provider: query.provider,
+  source: query.source,
+  orgId: query.orgId
+}));
+
+const capHistoryQuerySchema = z.object({
+  window: analyticsWindowSchema.optional(),
+  provider: analyticsProviderSchema.optional(),
+  orgId: z.string().uuid().optional(),
+  credentialId: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  cursor: capHistoryCursorSchema.optional()
+}).transform((query) => ({
+  window: query.window ?? '7d',
+  provider: query.provider,
+  orgId: query.orgId,
+  credentialId: query.credentialId,
+  limit: query.limit ?? 50,
+  cursor: query.cursor
 }));
 
 const anomaliesQuerySchema = baseAnalyticsQuerySchema.transform((query) => ({
@@ -329,6 +391,8 @@ const missingAnalyticsRepository: AnalyticsRouteRepository = {
   getBuyers: failMissingRepository as AnalyticsRouteRepository['getBuyers'],
   getBuyerTimeSeries: failMissingRepository as AnalyticsRouteRepository['getBuyerTimeSeries'],
   getRecentRequests: failMissingRepository as AnalyticsRouteRepository['getRecentRequests'],
+  getDailyTrends: failMissingRepository as AnalyticsRouteRepository['getDailyTrends'],
+  getCapHistory: failMissingRepository as AnalyticsRouteRepository['getCapHistory'],
   getEvents: failMissingRepository as AnalyticsRouteRepository['getEvents'],
   getAnomalies: failMissingRepository as AnalyticsRouteRepository['getAnomalies']
 };
@@ -1154,6 +1218,51 @@ function normalizeRecentRequestResult(value: unknown) {
   };
 }
 
+function normalizeDailyTrends(value: unknown) {
+  return readObjectArray(value, 'days').map((record) => ({
+    day: readIsoDate(pick(record, ['day', 'date']), 'day'),
+    requests: readOptionalNumber(record, ['requests', 'request_count'], 0) ?? 0,
+    attempts: readOptionalNumber(record, ['attempts', 'attempt_count'], 0) ?? 0,
+    usageUnits: readOptionalNumber(record, ['usageUnits', 'usage_units'], 0) ?? 0,
+    inputTokens: readOptionalNumber(record, ['inputTokens', 'input_tokens'], 0) ?? 0,
+    outputTokens: readOptionalNumber(record, ['outputTokens', 'output_tokens'], 0) ?? 0,
+    errorRate: readOptionalNumber(record, ['errorRate', 'error_rate'], 0) ?? 0,
+    avgLatencyMs: readOptionalNumber(record, ['avgLatencyMs', 'avg_latency_ms']),
+    providerSplit: readJsonRecord(record, ['providerSplit', 'provider_split']),
+    sourceSplit: readJsonRecord(record, ['sourceSplit', 'source_split'])
+  }));
+}
+
+function normalizeCapHistoryRows(value: unknown) {
+  return readObjectArray(value, 'cycles').map((record) => ({
+    credentialId: readRequiredString(record, ['credentialId', 'credential_id'], 'cycle.credentialId'),
+    credentialLabel: readOptionalString(record, ['credentialLabel', 'credential_label', 'debugLabel', 'debug_label']),
+    provider: normalizeProvider(pick(record, ['provider']), 'cycle.provider'),
+    windowKind: readRequiredString(record, ['windowKind', 'window_kind'], 'cycle.windowKind'),
+    exhaustedAt: readIsoDate(pick(record, ['exhaustedAt', 'exhausted_at']), 'cycle.exhaustedAt'),
+    clearedAt: readOptionalIsoDate(record, ['clearedAt', 'cleared_at']),
+    recoveryMinutes: readOptionalNumber(record, ['recoveryMinutes', 'recovery_minutes']),
+    usageUnitsBeforeCap: readOptionalNumber(record, ['usageUnitsBeforeCap', 'usage_units_before_cap'], 0) ?? 0,
+    requestsBeforeCap: readOptionalNumber(record, ['requestsBeforeCap', 'requests_before_cap'], 0) ?? 0,
+    exhaustionReason: readOptionalString(record, ['exhaustionReason', 'exhaustion_reason'])
+  }));
+}
+
+function normalizeCapHistoryResult(value: unknown) {
+  if (Array.isArray(value)) {
+    return {
+      cycles: normalizeCapHistoryRows(value),
+      nextCursor: null
+    };
+  }
+
+  const record = readObject(value, 'capHistoryResult');
+  return {
+    cycles: normalizeCapHistoryRows(pick(record, ['cycles']) ?? []),
+    nextCursor: readOptionalString(record, ['nextCursor', 'next_cursor'])
+  };
+}
+
 export function normalizeEventRows(value: unknown) {
   return readObjectArray(value, 'events').map((record) => ({
     id: readRequiredString(record, ['id'], 'event.id'),
@@ -1532,6 +1641,35 @@ export function createAnalyticsRouter(deps: AnalyticsRouteDeps): Router {
         limit: query.limit,
         nextCursor: normalized.nextCursor,
         requests: normalized.requests
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/v1/admin/analytics/daily-trends', requireApiKey(deps.apiKeys, ['admin']), async (req, res, next) => {
+    try {
+      const query = dailyTrendsQuerySchema.parse(req.query);
+      const days = await analytics.getDailyTrends(query);
+      res.json({
+        window: query.window,
+        days: normalizeDailyTrends(days)
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/v1/admin/analytics/cap-history', requireApiKey(deps.apiKeys, ['admin']), async (req, res, next) => {
+    try {
+      const query = capHistoryQuerySchema.parse(req.query);
+      const cycles = await analytics.getCapHistory(query);
+      const normalized = normalizeCapHistoryResult(cycles);
+      res.json({
+        window: query.window,
+        limit: query.limit,
+        nextCursor: normalized.nextCursor,
+        cycles: normalized.cycles
       });
     } catch (error) {
       next(error);

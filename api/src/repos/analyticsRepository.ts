@@ -33,6 +33,13 @@ type RecentRequestCursor = {
   attemptNo: number;
 };
 
+type CapHistoryCursor = {
+  exhaustedAt: string;
+  credentialId: string;
+  windowKind: string;
+  eventId: string;
+};
+
 function windowSql(window: AnalyticsWindow, alias = 're'): string {
   switch (window) {
     case '5h':  return `${alias}.created_at >= now() - interval '5 hours'`;
@@ -63,6 +70,28 @@ function dayWindowSql(window: AnalyticsWindow, col = 'day'): string {
     case '1m':  return `${col} >= ((now() at time zone 'utc') - interval '30 days')::date`;
     case 'all': return '1=1';
     default:    return '1=1';
+  }
+}
+
+function dayWindowStartSql(window: AnalyticsWindow): string {
+  switch (window) {
+    case '5h':  return "((now() at time zone 'utc') - interval '5 hours')::date";
+    case '24h': return "((now() at time zone 'utc') - interval '24 hours')::date";
+    case '7d':  return "((now() at time zone 'utc') - interval '7 days')::date";
+    case '1m':  return "((now() at time zone 'utc') - interval '30 days')::date";
+    case 'all': return "((now() at time zone 'utc') - interval '30 days')::date";
+    default:    return "((now() at time zone 'utc') - interval '30 days')::date";
+  }
+}
+
+function windowStartTimestampSql(window: AnalyticsWindow): string {
+  switch (window) {
+    case '5h':  return "now() - interval '5 hours'";
+    case '24h': return "now() - interval '24 hours'";
+    case '7d':  return "now() - interval '7 days'";
+    case '1m':  return "now() - interval '30 days'";
+    case 'all': return "now() - interval '30 days'";
+    default:    return "now() - interval '30 days'";
   }
 }
 
@@ -177,6 +206,31 @@ function decodeRecentRequestCursor(cursor: string | undefined): RecentRequestCur
 }
 
 function encodeRecentRequestCursor(cursor: RecentRequestCursor): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+}
+
+function decodeCapHistoryCursor(cursor: string | undefined): CapHistoryCursor | null {
+  if (!cursor) return null;
+
+  const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
+  const exhaustedAt = typeof parsed.exhaustedAt === 'string' ? parsed.exhaustedAt : null;
+  const credentialId = typeof parsed.credentialId === 'string' ? parsed.credentialId : null;
+  const windowKind = typeof parsed.windowKind === 'string' ? parsed.windowKind : null;
+  const eventId = typeof parsed.eventId === 'string' ? parsed.eventId : null;
+
+  if (!exhaustedAt || !credentialId || !windowKind || !eventId) {
+    throw new Error('Invalid cap-history cursor');
+  }
+
+  return {
+    exhaustedAt,
+    credentialId,
+    windowKind,
+    eventId
+  };
+}
+
+function encodeCapHistoryCursor(cursor: CapHistoryCursor): string {
   return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
 }
 
@@ -1437,6 +1491,263 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
           createdAt: new Date(last.created_at).toISOString(),
           requestId: String(last.request_id),
           attemptNo: Number(last.attempt_no)
+        })
+        : null
+    };
+  }
+
+  async getDailyTrends(filters: BaseFilters): Promise<unknown> {
+    const params: SqlValue[] = [];
+    const where: string[] = [];
+    applyBaseFilters(where, params, filters);
+
+    const startDaySql = dayWindowStartSql(filters.window);
+    const sql = `
+      WITH filtered_events AS (
+        SELECT
+          (${usageDaySql('re')}) AS day,
+          re.request_id,
+          re.attempt_no,
+          re.provider,
+          (${SOURCE_CASE}) AS source,
+          re.latency_ms,
+          re.upstream_status,
+          re.error_code,
+          coalesce(ul.usage_units, 0) AS usage_units,
+          coalesce(ul.input_tokens, 0) AS input_tokens,
+          coalesce(ul.output_tokens, 0) AS output_tokens
+        FROM ${TABLES.routingEvents} re
+        LEFT JOIN ${TABLES.usageLedger} ul
+          ON ul.org_id = re.org_id
+          AND ul.request_id = re.request_id
+          AND ul.attempt_no = re.attempt_no
+          AND ul.entry_type = 'usage'
+        WHERE ${where.join(' AND ')}
+      ),
+      days AS (
+        SELECT generate_series(${startDaySql}, (now() at time zone 'utc')::date, interval '1 day')::date AS day
+      ),
+      day_totals AS (
+        SELECT
+          fe.day,
+          count(DISTINCT fe.request_id) AS requests,
+          count(*) AS attempts,
+          coalesce(sum(fe.usage_units), 0) AS usage_units,
+          coalesce(sum(fe.input_tokens), 0) AS input_tokens,
+          coalesce(sum(fe.output_tokens), 0) AS output_tokens,
+          CASE
+            WHEN count(*) > 0
+              THEN round(count(*) FILTER (WHERE fe.upstream_status >= 400 OR fe.error_code IS NOT NULL)::numeric / count(*), 4)
+            ELSE 0
+          END AS error_rate,
+          round(avg(fe.latency_ms)::numeric, 2) AS avg_latency_ms
+        FROM filtered_events fe
+        GROUP BY fe.day
+      ),
+      provider_totals AS (
+        SELECT
+          fe.day,
+          fe.provider,
+          count(DISTINCT fe.request_id) AS requests,
+          coalesce(sum(fe.usage_units), 0) AS usage_units
+        FROM filtered_events fe
+        GROUP BY fe.day, fe.provider
+      ),
+      source_totals AS (
+        SELECT
+          fe.day,
+          fe.source,
+          count(DISTINCT fe.request_id) AS requests,
+          coalesce(sum(fe.usage_units), 0) AS usage_units
+        FROM filtered_events fe
+        GROUP BY fe.day, fe.source
+      )
+      SELECT
+        d.day,
+        coalesce(dt.requests, 0) AS requests,
+        coalesce(dt.attempts, 0) AS attempts,
+        coalesce(dt.usage_units, 0) AS usage_units,
+        coalesce(dt.input_tokens, 0) AS input_tokens,
+        coalesce(dt.output_tokens, 0) AS output_tokens,
+        coalesce(dt.error_rate, 0) AS error_rate,
+        dt.avg_latency_ms,
+        coalesce((
+          SELECT jsonb_object_agg(
+            pt.provider,
+            jsonb_build_object(
+              'requests', pt.requests,
+              'usageUnits', pt.usage_units
+            )
+          )
+          FROM provider_totals pt
+          WHERE pt.day = d.day
+        ), '{}'::jsonb) AS provider_split,
+        coalesce((
+          SELECT jsonb_object_agg(
+            st.source,
+            jsonb_build_object(
+              'requests', st.requests,
+              'usageUnits', st.usage_units
+            )
+          )
+          FROM source_totals st
+          WHERE st.day = d.day
+        ), '{}'::jsonb) AS source_split
+      FROM days d
+      LEFT JOIN day_totals dt
+        ON dt.day = d.day
+      ORDER BY d.day ASC
+    `;
+
+    const result = await this.db.query(sql, params);
+    return result.rows;
+  }
+
+  async getCapHistory(filters: {
+    window: AnalyticsWindow;
+    provider?: string;
+    orgId?: string;
+    credentialId?: string;
+    limit: number;
+    cursor?: string;
+  }): Promise<unknown> {
+    const params: SqlValue[] = [];
+    const where: string[] = [
+      windowSqlRaw(filters.window, 'ce.created_at'),
+      `ce.event_type = 'contribution_cap_exhausted'`
+    ];
+
+    applyCanonicalCredentialProviderFilter(where, params, filters.provider, 'ce.provider');
+    applyOrgIdFilter(where, params, filters.orgId, 'tc.org_id');
+
+    if (filters.credentialId) {
+      params.push(filters.credentialId);
+      where.push(`ce.token_credential_id = $${params.length}::uuid`);
+    }
+
+    const cursor = decodeCapHistoryCursor(filters.cursor);
+    const windowStartSql = windowStartTimestampSql(filters.window);
+    const limit = Math.max(1, Math.min(200, filters.limit));
+
+    let outerWhere = '';
+    if (cursor) {
+      params.push(cursor.exhaustedAt, cursor.credentialId, cursor.windowKind, cursor.eventId);
+      outerWhere = `WHERE (cycles.exhausted_at, cycles.credential_id, cycles.window_kind, cycles.event_id) < ($${params.length - 3}::timestamptz, $${params.length - 2}::text, $${params.length - 1}::text, $${params.length}::uuid)`;
+    }
+
+    params.push(limit + 1);
+
+    const sql = `
+      WITH cycles AS (
+        SELECT
+          ce.id AS event_id,
+          ce.token_credential_id::text AS credential_id,
+          tc.debug_label AS credential_label,
+          ce.provider,
+          coalesce(ce.metadata->>'window', 'unknown') AS window_kind,
+          ce.created_at AS exhausted_at,
+          (
+            SELECT cc.created_at
+            FROM ${TABLES.tokenCredentialEvents} cc
+            WHERE cc.event_type = 'contribution_cap_cleared'
+              AND cc.token_credential_id = ce.token_credential_id
+              AND coalesce(cc.metadata->>'window', 'unknown') = coalesce(ce.metadata->>'window', 'unknown')
+              AND cc.created_at > ce.created_at
+            ORDER BY cc.created_at ASC
+            LIMIT 1
+          ) AS cleared_at,
+          CASE
+            WHEN (
+              SELECT cc.created_at
+              FROM ${TABLES.tokenCredentialEvents} cc
+              WHERE cc.event_type = 'contribution_cap_cleared'
+                AND cc.token_credential_id = ce.token_credential_id
+                AND coalesce(cc.metadata->>'window', 'unknown') = coalesce(ce.metadata->>'window', 'unknown')
+                AND cc.created_at > ce.created_at
+              ORDER BY cc.created_at ASC
+              LIMIT 1
+            ) IS NULL THEN null
+            ELSE round(extract(epoch from ((
+              SELECT cc.created_at
+              FROM ${TABLES.tokenCredentialEvents} cc
+              WHERE cc.event_type = 'contribution_cap_cleared'
+                AND cc.token_credential_id = ce.token_credential_id
+                AND coalesce(cc.metadata->>'window', 'unknown') = coalesce(ce.metadata->>'window', 'unknown')
+                AND cc.created_at > ce.created_at
+              ORDER BY cc.created_at ASC
+              LIMIT 1
+            ) - ce.created_at)) / 60.0)::int
+          END AS recovery_minutes,
+          coalesce((
+            SELECT sum(ul.usage_units)
+            FROM ${TABLES.routingEvents} re
+            LEFT JOIN ${TABLES.usageLedger} ul
+              ON ul.org_id = re.org_id
+              AND ul.request_id = re.request_id
+              AND ul.attempt_no = re.attempt_no
+              AND ul.entry_type = 'usage'
+            WHERE re.route_decision->>'tokenCredentialId' = ce.token_credential_id::text
+              AND re.created_at > coalesce((
+                SELECT max(cc.created_at)
+                FROM ${TABLES.tokenCredentialEvents} cc
+                WHERE cc.event_type = 'contribution_cap_cleared'
+                  AND cc.token_credential_id = ce.token_credential_id
+                  AND coalesce(cc.metadata->>'window', 'unknown') = coalesce(ce.metadata->>'window', 'unknown')
+                  AND cc.created_at < ce.created_at
+              ), ${windowStartSql})
+              AND re.created_at <= ce.created_at
+          ), 0) AS usage_units_before_cap,
+          (
+            SELECT count(DISTINCT re.request_id)
+            FROM ${TABLES.routingEvents} re
+            WHERE re.route_decision->>'tokenCredentialId' = ce.token_credential_id::text
+              AND re.created_at > coalesce((
+                SELECT max(cc.created_at)
+                FROM ${TABLES.tokenCredentialEvents} cc
+                WHERE cc.event_type = 'contribution_cap_cleared'
+                  AND cc.token_credential_id = ce.token_credential_id
+                  AND coalesce(cc.metadata->>'window', 'unknown') = coalesce(ce.metadata->>'window', 'unknown')
+                  AND cc.created_at < ce.created_at
+              ), ${windowStartSql})
+              AND re.created_at <= ce.created_at
+          ) AS requests_before_cap,
+          coalesce(ce.reason, ce.metadata->>'reason') AS exhaustion_reason
+        FROM ${TABLES.tokenCredentialEvents} ce
+        LEFT JOIN ${TABLES.tokenCredentials} tc
+          ON tc.id = ce.token_credential_id
+        WHERE ${where.join(' AND ')}
+      )
+      SELECT
+        cycles.event_id,
+        cycles.credential_id,
+        cycles.credential_label,
+        cycles.provider,
+        cycles.window_kind,
+        cycles.exhausted_at,
+        cycles.cleared_at,
+        cycles.recovery_minutes,
+        cycles.usage_units_before_cap,
+        cycles.requests_before_cap,
+        cycles.exhaustion_reason
+      FROM cycles
+      ${outerWhere}
+      ORDER BY cycles.exhausted_at DESC, cycles.credential_id DESC, cycles.window_kind DESC, cycles.event_id DESC
+      LIMIT $${params.length}
+    `;
+
+    const result = await this.db.query(sql, params);
+    const cycles = result.rows.slice(0, limit);
+    const hasNextPage = result.rows.length > limit;
+    const last = cycles[cycles.length - 1] as Record<string, unknown> | undefined;
+
+    return {
+      cycles,
+      nextCursor: hasNextPage && last
+        ? encodeCapHistoryCursor({
+          exhaustedAt: new Date(String(last.exhausted_at)).toISOString(),
+          credentialId: String(last.credential_id),
+          windowKind: String(last.window_kind),
+          eventId: String(last.event_id)
         })
         : null
     };
