@@ -234,8 +234,9 @@ export class AdminArchiveReadService {
 
     events.sort(compareEventRecords);
 
-    const filtered = input.cursor
-      ? events.filter((event) => compareEventRecords(event, decodeEventCursorRecord(input.cursor)) > 0)
+    const decodedCursor = input.cursor ? decodeEventCursorRecord(input.cursor) : null;
+    const filtered = decodedCursor
+      ? events.filter((event) => compareEventRecords(event, decodedCursor) > 0)
       : events;
     const pageEvents = filtered.slice(0, input.limit);
     const nextEvent = filtered[input.limit];
