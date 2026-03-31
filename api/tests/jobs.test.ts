@@ -8,6 +8,7 @@ import { createReconciliationJob } from '../src/jobs/reconciliationJob.js';
 import { AggregatesRepository } from '../src/repos/aggregatesRepository.js';
 import { IdempotencyRepository } from '../src/repos/idempotencyRepository.js';
 import { ReconciliationRepository } from '../src/repos/reconciliationRepository.js';
+import { buildDefaultJobs } from '../src/jobs/registry.js';
 import { MockSqlClient, createLoggerSpy } from './testHelpers.js';
 
 describe('jobs', () => {
@@ -61,5 +62,11 @@ describe('jobs', () => {
 
     expect(job.scheduleMs).toBe(60 * 60 * 1000);
     expect(infoCalls.some((call) => call.message.includes('reconciliation row written'))).toBe(true);
+  });
+
+  it('registers the admin session projector job by default', () => {
+    const jobs = buildDefaultJobs(new MockSqlClient());
+
+    expect(jobs.map((job) => job.name)).toContain('admin-session-projector');
   });
 });

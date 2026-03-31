@@ -1,4 +1,7 @@
 import { buildPgClient } from '../repos/pgClient.js';
+import { AdminSessionAttemptRepository } from '../repos/adminSessionAttemptRepository.js';
+import { AdminSessionProjectionOutboxRepository } from '../repos/adminSessionProjectionOutboxRepository.js';
+import { AdminSessionRepository } from '../repos/adminSessionRepository.js';
 import { ApiKeyRepository } from '../repos/apiKeyRepository.js';
 import { AuditLogRepository } from '../repos/auditLogRepository.js';
 import { CanonicalMeteringRepository } from '../repos/canonicalMeteringRepository.js';
@@ -49,6 +52,7 @@ import { EarningsProjectorService } from './earnings/earningsProjectorService.js
 import { WithdrawalService } from './earnings/withdrawalService.js';
 import { TokenCredentialService } from './tokenCredentialService.js';
 import { RequestArchiveService } from './archive/requestArchiveService.js';
+import { AdminSessionProjectorService } from './adminArchive/adminSessionProjectorService.js';
 import { OrgSessionService } from './org/orgSessionService.js';
 import { OrgGithubAuthService } from './org/orgGithubAuthService.js';
 import { OrgMembershipService } from './org/orgMembershipService.js';
@@ -87,6 +91,9 @@ function readOrgGithubCallbackUrl(): string {
 export const runtime = {
   sql,
   repos: {
+    adminSessionAttempts: new AdminSessionAttemptRepository(sql),
+    adminSessionProjectionOutbox: new AdminSessionProjectionOutboxRepository(sql),
+    adminSessions: new AdminSessionRepository(sql),
     apiKeys: new ApiKeyRepository(sql),
     auditLogs: new AuditLogRepository(sql),
     canonicalMetering: new CanonicalMeteringRepository(sql),
@@ -128,6 +135,7 @@ export const runtime = {
     orgTokens: new OrgTokenRepository(sql)
   },
   services: {
+    adminSessionProjector: undefined as unknown as AdminSessionProjectorService,
     earningsProjector: undefined as unknown as EarningsProjectorService,
     idempotency: undefined as unknown as IdempotencyService,
     jobs: undefined as unknown as JobScheduler,
@@ -227,6 +235,11 @@ runtime.services.routingService = new RoutingService(
 );
 runtime.services.requestArchive = new RequestArchiveService({
   sql: runtime.sql
+});
+runtime.services.adminSessionProjector = new AdminSessionProjectorService({
+  sql: runtime.sql,
+  sessionRepo: runtime.repos.adminSessions,
+  sessionAttemptRepo: runtime.repos.adminSessionAttempts
 });
 runtime.services.payments = new PaymentService({
   paymentProfiles: runtime.repos.paymentProfiles,

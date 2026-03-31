@@ -1,4 +1,7 @@
 import { AggregatesRepository } from '../repos/aggregatesRepository.js';
+import { AdminSessionAttemptRepository } from '../repos/adminSessionAttemptRepository.js';
+import { AdminSessionProjectionOutboxRepository } from '../repos/adminSessionProjectionOutboxRepository.js';
+import { AdminSessionRepository } from '../repos/adminSessionRepository.js';
 import { IdempotencyRepository } from '../repos/idempotencyRepository.js';
 import { ReconciliationRepository } from '../repos/reconciliationRepository.js';
 import { RequestLogRepository } from '../repos/requestLogRepository.js';
@@ -11,8 +14,10 @@ import { MeteringProjectorStateRepository } from '../repos/meteringProjectorStat
 import { WalletLedgerRepository } from '../repos/walletLedgerRepository.js';
 import type { SqlClient } from '../repos/sqlClient.js';
 import { EarningsProjectorService } from '../services/earnings/earningsProjectorService.js';
+import { AdminSessionProjectorService } from '../services/adminArchive/adminSessionProjectorService.js';
 import { WalletService } from '../services/wallet/walletService.js';
 import { C1ReconciliationDataSource } from './reconciliationDataSource.js';
+import { createAdminSessionProjectorJob } from './adminSessionProjectorJob.js';
 import {
   createDailyAggregatesCompactionJob,
   createDailyAggregatesIncrementalJob
@@ -28,6 +33,9 @@ import { createReconciliationJob, type ReconciliationDataSource } from './reconc
 import type { JobDefinition } from './types.js';
 
 export function buildDefaultJobs(db: SqlClient, source: ReconciliationDataSource = new C1ReconciliationDataSource(db)): JobDefinition[] {
+  const adminSessionProjectionOutboxRepo = new AdminSessionProjectionOutboxRepository(db);
+  const adminSessionRepo = new AdminSessionRepository(db);
+  const adminSessionAttemptRepo = new AdminSessionAttemptRepository(db);
   const idempotencyRepo = new IdempotencyRepository(db);
   const aggregatesRepo = new AggregatesRepository(db);
   const canonicalMeteringRepo = new CanonicalMeteringRepository(db);
@@ -50,12 +58,21 @@ export function buildDefaultJobs(db: SqlClient, source: ReconciliationDataSource
     canonicalMeteringRepo,
     meteringProjectorStateRepo
   });
+  const adminSessionProjector = new AdminSessionProjectorService({
+    sql: db,
+    sessionRepo: adminSessionRepo,
+    sessionAttemptRepo: adminSessionAttemptRepo
+  });
 
   return [
     createIdempotencyPurgeJob(idempotencyRepo),
     createEarningsProjectorJob(earningsProjector),
     createKeyHealthCheckJob(sellerKeysRepo),
     createTokenCredentialProviderUsageJob(tokenCredentialsRepo, tokenCredentialProviderUsageRepo),
+    createAdminSessionProjectorJob({
+      projectorService: adminSessionProjector,
+      sessionProjectionOutboxRepo: adminSessionProjectionOutboxRepo
+    }),
     createWalletProjectorJob({
       walletService,
       meteringProjectorStateRepo
