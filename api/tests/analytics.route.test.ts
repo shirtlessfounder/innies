@@ -705,31 +705,29 @@ describe('analytics routes', () => {
     const apiKeys = createApiKeysRepo();
     const analytics = createAnalyticsRepo();
     const cursor = Buffer.from(JSON.stringify({
-      startedAt: '2026-03-08T14:59:00.000Z',
-      sessionKey: 'idle_gap:818d0cc7-7ed2-469f-b690-a977e72a921d:4'
+      lastActivityAt: '2026-03-08T16:05:00.000Z',
+      sessionKey: 'openclaw:session:oc_session_123'
     }), 'utf8').toString('base64url');
     analytics.getSessions.mockResolvedValue({
       sessions: [
         {
-          session_key: 'explicit_session_marker:oc_session_123',
-          grouping_basis: 'explicit_session_marker',
+          session_key: 'openclaw:session:oc_session_123',
+          session_type: 'openclaw',
+          grouping_basis: 'explicit_session_id',
           started_at: '2026-03-08T15:00:00.000Z',
           ended_at: '2026-03-08T16:05:00.000Z',
-          duration_minutes: 65,
+          duration_ms: 3900000,
           request_count: 8,
           attempt_count: 10,
-          usage_units: 4200,
           input_tokens: 18000,
           output_tokens: 2300,
-          providers: ['anthropic', 'openai'],
-          models: ['claude-opus-4-6', 'gpt-5.2'],
-          credential_ids: [
-            '11111111-1111-4111-8111-111111111111',
-            '22222222-2222-4222-8222-222222222222'
-          ],
-          provider_switch_count: 1,
-          sample_prompt_previews: ['fix this bug', 'now refactor it'],
-          sample_response_previews: ['here is a patch', 'tests are green']
+          provider_set: ['anthropic', 'openai'],
+          model_set: ['claude-opus-4-6', 'gpt-5.2'],
+          status_summary: { success: 8, failed: 2 },
+          preview_sample: {
+            promptPreview: 'fix this bug',
+            responsePreview: 'here is a patch'
+          }
         }
       ],
       nextCursor: cursor
@@ -746,10 +744,9 @@ describe('analytics routes', () => {
       query: {
         window: '30d',
         provider: 'codex',
-        source: 'openclaw',
+        sessionType: 'openclaw',
         orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
         limit: '15',
-        idleMinutes: '45',
         cursor
       }
     });
@@ -760,40 +757,83 @@ describe('analytics routes', () => {
     expect(analytics.getSessions).toHaveBeenCalledWith({
       window: '1m',
       provider: 'openai',
-      source: 'openclaw',
+      source: undefined,
+      sessionType: 'openclaw',
       orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
       limit: 15,
-      idleMinutes: 45,
       cursor
     });
     expect(res.body).toEqual({
       window: '1m',
-      idleMinutes: 45,
+      limit: 15,
       nextCursor: cursor,
       sessions: [
         {
-          sessionKey: 'explicit_session_marker:oc_session_123',
-          groupingBasis: 'explicit_session_marker',
+          sessionKey: 'openclaw:session:oc_session_123',
+          sessionType: 'openclaw',
+          groupingBasis: 'explicit_session_id',
           startedAt: '2026-03-08T15:00:00.000Z',
           endedAt: '2026-03-08T16:05:00.000Z',
-          durationMinutes: 65,
+          durationMs: 3900000,
           requestCount: 8,
           attemptCount: 10,
-          usageUnits: 4200,
           inputTokens: 18000,
           outputTokens: 2300,
-          providers: ['anthropic', 'openai'],
-          models: ['claude-opus-4-6', 'gpt-5.2'],
-          credentialIds: [
-            '11111111-1111-4111-8111-111111111111',
-            '22222222-2222-4222-8222-222222222222'
-          ],
-          providerSwitchCount: 1,
-          samplePromptPreviews: ['fix this bug', 'now refactor it'],
-          sampleResponsePreviews: ['here is a patch', 'tests are green']
+          providerSet: ['anthropic', 'openai'],
+          modelSet: ['claude-opus-4-6', 'gpt-5.2'],
+          statusSummary: { success: 8, failed: 2 },
+          previewSample: {
+            promptPreview: 'fix this bug',
+            responsePreview: 'here is a patch'
+          }
         }
       ]
     });
+  });
+
+  it('accepts legacy source aliases for sessions and rejects direct', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/sessions', 'get');
+
+    const aliasReq = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/sessions',
+      headers: {
+        authorization: 'Bearer admin_token'
+      },
+      query: {
+        source: 'cli-codex'
+      }
+    });
+    const aliasRes = createMockRes();
+    await invokeHandlers(handlers, aliasReq, aliasRes);
+
+    expect(analytics.getSessions).toHaveBeenCalledWith({
+      window: '7d',
+      provider: undefined,
+      source: 'cli-codex',
+      sessionType: 'cli',
+      orgId: undefined,
+      limit: 20,
+      cursor: undefined
+    });
+
+    const directReq = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/sessions',
+      headers: {
+        authorization: 'Bearer admin_token'
+      },
+      query: {
+        source: 'direct'
+      }
+    });
+    const directRes = createMockRes();
+    await invokeHandlers(handlers, directReq, directRes);
+
+    expect(directRes.statusCode).toBe(400);
   });
 
   it('returns buyer analytics including zero-usage rows and display fallbacks', async () => {

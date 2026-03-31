@@ -22,7 +22,8 @@ const ANALYTICS_SOURCES = ['openclaw', 'cli-claude', 'cli-codex', 'direct'] as c
 const TOKEN_PROVIDERS = ['anthropic', 'openai'] as const;
 const TOKEN_STATUSES = ['active', 'paused', 'rotating', 'maxed', 'expired', 'revoked'] as const;
 const ANALYTICS_EVENT_SEVERITIES = ['info', 'warn', 'error'] as const;
-const SESSION_GROUPING_BASES = ['explicit_session_marker', 'explicit_run_marker', 'request_id', 'idle_gap'] as const;
+const ANALYTICS_SESSION_TYPES = ['cli', 'openclaw'] as const;
+const SESSION_GROUPING_BASES = ['explicit_session_id', 'explicit_run_id', 'idle_gap', 'request_fallback'] as const;
 
 export type AnalyticsSource = typeof ANALYTICS_SOURCES[number];
 export type AnalyticsProvider = typeof TOKEN_PROVIDERS[number];
@@ -112,11 +113,13 @@ type CapHistoryFilters = {
 type SessionFilters = {
   window: AnalyticsWindow;
   provider?: AnalyticsProvider;
+  model?: string;
+  status?: 'success' | 'failed' | 'partial';
+  sessionType?: typeof ANALYTICS_SESSION_TYPES[number];
   source?: AnalyticsSource;
   orgId?: string;
   limit: number;
   cursor?: string;
-  idleMinutes: number;
 };
 
 type AnomaliesFilters = {
@@ -276,7 +279,7 @@ const capHistoryCursorSchema = z.string().trim().min(1).transform((value, ctx) =
 });
 
 const sessionCursorPayloadSchema = z.object({
-  startedAt: z.string().datetime({ offset: true }),
+  lastActivityAt: z.string().datetime({ offset: true }),
   sessionKey: z.string().trim().min(1)
 });
 
@@ -367,15 +370,27 @@ const capHistoryQuerySchema = z.object({
 const sessionsQuerySchema = baseAnalyticsQuerySchema.extend({
   limit: z.coerce.number().int().min(1).max(200).optional(),
   cursor: sessionCursorSchema.optional(),
-  idleMinutes: z.coerce.number().int().min(1).max(240).optional()
+  sessionType: z.enum(ANALYTICS_SESSION_TYPES).optional(),
+  model: z.string().trim().min(1).max(200).optional(),
+  status: z.enum(['success', 'failed', 'partial']).optional()
+}).superRefine((query, ctx) => {
+  if (!query.sessionType && query.source === 'direct') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['source'],
+      message: 'source=direct is not supported for session analytics'
+    });
+  }
 }).transform((query) => ({
   window: query.window ?? '7d',
   provider: query.provider,
+  model: query.model,
+  status: query.status,
   source: query.source,
+  sessionType: query.sessionType ?? mapLegacySourceToSessionType(query.source),
   orgId: query.orgId,
   limit: query.limit ?? 20,
-  cursor: query.cursor,
-  idleMinutes: query.idleMinutes ?? 30
+  cursor: query.cursor
 }));
 
 const anomaliesQuerySchema = baseAnalyticsQuerySchema.transform((query) => ({
@@ -575,6 +590,14 @@ function normalizeSessionGroupingBasis(value: unknown): typeof SESSION_GROUPING_
     return normalized as typeof SESSION_GROUPING_BASES[number];
   }
   throw new AppError('internal_error', 500, 'Analytics repository returned invalid session.groupingBasis');
+}
+
+function normalizeSessionType(value: unknown): typeof ANALYTICS_SESSION_TYPES[number] {
+  const normalized = readTrimmedString(value)?.toLowerCase();
+  if (normalized && (ANALYTICS_SESSION_TYPES as readonly string[]).includes(normalized)) {
+    return normalized as typeof ANALYTICS_SESSION_TYPES[number];
+  }
+  throw new AppError('internal_error', 500, 'Analytics repository returned invalid session.sessionType');
 }
 
 function normalizeTokenStatus(value: unknown, field: string): typeof TOKEN_STATUSES[number] {
@@ -1336,21 +1359,20 @@ function normalizeCapHistoryResult(value: unknown) {
 function normalizeSessionsRows(value: unknown) {
   return readObjectArray(value, 'sessions').map((record) => ({
     sessionKey: readRequiredString(record, ['sessionKey', 'session_key'], 'session.sessionKey'),
+    sessionType: normalizeSessionType(pick(record, ['sessionType', 'session_type'])),
     groupingBasis: normalizeSessionGroupingBasis(pick(record, ['groupingBasis', 'grouping_basis'])),
     startedAt: readIsoDate(pick(record, ['startedAt', 'started_at']), 'session.startedAt'),
     endedAt: readIsoDate(pick(record, ['endedAt', 'ended_at']), 'session.endedAt'),
-    durationMinutes: readOptionalNumber(record, ['durationMinutes', 'duration_minutes'], 0) ?? 0,
+    durationMs: readOptionalNumber(record, ['durationMs', 'duration_ms'], 0) ?? 0,
     requestCount: readOptionalNumber(record, ['requestCount', 'request_count'], 0) ?? 0,
     attemptCount: readOptionalNumber(record, ['attemptCount', 'attempt_count'], 0) ?? 0,
-    usageUnits: readOptionalNumber(record, ['usageUnits', 'usage_units'], 0) ?? 0,
     inputTokens: readOptionalNumber(record, ['inputTokens', 'input_tokens'], 0) ?? 0,
     outputTokens: readOptionalNumber(record, ['outputTokens', 'output_tokens'], 0) ?? 0,
-    providers: readStringArray(record, ['providers'], 'session.providers').map((provider) => normalizeProvider(provider, 'session.providers')),
-    models: readStringArray(record, ['models'], 'session.models'),
-    credentialIds: readStringArray(record, ['credentialIds', 'credential_ids'], 'session.credentialIds'),
-    providerSwitchCount: readOptionalNumber(record, ['providerSwitchCount', 'provider_switch_count'], 0) ?? 0,
-    samplePromptPreviews: readStringArray(record, ['samplePromptPreviews', 'sample_prompt_previews'], 'session.samplePromptPreviews'),
-    sampleResponsePreviews: readStringArray(record, ['sampleResponsePreviews', 'sample_response_previews'], 'session.sampleResponsePreviews')
+    providerSet: readStringArray(record, ['providerSet', 'provider_set', 'providers'], 'session.providerSet')
+      .map((provider) => normalizeProvider(provider, 'session.providerSet')),
+    modelSet: readStringArray(record, ['modelSet', 'model_set', 'models'], 'session.modelSet'),
+    statusSummary: readJsonRecord(record, ['statusSummary', 'status_summary']) ?? {},
+    previewSample: readJsonRecord(record, ['previewSample', 'preview_sample'])
   }));
 }
 
@@ -1789,7 +1811,7 @@ export function createAnalyticsRouter(deps: AnalyticsRouteDeps): Router {
       const normalized = normalizeSessionsResult(sessions);
       res.json({
         window: query.window,
-        idleMinutes: query.idleMinutes,
+        limit: query.limit,
         nextCursor: normalized.nextCursor,
         sessions: normalized.sessions
       });
@@ -1891,3 +1913,10 @@ export default createAnalyticsRouter({
   analytics: (runtime.repos as RuntimeReposWithAnalytics).analytics,
   dashboardSnapshots: (runtime.repos as RuntimeReposWithAnalytics).analyticsDashboardSnapshots
 });
+
+function mapLegacySourceToSessionType(source: AnalyticsSource | undefined): typeof ANALYTICS_SESSION_TYPES[number] | undefined {
+  if (!source) return undefined;
+  if (source === 'openclaw') return 'openclaw';
+  if (source === 'cli-claude' || source === 'cli-codex') return 'cli';
+  return undefined;
+}
