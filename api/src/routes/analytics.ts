@@ -89,6 +89,7 @@ type RecentRequestsFilters = {
   credentialId?: string;
   model?: string;
   minLatencyMs?: number;
+  cursor?: string;
 };
 
 type AnomaliesFilters = {
@@ -203,6 +204,26 @@ const multiUuidQuerySchema = z.preprocess((value) => {
   return undefined;
 }, z.array(z.string().uuid()).optional());
 
+const requestCursorPayloadSchema = z.object({
+  createdAt: z.string().datetime({ offset: true }),
+  requestId: z.string().trim().min(1),
+  attemptNo: z.coerce.number().int().min(1)
+});
+
+const requestCursorSchema = z.string().trim().min(1).transform((value, ctx) => {
+  try {
+    const decoded = Buffer.from(value, 'base64url').toString('utf8');
+    requestCursorPayloadSchema.parse(JSON.parse(decoded));
+    return value;
+  } catch {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Invalid request cursor'
+    });
+    return z.NEVER;
+  }
+});
+
 const timeSeriesQuerySchema = baseAnalyticsQuerySchema.extend({
   granularity: analyticsGranularitySchema.optional(),
   credentialId: z.string().uuid().optional()
@@ -235,6 +256,7 @@ const buyerTimeSeriesQuerySchema = baseAnalyticsQuerySchema.extend({
 
 const recentRequestsQuerySchema = baseAnalyticsQuerySchema.extend({
   credentialId: z.string().uuid().optional(),
+  cursor: requestCursorSchema.optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
   model: z.string().trim().min(1).max(200).optional(),
   minLatencyMs: z.coerce.number().int().nonnegative().optional()
@@ -243,6 +265,7 @@ const recentRequestsQuerySchema = baseAnalyticsQuerySchema.extend({
   provider: query.provider,
   source: query.source,
   credentialId: query.credentialId,
+  cursor: query.cursor,
   limit: query.limit ?? 50,
   model: query.model,
   minLatencyMs: query.minLatencyMs
@@ -1111,9 +1134,24 @@ function normalizeRecentRequests(value: unknown) {
     inputTokens: readOptionalNumber(record, ['inputTokens', 'input_tokens'], 0) ?? 0,
     outputTokens: readOptionalNumber(record, ['outputTokens', 'output_tokens'], 0) ?? 0,
     usageUnits: readOptionalNumber(record, ['usageUnits', 'usage_units'], 0) ?? 0,
-    prompt: readOptionalString(record, ['prompt', 'promptPreview', 'prompt_preview']),
-    response: readOptionalString(record, ['response', 'responsePreview', 'response_preview'])
+    promptPreview: readOptionalString(record, ['promptPreview', 'prompt_preview', 'prompt']),
+    responsePreview: readOptionalString(record, ['responsePreview', 'response_preview', 'response'])
   }));
+}
+
+function normalizeRecentRequestResult(value: unknown) {
+  if (Array.isArray(value)) {
+    return {
+      requests: normalizeRecentRequests(value),
+      nextCursor: null
+    };
+  }
+
+  const record = readObject(value, 'requestsResult');
+  return {
+    requests: normalizeRecentRequests(pick(record, ['requests']) ?? []),
+    nextCursor: readOptionalString(record, ['nextCursor', 'next_cursor'])
+  };
 }
 
 export function normalizeEventRows(value: unknown) {
@@ -1488,10 +1526,12 @@ export function createAnalyticsRouter(deps: AnalyticsRouteDeps): Router {
     try {
       const query = recentRequestsQuerySchema.parse(req.query);
       const requests = await analytics.getRecentRequests(query);
+      const normalized = normalizeRecentRequestResult(requests);
       res.json({
         window: query.window,
         limit: query.limit,
-        requests: normalizeRecentRequests(requests)
+        nextCursor: normalized.nextCursor,
+        requests: normalized.requests
       });
     } catch (error) {
       next(error);

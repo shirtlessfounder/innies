@@ -448,34 +448,42 @@ describe('analytics routes', () => {
   it('returns request-log previews with normalized filters', async () => {
     const apiKeys = createApiKeysRepo();
     const analytics = createAnalyticsRepo();
-    analytics.getRecentRequests.mockResolvedValue([
-      {
-        request_id: 'req_123',
-        attempt_no: 2,
-        created_at: '2026-03-08T15:00:00.000Z',
-        credential_id: '11111111-1111-4111-8111-111111111111',
-        credential_label: 'alpha',
-        provider: 'anthropic',
-        model: 'claude-opus-4-6',
-        source: 'openclaw',
-        translated: true,
-        rescued: true,
-        rescue_scope: 'cross_provider',
-        rescue_initial_provider: 'openai',
-        rescue_initial_credential_id: '22222222-2222-4222-8222-222222222222',
-        rescue_initial_failure_code: 'upstream_400',
-        rescue_initial_failure_status: 400,
-        streaming: true,
-        upstream_status: 200,
-        latency_ms: 450,
-        ttfb_ms: 120,
-        input_tokens: 1000,
-        output_tokens: 50,
-        usage_units: 200,
-        prompt_preview: 'hello',
-        response_preview: 'world'
-      }
-    ]);
+    const cursor = Buffer.from(JSON.stringify({
+      createdAt: '2026-03-08T14:59:00.000Z',
+      requestId: 'req_122',
+      attemptNo: 1
+    }), 'utf8').toString('base64url');
+    analytics.getRecentRequests.mockResolvedValue({
+      requests: [
+        {
+          request_id: 'req_123',
+          attempt_no: 2,
+          created_at: '2026-03-08T15:00:00.000Z',
+          credential_id: '11111111-1111-4111-8111-111111111111',
+          credential_label: 'alpha',
+          provider: 'anthropic',
+          model: 'claude-opus-4-6',
+          source: 'openclaw',
+          translated: true,
+          rescued: true,
+          rescue_scope: 'cross_provider',
+          rescue_initial_provider: 'openai',
+          rescue_initial_credential_id: '22222222-2222-4222-8222-222222222222',
+          rescue_initial_failure_code: 'upstream_400',
+          rescue_initial_failure_status: 400,
+          streaming: true,
+          upstream_status: 200,
+          latency_ms: 450,
+          ttfb_ms: 120,
+          input_tokens: 1000,
+          output_tokens: 50,
+          usage_units: 200,
+          prompt_preview: 'hello',
+          response_preview: 'world'
+        }
+      ],
+      nextCursor: cursor
+    });
 
     const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
     const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/requests', 'get');
@@ -488,7 +496,8 @@ describe('analytics routes', () => {
       query: {
         limit: '20',
         minLatencyMs: '250',
-        credentialId: '11111111-1111-4111-8111-111111111111'
+        credentialId: '11111111-1111-4111-8111-111111111111',
+        cursor
       }
     });
     const res = createMockRes();
@@ -502,11 +511,13 @@ describe('analytics routes', () => {
       credentialId: '11111111-1111-4111-8111-111111111111',
       limit: 20,
       model: undefined,
-      minLatencyMs: 250
+      minLatencyMs: 250,
+      cursor
     });
     expect(res.body).toEqual({
       window: '24h',
       limit: 20,
+      nextCursor: cursor,
       requests: [
         {
           requestId: 'req_123',
@@ -531,8 +542,8 @@ describe('analytics routes', () => {
           inputTokens: 1000,
           outputTokens: 50,
           usageUnits: 200,
-          prompt: 'hello',
-          response: 'world'
+          promptPreview: 'hello',
+          responsePreview: 'world'
         }
       ]
     });
@@ -2640,6 +2651,30 @@ describe('analytics routes', () => {
       },
       query: {
         limit: '201'
+      }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect((res.body as any).code).toBe('invalid_request');
+    expect(analytics.getRecentRequests).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid request-log cursors', async () => {
+    const apiKeys = createApiKeysRepo();
+    const analytics = createAnalyticsRepo();
+    const router = createAnalyticsRouter({ apiKeys: apiKeys as any, analytics });
+    const handlers = getRouteHandlers(router as any, '/v1/admin/analytics/requests', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analytics/requests',
+      headers: {
+        authorization: 'Bearer admin_token'
+      },
+      query: {
+        cursor: 'not-base64url-json'
       }
     });
     const res = createMockRes();

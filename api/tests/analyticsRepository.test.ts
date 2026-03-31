@@ -296,6 +296,27 @@ describe('AnalyticsRepository', () => {
     await repo.getRecentRequests({ window: '24h', limit: 25 });
 
     expect(db.queries[0]?.sql).toContain("AND ul.entry_type = 'usage'");
+    expect(db.queries[0]?.sql).toContain('ORDER BY re.created_at DESC, re.request_id DESC, re.attempt_no DESC');
+  });
+
+  it('applies descending cursor pagination to recent-request analytics', async () => {
+    const db = new MockSqlClient({ rows: [], rowCount: 0 });
+    const repo = new AnalyticsRepository(db);
+    const cursor = Buffer.from(JSON.stringify({
+      createdAt: '2026-03-08T14:59:00.000Z',
+      requestId: 'req_122',
+      attemptNo: 1
+    }), 'utf8').toString('base64url');
+
+    await repo.getRecentRequests({ window: '24h', limit: 25, cursor } as any);
+
+    expect(db.queries[0]?.sql).toContain('(re.created_at, re.request_id, re.attempt_no) < ($1::timestamptz, $2::text, $3::int)');
+    expect(db.queries[0]?.params).toEqual([
+      '2026-03-08T14:59:00.000Z',
+      'req_122',
+      1,
+      26
+    ]);
   });
 
   it('returns rescued-request metadata from final routing rows in recent-request analytics', async () => {
@@ -330,19 +351,22 @@ describe('AnalyticsRepository', () => {
     });
     const repo = new AnalyticsRepository(db);
 
-    const rows = await repo.getRecentRequests({ window: '24h', limit: 25 }) as Array<Record<string, unknown>>;
+    const result = await repo.getRecentRequests({ window: '24h', limit: 25 }) as Record<string, unknown>;
 
     expect(db.queries[0]?.sql).toContain(`CASE WHEN re.route_decision->>'rescued' = 'true' THEN true ELSE false END AS rescued`);
     expect(db.queries[0]?.sql).toContain(`re.route_decision->>'rescue_scope' AS rescue_scope`);
-    expect(rows).toEqual([expect.objectContaining({
-      request_id: 'req_rescued_1',
-      rescued: true,
-      rescue_scope: 'cross_provider',
-      rescue_initial_provider: 'openai',
-      rescue_initial_credential_id: '22222222-2222-4222-8222-222222222222',
-      rescue_initial_failure_code: 'upstream_400',
-      rescue_initial_failure_status: 400
-    })]);
+    expect(result).toEqual({
+      nextCursor: null,
+      requests: [expect.objectContaining({
+        request_id: 'req_rescued_1',
+        rescued: true,
+        rescue_scope: 'cross_provider',
+        rescue_initial_provider: 'openai',
+        rescue_initial_credential_id: '22222222-2222-4222-8222-222222222222',
+        rescue_initial_failure_code: 'upstream_400',
+        rescue_initial_failure_status: 400
+      })]
+    });
   });
 
   it('reads lifecycle events with window/provider filters and limits', async () => {

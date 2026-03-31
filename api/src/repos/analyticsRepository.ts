@@ -27,6 +27,12 @@ type EventFilters = {
   orgId?: string;
 };
 
+type RecentRequestCursor = {
+  createdAt: string;
+  requestId: string;
+  attemptNo: number;
+};
+
 function windowSql(window: AnalyticsWindow, alias = 're'): string {
   switch (window) {
     case '5h':  return `${alias}.created_at >= now() - interval '5 hours'`;
@@ -147,6 +153,31 @@ function applyCanonicalCredentialProviderFilter(
 
   params.push(provider);
   where.push(`${column} = $${params.length}`);
+}
+
+function decodeRecentRequestCursor(cursor: string | undefined): RecentRequestCursor | null {
+  if (!cursor) return null;
+
+  const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
+  const createdAt = typeof parsed.createdAt === 'string' ? parsed.createdAt : null;
+  const requestId = typeof parsed.requestId === 'string' ? parsed.requestId : null;
+  const attemptNo = typeof parsed.attemptNo === 'number'
+    ? parsed.attemptNo
+    : (typeof parsed.attemptNo === 'string' ? Number(parsed.attemptNo) : NaN);
+
+  if (!createdAt || !requestId || !Number.isInteger(attemptNo) || attemptNo < 1) {
+    throw new Error('Invalid recent-request cursor');
+  }
+
+  return {
+    createdAt,
+    requestId,
+    attemptNo
+  };
+}
+
+function encodeRecentRequestCursor(cursor: RecentRequestCursor): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
 }
 
 function isMissingReserveColumn(error: unknown): boolean {
@@ -1290,6 +1321,7 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
     credentialId?: string;
     model?: string;
     minLatencyMs?: number;
+    cursor?: string;
   }): Promise<unknown> {
     const params: SqlValue[] = [];
     const where: string[] = [];
@@ -1310,8 +1342,14 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
       where.push(`re.latency_ms >= $${params.length}`);
     }
 
+    const cursor = decodeRecentRequestCursor(filters.cursor);
+    if (cursor) {
+      params.push(cursor.createdAt, cursor.requestId, cursor.attemptNo);
+      where.push(`(re.created_at, re.request_id, re.attempt_no) < ($${params.length - 2}::timestamptz, $${params.length - 1}::text, $${params.length}::int)`);
+    }
+
     const limit = Math.max(1, Math.min(200, filters.limit));
-    params.push(limit);
+    params.push(limit + 1);
 
     const sql = `
       SELECT
@@ -1356,12 +1394,12 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         AND rl.request_id = re.request_id
         AND rl.attempt_no = re.attempt_no
       WHERE ${where.join(' AND ')}
-      ORDER BY re.created_at DESC
+      ORDER BY re.created_at DESC, re.request_id DESC, re.attempt_no DESC
       LIMIT $${params.length}
     `;
 
     const result = await this.db.query(sql, params);
-    return result.rows.map((row: any) => ({
+    const rows = result.rows.map((row: any) => ({
       request_id: row.request_id,
       attempt_no: row.attempt_no,
       created_at: row.created_at,
@@ -1387,6 +1425,21 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
       prompt_preview: row.prompt_preview,
       response_preview: row.response_preview
     }));
+
+    const requests = rows.slice(0, limit);
+    const hasNextPage = rows.length > limit;
+    const last = requests[requests.length - 1];
+
+    return {
+      requests,
+      nextCursor: hasNextPage && last
+        ? encodeRecentRequestCursor({
+          createdAt: new Date(last.created_at).toISOString(),
+          requestId: String(last.request_id),
+          attemptNo: Number(last.attempt_no)
+        })
+        : null
+    };
   }
 
   async getEvents(filters: EventFilters): Promise<unknown> {
