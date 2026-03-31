@@ -184,6 +184,39 @@ export class RequestLogRepository {
     return result.rows.map((row) => mapRow(row, input.includeFull === true));
   }
 
+  async findByOrgRequestAttempt(input: {
+    orgId: string;
+    requestId: string;
+    attemptNo: number;
+  }): Promise<RequestLogRecord | null> {
+    const sql = `
+      select
+        id,
+        request_id,
+        attempt_no,
+        org_id,
+        provider,
+        model,
+        prompt_preview,
+        response_preview,
+        full_prompt_encrypted,
+        full_response_encrypted,
+        created_at
+      from ${TABLES.requestLog}
+      where org_id = $1
+        and request_id = $2
+        and attempt_no = $3
+      limit 1
+    `;
+    const result = await this.db.query<RequestLogRow>(sql, [
+      input.orgId,
+      input.requestId,
+      input.attemptNo
+    ]);
+    const row = result.rows[0];
+    return row ? mapRow(row, false) : null;
+  }
+
   async purgeOlderThan(days: number, now: Date = new Date()): Promise<PurgeResult> {
     const sql = `
       delete from ${TABLES.requestLog}

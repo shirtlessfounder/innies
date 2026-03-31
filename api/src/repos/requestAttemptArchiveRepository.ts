@@ -154,6 +154,33 @@ export class RequestAttemptArchiveRepository {
     ]);
     return result.rowCount === 1 ? result.rows[0] : null;
   }
+
+  async findByRequestAttempt(requestId: string, attemptNo: number): Promise<RequestAttemptArchiveRow | null> {
+    const sql = `
+      select *
+      from ${TABLES.requestAttemptArchives}
+      where request_id = $1
+        and attempt_no = $2
+      order by created_at desc
+      limit 1
+    `;
+    const result = await this.db.query<RequestAttemptArchiveRow>(sql, [requestId, attemptNo]);
+    return result.rows[0] ?? null;
+  }
+
+  listByIds(ids: string[]): Promise<RequestAttemptArchiveRow[]> {
+    if (ids.length === 0) {
+      return Promise.resolve([]);
+    }
+
+    const sql = `
+      select *
+      from ${TABLES.requestAttemptArchives}
+      where id::text = any($1::text[])
+      order by array_position($1::text[], id::text)
+    `;
+    return this.db.query<RequestAttemptArchiveRow>(sql, [ids]).then((result) => result.rows);
+  }
 }
 
 function assertRequestAttemptArchiveReplayMatches(

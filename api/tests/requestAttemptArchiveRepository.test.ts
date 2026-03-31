@@ -96,6 +96,43 @@ describe('RequestAttemptArchiveRepository', () => {
     );
   });
 
+  it('finds one archived attempt by request id and attempt number', async () => {
+    const db = new MockSqlClient({
+      rows: [{
+        id: 'archive_1',
+        request_id: 'req_1',
+        attempt_no: 2
+      }],
+      rowCount: 1
+    });
+    const repo = new RequestAttemptArchiveRepository(db);
+
+    const row = await repo.findByRequestAttempt('req_1', 2);
+
+    expect(row).toEqual(expect.objectContaining({ id: 'archive_1', request_id: 'req_1', attempt_no: 2 }));
+    expect(db.queries[0].sql).toContain('where request_id = $1');
+    expect(db.queries[0].sql).toContain('and attempt_no = $2');
+    expect(db.queries[0].sql).toContain('order by created_at desc');
+  });
+
+  it('lists archived attempts by ids in the caller-specified order', async () => {
+    const db = new MockSqlClient({
+      rows: [
+        { id: 'archive_2' },
+        { id: 'archive_1' }
+      ],
+      rowCount: 2
+    });
+    const repo = new RequestAttemptArchiveRepository(db);
+
+    const rows = await repo.listByIds(['archive_2', 'archive_1']);
+
+    expect(rows).toHaveLength(2);
+    expect(db.queries[0].sql).toContain('where id::text = any($1::text[])');
+    expect(db.queries[0].sql).toContain('order by array_position($1::text[], id::text)');
+    expect(db.queries[0].params).toEqual([['archive_2', 'archive_1']]);
+  });
+
   it('defines attempt uniqueness and lookup indexes in both migration variants', () => {
     const candidates = [
       readFileSync(migrationPath, 'utf8'),

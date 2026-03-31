@@ -85,6 +85,20 @@ export class RawBlobRepository {
     const result = await this.db.query<RawBlobRow>(sql, [contentHash, blobKind]);
     return result.rowCount === 1 ? result.rows[0] : null;
   }
+
+  findByIds(ids: string[]): Promise<RawBlobRow[]> {
+    if (ids.length === 0) {
+      return Promise.resolve([]);
+    }
+
+    const sql = `
+      select *
+      from ${TABLES.rawBlobs}
+      where id::text = any($1::text[])
+      order by array_position($1::text[], id::text)
+    `;
+    return this.db.query<RawBlobRow>(sql, [ids]).then((result) => result.rows);
+  }
 }
 
 function assertRawBlobReplayMatches(input: RawBlobInput, row: RawBlobRow): void {

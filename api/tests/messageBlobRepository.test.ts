@@ -99,6 +99,24 @@ describe('MessageBlobRepository', () => {
     await expect(repo.upsertBlob(sampleBlob)).rejects.toThrow('message blob idempotent replay mismatch');
   });
 
+  it('lists blobs by ids in the caller-specified order', async () => {
+    const db = new MockSqlClient({
+      rows: [
+        { id: 'blob_2' },
+        { id: 'blob_1' }
+      ],
+      rowCount: 2
+    });
+    const repo = new MessageBlobRepository(db);
+
+    const rows = await repo.findByIds(['blob_2', 'blob_1']);
+
+    expect(rows).toHaveLength(2);
+    expect(db.queries[0].sql).toContain('where id::text = any($1::text[])');
+    expect(db.queries[0].sql).toContain('order by array_position($1::text[], id::text)');
+    expect(db.queries[0].params).toEqual([['blob_2', 'blob_1']]);
+  });
+
   it('defines global content-hash dedupe in both migration variants', () => {
     const candidates = [
       readFileSync(migrationPath, 'utf8'),
