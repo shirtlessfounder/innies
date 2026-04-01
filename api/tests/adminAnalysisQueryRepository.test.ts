@@ -34,6 +34,8 @@ describe('AdminAnalysisQueryRepository', () => {
     expect(db.queries[0]?.sql).toContain('task_category = $');
     expect(db.queries[0]?.sql).toContain('task_tags @> array[');
     expect(db.queries[1]?.sql).toContain('from in_admin_analysis_sessions');
+    expect(db.queries[1]?.sql).toContain('sr.started_at >= $1');
+    expect(db.queries[1]?.sql).toContain('sr.started_at < $2');
   });
 
   it('builds UTC day-bucket category trend queries', async () => {
@@ -137,7 +139,8 @@ describe('AdminAnalysisQueryRepository', () => {
     const db = new SequenceSqlClient([
       { rows: [{ request_id: 'req_1', attempt_no: 2, session_key: 'openclaw:session:sess_1' }], rowCount: 1 },
       { rows: [{ session_key: 'openclaw:session:sess_1', primary_task_category: 'debugging' }], rowCount: 1 },
-      { rows: [{ projected_request_count: '42', pending_projection_count: '3', first_projected_at: '2026-03-24T00:00:00Z', last_projected_at: '2026-03-31T00:00:00Z' }], rowCount: 1 }
+      { rows: [{ projected_request_count: '42', first_projected_at: '2026-03-24T00:00:00Z', last_projected_at: '2026-03-31T00:00:00Z' }], rowCount: 1 },
+      { rows: [{ request_attempt_archive_id: 'archive_1', org_id: 'org_1', provider: 'openai', request_source: 'openclaw', provider_selection_reason: null, openclaw_run_id: 'run_1', openclaw_session_id: 'sess_1', prompt_preview: 'debug the postgres migration failure', response_preview: 'apply the migration fix', session_type: 'openclaw' }], rowCount: 1 }
     ]);
     const repo = new AdminAnalysisQueryRepository(db);
 
@@ -151,10 +154,68 @@ describe('AdminAnalysisQueryRepository', () => {
     expect(request?.requestId).toBe('req_1');
     expect(session?.sessionKey).toBe('openclaw:session:sess_1');
     expect(coverage.projectedRequestCount).toBe(42);
-    expect(coverage.pendingProjectionCount).toBe(3);
+    expect(coverage.pendingProjectionCount).toBe(1);
     expect(db.queries[0]?.sql).toContain('where request_id = $1');
     expect(db.queries[1]?.sql).toContain('where session_key = $1');
-    expect(db.queries[2]?.sql).toContain('from in_admin_analysis_requests r');
-    expect(db.queries[2]?.sql).toContain('left join in_admin_analysis_request_projection_outbox o');
+    expect(db.queries[2]?.sql).toContain('from in_admin_analysis_requests');
+    expect(db.queries[3]?.sql).toContain('from in_admin_analysis_request_projection_outbox o');
+    expect(db.queries[3]?.sql).toContain('inner join in_request_attempt_archives a');
+    expect(db.queries[3]?.sql).toContain('left join in_request_log rl');
+    expect(db.queries[3]?.sql).toContain('left join in_admin_session_attempts sa');
+    expect(db.queries[3]?.sql).toContain('left join in_admin_sessions s');
+  });
+
+  it('reapplies requested coverage filters when counting pending projection backlog', async () => {
+    const db = new SequenceSqlClient([
+      { rows: [{ projected_request_count: '5', first_projected_at: '2026-03-24T00:00:00Z', last_projected_at: '2026-03-31T00:00:00Z' }], rowCount: 1 },
+      {
+        rows: [
+          {
+            request_attempt_archive_id: 'archive_1',
+            org_id: 'org_1',
+            provider: 'openai',
+            request_source: 'openclaw',
+            provider_selection_reason: null,
+            openclaw_run_id: 'run_1',
+            openclaw_session_id: 'sess_1',
+            prompt_preview: 'debug the postgres migration failure',
+            response_preview: 'apply the migration fix',
+            session_type: 'openclaw'
+          },
+          {
+            request_attempt_archive_id: 'archive_2',
+            org_id: 'org_1',
+            provider: 'openai',
+            request_source: 'openclaw',
+            provider_selection_reason: null,
+            openclaw_run_id: 'run_2',
+            openclaw_session_id: 'sess_2',
+            prompt_preview: 'write deployment notes',
+            response_preview: 'document the rollout',
+            session_type: 'openclaw'
+          }
+        ],
+        rowCount: 2
+      }
+    ]);
+    const repo = new AdminAnalysisQueryRepository(db);
+
+    const coverage = await repo.getCoverage({
+      start: new Date('2026-03-24T00:00:00Z'),
+      end: new Date('2026-03-31T00:00:00Z'),
+      orgId: 'org_1',
+      sessionType: 'openclaw',
+      provider: 'openai',
+      source: 'openclaw',
+      taskCategory: 'debugging',
+      taskTag: 'postgres'
+    });
+
+    expect(coverage).toEqual({
+      projectedRequestCount: 5,
+      pendingProjectionCount: 1,
+      firstProjectedAt: '2026-03-24T00:00:00Z',
+      lastProjectedAt: '2026-03-31T00:00:00Z'
+    });
   });
 });

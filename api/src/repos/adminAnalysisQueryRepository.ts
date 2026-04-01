@@ -1,6 +1,8 @@
 import type { SqlClient, SqlValue } from './sqlClient.js';
 import { TABLES } from './tableNames.js';
 import type { AdminAnalysisTaskCategory } from './adminAnalysisRequestRepository.js';
+import { classifyTaskCategory, deriveTaskTags } from '../services/adminAnalysis/adminAnalysisClassifier.js';
+import { classifyAnalyticsSource } from '../utils/analytics.js';
 
 export type AdminAnalysisWindowSlice = {
   start: Date;
@@ -319,40 +321,85 @@ export class AdminAnalysisQueryRepository {
     };
   }
 
-  async getCoverage(filters: Pick<AdminAnalysisWindowSlice, 'start' | 'end'>): Promise<{
+  async getCoverage(filters: AdminAnalysisWindowSlice): Promise<{
     projectedRequestCount: number;
     pendingProjectionCount: number;
     firstProjectedAt: string | null;
     lastProjectedAt: string | null;
   }> {
-    const sql = `
+    const projectedScope = buildRequestScope(filters);
+    const projectedSql = `
       select
-        count(distinct r.request_attempt_archive_id)::bigint as projected_request_count,
-        count(distinct o.request_attempt_archive_id)::bigint as pending_projection_count,
-        min(r.started_at)::text as first_projected_at,
-        max(r.started_at)::text as last_projected_at
-      from ${TABLES.adminAnalysisRequests} r
-      left join ${TABLES.adminAnalysisProjectionOutbox} o
-        on o.request_attempt_archive_id = r.request_attempt_archive_id
-        and o.projection_state = 'pending_projection'
-      where r.started_at >= $1
-        and r.started_at < $2
+        count(distinct request_attempt_archive_id)::bigint as projected_request_count,
+        min(started_at)::text as first_projected_at,
+        max(started_at)::text as last_projected_at
+      from ${TABLES.adminAnalysisRequests}
+      where ${projectedScope.where.join(' and ')}
     `;
-    const result = await this.db.query<{
+    const projectedResult = await this.db.query<{
       projected_request_count: string;
-      pending_projection_count: string;
       first_projected_at: string | null;
       last_projected_at: string | null;
-    }>(sql, [filters.start, filters.end]);
-    const row = result.rows[0];
+    }>(projectedSql, projectedScope.params);
+    const pendingCandidates = await this.listPendingCoverageCandidates(filters);
+    const row = projectedResult.rows[0];
+
     return {
       projectedRequestCount: Number(row?.projected_request_count ?? 0),
-      pendingProjectionCount: Number(row?.pending_projection_count ?? 0),
+      pendingProjectionCount: pendingCandidates.filter((candidate) => matchesPendingCoverageCandidate(candidate, filters)).length,
       firstProjectedAt: row?.first_projected_at ?? null,
       lastProjectedAt: row?.last_projected_at ?? null
     };
   }
+
+  private async listPendingCoverageCandidates(filters: AdminAnalysisWindowSlice): Promise<PendingCoverageCandidateRow[]> {
+    const scope = buildPendingCoverageScope(filters);
+    const sql = `
+      select distinct on (o.request_attempt_archive_id)
+        o.request_attempt_archive_id,
+        a.org_id,
+        a.provider,
+        nullif(re.route_decision->>'request_source', '') as request_source,
+        nullif(re.route_decision->>'provider_selection_reason', '') as provider_selection_reason,
+        coalesce(nullif(re.route_decision->>'openclaw_run_id', ''), a.openclaw_run_id) as openclaw_run_id,
+        coalesce(nullif(re.route_decision->>'openclaw_session_id', ''), a.openclaw_session_id) as openclaw_session_id,
+        rl.prompt_preview,
+        rl.response_preview,
+        s.session_type
+      from ${TABLES.adminAnalysisProjectionOutbox} o
+      inner join ${TABLES.requestAttemptArchives} a
+        on a.id = o.request_attempt_archive_id
+      left join ${TABLES.routingEvents} re
+        on re.org_id = a.org_id
+        and re.request_id = a.request_id
+        and re.attempt_no = a.attempt_no
+      left join ${TABLES.requestLog} rl
+        on rl.org_id = a.org_id
+        and rl.request_id = a.request_id
+        and rl.attempt_no = a.attempt_no
+      left join ${TABLES.adminSessionAttempts} sa
+        on sa.request_attempt_archive_id = a.id
+      left join ${TABLES.adminSessions} s
+        on s.session_key = sa.session_key
+      where ${scope.where.join(' and ')}
+      order by o.request_attempt_archive_id asc
+    `;
+    return this.db.query<PendingCoverageCandidateRow>(sql, scope.params).then((result) => result.rows);
+  }
 }
+
+type PendingCoverageCandidateRow = {
+  request_attempt_archive_id: string;
+  org_id: string;
+  provider: string;
+  request_source: string | null;
+  provider_selection_reason: string | null;
+  openclaw_run_id: string | null;
+  openclaw_session_id: string | null;
+  prompt_preview: string | null;
+  response_preview: string | null;
+  session_type: 'cli' | 'openclaw' | null;
+};
 
 function buildRequestScope(filters: AdminAnalysisWindowSlice, startIndex = 1) {
   const params: SqlValue[] = [filters.start, filters.end];
@@ -423,12 +470,108 @@ function buildSessionScope(filters: AdminAnalysisWindowSlice, startIndex = 1) {
         select 1
         from ${TABLES.adminAnalysisRequests} sr
         where sr.session_key = s.session_key
+          and sr.started_at >= $${startIndex}
+          and sr.started_at < $${startIndex + 1}
           and ${requestFilters.join(' and ')}
       )
     `);
   }
 
   return { params, where };
+}
+
+function buildPendingCoverageScope(filters: AdminAnalysisWindowSlice, startIndex = 1) {
+  const params: SqlValue[] = [filters.start, filters.end];
+  const where = [
+    `o.projection_state = 'pending_projection'`,
+    `a.started_at >= $${startIndex}`,
+    `a.started_at < $${startIndex + 1}`
+  ];
+
+  if (filters.orgId) {
+    params.push(filters.orgId);
+    where.push(`a.org_id = $${startIndex + params.length - 1}`);
+  }
+
+  if (filters.provider) {
+    params.push(filters.provider);
+    where.push(`a.provider = $${startIndex + params.length - 1}`);
+  }
+
+  return { params, where };
+}
+
+function matchesPendingCoverageCandidate(
+  candidate: PendingCoverageCandidateRow,
+  filters: AdminAnalysisWindowSlice
+): boolean {
+  if (filters.orgId && candidate.org_id !== filters.orgId) {
+    return false;
+  }
+  if (filters.provider && candidate.provider !== filters.provider) {
+    return false;
+  }
+
+  const source = classifyAnalyticsSource({
+    provider: candidate.provider,
+    routeDecision: {
+      request_source: candidate.request_source,
+      provider_selection_reason: candidate.provider_selection_reason,
+      openclaw_run_id: candidate.openclaw_run_id,
+      openclaw_session_id: candidate.openclaw_session_id
+    }
+  });
+  if (filters.source && source !== filters.source) {
+    return false;
+  }
+
+  const sessionType = candidate.session_type ?? toSessionType(source);
+  if (filters.sessionType && sessionType !== filters.sessionType) {
+    return false;
+  }
+
+  const userMessagePreview = trimToNull(candidate.prompt_preview);
+  const assistantTextPreview = trimToNull(candidate.response_preview);
+  if (filters.taskCategory) {
+    const taskCategory = classifyTaskCategory({
+      userMessagePreview,
+      assistantTextPreview
+    });
+    if (taskCategory !== filters.taskCategory) {
+      return false;
+    }
+  }
+
+  if (filters.taskTag) {
+    const taskTags = deriveTaskTags({
+      userMessagePreview,
+      assistantTextPreview
+    });
+    if (!taskTags.includes(filters.taskTag)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function toSessionType(source: ReturnType<typeof classifyAnalyticsSource>): 'cli' | 'openclaw' | null {
+  if (source === 'openclaw') {
+    return 'openclaw';
+  }
+  if (source === 'cli-claude' || source === 'cli-codex') {
+    return 'cli';
+  }
+  return null;
+}
+
+function trimToNull(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function clampLimit(limit: number, max = 100): number {

@@ -500,6 +500,7 @@ describe('analytics routes', () => {
         limit: '20',
         minLatencyMs: '250',
         credentialId: '11111111-1111-4111-8111-111111111111',
+        orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
         cursor
       }
     });
@@ -512,6 +513,7 @@ describe('analytics routes', () => {
       provider: undefined,
       source: undefined,
       credentialId: '11111111-1111-4111-8111-111111111111',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
       limit: 20,
       model: undefined,
       minLatencyMs: 250,
@@ -827,13 +829,15 @@ describe('analytics routes', () => {
         authorization: 'Bearer admin_token'
       },
       query: {
-        source: 'direct'
+        source: 'direct',
+        sessionType: 'cli'
       }
     });
     const directRes = createMockRes();
     await invokeHandlers(handlers, directReq, directRes);
 
     expect(directRes.statusCode).toBe(400);
+    expect(analytics.getSessions).toHaveBeenCalledTimes(1);
   });
 
   it('returns buyer analytics including zero-usage rows and display fallbacks', async () => {

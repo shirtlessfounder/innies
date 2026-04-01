@@ -3,6 +3,50 @@ import { AppError } from '../src/utils/errors.js';
 import { AdminAnalysisReadService } from '../src/services/adminAnalysis/adminAnalysisReadService.js';
 
 describe('AdminAnalysisReadService', () => {
+  it('preserves the query repository receiver when invoking class-backed methods', async () => {
+    class QueryHarness {
+      db = { connected: true };
+
+      async getOverview() {
+        return {
+          totals: {
+            totalRequests: this.db.connected ? 1 : 0,
+            totalSessions: 0,
+            totalTokens: 0
+          },
+          categoryMix: [],
+          tagHighlights: [],
+          signalCounts: {
+            retryCount: 0,
+            failureCount: 0
+          }
+        };
+      }
+
+      async getCoverage() {
+        return {
+          projectedRequestCount: 1,
+          pendingProjectionCount: 0,
+          firstProjectedAt: '2026-03-24T00:00:00Z',
+          lastProjectedAt: '2026-03-31T00:00:00Z'
+        };
+      }
+    }
+
+    const service = new AdminAnalysisReadService({
+      now: () => new Date('2026-03-31T12:00:00Z'),
+      queries: new QueryHarness()
+    });
+
+    await expect(service.getOverview({
+      window: '7d'
+    })).resolves.toEqual(expect.objectContaining({
+      totals: expect.objectContaining({
+        totalRequests: 1
+      })
+    }));
+  });
+
   it('adds previous-window comparison blocks for finite windows', async () => {
     const overviewCalls: Array<Record<string, unknown>> = [];
     const service = new AdminAnalysisReadService({
@@ -114,5 +158,52 @@ describe('AdminAnalysisReadService', () => {
     expect(requestSamples.coverage.isComplete).toBe(false);
     expect(sessionSamples.samples).toEqual([{ session_key: 'openclaw:session:sess_1' }]);
     expect(sessionSamples.coverage.projectedRequestCount).toBe(42);
+  });
+
+  it('passes the full filter slice into coverage lookups', async () => {
+    const coverageCalls: Array<Record<string, unknown>> = [];
+    const service = new AdminAnalysisReadService({
+      now: () => new Date('2026-03-31T12:00:00Z'),
+      queries: {
+        async getOverview() {
+          return {
+            totals: { totalRequests: 12, totalSessions: 5, totalTokens: 3400 },
+            categoryMix: [{ taskCategory: 'debugging', count: 7 }],
+            tagHighlights: [{ tag: 'postgres', count: 4 }],
+            signalCounts: { retryCount: 2, failureCount: 1 }
+          };
+        },
+        async getCoverage(input) {
+          coverageCalls.push(input as unknown as Record<string, unknown>);
+          return {
+            projectedRequestCount: 12,
+            pendingProjectionCount: 1,
+            firstProjectedAt: '2026-03-24T00:00:00Z',
+            lastProjectedAt: '2026-03-31T00:00:00Z'
+          };
+        }
+      }
+    });
+
+    await service.getOverview({
+      window: '7d',
+      orgId: 'org_1',
+      sessionType: 'openclaw',
+      provider: 'openai',
+      source: 'openclaw',
+      taskCategory: 'debugging',
+      taskTag: 'postgres'
+    });
+
+    expect(coverageCalls).toEqual([{
+      start: new Date('2026-03-24T12:00:00.000Z'),
+      end: new Date('2026-03-31T12:00:00.000Z'),
+      orgId: 'org_1',
+      sessionType: 'openclaw',
+      provider: 'openai',
+      source: 'openclaw',
+      taskCategory: 'debugging',
+      taskTag: 'postgres'
+    }]);
   });
 });

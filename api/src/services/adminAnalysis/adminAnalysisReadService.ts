@@ -27,8 +27,8 @@ export class AdminAnalysisReadService {
     const current = resolveWindowBounds(input.window, this.now());
     const comparison = resolveComparisonBounds(input.window, input.compare, current);
     const currentFilters = buildSlice(current, input);
-    const currentOverview = await requireMethod(this.deps.queries.getOverview, 'getOverview')(currentFilters);
-    const coverage = await requireMethod(this.deps.queries.getCoverage, 'getCoverage')(current);
+    const currentOverview = await this.requireQuery('getOverview')(currentFilters);
+    const coverage = await this.requireQuery('getCoverage')(currentFilters);
 
     return {
       window: input.window,
@@ -38,7 +38,7 @@ export class AdminAnalysisReadService {
       comparison: comparison
         ? toComparison(
           serializeBounds(comparison),
-          await requireMethod(this.deps.queries.getOverview, 'getOverview')(buildSlice(comparison, input)),
+          await this.requireQuery('getOverview')(buildSlice(comparison, input)),
           currentOverview
         )
         : undefined
@@ -50,7 +50,7 @@ export class AdminAnalysisReadService {
   }) {
     const current = resolveWindowBounds(input.window, this.now());
     const comparison = resolveComparisonBounds(input.window, input.compare, current);
-    const rows = await requireMethod(this.deps.queries.getCategoryTrends, 'getCategoryTrends')(buildSlice(current, input));
+    const rows = await this.requireQuery('getCategoryTrends')(buildSlice(current, input));
     return {
       window: input.window,
       requestedWindow: serializeBounds(current),
@@ -58,7 +58,7 @@ export class AdminAnalysisReadService {
       comparison: comparison
         ? {
           previousWindow: serializeBounds(comparison),
-          days: await requireMethod(this.deps.queries.getCategoryTrends, 'getCategoryTrends')(buildSlice(comparison, input))
+          days: await this.requireQuery('getCategoryTrends')(buildSlice(comparison, input))
         }
         : undefined
     };
@@ -69,7 +69,7 @@ export class AdminAnalysisReadService {
   }) {
     const current = resolveWindowBounds(input.window, this.now());
     const comparison = resolveComparisonBounds(input.window, input.compare, current);
-    const currentTrends = await requireMethod(this.deps.queries.getTagTrends, 'getTagTrends')(buildSlice(current, input));
+    const currentTrends = await this.requireQuery('getTagTrends')(buildSlice(current, input));
     return {
       window: input.window,
       requestedWindow: serializeBounds(current),
@@ -77,7 +77,7 @@ export class AdminAnalysisReadService {
       comparison: comparison
         ? {
           previousWindow: serializeBounds(comparison),
-          ...(await requireMethod(this.deps.queries.getTagTrends, 'getTagTrends')(buildSlice(comparison, input)))
+          ...(await this.requireQuery('getTagTrends')(buildSlice(comparison, input)))
         }
         : undefined
     };
@@ -88,7 +88,7 @@ export class AdminAnalysisReadService {
   }) {
     const current = resolveWindowBounds(input.window, this.now());
     const comparison = resolveComparisonBounds(input.window, input.compare, current);
-    const currentSignals = await requireMethod(this.deps.queries.getInterestingSignals, 'getInterestingSignals')(buildSlice(current, input));
+    const currentSignals = await this.requireQuery('getInterestingSignals')(buildSlice(current, input));
     return {
       window: input.window,
       requestedWindow: serializeBounds(current),
@@ -96,7 +96,7 @@ export class AdminAnalysisReadService {
       comparison: comparison
         ? {
           previousWindow: serializeBounds(comparison),
-          signals: await requireMethod(this.deps.queries.getInterestingSignals, 'getInterestingSignals')(buildSlice(comparison, input))
+          signals: await this.requireQuery('getInterestingSignals')(buildSlice(comparison, input))
         }
         : undefined
     };
@@ -106,12 +106,13 @@ export class AdminAnalysisReadService {
     sampleSize: number;
   }) {
     const bounds = resolveWindowBounds(input.window, this.now());
+    const filters = buildSlice(bounds, input);
     const [samples, coverage] = await Promise.all([
-      requireMethod(this.deps.queries.listRequestSamples, 'listRequestSamples')({
-        ...buildSlice(bounds, input),
+      this.requireQuery('listRequestSamples')({
+        ...filters,
         sampleSize: input.sampleSize
       }),
-      requireMethod(this.deps.queries.getCoverage, 'getCoverage')(bounds)
+      this.requireQuery('getCoverage')(filters)
     ]);
 
     return {
@@ -126,12 +127,13 @@ export class AdminAnalysisReadService {
     sampleSize: number;
   }) {
     const bounds = resolveWindowBounds(input.window, this.now());
+    const filters = buildSlice(bounds, input);
     const [samples, coverage] = await Promise.all([
-      requireMethod(this.deps.queries.listSessionSamples, 'listSessionSamples')({
-        ...buildSlice(bounds, input),
+      this.requireQuery('listSessionSamples')({
+        ...filters,
         sampleSize: input.sampleSize
       }),
-      requireMethod(this.deps.queries.getCoverage, 'getCoverage')(bounds)
+      this.requireQuery('getCoverage')(filters)
     ]);
 
     return {
@@ -143,15 +145,30 @@ export class AdminAnalysisReadService {
   }
 
   getRequestDetail(requestId: string, attemptNo: number) {
-    return requireMethod(this.deps.queries.getRequestDetail, 'getRequestDetail')(requestId, attemptNo);
+    return this.requireQuery('getRequestDetail')(requestId, attemptNo);
   }
 
   getSessionDetail(sessionKey: string) {
-    return requireMethod(this.deps.queries.getSessionDetail, 'getSessionDetail')(sessionKey);
+    return this.requireQuery('getSessionDetail')(sessionKey);
   }
 
   private now(): Date {
     return this.deps.now?.() ?? new Date();
+  }
+
+  private requireQuery<K extends keyof AdminAnalysisReadService['deps']['queries']>(
+    name: K
+  ): NonNullable<AdminAnalysisReadService['deps']['queries'][K]> {
+    const value = this.deps.queries[name];
+    if (!value) {
+      throw new Error(`admin analysis read service missing dependency: ${String(name)}`);
+    }
+
+    if (typeof value === 'function') {
+      return value.bind(this.deps.queries) as NonNullable<AdminAnalysisReadService['deps']['queries'][K]>;
+    }
+
+    return value as NonNullable<AdminAnalysisReadService['deps']['queries'][K]>;
   }
 }
 
@@ -164,11 +181,6 @@ type AdminAnalysisFilterInput = {
   taskCategory?: string;
   taskTag?: string;
 };
-
-function requireMethod<T>(value: T | undefined, name: string): T {
-  if (value) return value;
-  throw new Error(`admin analysis read service missing dependency: ${name}`);
-}
 
 function buildSlice(bounds: WindowBounds, input: Omit<AdminAnalysisFilterInput, 'window'>): AdminAnalysisWindowSlice {
   return {

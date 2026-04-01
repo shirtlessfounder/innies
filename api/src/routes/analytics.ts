@@ -88,6 +88,7 @@ type RecentRequestsFilters = {
   limit: number;
   provider?: AnalyticsProvider;
   source?: AnalyticsSource;
+  orgId?: string;
   credentialId?: string;
   model?: string;
   minLatencyMs?: number;
@@ -337,6 +338,7 @@ const recentRequestsQuerySchema = baseAnalyticsQuerySchema.extend({
   window: query.window ?? '24h',
   provider: query.provider,
   source: query.source,
+  orgId: query.orgId,
   credentialId: query.credentialId,
   cursor: query.cursor,
   limit: query.limit ?? 50,
@@ -374,7 +376,7 @@ const sessionsQuerySchema = baseAnalyticsQuerySchema.extend({
   model: z.string().trim().min(1).max(200).optional(),
   status: z.enum(['success', 'failed', 'partial']).optional()
 }).superRefine((query, ctx) => {
-  if (!query.sessionType && query.source === 'direct') {
+  if (query.source === 'direct') {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['source'],
