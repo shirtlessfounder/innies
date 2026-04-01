@@ -41,7 +41,7 @@ export class AdminSessionProjectorService {
   private readonly candidateLoader: CandidateLoader;
 
   constructor(private readonly deps: {
-    sessionRepo: Pick<AdminSessionRepository, 'findBySessionKey' | 'findLatestInLane' | 'upsertSession'>;
+    sessionRepo: Pick<AdminSessionRepository, 'findBySessionKey' | 'findLatestInLane' | 'loadProjectionRollup' | 'upsertSession'>;
     sessionAttemptRepo: Pick<AdminSessionAttemptRepository, 'listAttemptsBySessionKey' | 'upsertAttemptLink'>;
     sql?: Pick<SqlClient, 'query'>;
     candidateLoader?: CandidateLoader;
@@ -76,7 +76,7 @@ export class AdminSessionProjectorService {
       };
     }
 
-    const existingSession = await this.deps.sessionRepo.findBySessionKey(grouping.sessionKey);
+    const existingRollup = await this.deps.sessionRepo.loadProjectionRollup(grouping.sessionKey);
     const existingAttempts = await this.deps.sessionAttemptRepo.listAttemptsBySessionKey(grouping.sessionKey);
     const wasNewAttempt = existingAttempts.every((attempt) =>
       attempt.request_attempt_archive_id !== candidate.requestAttemptArchiveId
@@ -92,29 +92,29 @@ export class AdminSessionProjectorService {
       apiKeyId: candidate.apiKeyId,
       sourceSessionId: grouping.sourceSessionId,
       sourceRunId: grouping.sourceRunId,
-      startedAt: existingSession ? minDate(new Date(existingSession.started_at), candidate.startedAt) : candidate.startedAt,
-      endedAt: existingSession ? maxDate(new Date(existingSession.ended_at), eventTime) : eventTime,
-      lastActivityAt: existingSession ? maxDate(new Date(existingSession.last_activity_at), eventTime) : eventTime,
-      requestCount: existingSession
-        ? existingSession.request_count + (wasNewAttempt && wasNewRequest ? 1 : 0)
+      startedAt: existingRollup ? minDate(new Date(existingRollup.started_at), candidate.startedAt) : candidate.startedAt,
+      endedAt: existingRollup ? maxDate(new Date(existingRollup.ended_at), eventTime) : eventTime,
+      lastActivityAt: existingRollup ? maxDate(new Date(existingRollup.last_activity_at), eventTime) : eventTime,
+      requestCount: existingRollup
+        ? existingRollup.request_count + (wasNewAttempt && wasNewRequest ? 1 : 0)
         : 1,
-      attemptCount: existingSession
-        ? existingSession.attempt_count + (wasNewAttempt ? 1 : 0)
+      attemptCount: existingRollup
+        ? existingRollup.attempt_count + (wasNewAttempt ? 1 : 0)
         : 1,
-      inputTokens: existingSession
-        ? existingSession.input_tokens + (wasNewAttempt ? candidate.inputTokens : 0)
+      inputTokens: existingRollup
+        ? existingRollup.input_tokens + (wasNewAttempt ? candidate.inputTokens : 0)
         : candidate.inputTokens,
-      outputTokens: existingSession
-        ? existingSession.output_tokens + (wasNewAttempt ? candidate.outputTokens : 0)
+      outputTokens: existingRollup
+        ? existingRollup.output_tokens + (wasNewAttempt ? candidate.outputTokens : 0)
         : candidate.outputTokens,
-      providerSet: existingSession
-        ? appendUnique(existingSession.provider_set, candidate.provider, wasNewAttempt)
+      providerSet: existingRollup
+        ? appendUnique(existingRollup.provider_set, candidate.provider, wasNewAttempt)
         : [candidate.provider],
-      modelSet: existingSession
-        ? appendUnique(existingSession.model_set, candidate.model, wasNewAttempt)
+      modelSet: existingRollup
+        ? appendUnique(existingRollup.model_set, candidate.model, wasNewAttempt)
         : [candidate.model],
-      statusSummary: incrementStatusSummary(existingSession?.status_summary, candidate.status, wasNewAttempt),
-      previewSample: mergePreviewSample(existingSession?.preview_sample ?? null, candidate, wasNewAttempt)
+      statusSummary: incrementStatusSummary(existingRollup?.status_summary, candidate.status, wasNewAttempt),
+      previewSample: mergePreviewSample(existingRollup?.preview_sample ?? null, candidate, wasNewAttempt)
     });
 
     await this.deps.sessionAttemptRepo.upsertAttemptLink({

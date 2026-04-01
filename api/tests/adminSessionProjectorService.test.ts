@@ -70,6 +70,26 @@ function createHarness(options?: {
             || right.session_key.localeCompare(left.session_key)
           );
         return matches[0] ?? null;
+      },
+      async loadProjectionRollup(sessionKey) {
+        const session = state.sessions.find((candidate) => candidate.session_key === sessionKey);
+        if (!session) {
+          return null;
+        }
+        return {
+          session_key: session.session_key,
+          started_at: session.started_at,
+          ended_at: session.ended_at,
+          last_activity_at: session.last_activity_at,
+          request_count: session.request_count,
+          attempt_count: session.attempt_count,
+          input_tokens: session.input_tokens,
+          output_tokens: session.output_tokens,
+          provider_set: [...session.provider_set],
+          model_set: [...session.model_set],
+          status_summary: structuredClone(session.status_summary) as Record<string, number>,
+          preview_sample: session.preview_sample ? structuredClone(session.preview_sample) : null
+        };
       }
     },
     sessionAttemptRepo: {
@@ -296,6 +316,9 @@ describe('AdminSessionProjectorService', () => {
         },
         async findLatestInLane() {
           return null;
+        },
+        async loadProjectionRollup() {
+          return null;
         }
       },
       sessionAttemptRepo: {
@@ -321,6 +344,148 @@ describe('AdminSessionProjectorService', () => {
     }));
 
     expect(calls).toEqual(['session', 'attempt']);
+  });
+
+  it('repairs a corrupted stored aggregate from linked attempts before appending a new attempt', async () => {
+    const upsertCalls: Array<Record<string, unknown>> = [];
+    const sessionKey = 'cli:idle:org_1:api_1:req_old';
+    const service = new AdminSessionProjectorService({
+      sessionRepo: {
+        async upsertSession(input) {
+          upsertCalls.push(input as unknown as Record<string, unknown>);
+          return {} as AdminSessionRow;
+        },
+        async findBySessionKey() {
+          return {
+            session_key: sessionKey,
+            session_type: 'cli',
+            grouping_basis: 'idle_gap',
+            org_id: 'org_1',
+            api_key_id: 'api_1',
+            source_session_id: null,
+            source_run_id: null,
+            started_at: '2026-03-31T22:00:00.000Z',
+            ended_at: '2026-03-31T22:05:00.000Z',
+            last_activity_at: '2026-03-31T22:05:00.000Z',
+            request_count: 7,
+            attempt_count: 7,
+            input_tokens: '111112330',
+            output_tokens: '2572292072151771400',
+            provider_set: ['anthropic'],
+            model_set: ['claude-opus-4-6'],
+            status_summary: { success: 7 },
+            preview_sample: {
+              promptPreview: 'bad prompt',
+              responsePreview: 'bad response',
+              latestRequestId: 'req_bad',
+              latestAttemptNo: 1
+            },
+            created_at: '2026-03-31T22:00:00.000Z',
+            updated_at: '2026-03-31T22:05:00.000Z'
+          } as unknown as AdminSessionRow;
+        },
+        async findLatestInLane() {
+          return {
+            session_key: sessionKey,
+            session_type: 'cli',
+            grouping_basis: 'idle_gap',
+            org_id: 'org_1',
+            api_key_id: 'api_1',
+            source_session_id: null,
+            source_run_id: null,
+            started_at: '2026-03-31T22:00:00.000Z',
+            ended_at: '2026-03-31T22:05:00.000Z',
+            last_activity_at: '2026-03-31T22:05:00.000Z',
+            request_count: 7,
+            attempt_count: 7,
+            input_tokens: '111112330',
+            output_tokens: '2572292072151771400',
+            provider_set: ['anthropic'],
+            model_set: ['claude-opus-4-6'],
+            status_summary: { success: 7 },
+            preview_sample: null,
+            created_at: '2026-03-31T22:00:00.000Z',
+            updated_at: '2026-03-31T22:05:00.000Z'
+          } as unknown as AdminSessionRow;
+        },
+        async loadProjectionRollup() {
+          return {
+            session_key: sessionKey,
+            started_at: '2026-03-31T22:00:00.000Z',
+            ended_at: '2026-03-31T22:05:00.000Z',
+            last_activity_at: '2026-03-31T22:05:00.000Z',
+            request_count: 79,
+            attempt_count: 83,
+            input_tokens: 5587,
+            output_tokens: 27495,
+            provider_set: ['anthropic', 'openai'],
+            model_set: ['claude-opus-4-6', 'gpt-5.4'],
+            status_summary: { success: 80, failed: 3 },
+            preview_sample: {
+              promptPreview: 'prior prompt',
+              responsePreview: 'prior response',
+              latestRequestId: 'req_prev',
+              latestAttemptNo: 3
+            }
+          };
+        }
+      } as any,
+      sessionAttemptRepo: {
+        async upsertAttemptLink() {
+          return {} as AdminSessionAttemptRow;
+        },
+        async listAttemptsBySessionKey() {
+          return [{
+            session_key: sessionKey,
+            request_attempt_archive_id: 'archive_prev',
+            request_id: 'req_prev',
+            attempt_no: 3,
+            event_time: '2026-03-31T22:05:00.000Z',
+            sequence_no: 2,
+            provider: 'anthropic',
+            model: 'claude-opus-4-6',
+            streaming: false,
+            status: 'success',
+            created_at: '2026-03-31T22:05:00.000Z'
+          }];
+        }
+      }
+    });
+
+    await service.projectAttempt(candidate({
+      requestAttemptArchiveId: 'archive_new',
+      requestId: 'req_new',
+      attemptNo: 4,
+      requestSource: 'cli-claude',
+      openclawSessionId: null,
+      openclawRunId: null,
+      startedAt: new Date('2026-03-31T22:06:00Z'),
+      completedAt: new Date('2026-03-31T22:06:10Z'),
+      provider: 'anthropic',
+      model: 'claude-opus-4-6',
+      inputTokens: 1,
+      outputTokens: 526,
+      promptPreview: 'latest prompt',
+      responsePreview: 'latest response'
+    }));
+
+    expect(upsertCalls).toHaveLength(1);
+    expect(upsertCalls[0]).toEqual(expect.objectContaining({
+      sessionKey,
+      requestCount: 80,
+      attemptCount: 84,
+      inputTokens: 5588,
+      outputTokens: 28021,
+      providerSet: ['anthropic', 'openai'],
+      modelSet: ['claude-opus-4-6', 'gpt-5.4'],
+      statusSummary: { success: 81, failed: 3 },
+      previewSample: {
+        promptPreview: 'latest prompt',
+        responsePreview: 'latest response',
+        latestRequestId: 'req_new',
+        latestAttemptNo: 4
+      }
+    }));
   });
 
   it('recomputes counts, tokens, and preview sample after appending an attempt', async () => {

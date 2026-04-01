@@ -83,6 +83,59 @@ describe('AdminSessionRepository', () => {
     expect(db.queries[0].sql).toContain('where session_key = $1');
   });
 
+  it('loads a canonical projection rollup from linked attempts', async () => {
+    const db = new MockSqlClient({
+      rows: [{
+        session_key: sampleSession.sessionKey,
+        started_at: '2026-03-31T22:00:00.000Z',
+        ended_at: '2026-03-31T22:06:10.000Z',
+        last_activity_at: '2026-03-31T22:06:10.000Z',
+        request_count: 80,
+        attempt_count: 84,
+        input_tokens: '5588',
+        output_tokens: '28021',
+        provider_set: ['anthropic', 'openai'],
+        model_set: ['claude-opus-4-6', 'gpt-5.4'],
+        status_summary: { success: 81, failed: 3 },
+        preview_sample: {
+          promptPreview: 'latest prompt',
+          responsePreview: 'latest response',
+          latestRequestId: 'req_new',
+          latestAttemptNo: 4
+        }
+      }],
+      rowCount: 1
+    });
+    const repo = new AdminSessionRepository(db);
+
+    const row = await repo.loadProjectionRollup(sampleSession.sessionKey);
+
+    expect(row).toEqual({
+      session_key: sampleSession.sessionKey,
+      started_at: '2026-03-31T22:00:00.000Z',
+      ended_at: '2026-03-31T22:06:10.000Z',
+      last_activity_at: '2026-03-31T22:06:10.000Z',
+      request_count: 80,
+      attempt_count: 84,
+      input_tokens: 5588,
+      output_tokens: 28021,
+      provider_set: ['anthropic', 'openai'],
+      model_set: ['claude-opus-4-6', 'gpt-5.4'],
+      status_summary: { success: 81, failed: 3 },
+      preview_sample: {
+        promptPreview: 'latest prompt',
+        responsePreview: 'latest response',
+        latestRequestId: 'req_new',
+        latestAttemptNo: 4
+      }
+    });
+    expect(db.queries).toHaveLength(1);
+    expect(db.queries[0].sql).toContain('from in_admin_session_attempts sa');
+    expect(db.queries[0].sql).toContain('left join in_usage_ledger ul');
+    expect(db.queries[0].sql).toContain('left join in_request_log rl');
+    expect(db.queries[0].params).toEqual([sampleSession.sessionKey]);
+  });
+
   it('returns null when a lane or session lookup misses', async () => {
     const db = new SequenceSqlClient([
       { rows: [], rowCount: 0 },
