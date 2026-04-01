@@ -52,4 +52,24 @@ describe('AdminSessionAttemptRepository', () => {
     expect(db.queries[0].sql).toContain('where session_key = $1');
     expect(db.queries[0].sql).toContain('order by event_time asc, request_id asc, attempt_no asc, sequence_no asc');
   });
+
+  it('finds one attempt link by archived attempt id', async () => {
+    const db = new MockSqlClient({
+      rows: [{
+        session_key: 'openclaw:run:run_1',
+        request_attempt_archive_id: 'archive_1'
+      }],
+      rowCount: 1
+    });
+    const repo = new AdminSessionAttemptRepository(db);
+
+    const row = await repo.findByArchiveId('archive_1');
+
+    expect(row).toEqual(expect.objectContaining({
+      session_key: 'openclaw:run:run_1',
+      request_attempt_archive_id: 'archive_1'
+    }));
+    expect(db.queries[0].sql).toContain('where request_attempt_archive_id = $1');
+    expect(db.queries[0].sql).toContain('limit 1');
+  });
 });

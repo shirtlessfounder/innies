@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS in_admin_analysis_request_projection_outbox (
   api_key_id uuid,
   projection_state text NOT NULL DEFAULT 'pending_projection',
   retry_count integer NOT NULL DEFAULT 0,
-  next_attempt_at timestamptz NOT NULL DEFAULT now(),
+  next_attempt_at timestamptz DEFAULT now(),
   last_attempted_at timestamptz,
   processed_at timestamptz,
   last_error text,

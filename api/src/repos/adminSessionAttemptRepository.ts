@@ -83,6 +83,17 @@ export class AdminSessionAttemptRepository {
     return this.db.query<AdminSessionAttemptRow>(sql, [sessionKey]).then((result) => result.rows);
   }
 
+  async findByArchiveId(requestAttemptArchiveId: string): Promise<AdminSessionAttemptRow | null> {
+    const sql = `
+      select *
+      from ${TABLES.adminSessionAttempts}
+      where request_attempt_archive_id = $1
+      limit 1
+    `;
+    const result = await this.db.query<AdminSessionAttemptRow>(sql, [requestAttemptArchiveId]);
+    return result.rows[0] ?? null;
+  }
+
   private async expectOne(sql: string, params: SqlValue[]): Promise<AdminSessionAttemptRow> {
     const result = await this.db.query<AdminSessionAttemptRow>(sql, params);
     if (result.rowCount !== 1) {
