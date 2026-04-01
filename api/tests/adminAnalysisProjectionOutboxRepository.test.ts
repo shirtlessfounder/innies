@@ -102,4 +102,44 @@ describe('AdminAnalysisProjectionOutboxRepository', () => {
     expect(db.queries[0].sql).toContain("projection_state = 'pending_projection'");
     expect(db.queries[0].params).toEqual([start, end]);
   });
+
+  it('enqueues missing archived attempts in bounded batches while skipping queued or projected rows', async () => {
+    const db = new SequenceSqlClient([
+      {
+        rows: [{
+          id: 'archive_1',
+          request_id: 'req_1',
+          attempt_no: 2,
+          org_id: 'org_1',
+          api_key_id: 'api_1'
+        }],
+        rowCount: 1
+      },
+      {
+        rows: [{ request_attempt_archive_id: 'archive_1' }],
+        rowCount: 1
+      }
+    ]);
+    const repo = new AdminAnalysisProjectionOutboxRepository(db, () => 'analysis_outbox_1');
+    const start = new Date('2026-03-24T00:00:00Z');
+    const end = new Date('2026-03-31T00:00:00Z');
+
+    const insertedCount = await repo.enqueueMissingArchivedAttempts({
+      start,
+      end,
+      limit: 100
+    });
+
+    expect(insertedCount).toBe(1);
+    expect(db.queries[0].sql).toContain('from in_request_attempt_archives a');
+    expect(db.queries[0].sql).toContain('left join in_admin_analysis_request_projection_outbox o');
+    expect(db.queries[0].sql).toContain('left join in_admin_analysis_requests r');
+    expect(db.queries[0].sql).toContain('o.request_attempt_archive_id is null');
+    expect(db.queries[0].sql).toContain('r.request_attempt_archive_id is null');
+    expect(db.queries[0].sql).toContain('order by a.started_at asc, a.id asc');
+    expect(db.queries[1].sql).toContain('insert into in_admin_analysis_request_projection_outbox');
+    expect(db.queries[1].sql).toContain('json_to_recordset');
+    expect(String(db.queries[1].params?.[0])).toContain('analysis_outbox_1');
+    expect(String(db.queries[1].params?.[0])).toContain('archive_1');
+  });
 });

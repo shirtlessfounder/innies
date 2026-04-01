@@ -189,6 +189,103 @@ export class AdminAnalysisProjectionOutboxRepository {
     return Number(result.rows[0]?.pending_count ?? 0);
   }
 
+  async enqueueMissingArchivedAttempts(input: {
+    start: Date;
+    end: Date;
+    limit: number;
+  }): Promise<number> {
+    return this.db.transaction(async (tx) => {
+      const candidateSql = `
+        select
+          a.id,
+          a.request_id,
+          a.attempt_no,
+          a.org_id,
+          a.api_key_id
+        from ${TABLES.requestAttemptArchives} a
+        left join ${TABLES.adminAnalysisProjectionOutbox} o
+          on o.request_attempt_archive_id = a.id
+        left join ${TABLES.adminAnalysisRequests} r
+          on r.request_attempt_archive_id = a.id
+        where a.started_at >= $1
+          and a.started_at < $2
+          and o.request_attempt_archive_id is null
+          and r.request_attempt_archive_id is null
+        order by a.started_at asc, a.id asc
+        limit $3
+      `;
+      const candidates = await tx.query<Array<{
+        id: string;
+        request_id: string;
+        attempt_no: number;
+        org_id: string;
+        api_key_id: string | null;
+      }>[number]>(candidateSql, [
+        input.start,
+        input.end,
+        clampLimit(input.limit)
+      ]);
+
+      if (candidates.rowCount === 0 || candidates.rows.length === 0) {
+        return 0;
+      }
+
+      const payload = candidates.rows.map((row) => ({
+        id: this.createId(),
+        request_attempt_archive_id: row.id,
+        request_id: row.request_id,
+        attempt_no: row.attempt_no,
+        org_id: row.org_id,
+        api_key_id: row.api_key_id
+      }));
+      const insertSql = `
+        insert into ${TABLES.adminAnalysisProjectionOutbox} (
+          id,
+          request_attempt_archive_id,
+          request_id,
+          attempt_no,
+          org_id,
+          api_key_id,
+          projection_state,
+          retry_count,
+          next_attempt_at,
+          last_attempted_at,
+          processed_at,
+          last_error,
+          created_at,
+          updated_at
+        )
+        select
+          payload.id::uuid,
+          payload.request_attempt_archive_id::uuid,
+          payload.request_id,
+          payload.attempt_no,
+          payload.org_id::uuid,
+          payload.api_key_id::uuid,
+          'pending_projection',
+          0,
+          now(),
+          null,
+          null,
+          null,
+          now(),
+          now()
+        from json_to_recordset($1::json) as payload(
+          id text,
+          request_attempt_archive_id text,
+          request_id text,
+          attempt_no integer,
+          org_id text,
+          api_key_id text
+        )
+        on conflict (request_attempt_archive_id)
+        do nothing
+      `;
+      const result = await tx.query(insertSql, [JSON.stringify(payload)]);
+      return result.rowCount;
+    });
+  }
+
   private async expectOne(sql: string, params: SqlValue[]): Promise<AdminAnalysisProjectionOutboxRow> {
     const result = await this.db.query<AdminAnalysisProjectionOutboxRow>(sql, params);
     if (result.rowCount !== 1) {

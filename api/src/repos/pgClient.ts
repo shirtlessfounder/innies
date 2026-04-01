@@ -39,6 +39,10 @@ export class PgSqlClient implements SqlClient {
       client.release();
     }
   }
+
+  async end(): Promise<void> {
+    await this.pool.end();
+  }
 }
 
 export function buildPgClient(connectionString: string): PgSqlClient {
