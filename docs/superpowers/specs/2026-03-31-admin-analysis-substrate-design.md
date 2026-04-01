@@ -425,6 +425,24 @@ Forward path:
 
 The analysis projector should be independent from the existing session projector for retry/backfill reasons, but it should depend on the existing `session_key` projection rather than recreating session grouping.
 
+### Projection Ordering And Retry Semantics
+
+The main runtime edge case is ordering between:
+
+- session projection completion
+- analysis projection completion
+
+The analysis projector must treat missing session identity as a retryable dependency, not as a terminal data error.
+
+Rules:
+
+1. if the archive attempt exists but the unified session projection row is not available yet, leave the outbox row retryable and reschedule it
+2. do not synthesize a fallback session identity in the analysis projector
+3. once `session_key` is available, project the request row and recompute the session rollup normally
+4. reserve `needs_operator_correction` for genuinely malformed or non-recoverable archive data, not ordinary ordering lag
+
+This keeps the session identity model single-sourced and avoids subtle divergence between archive/session/analysis surfaces.
+
 ## Historical Backfill
 
 V1 requires historical backfill.
@@ -611,6 +629,20 @@ OpenClaw should continue using the existing archive endpoints for exact content:
 - `GET /v1/admin/archive/requests/:requestId/attempts/:attemptNo`
 
 The new analysis branch should point to these surfaces rather than duplicating full content.
+
+### Freshness And Coverage Metadata
+
+Every aggregate and sample response should include lightweight coverage metadata so OpenClaw can tell whether a window is fully projected.
+
+Recommended response metadata:
+
+- requested window bounds
+- projected coverage bounds
+- projected request count in window
+- pending projection count in window
+- `is_complete` boolean for the requested filter/window slice
+
+This avoids misreading partially backfilled windows as real trend shifts.
 
 ## Sampling Semantics
 
