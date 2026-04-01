@@ -196,3 +196,48 @@ For full-fidelity admin playback/debug feeds:
 - they reconstruct content server-side from `in_request_attempt_archives`, `in_request_attempt_messages`, `in_message_blobs`, `in_request_attempt_raw_blobs`, and `in_raw_blobs`
 - the session index/detail layer is accelerated by the small projection tables `in_admin_sessions`, `in_admin_session_attempts`, and `in_admin_session_projection_outbox`
 - those archive routes are the right surface for operators or trusted internal agents that need exact prompt/response playback rather than preview analytics
+
+## Admin Analysis Substrate
+
+For OpenClaw-style batch analysis, Innies now exposes `/v1/admin/analysis/*`.
+
+Storage:
+- `in_admin_analysis_request_projection_outbox`
+  - durable queue for request-analysis projection and replay
+- `in_admin_analysis_requests`
+  - one row per archived request attempt
+  - stores deterministic qualitative fields:
+    - `user_message_preview`
+    - `assistant_text_preview`
+    - `task_category`
+    - `task_tags`
+    - concrete interestingness booleans
+- `in_admin_analysis_sessions`
+  - one row per unified session
+  - stores primary category, category breakdown, tag set, and session-level interestingness booleans
+
+Boundary:
+- `/v1/admin/analytics/*` stays preview/ops oriented
+- `/v1/admin/analysis/*` is archive-backed and backfillable
+- `/v1/admin/archive/*` stays the exact-content drilldown surface
+
+What the analysis API adds:
+- aggregate windows with `compare=prev`
+- deterministic category and tag trends
+- interesting-signal counts
+- stratified request/session samples across the full window instead of latest-N
+- detail rows that point back to archive endpoints via `archiveRefs`
+
+Coverage semantics:
+- aggregate and sample responses carry:
+  - requested window bounds
+  - projected coverage bounds
+  - projected request count
+  - pending projection count
+  - `isComplete`
+- consumers should treat partial coverage as “projection/backfill still in flight,” not a real trend shift
+
+Backfill / replay:
+- historical analysis rows are populated with:
+  - `cd api && npm run backfill:admin-analysis -- --window=7d --batch-size=200 --max-batches=1`
+- the backfill path only enqueues missing archived attempts; already projected or already queued rows are skipped

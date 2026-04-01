@@ -41,7 +41,7 @@ export class AdminAnalysisProjectorService {
     sessionKey: string;
     requestAttemptArchiveId: string;
   }> {
-    const candidate = await this.deps.candidateLoader.loadCandidateByArchiveId(outboxRow.request_attempt_archive_id);
+    const candidate = await this.candidateLoader.loadCandidateByArchiveId(outboxRow.request_attempt_archive_id);
     if (!candidate) {
       throw new Error(`admin analysis projection candidate not found: ${outboxRow.request_attempt_archive_id}`);
     }

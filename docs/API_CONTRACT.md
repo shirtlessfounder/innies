@@ -821,6 +821,156 @@ Response example:
 }
 ```
 
+### `GET /v1/admin/analysis/overview`
+Admin-only analysis snapshot over archive-backed request/session truth.
+
+Query params:
+- `window`: `24h|7d|1m|all` (default `7d`)
+- `compare`: `prev`
+- `orgId`: UUID filter
+- `sessionType`: `cli|openclaw`
+- `provider`: exact provider filter
+- `source`: `openclaw|cli-claude|cli-codex|direct`
+- `taskCategory`: `debugging|feature_building|code_review|research|ops|writing|data_analysis|other`
+- `taskTag`: exact tag filter
+
+Response shape:
+- `totals.totalRequests|totalSessions|totalTokens`
+- `categoryMix[]`
+- `tagHighlights[]`
+- `signalCounts`
+- `coverage`
+  - `requestedWindow`
+  - `projectedCoverage`
+  - `projectedRequestCount`
+  - `pendingProjectionCount`
+  - `isComplete`
+- optional `comparison`
+  - only for `compare=prev`
+  - includes `previousWindow`, previous totals, absolute deltas, and percentage deltas
+
+Notes:
+- `compare=prev` is rejected for `window=all`
+- this surface reads `in_admin_analysis_requests` / `in_admin_analysis_sessions`, not `in_request_log`
+
+### `GET /v1/admin/analysis/categories`
+Admin-only category-trend surface over the analysis projection.
+
+Query params:
+- `window`: `24h|7d|1m|all` (default `7d`)
+- `compare`: `prev`
+- `orgId`: UUID filter
+- `sessionType`: `cli|openclaw`
+- `provider`: exact provider filter
+- `source`: `openclaw|cli-claude|cli-codex|direct`
+
+Response shape:
+- `days[]`
+  - UTC-day bucket rows with `day`, `taskCategory`, `count`
+- optional `comparison.previousWindow`
+- optional `comparison.days[]`
+
+### `GET /v1/admin/analysis/tags`
+Admin-only tag frequency / co-occurrence surface over the analysis projection.
+
+Query params:
+- `window`: `24h|7d|1m|all` (default `7d`)
+- `compare`: `prev`
+- `orgId`: UUID filter
+- `sessionType`: `cli|openclaw`
+- `provider`: exact provider filter
+- `source`: `openclaw|cli-claude|cli-codex|direct`
+- `taskCategory`
+
+Response shape:
+- `topTags[]`
+- `cooccurringTags[]`
+- optional `comparison`
+
+### `GET /v1/admin/analysis/interesting-signals`
+Admin-only macro counts for deterministic interestingness signals.
+
+Query params:
+- `window`: `24h|7d|1m|all` (default `7d`)
+- `compare`: `prev`
+- `orgId`: UUID filter
+- `sessionType`: `cli|openclaw`
+- `provider`: exact provider filter
+- `source`: `openclaw|cli-claude|cli-codex|direct`
+- `taskCategory`
+- `taskTag`
+
+Response shape:
+- `signals`
+  - request-level counts such as retries, failures, partials, high-token, cross-provider rescue, tool use
+  - session-level counts such as long-session, retry-heavy, cross-provider, multi-model
+- optional `comparison`
+
+### `GET /v1/admin/analysis/samples/requests`
+Admin-only stratified request sample over a full window.
+
+Query params:
+- `window`: `24h|7d|1m|all` (default `24h`)
+- `orgId`: UUID filter
+- `sessionType`: `cli|openclaw`
+- `provider`: exact provider filter
+- `source`: `openclaw|cli-claude|cli-codex|direct`
+- `taskCategory`
+- `taskTag`
+- `sampleSize`: `1..200` (default `10`)
+
+Response shape:
+- `coverage`
+- `samples[]`
+  - camelCase analysis fields
+  - `signals`
+  - `archiveRefs.requestAttempt`
+  - `archiveRefs.session`
+
+Notes:
+- server-controlled stratified sampling, not latest-N recency order
+- samples point callers back to archive routes for exact playback
+
+### `GET /v1/admin/analysis/samples/sessions`
+Admin-only stratified session sample over the unified session identity model.
+
+Query params:
+- same family as request samples
+
+Response shape:
+- `coverage`
+- `samples[]`
+  - camelCase session rollups
+  - `taskCategoryBreakdown`
+  - `taskTagSet`
+  - `signals`
+  - `archiveRefs.session`
+  - `archiveRefs.sessionEvents`
+
+### `GET /v1/admin/analysis/requests/:requestId/attempts/:attemptNo`
+Admin-only request-analysis detail row.
+
+Response shape:
+- one camelCase request-analysis row
+- `signals`
+- `archiveRefs.requestAttempt`
+- `archiveRefs.session`
+
+Notes:
+- does not inline full prompt/response content
+- use `/v1/admin/archive/requests/:requestId/attempts/:attemptNo` for exact payload drilldown
+
+### `GET /v1/admin/analysis/sessions/:sessionKey`
+Admin-only session-analysis detail row.
+
+Response shape:
+- one camelCase session-analysis row
+- `taskCategoryBreakdown`
+- `taskTagSet`
+- `signals`
+- `archiveRefs.session`
+- `archiveRefs.sessionEvents`
+
 ### `GET /v1/admin/archive/sessions`
 Admin-only archive session index for full-fidelity consumers.
 

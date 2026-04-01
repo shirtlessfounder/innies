@@ -11,14 +11,18 @@ Current-state reference for Innies background jobs and core dataflow in producti
 5. Routing attempt/outcome is written to `in_routing_events`.
 6. Usage/metering writes append rows to `in_usage_ledger`.
 7. Request preview rows land in `in_request_log`; full archive writes land in the archive tables.
-8. Archive writes enqueue one row in `in_admin_session_projection_outbox` in the same transaction.
+8. Archive writes enqueue one row in `in_admin_session_projection_outbox` and one row in `in_admin_analysis_request_projection_outbox` in the same transaction.
 9. The admin session projector job upserts `in_admin_sessions` + `in_admin_session_attempts`.
-10. Aggregate/reconciliation jobs roll up and validate data.
+10. The admin analysis projector job upserts `in_admin_analysis_requests` + `in_admin_analysis_sessions`.
+11. Aggregate/reconciliation jobs roll up and validate data.
 
 ## Core Tables
 From `api/src/repos/tableNames.ts`:
 
 - `in_api_keys`
+- `in_admin_analysis_request_projection_outbox`
+- `in_admin_analysis_requests`
+- `in_admin_analysis_sessions`
 - `in_admin_session_projection_outbox`
 - `in_admin_sessions`
 - `in_admin_session_attempts`
@@ -77,6 +81,16 @@ Registered in `api/src/jobs/registry.ts`.
   - `ADMIN_SESSION_PROJECTOR_MAX_RETRIES`
   - `ADMIN_SESSION_PROJECTOR_BATCH_SIZE`
 
+### `admin-analysis-projector`
+- Source: `adminAnalysisProjectorJob.ts`
+- Default cadence: every 30 seconds; also runs on startup
+- Action: drains `in_admin_analysis_request_projection_outbox`, derives qualitative analysis fields from archived truth, upserts request/session analysis projections, marks retries/operator-correction state
+- Main env knobs:
+  - `ADMIN_ANALYSIS_PROJECTOR_SCHEDULE_MS`
+  - `ADMIN_ANALYSIS_PROJECTOR_RETRY_DELAY_MS`
+  - `ADMIN_ANALYSIS_PROJECTOR_MAX_RETRIES`
+  - `ADMIN_ANALYSIS_PROJECTOR_BATCH_SIZE`
+
 ### `daily-aggregates-incremental-5m`
 - Source: `dailyAggregatesJob.ts`
 - Default cadence: every 5 minutes
@@ -106,6 +120,7 @@ Registered in `api/src/jobs/registry.ts`.
   - `in_request_attempt_raw_blobs`
   - `in_raw_blobs`
 - The archive write path transactionally enqueues projection work in `in_admin_session_projection_outbox`.
+- The same archive write path also enqueues analysis work in `in_admin_analysis_request_projection_outbox`.
 - The projector currently creates unified sessions only for `openclaw`, `cli-claude`, and `cli-codex` request sources.
 - Session grouping precedence:
   - explicit source session id
@@ -115,8 +130,17 @@ Registered in `api/src/jobs/registry.ts`.
 - `direct` traffic is ignored by the v1 projector.
 - Read surfaces:
   - `GET /v1/admin/analytics/sessions` reads projection summaries from `in_admin_sessions`
+  - `GET /v1/admin/analysis/*` reads archive-backed request/session analysis projections from `in_admin_analysis_requests` and `in_admin_analysis_sessions`
   - `GET /v1/admin/archive/sessions*` uses the same projection for indexing/detail
   - `GET /v1/admin/archive/sessions/:sessionKey/events` and `GET /v1/admin/archive/requests/:requestId/attempts/:attemptNo` reconstruct payloads server-side from archive tables
+
+## Backfill
+- Historical analysis replay is a separate operator command:
+  - `cd api && npm run backfill:admin-analysis -- --window=7d --batch-size=200 --max-batches=1`
+- The command scans archived attempts in bounded time windows and enqueues only rows that are:
+  - not already projected in `in_admin_analysis_requests`
+  - not already present in `in_admin_analysis_request_projection_outbox`
+- Re-running the command is restart-safe because duplicates are skipped.
 
 ## Observability
 Primary signals:

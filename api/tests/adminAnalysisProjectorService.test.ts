@@ -8,6 +8,7 @@ import {
   AdminAnalysisProjectorService,
   RetryableProjectionDependencyError
 } from '../src/services/adminAnalysis/adminAnalysisProjectorService.js';
+import { SequenceSqlClient } from './testHelpers.js';
 
 type Candidate = Awaited<ReturnType<ReturnType<typeof createHarness>['candidateLoader']['loadCandidateByArchiveId']>>;
 
@@ -223,6 +224,147 @@ describe('AdminAnalysisProjectorService', () => {
     await expect(harness.service.projectQueuedAttempt({
       request_attempt_archive_id: 'archive_1'
     })).rejects.toBeInstanceOf(RetryableProjectionDependencyError);
+  });
+
+  it('uses the default SQL candidate loader when no custom loader is provided', async () => {
+    const sql = new SequenceSqlClient([
+      {
+        rows: [{
+          request_attempt_archive_id: 'archive_1',
+          request_id: 'req_1',
+          attempt_no: 1,
+          org_id: 'org_1',
+          api_key_id: 'api_1',
+          provider: 'openai',
+          model: 'gpt-5.2',
+          status: 'success',
+          started_at: '2026-03-31T10:00:00.000Z',
+          completed_at: '2026-03-31T10:01:00.000Z',
+          route_decision: { request_source: 'openclaw' },
+          input_tokens: 12,
+          output_tokens: 8
+        }],
+        rowCount: 1
+      },
+      {
+        rows: [
+          {
+            side: 'request',
+            normalized_payload: message('user', [{ type: 'text', text: 'fix this migration' }])
+          },
+          {
+            side: 'response',
+            normalized_payload: message('assistant', [{ type: 'text', text: 'here is the fix' }])
+          }
+        ],
+        rowCount: 2
+      },
+      {
+        rows: [],
+        rowCount: 0
+      }
+    ]);
+    const requestRows: AdminAnalysisRequestRow[] = [];
+    const service = new AdminAnalysisProjectorService({
+      sql,
+      requestRepo: {
+        async upsertRequest(input) {
+          const row: AdminAnalysisRequestRow = {
+            request_attempt_archive_id: input.requestAttemptArchiveId,
+            request_id: input.requestId,
+            attempt_no: input.attemptNo,
+            session_key: input.sessionKey,
+            org_id: input.orgId,
+            api_key_id: input.apiKeyId,
+            session_type: input.sessionType,
+            grouping_basis: input.groupingBasis,
+            source: input.source,
+            provider: input.provider,
+            model: input.model,
+            status: input.status,
+            started_at: input.startedAt.toISOString(),
+            completed_at: input.completedAt ? input.completedAt.toISOString() : null,
+            input_tokens: input.inputTokens,
+            output_tokens: input.outputTokens,
+            user_message_preview: input.userMessagePreview,
+            assistant_text_preview: input.assistantTextPreview,
+            task_category: input.taskCategory,
+            task_tags: [...input.taskTags],
+            is_retry: input.isRetry,
+            is_failure: input.isFailure,
+            is_partial: input.isPartial,
+            is_high_token: input.isHighToken,
+            is_cross_provider_rescue: input.isCrossProviderRescue,
+            has_tool_use: input.hasToolUse,
+            interestingness_score: input.interestingnessScore,
+            created_at: new Date('2026-03-31T00:00:00.000Z').toISOString(),
+            updated_at: new Date('2026-03-31T00:00:00.000Z').toISOString()
+          };
+          requestRows.push(row);
+          return row;
+        },
+        async listBySessionKey() {
+          return requestRows;
+        }
+      },
+      sessionAnalysisRepo: {
+        async upsertSession(input) {
+          return {
+            session_key: input.sessionKey,
+            org_id: input.orgId,
+            session_type: input.sessionType,
+            grouping_basis: input.groupingBasis,
+            started_at: input.startedAt.toISOString(),
+            ended_at: input.endedAt.toISOString(),
+            last_activity_at: input.lastActivityAt.toISOString(),
+            request_count: input.requestCount,
+            attempt_count: input.attemptCount,
+            input_tokens: input.inputTokens,
+            output_tokens: input.outputTokens,
+            primary_task_category: input.primaryTaskCategory,
+            task_category_breakdown: input.taskCategoryBreakdown,
+            task_tag_set: input.taskTagSet,
+            is_long_session: input.isLongSession,
+            is_high_token_session: input.isHighTokenSession,
+            is_retry_heavy_session: input.isRetryHeavySession,
+            is_cross_provider_session: input.isCrossProviderSession,
+            is_multi_model_session: input.isMultiModelSession,
+            interestingness_score: input.interestingnessScore,
+            created_at: new Date('2026-03-31T00:00:00.000Z').toISOString(),
+            updated_at: new Date('2026-03-31T00:00:00.000Z').toISOString()
+          };
+        }
+      },
+      sessionAttemptRepo: {
+        async findByArchiveId() {
+          return sessionLink({
+            session_key: 'openclaw:run:run_1',
+            request_attempt_archive_id: 'archive_1'
+          });
+        }
+      },
+      adminSessionRepo: {
+        async findBySessionKey() {
+          return adminSession({
+            session_key: 'openclaw:run:run_1',
+            session_type: 'openclaw',
+            grouping_basis: 'explicit_run_id',
+            source_session_id: null,
+            source_run_id: 'run_1'
+          });
+        }
+      }
+    });
+
+    const result = await service.projectQueuedAttempt({
+      request_attempt_archive_id: 'archive_1'
+    });
+
+    expect(result).toEqual({
+      sessionKey: 'openclaw:run:run_1',
+      requestAttemptArchiveId: 'archive_1'
+    });
+    expect(requestRows[0]?.user_message_preview).toContain('fix this migration');
   });
 
   it('projects one archived attempt into request analysis and session rollups', async () => {
