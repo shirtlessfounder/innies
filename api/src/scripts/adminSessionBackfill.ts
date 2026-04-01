@@ -1,30 +1,30 @@
 import 'dotenv/config';
 import { pathToFileURL } from 'node:url';
-import { AdminAnalysisProjectionOutboxRepository } from '../repos/adminAnalysisProjectionOutboxRepository.js';
+import { AdminSessionProjectionOutboxRepository } from '../repos/adminSessionProjectionOutboxRepository.js';
 import { buildPgClient } from '../repos/pgClient.js';
 import { readRequiredEnv } from '../utils/env.js';
 
-export type AdminAnalysisBackfillWindow = '24h' | '7d' | '1m' | 'all';
+export type AdminSessionBackfillWindow = '24h' | '7d' | '1m' | 'all';
 
-type AdminAnalysisBackfillArgs = {
-  window: AdminAnalysisBackfillWindow;
+type AdminSessionBackfillArgs = {
+  window: AdminSessionBackfillWindow;
   batchSize: number;
   maxBatches?: number;
 };
 
-type AdminAnalysisBackfillLogger = {
+type AdminSessionBackfillLogger = {
   info: (message: string, fields?: Record<string, unknown>) => void;
 };
 
-const WINDOW_VALUES = new Set<AdminAnalysisBackfillWindow>(['24h', '7d', '1m', 'all']);
+const WINDOW_VALUES = new Set<AdminSessionBackfillWindow>(['24h', '7d', '1m', 'all']);
 
-export function parseAdminAnalysisBackfillArgs(argv: string[]): AdminAnalysisBackfillArgs {
+export function parseAdminSessionBackfillArgs(argv: string[]): AdminSessionBackfillArgs {
   const flags = readFlags(argv);
   const window = flags.window;
   if (!window) {
     throw new Error('Missing required --window');
   }
-  if (!WINDOW_VALUES.has(window as AdminAnalysisBackfillWindow)) {
+  if (!WINDOW_VALUES.has(window as AdminSessionBackfillWindow)) {
     throw new Error(`Invalid --window: ${window}`);
   }
 
@@ -44,22 +44,19 @@ export function parseAdminAnalysisBackfillArgs(argv: string[]): AdminAnalysisBac
   }
 
   return {
-    window: window as AdminAnalysisBackfillWindow,
+    window: window as AdminSessionBackfillWindow,
     batchSize,
     maxBatches
   };
 }
 
-export async function runAdminAnalysisBackfill(input: {
-  outbox: Pick<
-    AdminAnalysisProjectionOutboxRepository,
-    'enqueueMissingArchivedAttempts' | 'requeueWaitingForSessionProjection'
-  >;
-  window: AdminAnalysisBackfillWindow;
+export async function runAdminSessionBackfill(input: {
+  outbox: Pick<AdminSessionProjectionOutboxRepository, 'enqueueMissingArchivedAttempts'>;
+  window: AdminSessionBackfillWindow;
   batchSize: number;
   maxBatches?: number;
   now?: () => Date;
-  log?: AdminAnalysisBackfillLogger;
+  log?: AdminSessionBackfillLogger;
 }) {
   const now = input.now?.() ?? new Date();
   const bounds = resolveWindowBounds(input.window, now);
@@ -67,11 +64,6 @@ export async function runAdminAnalysisBackfill(input: {
 
   let batchesProcessed = 0;
   let insertedCount = 0;
-  const requeuedCount = await input.outbox.requeueWaitingForSessionProjection({
-    start: bounds.start,
-    end: bounds.end,
-    limit: input.batchSize
-  });
 
   while (input.maxBatches == null || batchesProcessed < input.maxBatches) {
     const inserted = await input.outbox.enqueueMissingArchivedAttempts({
@@ -82,7 +74,7 @@ export async function runAdminAnalysisBackfill(input: {
     batchesProcessed += 1;
     insertedCount += inserted;
 
-    log.info('admin analysis backfill batch processed', {
+    log.info('admin session backfill batch processed', {
       batchNumber: batchesProcessed,
       inserted,
       batchSize: input.batchSize,
@@ -99,26 +91,25 @@ export async function runAdminAnalysisBackfill(input: {
     window: input.window,
     requestedWindow: serializeBounds(bounds),
     batchSize: input.batchSize,
-    requeuedCount,
     batchesProcessed,
     insertedCount
   };
 }
 
 async function main(argv = process.argv.slice(2)): Promise<void> {
-  const args = parseAdminAnalysisBackfillArgs(argv);
+  const args = parseAdminSessionBackfillArgs(argv);
   const sql = buildPgClient(readRequiredEnv('DATABASE_URL'));
 
   try {
-    const summary = await runAdminAnalysisBackfill({
-      outbox: new AdminAnalysisProjectionOutboxRepository(sql),
+    const summary = await runAdminSessionBackfill({
+      outbox: new AdminSessionProjectionOutboxRepository(sql),
       window: args.window,
       batchSize: args.batchSize,
       maxBatches: args.maxBatches,
       log: {
         info(message, fields) {
           // eslint-disable-next-line no-console
-          console.log(`[admin-analysis-backfill] ${message}`, fields ?? {});
+          console.log(`[admin-session-backfill] ${message}`, fields ?? {});
         }
       }
     });
@@ -159,7 +150,7 @@ function readFlags(argv: string[]): Record<string, string> {
   return flags;
 }
 
-function resolveWindowBounds(window: AdminAnalysisBackfillWindow, now: Date): {
+function resolveWindowBounds(window: AdminSessionBackfillWindow, now: Date): {
   start: Date;
   end: Date;
 } {

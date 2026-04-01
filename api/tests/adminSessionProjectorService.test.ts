@@ -281,6 +281,48 @@ describe('AdminSessionProjectorService', () => {
     expect(state.attempts).toEqual([]);
   });
 
+  it('upserts the parent session before linking the child attempt row', async () => {
+    let sessionWritten = false;
+    const calls: string[] = [];
+    const service = new AdminSessionProjectorService({
+      sessionRepo: {
+        async upsertSession() {
+          sessionWritten = true;
+          calls.push('session');
+          return {} as AdminSessionRow;
+        },
+        async findBySessionKey() {
+          return null;
+        },
+        async findLatestInLane() {
+          return null;
+        }
+      },
+      sessionAttemptRepo: {
+        async upsertAttemptLink() {
+          calls.push('attempt');
+          expect(sessionWritten).toBe(true);
+          return {} as AdminSessionAttemptRow;
+        },
+        async listAttemptsBySessionKey() {
+          return [];
+        }
+      }
+    });
+
+    await service.projectAttempt(candidate({
+      requestAttemptArchiveId: 'archive_parent_first',
+      requestId: 'req_parent_first',
+      requestSource: 'cli-codex',
+      provider: 'openai',
+      model: 'gpt-5.4',
+      openclawSessionId: null,
+      openclawRunId: null
+    }));
+
+    expect(calls).toEqual(['session', 'attempt']);
+  });
+
   it('recomputes counts, tokens, and preview sample after appending an attempt', async () => {
     const { service, state } = createHarness();
 

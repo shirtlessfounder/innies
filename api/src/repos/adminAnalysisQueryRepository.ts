@@ -521,6 +521,9 @@ function matchesPendingCoverageCandidate(
       openclaw_session_id: candidate.openclaw_session_id
     }
   });
+  if (source === 'direct') {
+    return false;
+  }
   if (filters.source && source !== filters.source) {
     return false;
   }

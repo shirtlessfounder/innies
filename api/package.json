@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "backfill:admin-analysis": "tsx src/scripts/adminAnalysisBackfill.ts",
+    "backfill:admin-session": "tsx src/scripts/adminSessionBackfill.ts",
     "test": "vitest run",
     "test:watch": "vitest watch"
   },

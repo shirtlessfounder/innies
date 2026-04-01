@@ -24,6 +24,19 @@ const adminAnalysisSourceSchema = z.enum(['openclaw', 'cli-claude', 'cli-codex',
 const providerSchema = z.string().trim().min(1).max(200);
 const taskTagSchema = z.string().trim().min(1).max(100);
 
+function rejectDirectSource(
+  query: { source?: string | undefined },
+  ctx: z.RefinementCtx
+) {
+  if (query.source === 'direct') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['source'],
+      message: 'source=direct is not supported for admin analysis'
+    });
+  }
+}
+
 const baseAnalysisQuerySchema = z.object({
   window: adminAnalysisWindowSchema.optional(),
   compare: adminAnalysisCompareSchema.optional(),
@@ -33,7 +46,7 @@ const baseAnalysisQuerySchema = z.object({
   source: adminAnalysisSourceSchema.optional(),
   taskCategory: adminAnalysisTaskCategorySchema.optional(),
   taskTag: taskTagSchema.optional()
-});
+}).superRefine(rejectDirectSource);
 
 const overviewQuerySchema = baseAnalysisQuerySchema.transform((query) => ({
   window: query.window ?? '7d',
@@ -53,7 +66,7 @@ const categoriesQuerySchema = z.object({
   sessionType: adminAnalysisSessionTypeSchema.optional(),
   provider: providerSchema.optional(),
   source: adminAnalysisSourceSchema.optional()
-}).transform((query) => ({
+}).superRefine(rejectDirectSource).transform((query) => ({
   window: query.window ?? '7d',
   compare: query.compare,
   orgId: query.orgId,
@@ -70,7 +83,7 @@ const tagsQuerySchema = z.object({
   provider: providerSchema.optional(),
   source: adminAnalysisSourceSchema.optional(),
   taskCategory: adminAnalysisTaskCategorySchema.optional()
-}).transform((query) => ({
+}).superRefine(rejectDirectSource).transform((query) => ({
   window: query.window ?? '7d',
   compare: query.compare,
   orgId: query.orgId,
@@ -100,7 +113,7 @@ const requestSamplesQuerySchema = z.object({
   taskCategory: adminAnalysisTaskCategorySchema.optional(),
   taskTag: taskTagSchema.optional(),
   sampleSize: z.coerce.number().int().min(1).max(200).optional()
-}).transform((query) => ({
+}).superRefine(rejectDirectSource).transform((query) => ({
   window: query.window ?? '24h',
   orgId: query.orgId,
   sessionType: query.sessionType,

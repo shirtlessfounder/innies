@@ -218,4 +218,49 @@ describe('AdminAnalysisQueryRepository', () => {
       lastProjectedAt: '2026-03-31T00:00:00Z'
     });
   });
+
+  it('excludes direct backlog rows from admin-analysis coverage because v1 is session-backed', async () => {
+    const db = new SequenceSqlClient([
+      { rows: [{ projected_request_count: '5', first_projected_at: '2026-03-24T00:00:00Z', last_projected_at: '2026-03-31T00:00:00Z' }], rowCount: 1 },
+      {
+        rows: [
+          {
+            request_attempt_archive_id: 'archive_direct',
+            org_id: 'org_1',
+            provider: 'openai',
+            request_source: 'direct',
+            provider_selection_reason: 'preferred_provider_selected',
+            openclaw_run_id: 'run_req_1',
+            openclaw_session_id: null,
+            prompt_preview: 'debug the postgres migration failure',
+            response_preview: 'apply the migration fix',
+            session_type: null
+          },
+          {
+            request_attempt_archive_id: 'archive_openclaw',
+            org_id: 'org_1',
+            provider: 'openai',
+            request_source: 'openclaw',
+            provider_selection_reason: null,
+            openclaw_run_id: 'run_2',
+            openclaw_session_id: 'sess_2',
+            prompt_preview: 'debug the postgres migration failure',
+            response_preview: 'apply the migration fix',
+            session_type: 'openclaw'
+          }
+        ],
+        rowCount: 2
+      }
+    ]);
+    const repo = new AdminAnalysisQueryRepository(db);
+
+    const coverage = await repo.getCoverage({
+      start: new Date('2026-03-24T00:00:00Z'),
+      end: new Date('2026-03-31T00:00:00Z'),
+      orgId: 'org_1',
+      provider: 'openai'
+    });
+
+    expect(coverage.pendingProjectionCount).toBe(1);
+  });
 });

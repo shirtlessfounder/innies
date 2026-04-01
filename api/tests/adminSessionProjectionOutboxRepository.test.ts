@@ -88,4 +88,47 @@ describe('AdminSessionProjectionOutboxRepository', () => {
     expect(db.queries[2].sql).toContain("projection_state = 'needs_operator_correction'");
     expect(db.queries[2].sql).toContain('next_attempt_at = null');
   });
+
+  it('enqueues missing eligible archived attempts while skipping queued or projected rows', async () => {
+    const db = new SequenceSqlClient([
+      {
+        rows: [{
+          id: 'archive_1',
+          request_id: 'req_1',
+          attempt_no: 2,
+          org_id: 'org_1',
+          api_key_id: 'api_1'
+        }],
+        rowCount: 1
+      },
+      {
+        rows: [{ request_attempt_archive_id: 'archive_1' }],
+        rowCount: 1
+      }
+    ]);
+    const repo = new AdminSessionProjectionOutboxRepository(db, () => 'outbox_1');
+    const start = new Date('2026-03-24T00:00:00Z');
+    const end = new Date('2026-03-31T00:00:00Z');
+
+    const insertedCount = await repo.enqueueMissingArchivedAttempts({
+      start,
+      end,
+      limit: 100
+    });
+
+    expect(insertedCount).toBe(1);
+    expect(db.queries[0].sql).toContain('from in_request_attempt_archives a');
+    expect(db.queries[0].sql).toContain('left join in_routing_events re');
+    expect(db.queries[0].sql).toContain('left join in_admin_session_projection_outbox o');
+    expect(db.queries[0].sql).toContain('left join in_admin_session_attempts sa');
+    expect(db.queries[0].sql).toContain('o.request_attempt_archive_id is null');
+    expect(db.queries[0].sql).toContain('sa.request_attempt_archive_id is null');
+    expect(db.queries[0].sql).toContain("nullif(re.route_decision->>'request_source', '') in ('openclaw', 'cli-claude', 'cli-codex')");
+    expect(db.queries[0].sql).toContain("nullif(re.route_decision->>'provider_selection_reason', '') = 'cli_provider_pinned'");
+    expect(db.queries[0].sql).toContain("coalesce(nullif(re.route_decision->>'openclaw_run_id', ''), a.openclaw_run_id) is not null");
+    expect(db.queries[1].sql).toContain('insert into in_admin_session_projection_outbox');
+    expect(db.queries[1].sql).toContain('json_to_recordset');
+    expect(String(db.queries[1].params?.[0])).toContain('outbox_1');
+    expect(String(db.queries[1].params?.[0])).toContain('archive_1');
+  });
 });

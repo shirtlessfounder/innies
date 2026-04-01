@@ -84,19 +84,6 @@ export class AdminSessionProjectorService {
     const wasNewRequest = existingAttempts.every((attempt) => attempt.request_id !== candidate.requestId);
     const eventTime = projectionEventTime(candidate);
 
-    await this.deps.sessionAttemptRepo.upsertAttemptLink({
-      sessionKey: grouping.sessionKey,
-      requestAttemptArchiveId: candidate.requestAttemptArchiveId,
-      requestId: candidate.requestId,
-      attemptNo: candidate.attemptNo,
-      eventTime,
-      sequenceNo: Math.max(0, candidate.attemptNo - 1),
-      provider: candidate.provider,
-      model: candidate.model,
-      streaming: candidate.streaming,
-      status: candidate.status
-    });
-
     await this.deps.sessionRepo.upsertSession({
       sessionKey: grouping.sessionKey,
       sessionType: grouping.sessionType,
@@ -128,6 +115,19 @@ export class AdminSessionProjectorService {
         : [candidate.model],
       statusSummary: incrementStatusSummary(existingSession?.status_summary, candidate.status, wasNewAttempt),
       previewSample: mergePreviewSample(existingSession?.preview_sample ?? null, candidate, wasNewAttempt)
+    });
+
+    await this.deps.sessionAttemptRepo.upsertAttemptLink({
+      sessionKey: grouping.sessionKey,
+      requestAttemptArchiveId: candidate.requestAttemptArchiveId,
+      requestId: candidate.requestId,
+      attemptNo: candidate.attemptNo,
+      eventTime,
+      sequenceNo: Math.max(0, candidate.attemptNo - 1),
+      provider: candidate.provider,
+      model: candidate.model,
+      streaming: candidate.streaming,
+      status: candidate.status
     });
 
     return {

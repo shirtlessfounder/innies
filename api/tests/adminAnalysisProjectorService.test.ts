@@ -217,6 +217,27 @@ function sessionLink(input?: Partial<AdminSessionAttemptRow>): AdminSessionAttem
 }
 
 describe('AdminAnalysisProjectorService', () => {
+  it('ignores direct-source attempts instead of retrying a missing session dependency', async () => {
+    const harness = createHarness();
+    harness.candidates.set('archive_direct', candidate({
+      requestAttemptArchiveId: 'archive_direct',
+      requestId: 'req_direct',
+      source: 'direct'
+    }));
+
+    const result = await harness.service.projectQueuedAttempt({
+      request_attempt_archive_id: 'archive_direct'
+    });
+
+    expect(result).toEqual({
+      outcome: 'ignored',
+      reason: 'unsupported_request_source',
+      requestAttemptArchiveId: 'archive_direct'
+    });
+    expect(harness.requestRows).toEqual([]);
+    expect(harness.sessionRows).toEqual([]);
+  });
+
   it('treats missing session identity as a retryable dependency', async () => {
     const harness = createHarness();
     harness.candidates.set('archive_1', candidate());
@@ -361,6 +382,7 @@ describe('AdminAnalysisProjectorService', () => {
     });
 
     expect(result).toEqual({
+      outcome: 'projected',
       sessionKey: 'openclaw:run:run_1',
       requestAttemptArchiveId: 'archive_1'
     });

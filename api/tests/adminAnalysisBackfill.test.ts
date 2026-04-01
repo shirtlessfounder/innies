@@ -24,6 +24,7 @@ describe('adminAnalysisBackfill', () => {
 
   it('scans archived attempts in bounded batches until the window is exhausted', async () => {
     const outbox = {
+      requeueWaitingForSessionProjection: vi.fn().mockResolvedValue(3),
       enqueueMissingArchivedAttempts: vi.fn()
         .mockResolvedValueOnce(2)
         .mockResolvedValueOnce(2)
@@ -40,6 +41,12 @@ describe('adminAnalysisBackfill', () => {
       }
     });
 
+    expect(outbox.requeueWaitingForSessionProjection).toHaveBeenCalledTimes(1);
+    expect(outbox.requeueWaitingForSessionProjection).toHaveBeenCalledWith({
+      start: new Date('2026-03-24T12:00:00Z'),
+      end: new Date('2026-03-31T12:00:00Z'),
+      limit: 2
+    });
     expect(outbox.enqueueMissingArchivedAttempts).toHaveBeenCalledTimes(3);
     expect(outbox.enqueueMissingArchivedAttempts).toHaveBeenNthCalledWith(1, {
       start: new Date('2026-03-24T12:00:00Z'),
@@ -53,6 +60,7 @@ describe('adminAnalysisBackfill', () => {
         end: '2026-03-31T12:00:00.000Z'
       },
       batchSize: 2,
+      requeuedCount: 3,
       batchesProcessed: 3,
       insertedCount: 4
     });
@@ -60,6 +68,7 @@ describe('adminAnalysisBackfill', () => {
 
   it('respects max-batches for restart-safe incremental replay', async () => {
     const outbox = {
+      requeueWaitingForSessionProjection: vi.fn().mockResolvedValue(0),
       enqueueMissingArchivedAttempts: vi.fn()
         .mockResolvedValueOnce(200)
         .mockResolvedValueOnce(200)
@@ -79,5 +88,6 @@ describe('adminAnalysisBackfill', () => {
     expect(outbox.enqueueMissingArchivedAttempts).toHaveBeenCalledTimes(1);
     expect(result.batchesProcessed).toBe(1);
     expect(result.insertedCount).toBe(200);
+    expect(result.requeuedCount).toBe(0);
   });
 });

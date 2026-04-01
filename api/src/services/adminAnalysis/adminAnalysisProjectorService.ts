@@ -23,6 +23,18 @@ type CandidateLoader = {
 
 export class RetryableProjectionDependencyError extends Error {}
 
+type AdminAnalysisProjectionResult =
+  | {
+    outcome: 'ignored';
+    reason: 'unsupported_request_source';
+    requestAttemptArchiveId: string;
+  }
+  | {
+    outcome: 'projected';
+    sessionKey: string;
+    requestAttemptArchiveId: string;
+  };
+
 export class AdminAnalysisProjectorService {
   constructor(private readonly deps: {
     candidateLoader?: CandidateLoader;
@@ -37,13 +49,20 @@ export class AdminAnalysisProjectorService {
 
   private readonly candidateLoader: CandidateLoader;
 
-  async projectQueuedAttempt(outboxRow: Pick<AdminSessionAttemptRow, 'request_attempt_archive_id'>): Promise<{
-    sessionKey: string;
-    requestAttemptArchiveId: string;
-  }> {
+  async projectQueuedAttempt(
+    outboxRow: Pick<AdminSessionAttemptRow, 'request_attempt_archive_id'>
+  ): Promise<AdminAnalysisProjectionResult> {
     const candidate = await this.candidateLoader.loadCandidateByArchiveId(outboxRow.request_attempt_archive_id);
     if (!candidate) {
       throw new Error(`admin analysis projection candidate not found: ${outboxRow.request_attempt_archive_id}`);
+    }
+
+    if (candidate.source === 'direct') {
+      return {
+        outcome: 'ignored',
+        reason: 'unsupported_request_source',
+        requestAttemptArchiveId: candidate.requestAttemptArchiveId
+      };
     }
 
     const sessionAttempt = await this.deps.sessionAttemptRepo.findByArchiveId(candidate.requestAttemptArchiveId);
@@ -65,6 +84,7 @@ export class AdminAnalysisProjectorService {
     await this.deps.sessionAnalysisRepo.upsertSession(buildSessionRollup(session, sessionRows));
 
     return {
+      outcome: 'projected',
       sessionKey: session.session_key,
       requestAttemptArchiveId: requestRow.request_attempt_archive_id
     };

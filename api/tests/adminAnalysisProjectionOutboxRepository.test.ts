@@ -132,14 +132,40 @@ describe('AdminAnalysisProjectionOutboxRepository', () => {
 
     expect(insertedCount).toBe(1);
     expect(db.queries[0].sql).toContain('from in_request_attempt_archives a');
+    expect(db.queries[0].sql).toContain('left join in_routing_events re');
     expect(db.queries[0].sql).toContain('left join in_admin_analysis_request_projection_outbox o');
     expect(db.queries[0].sql).toContain('left join in_admin_analysis_requests r');
     expect(db.queries[0].sql).toContain('o.request_attempt_archive_id is null');
     expect(db.queries[0].sql).toContain('r.request_attempt_archive_id is null');
+    expect(db.queries[0].sql).toContain("nullif(re.route_decision->>'request_source', '') in ('openclaw', 'cli-claude', 'cli-codex')");
+    expect(db.queries[0].sql).toContain("nullif(re.route_decision->>'provider_selection_reason', '') = 'cli_provider_pinned'");
+    expect(db.queries[0].sql).toContain("coalesce(nullif(re.route_decision->>'openclaw_run_id', ''), a.openclaw_run_id) is not null");
     expect(db.queries[0].sql).toContain('order by a.started_at asc, a.id asc');
     expect(db.queries[1].sql).toContain('insert into in_admin_analysis_request_projection_outbox');
     expect(db.queries[1].sql).toContain('json_to_recordset');
     expect(String(db.queries[1].params?.[0])).toContain('analysis_outbox_1');
     expect(String(db.queries[1].params?.[0])).toContain('archive_1');
+  });
+
+  it('requeues dependency-blocked rows that were waiting on admin session projection', async () => {
+    const db = new MockSqlClient({
+      rows: [{ request_attempt_archive_id: 'archive_1' }],
+      rowCount: 1
+    });
+    const repo = new AdminAnalysisProjectionOutboxRepository(db);
+    const start = new Date('2026-03-24T00:00:00Z');
+    const end = new Date('2026-03-31T00:00:00Z');
+
+    const requeuedCount = await repo.requeueWaitingForSessionProjection({
+      start,
+      end,
+      limit: 50
+    });
+
+    expect(requeuedCount).toBe(1);
+    expect(db.queries[0].sql).toContain('update in_admin_analysis_request_projection_outbox');
+    expect(db.queries[0].sql).toContain("projection_state = 'pending_projection'");
+    expect(db.queries[0].sql).toContain("projection_state = 'needs_operator_correction'");
+    expect(db.queries[0].sql).toContain("last_error like 'admin analysis projection waiting for admin session %'");
   });
 });

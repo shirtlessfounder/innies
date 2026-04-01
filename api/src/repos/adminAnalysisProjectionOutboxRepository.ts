@@ -203,6 +203,10 @@ export class AdminAnalysisProjectionOutboxRepository {
           a.org_id,
           a.api_key_id
         from ${TABLES.requestAttemptArchives} a
+        left join ${TABLES.routingEvents} re
+          on re.org_id = a.org_id
+          and re.request_id = a.request_id
+          and re.attempt_no = a.attempt_no
         left join ${TABLES.adminAnalysisProjectionOutbox} o
           on o.request_attempt_archive_id = a.id
         left join ${TABLES.adminAnalysisRequests} r
@@ -211,6 +215,17 @@ export class AdminAnalysisProjectionOutboxRepository {
           and a.started_at < $2
           and o.request_attempt_archive_id is null
           and r.request_attempt_archive_id is null
+          and (
+            nullif(re.route_decision->>'request_source', '') in ('openclaw', 'cli-claude', 'cli-codex')
+            or (
+              nullif(re.route_decision->>'request_source', '') is null
+              and (
+                nullif(re.route_decision->>'provider_selection_reason', '') = 'cli_provider_pinned'
+                or coalesce(nullif(re.route_decision->>'openclaw_run_id', ''), a.openclaw_run_id) is not null
+                or coalesce(nullif(re.route_decision->>'openclaw_session_id', ''), a.openclaw_session_id) is not null
+              )
+            )
+          )
         order by a.started_at asc, a.id asc
         limit $3
       `;
@@ -284,6 +299,45 @@ export class AdminAnalysisProjectionOutboxRepository {
       const result = await tx.query(insertSql, [JSON.stringify(payload)]);
       return result.rowCount;
     });
+  }
+
+  async requeueWaitingForSessionProjection(input: {
+    start: Date;
+    end: Date;
+    limit: number;
+  }): Promise<number> {
+    const sql = `
+      with candidates as (
+        select o.request_attempt_archive_id
+        from ${TABLES.adminAnalysisProjectionOutbox} o
+        inner join ${TABLES.requestAttemptArchives} a
+          on a.id = o.request_attempt_archive_id
+        where o.projection_state = 'needs_operator_correction'
+          and o.last_error like 'admin analysis projection waiting for admin session %'
+          and a.started_at >= $1
+          and a.started_at < $2
+        order by a.started_at asc, o.request_attempt_archive_id asc
+        limit $3
+      )
+      update ${TABLES.adminAnalysisProjectionOutbox} o
+      set
+        projection_state = 'pending_projection',
+        retry_count = 0,
+        next_attempt_at = now(),
+        last_attempted_at = null,
+        processed_at = null,
+        last_error = null,
+        updated_at = now()
+      from candidates
+      where candidates.request_attempt_archive_id = o.request_attempt_archive_id
+      returning o.request_attempt_archive_id
+    `;
+    const result = await this.db.query(sql, [
+      input.start,
+      input.end,
+      clampLimit(input.limit)
+    ]);
+    return result.rowCount;
   }
 
   private async expectOne(sql: string, params: SqlValue[]): Promise<AdminAnalysisProjectionOutboxRow> {

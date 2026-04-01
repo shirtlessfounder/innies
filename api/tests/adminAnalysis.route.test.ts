@@ -519,6 +519,37 @@ describe('admin analysis routes', () => {
     });
   });
 
+  it('rejects source=direct because admin analysis is session-backed in v1', async () => {
+    const adminAnalysis = createAdminAnalysisRead();
+    const router = createAdminAnalysisRouter({
+      apiKeys: createApiKeysRepo('admin'),
+      adminAnalysis
+    });
+    const handlers = getRouteHandlers(router, '/v1/admin/analysis/overview', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/admin/analysis/overview',
+      headers: { 'x-api-key': 'sk-admin' },
+      query: { source: 'direct' }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual(expect.objectContaining({
+      code: 'invalid_request',
+      message: 'Invalid request',
+      issues: expect.arrayContaining([
+        expect.objectContaining({
+          path: ['source'],
+          message: 'source=direct is not supported for admin analysis'
+        })
+      ])
+    }));
+    expect(adminAnalysis.getOverview).not.toHaveBeenCalled();
+  });
+
   it('normalizes request sample rows to camelCase fields and archive references', async () => {
     const adminAnalysis = createAdminAnalysisRead();
     const router = createAdminAnalysisRouter({

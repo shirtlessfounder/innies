@@ -40,6 +40,7 @@ describe('admin analysis projector job', () => {
         async projectQueuedAttempt(row) {
           calls.push(row.request_attempt_archive_id);
           return {
+            outcome: 'projected',
             sessionKey: `session:${row.request_attempt_archive_id}`,
             requestAttemptArchiveId: row.request_attempt_archive_id
           };
