@@ -1,4 +1,7 @@
 import { buildPgClient } from '../repos/pgClient.js';
+import { AdminAnalysisProjectionOutboxRepository } from '../repos/adminAnalysisProjectionOutboxRepository.js';
+import { AdminAnalysisRequestRepository } from '../repos/adminAnalysisRequestRepository.js';
+import { AdminAnalysisSessionRepository } from '../repos/adminAnalysisSessionRepository.js';
 import { AdminSessionAttemptRepository } from '../repos/adminSessionAttemptRepository.js';
 import { AdminSessionProjectionOutboxRepository } from '../repos/adminSessionProjectionOutboxRepository.js';
 import { AdminSessionRepository } from '../repos/adminSessionRepository.js';
@@ -52,6 +55,7 @@ import { EarningsProjectorService } from './earnings/earningsProjectorService.js
 import { WithdrawalService } from './earnings/withdrawalService.js';
 import { TokenCredentialService } from './tokenCredentialService.js';
 import { RequestArchiveService } from './archive/requestArchiveService.js';
+import { AdminAnalysisProjectorService } from './adminAnalysis/adminAnalysisProjectorService.js';
 import { AdminSessionProjectorService } from './adminArchive/adminSessionProjectorService.js';
 import { OrgSessionService } from './org/orgSessionService.js';
 import { OrgGithubAuthService } from './org/orgGithubAuthService.js';
@@ -91,6 +95,9 @@ function readOrgGithubCallbackUrl(): string {
 export const runtime = {
   sql,
   repos: {
+    adminAnalysisProjectionOutbox: new AdminAnalysisProjectionOutboxRepository(sql),
+    adminAnalysisRequests: new AdminAnalysisRequestRepository(sql),
+    adminAnalysisSessions: new AdminAnalysisSessionRepository(sql),
     adminSessionAttempts: new AdminSessionAttemptRepository(sql),
     adminSessionProjectionOutbox: new AdminSessionProjectionOutboxRepository(sql),
     adminSessions: new AdminSessionRepository(sql),
@@ -135,6 +142,7 @@ export const runtime = {
     orgTokens: new OrgTokenRepository(sql)
   },
   services: {
+    adminAnalysisProjector: undefined as unknown as AdminAnalysisProjectorService,
     adminSessionProjector: undefined as unknown as AdminSessionProjectorService,
     earningsProjector: undefined as unknown as EarningsProjectorService,
     idempotency: undefined as unknown as IdempotencyService,
@@ -235,6 +243,13 @@ runtime.services.routingService = new RoutingService(
 );
 runtime.services.requestArchive = new RequestArchiveService({
   sql: runtime.sql
+});
+runtime.services.adminAnalysisProjector = new AdminAnalysisProjectorService({
+  sql: runtime.sql,
+  requestRepo: runtime.repos.adminAnalysisRequests,
+  sessionAnalysisRepo: runtime.repos.adminAnalysisSessions,
+  sessionAttemptRepo: runtime.repos.adminSessionAttempts,
+  adminSessionRepo: runtime.repos.adminSessions
 });
 runtime.services.adminSessionProjector = new AdminSessionProjectorService({
   sql: runtime.sql,

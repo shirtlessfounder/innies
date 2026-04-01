@@ -69,4 +69,10 @@ describe('jobs', () => {
 
     expect(jobs.map((job) => job.name)).toContain('admin-session-projector');
   });
+
+  it('registers the admin analysis projector job by default', () => {
+    const jobs = buildDefaultJobs(new MockSqlClient());
+
+    expect(jobs.map((job) => job.name)).toContain('admin-analysis-projector');
+  });
 });
