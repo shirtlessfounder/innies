@@ -3,6 +3,7 @@ import express from 'express';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import adminRoutes from './routes/admin.js';
+import adminAnalysisRoutes from './routes/adminAnalysis.js';
 import adminArchiveRoutes from './routes/adminArchive.js';
 import adminOrgsRouter from './routes/adminOrgs.js';
 import analyticsRoutes from './routes/analytics.js';
@@ -145,6 +146,7 @@ export function createApp(): express.Express {
   });
 
   app.use(adminRoutes);
+  app.use(adminAnalysisRoutes);
   app.use(adminArchiveRoutes);
   app.use('/v1/admin', adminOrgsRouter);
   app.use(analyticsRoutes);

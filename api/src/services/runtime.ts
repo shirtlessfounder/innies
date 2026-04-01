@@ -1,5 +1,6 @@
 import { buildPgClient } from '../repos/pgClient.js';
 import { AdminAnalysisProjectionOutboxRepository } from '../repos/adminAnalysisProjectionOutboxRepository.js';
+import { AdminAnalysisQueryRepository } from '../repos/adminAnalysisQueryRepository.js';
 import { AdminAnalysisRequestRepository } from '../repos/adminAnalysisRequestRepository.js';
 import { AdminAnalysisSessionRepository } from '../repos/adminAnalysisSessionRepository.js';
 import { AdminSessionAttemptRepository } from '../repos/adminSessionAttemptRepository.js';
@@ -56,6 +57,7 @@ import { WithdrawalService } from './earnings/withdrawalService.js';
 import { TokenCredentialService } from './tokenCredentialService.js';
 import { RequestArchiveService } from './archive/requestArchiveService.js';
 import { AdminAnalysisProjectorService } from './adminAnalysis/adminAnalysisProjectorService.js';
+import { AdminAnalysisReadService } from './adminAnalysis/adminAnalysisReadService.js';
 import { AdminSessionProjectorService } from './adminArchive/adminSessionProjectorService.js';
 import { OrgSessionService } from './org/orgSessionService.js';
 import { OrgGithubAuthService } from './org/orgGithubAuthService.js';
@@ -96,6 +98,7 @@ export const runtime = {
   sql,
   repos: {
     adminAnalysisProjectionOutbox: new AdminAnalysisProjectionOutboxRepository(sql),
+    adminAnalysisQueries: new AdminAnalysisQueryRepository(sql),
     adminAnalysisRequests: new AdminAnalysisRequestRepository(sql),
     adminAnalysisSessions: new AdminAnalysisSessionRepository(sql),
     adminSessionAttempts: new AdminSessionAttemptRepository(sql),
@@ -143,6 +146,7 @@ export const runtime = {
   },
   services: {
     adminAnalysisProjector: undefined as unknown as AdminAnalysisProjectorService,
+    adminAnalysisRead: undefined as unknown as AdminAnalysisReadService,
     adminSessionProjector: undefined as unknown as AdminSessionProjectorService,
     earningsProjector: undefined as unknown as EarningsProjectorService,
     idempotency: undefined as unknown as IdempotencyService,
@@ -250,6 +254,9 @@ runtime.services.adminAnalysisProjector = new AdminAnalysisProjectorService({
   sessionAnalysisRepo: runtime.repos.adminAnalysisSessions,
   sessionAttemptRepo: runtime.repos.adminSessionAttempts,
   adminSessionRepo: runtime.repos.adminSessions
+});
+runtime.services.adminAnalysisRead = new AdminAnalysisReadService({
+  queries: runtime.repos.adminAnalysisQueries
 });
 runtime.services.adminSessionProjector = new AdminSessionProjectorService({
   sql: runtime.sql,
