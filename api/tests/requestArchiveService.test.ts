@@ -76,6 +76,14 @@ type SessionProjectionOutboxRecord = {
   apiKeyId: string | null;
 };
 
+type AnalysisProjectionOutboxRecord = {
+  requestAttemptArchiveId: string;
+  requestId: string;
+  attemptNo: number;
+  orgId: string;
+  apiKeyId: string | null;
+};
+
 type HarnessState = {
   attempts: AttemptRecord[];
   messageBlobs: MessageBlobRecord[];
@@ -83,6 +91,7 @@ type HarnessState = {
   rawBlobs: RawBlobRecord[];
   attemptRawBlobs: AttemptRawBlobRecord[];
   sessionProjectionOutbox: SessionProjectionOutboxRecord[];
+  analysisProjectionOutbox: AnalysisProjectionOutboxRecord[];
 };
 
 type HarnessTx = TransactionContext & {
@@ -92,6 +101,7 @@ type HarnessTx = TransactionContext & {
 function createArchiveHarness(options?: {
   failOnRawBlobKind?: 'raw_request' | 'raw_response' | 'raw_stream';
   failOnOutbox?: boolean;
+  failOnAnalysisOutbox?: boolean;
 }): {
   sql: {
     transaction<T>(run: (tx: HarnessTx) => Promise<T>): Promise<T>;
@@ -105,7 +115,8 @@ function createArchiveHarness(options?: {
     attemptMessages: [],
     rawBlobs: [],
     attemptRawBlobs: [],
-    sessionProjectionOutbox: []
+    sessionProjectionOutbox: [],
+    analysisProjectionOutbox: []
   };
 
   const sql = {
@@ -125,6 +136,7 @@ function createArchiveHarness(options?: {
       state.rawBlobs = draft.rawBlobs;
       state.attemptRawBlobs = draft.attemptRawBlobs;
       state.sessionProjectionOutbox = draft.sessionProjectionOutbox;
+      state.analysisProjectionOutbox = draft.analysisProjectionOutbox;
       return result;
     }
   };
@@ -337,6 +349,64 @@ function createArchiveHarness(options?: {
           };
         }
       };
+    },
+    analysisProjectionOutbox(tx) {
+      return {
+        async enqueueAttempt(input) {
+          if (options?.failOnAnalysisOutbox) {
+            throw new Error('forced analysis outbox failure');
+          }
+
+          const stateRef = readState(tx);
+          const existing = stateRef.analysisProjectionOutbox.find((candidate) =>
+            candidate.requestAttemptArchiveId === input.requestAttemptArchiveId
+          );
+          if (existing) {
+            assertAnalysisProjectionReplayMatches(existing, input);
+            return {
+              id: `analysis_outbox_${stateRef.analysisProjectionOutbox.indexOf(existing) + 1}`,
+              request_attempt_archive_id: existing.requestAttemptArchiveId,
+              request_id: existing.requestId,
+              attempt_no: existing.attemptNo,
+              org_id: existing.orgId,
+              api_key_id: existing.apiKeyId,
+              projection_state: 'pending_projection',
+              retry_count: 0,
+              next_attempt_at: new Date('2026-03-26T00:00:00Z').toISOString(),
+              last_attempted_at: null,
+              processed_at: null,
+              last_error: null,
+              created_at: new Date('2026-03-26T00:00:00Z').toISOString(),
+              updated_at: new Date('2026-03-26T00:00:00Z').toISOString()
+            };
+          }
+
+          const record: AnalysisProjectionOutboxRecord = {
+            requestAttemptArchiveId: input.requestAttemptArchiveId,
+            requestId: input.requestId,
+            attemptNo: input.attemptNo,
+            orgId: input.orgId,
+            apiKeyId: input.apiKeyId
+          };
+          stateRef.analysisProjectionOutbox.push(record);
+          return {
+            id: `analysis_outbox_${stateRef.analysisProjectionOutbox.length}`,
+            request_attempt_archive_id: record.requestAttemptArchiveId,
+            request_id: record.requestId,
+            attempt_no: record.attemptNo,
+            org_id: record.orgId,
+            api_key_id: record.apiKeyId,
+            projection_state: 'pending_projection',
+            retry_count: 0,
+            next_attempt_at: new Date('2026-03-26T00:00:00Z').toISOString(),
+            last_attempted_at: null,
+            processed_at: null,
+            last_error: null,
+            created_at: new Date('2026-03-26T00:00:00Z').toISOString(),
+            updated_at: new Date('2026-03-26T00:00:00Z').toISOString()
+          };
+        }
+      };
     }
   };
 
@@ -364,7 +434,8 @@ function cloneState(state: HarnessState): HarnessState {
       payload: Buffer.from(record.payload)
     })),
     attemptRawBlobs: state.attemptRawBlobs.map((record) => ({ ...record })),
-    sessionProjectionOutbox: state.sessionProjectionOutbox.map((record) => ({ ...record }))
+    sessionProjectionOutbox: state.sessionProjectionOutbox.map((record) => ({ ...record })),
+    analysisProjectionOutbox: state.analysisProjectionOutbox.map((record) => ({ ...record }))
   };
 }
 
@@ -415,6 +486,27 @@ function assertSessionProjectionReplayMatches(
 
   if (!matches) {
     throw new Error('admin session projection outbox idempotent replay mismatch');
+  }
+}
+
+function assertAnalysisProjectionReplayMatches(
+  existing: AnalysisProjectionOutboxRecord,
+  input: {
+    requestAttemptArchiveId: string;
+    requestId: string;
+    attemptNo: number;
+    orgId: string;
+    apiKeyId: string | null;
+  }
+): void {
+  if (
+    existing.requestAttemptArchiveId !== input.requestAttemptArchiveId
+    || existing.requestId !== input.requestId
+    || existing.attemptNo !== input.attemptNo
+    || existing.orgId !== input.orgId
+    || existing.apiKeyId !== input.apiKeyId
+  ) {
+    throw new Error('admin analysis projection outbox idempotent replay mismatch');
   }
 }
 
@@ -673,6 +765,15 @@ describe('RequestArchiveService', () => {
         apiKeyId: 'api_key_1'
       }
     ]);
+    expect(state.analysisProjectionOutbox).toEqual([
+      {
+        requestAttemptArchiveId: 'archive_1',
+        requestId: 'req_projection_enqueue',
+        attemptNo: 2,
+        orgId: 'org_1',
+        apiKeyId: 'api_key_1'
+      }
+    ]);
   });
 
   it('keeps a duplicate replay from enqueueing a second projection outbox row', async () => {
@@ -689,7 +790,15 @@ describe('RequestArchiveService', () => {
 
     expect(state.attempts).toHaveLength(1);
     expect(state.sessionProjectionOutbox).toHaveLength(1);
+    expect(state.analysisProjectionOutbox).toHaveLength(1);
     expect(state.sessionProjectionOutbox[0]).toEqual({
+      requestAttemptArchiveId: 'archive_1',
+      requestId: 'req_projection_replay',
+      attemptNo: 3,
+      orgId: 'org_1',
+      apiKeyId: 'api_key_1'
+    });
+    expect(state.analysisProjectionOutbox[0]).toEqual({
       requestAttemptArchiveId: 'archive_1',
       requestId: 'req_projection_replay',
       attemptNo: 3,
@@ -698,7 +807,7 @@ describe('RequestArchiveService', () => {
     });
   });
 
-  it('rolls back archive rows when the projection outbox enqueue fails', async () => {
+  it('rolls back archive rows when either projection outbox enqueue fails', async () => {
     const { service, state } = createService({ failOnOutbox: true });
 
     await expect(service.archiveAttempt(baseAttempt({
@@ -711,6 +820,21 @@ describe('RequestArchiveService', () => {
     expect(state.rawBlobs).toEqual([]);
     expect(state.attemptRawBlobs).toEqual([]);
     expect(state.sessionProjectionOutbox).toEqual([]);
+    expect(state.analysisProjectionOutbox).toEqual([]);
+
+    const analysisFailure = createService({ failOnAnalysisOutbox: true });
+
+    await expect(analysisFailure.service.archiveAttempt(baseAttempt({
+      requestId: 'req_analysis_projection_rollback'
+    }))).rejects.toThrow('forced analysis outbox failure');
+
+    expect(analysisFailure.state.attempts).toEqual([]);
+    expect(analysisFailure.state.messageBlobs).toEqual([]);
+    expect(analysisFailure.state.attemptMessages).toEqual([]);
+    expect(analysisFailure.state.rawBlobs).toEqual([]);
+    expect(analysisFailure.state.attemptRawBlobs).toEqual([]);
+    expect(analysisFailure.state.sessionProjectionOutbox).toEqual([]);
+    expect(analysisFailure.state.analysisProjectionOutbox).toEqual([]);
   });
 
   it('preserves first-class system, user, assistant, tool-call, tool-result, and structured JSON content', async () => {

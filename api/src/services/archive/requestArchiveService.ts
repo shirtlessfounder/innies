@@ -1,5 +1,6 @@
 import { MessageBlobRepository } from '../../repos/messageBlobRepository.js';
 import { RawBlobRepository } from '../../repos/rawBlobRepository.js';
+import { AdminAnalysisProjectionOutboxRepository } from '../../repos/adminAnalysisProjectionOutboxRepository.js';
 import { AdminSessionProjectionOutboxRepository } from '../../repos/adminSessionProjectionOutboxRepository.js';
 import { RequestAttemptArchiveRepository } from '../../repos/requestAttemptArchiveRepository.js';
 import { RequestAttemptMessageRepository } from '../../repos/requestAttemptMessageRepository.js';
@@ -36,6 +37,9 @@ const defaultRepoFactory: RequestArchiveServiceRepoFactory = {
   },
   sessionProjectionOutbox(tx: TransactionContext) {
     return new AdminSessionProjectionOutboxRepository(tx as never);
+  },
+  analysisProjectionOutbox(tx: TransactionContext) {
+    return new AdminAnalysisProjectionOutboxRepository(tx as never);
   }
 };
 
@@ -58,7 +62,8 @@ export class RequestArchiveService {
         requestAttemptMessages: this.repoFactory.requestAttemptMessages(tx),
         rawBlobs: this.repoFactory.rawBlobs(tx),
         requestAttemptRawBlobs: this.repoFactory.requestAttemptRawBlobs(tx),
-        sessionProjectionOutbox: this.repoFactory.sessionProjectionOutbox(tx)
+        sessionProjectionOutbox: this.repoFactory.sessionProjectionOutbox(tx),
+        analysisProjectionOutbox: this.repoFactory.analysisProjectionOutbox(tx)
       };
 
       const archive = await repos.requestAttemptArchives.upsertArchive({
@@ -85,6 +90,13 @@ export class RequestArchiveService {
       });
 
       await repos.sessionProjectionOutbox.enqueueAttempt({
+        requestAttemptArchiveId: archive.id,
+        requestId: archive.request_id,
+        attemptNo: archive.attempt_no,
+        orgId: archive.org_id,
+        apiKeyId: archive.api_key_id
+      });
+      await repos.analysisProjectionOutbox.enqueueAttempt({
         requestAttemptArchiveId: archive.id,
         requestId: archive.request_id,
         attemptNo: archive.attempt_no,
