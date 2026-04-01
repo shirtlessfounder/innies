@@ -22,6 +22,7 @@ The user explicitly wants:
 - request-level truth plus session-level rollups
 - historical backfill, not forward-only enrichment
 - a dedicated admin analysis branch in addition to existing analytics/archive endpoints
+- easy window-over-window comparison for trend/tweet generation
 
 ## Context
 
@@ -478,6 +479,7 @@ Purpose:
 Accepted filters:
 
 - `window`
+- `compare`
 - `orgId`
 - `sessionType`
 - `provider`
@@ -493,6 +495,7 @@ Response shape:
 - category mix
 - tag highlights
 - signal counts
+- optional comparison block for the previous equivalent window when `compare=prev`
 
 #### `GET /v1/admin/analysis/categories`
 
@@ -503,6 +506,7 @@ Purpose:
 Accepted filters:
 
 - `window`
+- `compare`
 - `orgId`
 - `sessionType`
 - `provider`
@@ -513,6 +517,7 @@ Response shape:
 - per-category totals
 - day buckets with category breakdowns
 - optional provider/source splits by category
+- optional previous-window comparison for each category when `compare=prev`
 
 #### `GET /v1/admin/analysis/tags`
 
@@ -523,6 +528,7 @@ Purpose:
 Accepted filters:
 
 - `window`
+- `compare`
 - `orgId`
 - `sessionType`
 - `provider`
@@ -534,6 +540,7 @@ Response shape:
 - top tags
 - tag counts
 - optional co-occurring tags
+- optional previous-window comparison for tag frequency when `compare=prev`
 
 #### `GET /v1/admin/analysis/interesting-signals`
 
@@ -541,9 +548,21 @@ Purpose:
 
 - macro counts for mechanical “interestingness” dimensions
 
+Accepted filters:
+
+- `window`
+- `compare`
+- `orgId`
+- `sessionType`
+- `provider`
+- `source`
+- `taskCategory`
+- `taskTag`
+
 Response shape:
 
 - counts for retry-heavy, high-token, cross-provider, failure, partial, tool-use, long-session, etc.
+- optional previous-window comparison for each signal count when `compare=prev`
 
 ### Stratified Sample Layer
 
@@ -658,6 +677,38 @@ That keeps:
 - semantics stable
 - OpenClaw simple
 - room for future strategy parameters without locking in a bad API now
+
+## Window Comparison Semantics
+
+V1 should support simple built-in comparison for aggregate endpoints.
+
+Recommended shape:
+
+- `compare=prev`
+
+Meaning:
+
+- compare the requested window to the immediately preceding window of the same duration
+
+Examples:
+
+- `window=7d&compare=prev`
+  - compare the most recent 7 days to the 7 days before that
+- `window=24h&compare=prev`
+  - compare the most recent 24 hours to the 24 hours before that
+
+Response semantics:
+
+- keep the current window as the primary payload
+- add a `comparison` block with:
+  - previous window bounds
+  - previous totals
+  - absolute deltas
+  - percentage deltas where denominator is non-zero
+
+This is intentionally narrow for v1.
+
+Do not add arbitrary multi-window query DSLs yet.
 
 ## Rollout
 
