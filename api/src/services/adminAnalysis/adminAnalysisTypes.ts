@@ -33,3 +33,23 @@ export type RequestSignalsInput = {
   responseMessages: NormalizedArchiveMessage[];
   providerFallbackFrom?: string | null;
 };
+
+export type AdminAnalysisProjectionCandidate = {
+  requestAttemptArchiveId: string;
+  requestId: string;
+  attemptNo: number;
+  orgId: string;
+  apiKeyId: string | null;
+  source: string;
+  provider: string;
+  model: string;
+  status: 'success' | 'failed' | 'partial';
+  startedAt: Date;
+  completedAt: Date | null;
+  inputTokens: number;
+  outputTokens: number;
+  providerFallbackFrom?: string | null;
+  requestMessages: NormalizedArchiveMessage[];
+  responseMessages: NormalizedArchiveMessage[];
+  rawResponse?: string | null;
+};
