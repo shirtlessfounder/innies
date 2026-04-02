@@ -7,6 +7,9 @@
 - All endpoints require API key auth via either:
   - `Authorization: Bearer <token>`
   - `x-api-key: <token>`
+- Public auth exception:
+  - `GET /v1/public/innies/live-sessions`
+  - `OPTIONS /v1/public/innies/live-sessions`
 - `buyer_proxy` scope: proxy + usage endpoints.
 - `admin` scope: admin + seller-key endpoints.
 - Credential model distinction:
@@ -41,6 +44,32 @@
 - If missing, API generates one and returns it in response header.
 
 ## Endpoints
+
+### `GET /v1/public/innies/live-sessions`
+Unauthenticated public feed of recent live Innies sessions.
+
+Response shape summary:
+- `orgSlug`: public org slug (`innies`)
+- `generatedAt`: ISO timestamp for feed generation time
+- `sessions[]`: recent active sessions
+  - `sessionKey`, `sessionType`, `startedAt`, `endedAt`, `lastActivityAt`
+  - `providerSet[]`, `modelSet[]`
+  - `entries[]`: sanitized public transcript items
+    - `user`
+    - `assistant_final`
+    - `tool_call`
+    - `tool_result`
+    - `provider_switch`
+
+Notes:
+- No API key is required for `GET` or browser preflight `OPTIONS`.
+- CORS is route-local:
+  - when `INNIES_PUBLIC_WEB_ORIGINS` is set, only the listed origins are allowed
+  - otherwise the fallback allowlist is `https://innies.work` and `http://localhost:3000`
+  - matching origins receive `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods: GET, OPTIONS`, `Access-Control-Allow-Headers: Content-Type`, and `Vary: Origin`
+- Feed responses use conservative short-lived public cache headers suitable for roughly 30-second polling.
+- `INNIES_PUBLIC_EXCLUDED_BUYER_KEYS` accepts a comma-separated list of raw buyer keys to exclude from the feed; Innies resolves them by hash server-side before filtering.
+- Public transcript shaping excludes reasoning payloads, intermediate SSE fragments, and other non-final/private transport content. Only sanitized user text, final assistant text, provider switches, tool calls, and tool results are included.
 
 ### `POST /v1/proxy/*`
 Proxy entrypoint for routed model requests.

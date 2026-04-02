@@ -9,6 +9,7 @@ import adminOrgsRouter from './routes/adminOrgs.js';
 import analyticsRoutes from './routes/analytics.js';
 import anthropicCompatRoutes from './routes/anthropicCompat.js';
 import paymentsRoutes from './routes/payments.js';
+import publicInniesRoutes from './routes/publicInnies.js';
 import orgRoutes from './routes/org.js';
 import pilotRoutes from './routes/pilot.js';
 import proxyRoutes from './routes/proxy.js';
@@ -145,6 +146,7 @@ export function createApp(): express.Express {
     res.json({ ok: true });
   });
 
+  app.use(publicInniesRoutes);
   app.use(adminRoutes);
   app.use(adminAnalysisRoutes);
   app.use(adminArchiveRoutes);
