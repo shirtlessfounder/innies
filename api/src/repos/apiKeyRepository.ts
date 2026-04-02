@@ -22,6 +22,7 @@ export type BuyerProviderPreferenceRecord = {
   provider_preference_updated_at: string | null;
 };
 
+type ApiKeyIdRecord = Pick<ApiKeyRecord, 'id'>;
 type LegacyApiKeyRecord = Omit<ApiKeyRecord, 'preferred_provider'>;
 type LegacyBuyerProviderPreferenceRecord = Omit<BuyerProviderPreferenceRecord, 'preferred_provider' | 'provider_preference_updated_at'>;
 
@@ -54,6 +55,18 @@ function normalizeActiveApiKeyRecord(row: ApiKeyRecord | LegacyApiKeyRecord | un
 
 export class ApiKeyRepository {
   constructor(private readonly db: SqlClient) {}
+
+  async findIdByHash(keyHash: string): Promise<string | null> {
+    const sql = `
+      select id
+      from in_api_keys
+      where key_hash = $1
+      limit 1
+    `;
+    const result = await this.db.query<ApiKeyIdRecord>(sql, [keyHash]);
+    if (result.rowCount !== 1) return null;
+    return result.rows[0]?.id ?? null;
+  }
 
   async findActiveByHash(keyHash: string): Promise<ApiKeyRecord | null> {
     const runQuery = async (input: {

@@ -28,6 +28,12 @@ function createMissingFreezeTableError(): Record<string, string> {
   };
 }
 
+async function callFindIdByHash(repo: ApiKeyRepository, keyHash: string): Promise<string | undefined | null> {
+  return await (repo as ApiKeyRepository & {
+    findIdByHash?: (input: string) => Promise<string | null>;
+  }).findIdByHash?.(keyHash);
+}
+
 describe('apiKeyRepository', () => {
   it('loads preferred provider when migration is present', async () => {
     const db = new SequenceSqlClient([{
@@ -160,5 +166,50 @@ describe('apiKeyRepository', () => {
     expect(db.queries).toHaveLength(2);
     expect(db.queries[0]?.sql).toContain('provider_preference_updated_at');
     expect(db.queries[1]?.sql).not.toContain('preferred_provider');
+  });
+
+  it('returns id when hash exists', async () => {
+    const db = new SequenceSqlClient([{
+      rows: [{ id: 'key_3' }],
+      rowCount: 1
+    }]);
+    const repo = new ApiKeyRepository(db);
+
+    const recordId = await callFindIdByHash(repo, 'hash_live');
+
+    expect(recordId).toBe('key_3');
+    expect(db.queries).toHaveLength(1);
+    expect(db.queries[0]?.sql).toContain('select');
+    expect(db.queries[0]?.sql).toContain('id');
+    expect(db.queries[0]?.sql).toContain('from in_api_keys');
+    expect(db.queries[0]?.sql).toContain('where key_hash = $1');
+    expect(db.queries[0]?.params).toEqual(['hash_live']);
+  });
+
+  it('returns null when hash is not found', async () => {
+    const db = new SequenceSqlClient([{
+      rows: [],
+      rowCount: 0
+    }]);
+    const repo = new ApiKeyRepository(db);
+
+    const recordId = await callFindIdByHash(repo, 'hash_missing');
+
+    expect(recordId).toBeNull();
+    expect(db.queries).toHaveLength(1);
+  });
+
+  it('does not depend on is_active', async () => {
+    const db = new SequenceSqlClient([{
+      rows: [{ id: 'key_inactive' }],
+      rowCount: 1
+    }]);
+    const repo = new ApiKeyRepository(db);
+
+    const recordId = await callFindIdByHash(repo, 'hash_inactive');
+
+    expect(recordId).toBe('key_inactive');
+    expect(db.queries).toHaveLength(1);
+    expect(db.queries[0]?.sql).not.toContain('is_active');
   });
 });
