@@ -1,4 +1,6 @@
+import { gzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TABLES } from '../src/repos/tableNames.js';
 import type { SqlClient, SqlQueryResult, SqlValue, TransactionContext } from '../src/repos/sqlClient.js';
 import { PublicLiveSessionsService } from '../src/services/publicInnies/publicLiveSessionsService.js';
 import { sha256Hex } from '../src/utils/hash.js';
@@ -92,6 +94,53 @@ function messageRow(input: {
       role: input.role,
       content: input.content
     }
+  };
+}
+
+function directAttemptRow(input: {
+  archiveId: string;
+  requestId: string;
+  attemptNo: number;
+  apiKeyId: string | null;
+  provider: string;
+  model: string;
+  startedAt: string;
+  completedAt?: string | null;
+  promptCacheKey: string;
+  providerFallbackFrom?: string | null;
+  providerSelectionReason?: string | null;
+}): Record<string, unknown> {
+  return {
+    request_attempt_archive_id: input.archiveId,
+    request_id: input.requestId,
+    attempt_no: input.attemptNo,
+    api_key_id: input.apiKeyId,
+    provider: input.provider,
+    model: input.model,
+    started_at: input.startedAt,
+    completed_at: input.completedAt ?? null,
+    route_decision: {
+      request_source: 'direct',
+      ...(input.providerFallbackFrom ? { provider_fallback_from: input.providerFallbackFrom } : {}),
+      ...(input.providerSelectionReason ? { provider_selection_reason: input.providerSelectionReason } : {})
+    },
+    raw_request_encoding: 'gzip',
+    raw_request_payload: gzipSync(Buffer.from(JSON.stringify({
+      prompt_cache_key: input.promptCacheKey
+    }), 'utf8'))
+  };
+}
+
+function rawRequestBlobRow(input: {
+  archiveId: string;
+  promptCacheKey: string;
+}): Record<string, unknown> {
+  return {
+    request_attempt_archive_id: input.archiveId,
+    encoding: 'gzip',
+    payload: gzipSync(Buffer.from(JSON.stringify({
+      prompt_cache_key: input.promptCacheKey
+    }), 'utf8'))
   };
 }
 
@@ -196,6 +245,10 @@ describe('publicLiveSessionsService', () => {
         rowCount: 4
       },
       {
+        rows: [],
+        rowCount: 0
+      },
+      {
         rows: [
           messageRow({
             archiveId: 'arch_keep_1',
@@ -291,57 +344,70 @@ describe('publicLiveSessionsService', () => {
     expect(db.queries[0]?.params).toEqual(['innies']);
     expect(db.queries[1]?.sql).toContain('from in_admin_sessions');
     expect(db.queries[2]?.sql).toContain('from in_admin_session_attempts');
-    expect(db.queries[3]?.sql).toContain('from in_request_attempt_messages');
-    expect(db.queries[3]?.params?.[0]).toEqual(['arch_keep_1', 'arch_keep_2']);
+    expect(db.queries[3]?.sql).toContain(`from ${TABLES.requestAttemptArchives}`);
+    expect(db.queries[4]?.sql).toContain('from in_request_attempt_messages');
+    expect(db.queries[4]?.params?.[0]).toEqual(['arch_keep_1', 'arch_keep_2']);
 
     expect(feed).toEqual({
       orgSlug: 'innies',
       generatedAt: '2026-04-02T18:00:00.000Z',
+      pollIntervalSeconds: 30,
+      idleTimeoutSeconds: 900,
+      historyWindowSeconds: 3600,
       sessions: [{
         sessionKey: 'sess_public_1',
         sessionType: 'openclaw',
+        displayTitle: 'openclaw sess_public_1',
         startedAt: '2026-04-02T17:40:00.000Z',
         endedAt: '2026-04-02T17:59:00.000Z',
         lastActivityAt: '2026-04-02T17:59:00.000Z',
+        currentProvider: 'openai',
+        currentModel: 'gpt-5.2',
         providerSet: ['anthropic', 'openai'],
         modelSet: ['claude-sonnet-4-5', 'gpt-5.2'],
         entries: [
           {
+            entryId: 'arch_keep_1:0:user',
             kind: 'user',
             at: '2026-04-02T17:51:00.000Z',
             text: 'show Authorization: [REDACTED_CREDENTIAL] and [REDACTED_PATH]'
           },
           {
+            entryId: 'arch_keep_1:1:assistant_final',
             kind: 'assistant_final',
             at: '2026-04-02T17:51:00.000Z',
             text: 'assistant update for [REDACTED_EMAIL]'
           },
           {
+            entryId: 'arch_keep_1:2:tool_call',
             kind: 'tool_call',
             at: '2026-04-02T17:51:00.000Z',
-            toolCallId: 'tool_1',
             toolName: 'grep',
-            payloadText: '{"authorization":"[REDACTED_CREDENTIAL]","file":"[REDACTED_PATH]"}'
+            argsText: '{"authorization":"[REDACTED_CREDENTIAL]","file":"[REDACTED_PATH]"}'
           },
           {
+            entryId: 'arch_keep_1:3:tool_result',
             kind: 'tool_result',
             at: '2026-04-02T17:51:00.000Z',
-            toolUseId: 'tool_1',
-            payloadText: '{"message":"result ready","token":"[REDACTED_TOKEN]"}'
+            text: '{"message":"result ready","token":"[REDACTED_TOKEN]"}'
           },
           {
+            entryId: 'arch_keep_2:4:provider_switch',
             kind: 'provider_switch',
             at: '2026-04-02T17:59:00.000Z',
             fromProvider: 'anthropic',
+            fromModel: 'claude-sonnet-4-5',
             toProvider: 'openai',
-            reason: 'fallback_provider_selected'
+            toModel: 'gpt-5.2'
           },
           {
+            entryId: 'arch_keep_2:5:user',
             kind: 'user',
             at: '2026-04-02T17:59:00.000Z',
             text: 'retry with openai please'
           },
           {
+            entryId: 'arch_keep_2:6:assistant_final',
             kind: 'assistant_final',
             at: '2026-04-02T17:59:00.000Z',
             text: 'done for [REDACTED_EMAIL]'
@@ -403,6 +469,10 @@ describe('publicLiveSessionsService', () => {
         rowCount: attempts.length
       },
       {
+        rows: [],
+        rowCount: 0
+      },
+      {
         rows: denseMessages.concat(sparseMessages),
         rowCount: denseMessages.length + sparseMessages.length
       }
@@ -424,14 +494,162 @@ describe('publicLiveSessionsService', () => {
     const denseSession = feed.sessions.find((session) => session.sessionKey === 'sess_dense');
     expect(denseSession?.entries).toHaveLength(120);
     expect(denseSession?.entries[0]).toEqual({
+      entryId: 'arch_dense:0:user',
       kind: 'user',
       at: '2026-04-02T17:59:00.000Z',
       text: 'entry-6'
     });
     expect(denseSession?.entries.at(-1)).toEqual({
+      entryId: 'arch_dense:119:user',
       kind: 'user',
       at: '2026-04-02T17:59:00.000Z',
       text: 'entry-125'
     });
+  });
+
+  it('falls back to the legacy internal org slug and builds direct prompt-cache sessions without admin session rows', async () => {
+    const now = new Date('2026-04-02T18:00:00.000Z');
+    const db = new SequenceSqlClient([
+      {
+        rows: [],
+        rowCount: 0
+      },
+      {
+        rows: [{ id: 'org_team_seller' }],
+        rowCount: 1
+      },
+      {
+        rows: [],
+        rowCount: 0
+      },
+      {
+        rows: [
+          directAttemptRow({
+            archiveId: 'arch_direct_1',
+            requestId: 'req_direct_1',
+            attemptNo: 1,
+            apiKeyId: 'api_keep',
+            provider: 'openai',
+            model: 'gpt-5.4',
+            startedAt: '2026-04-02T17:54:00.000Z',
+            completedAt: '2026-04-02T17:55:00.000Z',
+            promptCacheKey: 'cache_live_1'
+          }),
+          directAttemptRow({
+            archiveId: 'arch_direct_2',
+            requestId: 'req_direct_2',
+            attemptNo: 1,
+            apiKeyId: 'api_keep',
+            provider: 'openai',
+            model: 'gpt-5.4',
+            startedAt: '2026-04-02T17:58:00.000Z',
+            completedAt: '2026-04-02T17:59:00.000Z',
+            promptCacheKey: 'cache_live_1'
+          })
+        ],
+        rowCount: 2
+      },
+      {
+        rows: [
+          rawRequestBlobRow({
+            archiveId: 'arch_direct_2',
+            promptCacheKey: 'cache_live_1'
+          }),
+          rawRequestBlobRow({
+            archiveId: 'arch_direct_1',
+            promptCacheKey: 'cache_live_1'
+          })
+        ],
+        rowCount: 2
+      },
+      {
+        rows: [
+          messageRow({
+            archiveId: 'arch_direct_1',
+            side: 'request',
+            ordinal: 0,
+            role: 'user',
+            content: [{ type: 'text', text: 'ship the patch' }]
+          }),
+          messageRow({
+            archiveId: 'arch_direct_1',
+            side: 'response',
+            ordinal: 0,
+            role: 'assistant',
+            content: [{ type: 'text', text: 'working through the API fix' }]
+          }),
+          messageRow({
+            archiveId: 'arch_direct_2',
+            side: 'request',
+            ordinal: 0,
+            role: 'user',
+            content: [{ type: 'text', text: 'verify the feed again' }]
+          }),
+          messageRow({
+            archiveId: 'arch_direct_2',
+            side: 'response',
+            ordinal: 0,
+            role: 'assistant',
+            content: [{ type: 'text', text: 'feed looks live now' }]
+          })
+        ],
+        rowCount: 4
+      }
+    ]);
+
+    const service = new PublicLiveSessionsService({
+      sql: db,
+      apiKeys: { findIdByHash: vi.fn(async () => null) },
+      now: () => now
+    });
+
+    const feed = await service.listFeed();
+
+    expect(db.queries[0]?.params).toEqual(['innies']);
+    expect(db.queries[1]?.params).toEqual(['team-seller']);
+    expect(db.queries[2]?.sql).toContain('from in_admin_sessions');
+    expect(db.queries[3]?.sql).toContain(`from ${TABLES.requestAttemptArchives}`);
+    expect(db.queries[4]?.sql).toContain(`from ${TABLES.requestAttemptRawBlobs}`);
+    expect(db.queries[4]?.params?.[0]).toEqual(['arch_direct_1', 'arch_direct_2']);
+    expect(db.queries[5]?.params?.[0]).toEqual(['arch_direct_1', 'arch_direct_2']);
+
+    expect(feed.sessions).toEqual([{
+      sessionKey: 'cli:prompt-cache:cache_live_1',
+      sessionType: 'cli',
+      displayTitle: 'cli cache_live_1',
+      startedAt: '2026-04-02T17:54:00.000Z',
+      endedAt: '2026-04-02T17:59:00.000Z',
+      lastActivityAt: '2026-04-02T17:59:00.000Z',
+      currentProvider: 'openai',
+      currentModel: 'gpt-5.4',
+      providerSet: ['openai'],
+      modelSet: ['gpt-5.4'],
+      entries: [
+        {
+          entryId: 'arch_direct_1:0:user',
+          kind: 'user',
+          at: '2026-04-02T17:55:00.000Z',
+          text: 'ship the patch'
+        },
+        {
+          entryId: 'arch_direct_1:1:assistant_final',
+          kind: 'assistant_final',
+          at: '2026-04-02T17:55:00.000Z',
+          text: 'working through the API fix'
+        },
+        {
+          entryId: 'arch_direct_2:2:user',
+          kind: 'user',
+          at: '2026-04-02T17:59:00.000Z',
+          text: 'verify the feed again'
+        },
+        {
+          entryId: 'arch_direct_2:3:assistant_final',
+          kind: 'assistant_final',
+          at: '2026-04-02T17:59:00.000Z',
+          text: 'feed looks live now'
+        }
+      ]
+    }]);
   });
 });

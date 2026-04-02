@@ -3,37 +3,43 @@ import type { SqlClient } from '../../repos/sqlClient.js';
 
 export type PublicLiveSessionEntry =
   | {
+    entryId: string;
     kind: 'user' | 'assistant_final';
     at: string;
     text: string;
   }
   | {
+    entryId: string;
     kind: 'tool_call';
     at: string;
-    toolCallId: string | null;
-    toolName: string | null;
-    payloadText: string;
+    toolName: string;
+    argsText: string;
   }
   | {
+    entryId: string;
     kind: 'tool_result';
     at: string;
-    toolUseId: string | null;
-    payloadText: string;
+    text: string;
   }
   | {
+    entryId: string;
     kind: 'provider_switch';
     at: string;
     fromProvider: string | null;
     toProvider: string;
-    reason: string | null;
+    fromModel: string | null;
+    toModel: string;
   };
 
 export type PublicLiveSession = {
   sessionKey: string;
   sessionType: 'cli' | 'openclaw';
+  displayTitle: string;
   startedAt: string;
   endedAt: string;
   lastActivityAt: string;
+  currentProvider: string | null;
+  currentModel: string | null;
   providerSet: string[];
   modelSet: string[];
   entries: PublicLiveSessionEntry[];
@@ -42,6 +48,9 @@ export type PublicLiveSession = {
 export type PublicLiveSessionsFeed = {
   orgSlug: string;
   generatedAt: string;
+  pollIntervalSeconds: number;
+  idleTimeoutSeconds: number;
+  historyWindowSeconds: number;
   sessions: PublicLiveSession[];
 };
 

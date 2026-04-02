@@ -1,3 +1,4 @@
+import { gunzipSync } from 'node:zlib';
 import type { SqlValue } from '../../repos/sqlClient.js';
 import { TABLES } from '../../repos/tableNames.js';
 import { sha256Hex } from '../../utils/hash.js';
@@ -10,10 +11,16 @@ import type {
 } from './publicLiveSessionsTypes.js';
 
 const PUBLIC_ORG_SLUG = 'innies';
+const LEGACY_PUBLIC_ORG_SLUG = 'team-seller';
 const ACTIVE_WINDOW_MS = 15 * 60 * 1000;
 const TRANSCRIPT_HISTORY_WINDOW_MS = 60 * 60 * 1000;
+const POLL_INTERVAL_SECONDS = 30;
+const IDLE_TIMEOUT_SECONDS = ACTIVE_WINDOW_MS / 1000;
+const HISTORY_WINDOW_SECONDS = TRANSCRIPT_HISTORY_WINDOW_MS / 1000;
 const MAX_SESSIONS = 24;
 const MAX_SESSION_ENTRIES = 120;
+const MAX_DIRECT_ATTEMPTS = 400;
+const MAX_DIRECT_SESSION_ATTEMPTS = 8;
 
 type OrgRow = {
   id: string;
@@ -42,6 +49,16 @@ type AttemptRow = {
   route_decision: Record<string, unknown> | null;
 };
 
+type DirectAttemptRow = Omit<AttemptRow, 'session_key'> & {
+  org_id: string;
+};
+
+type RawRequestBlobRow = {
+  request_attempt_archive_id: string;
+  encoding: 'gzip' | 'none';
+  payload: Buffer;
+};
+
 type MessageRow = {
   request_attempt_archive_id: string;
   side: 'request' | 'response';
@@ -54,6 +71,30 @@ type SessionAttempt = AttemptRow & {
   eventAtIso: string;
 };
 
+type EntryDraft =
+  | {
+    archiveId: string;
+    kind: 'user' | 'assistant_final' | 'tool_result';
+    at: string;
+    text: string;
+  }
+  | {
+    archiveId: string;
+    kind: 'tool_call';
+    at: string;
+    toolName: string;
+    argsText: string;
+  }
+  | {
+    archiveId: string;
+    kind: 'provider_switch';
+    at: string;
+    fromProvider: string | null;
+    toProvider: string;
+    fromModel: string | null;
+    toModel: string;
+  };
+
 type NormalizedPayload = {
   role: string | null;
   content: unknown[];
@@ -65,34 +106,29 @@ export class PublicLiveSessionsService {
   async listFeed(): Promise<PublicLiveSessionsFeed> {
     const now = this.deps.now?.() ?? new Date();
     const generatedAt = now.toISOString();
-    const orgId = await this.findOrgId(PUBLIC_ORG_SLUG);
+    const orgId = await this.findPublicOrgId();
+    const emptyFeed = this.buildEmptyFeed(generatedAt);
     if (!orgId) {
-      return {
-        orgSlug: sanitizeString(PUBLIC_ORG_SLUG),
-        generatedAt,
-        sessions: []
-      };
+      return emptyFeed;
     }
 
     const excludedApiKeyIds = await this.resolveExcludedApiKeyIds();
     const activeSessions = await this.loadActiveSessions(orgId, now);
-    if (activeSessions.length === 0) {
-      return {
-        orgSlug: sanitizeString(PUBLIC_ORG_SLUG),
-        generatedAt,
-        sessions: []
-      };
-    }
 
     const attempts = await this.loadRecentAttempts(
       activeSessions.map((session) => session.session_key),
       now
     );
+    const directAttempts = await this.loadRecentDirectAttempts(orgId, now);
     const includedAttempts = attempts.filter((attempt) => !excludedApiKeyIds.has(attempt.api_key_id ?? ''));
-    const archiveIds = includedAttempts.map((attempt) => attempt.request_attempt_archive_id);
-    const messageRows = archiveIds.length > 0
-      ? await this.loadMessages(archiveIds)
-      : [];
+    const includedDirectAttempts = directAttempts.filter((attempt) => !excludedApiKeyIds.has(attempt.api_key_id ?? ''));
+    const visibleDirectAttempts = selectVisibleDirectAttempts(includedDirectAttempts, now);
+    const projectedArchiveIds = Array.from(new Set(includedAttempts.map((attempt) => attempt.request_attempt_archive_id)));
+    const directArchiveIds = Array.from(new Set(visibleDirectAttempts.map((attempt) => attempt.request_attempt_archive_id)));
+    const messageRows = [
+      ...(projectedArchiveIds.length > 0 ? await this.loadMessages(projectedArchiveIds) : []),
+      ...(directArchiveIds.length > 0 ? await this.loadDirectMessages(directArchiveIds) : [])
+    ];
 
     const messagesByArchiveId = new Map<string, MessageRow[]>();
     for (const row of messageRows) {
@@ -110,10 +146,8 @@ export class PublicLiveSessionsService {
 
     const sessions: PublicLiveSession[] = [];
     for (const session of activeSessions) {
-      const entries = this.buildSessionEntries(
-        attemptsBySession.get(session.session_key) ?? [],
-        messagesByArchiveId
-      );
+      const sessionAttempts = sortSessionAttempts(attemptsBySession.get(session.session_key) ?? []);
+      const entries = this.buildSessionEntries(sessionAttempts, messagesByArchiveId);
       if (entries.length === 0) {
         continue;
       }
@@ -121,19 +155,43 @@ export class PublicLiveSessionsService {
       sessions.push({
         sessionKey: sanitizeString(session.session_key),
         sessionType: session.session_type,
+        displayTitle: buildDisplayTitle(session.session_type, session.session_key),
         startedAt: toIso(session.started_at),
         endedAt: toIso(session.ended_at),
         lastActivityAt: toIso(session.last_activity_at),
+        currentProvider: findCurrentValue(sessionAttempts, 'provider'),
+        currentModel: findCurrentValue(sessionAttempts, 'model'),
         providerSet: sanitizeStringArray(session.provider_set),
         modelSet: sanitizeStringArray(session.model_set),
         entries
       });
     }
 
+    sessions.push(...this.buildDirectSessions({
+      attempts: visibleDirectAttempts,
+      messagesByArchiveId,
+      now
+    }));
+
+    return {
+      ...emptyFeed,
+      sessions: sessions
+        .sort((left, right) =>
+          Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt)
+          || right.sessionKey.localeCompare(left.sessionKey)
+        )
+        .slice(0, MAX_SESSIONS)
+    };
+  }
+
+  private buildEmptyFeed(generatedAt: string): PublicLiveSessionsFeed {
     return {
       orgSlug: sanitizeString(PUBLIC_ORG_SLUG),
       generatedAt,
-      sessions: sessions.slice(0, MAX_SESSIONS)
+      pollIntervalSeconds: POLL_INTERVAL_SECONDS,
+      idleTimeoutSeconds: IDLE_TIMEOUT_SECONDS,
+      historyWindowSeconds: HISTORY_WINDOW_SECONDS,
+      sessions: []
     };
   }
 
@@ -146,6 +204,14 @@ export class PublicLiveSessionsService {
     `;
     const result = await this.deps.sql.query<OrgRow>(sql, [slug]);
     return result.rows[0]?.id ?? null;
+  }
+
+  private async findPublicOrgId(): Promise<string | null> {
+    const orgId = await this.findOrgId(PUBLIC_ORG_SLUG);
+    if (orgId) {
+      return orgId;
+    }
+    return this.findOrgId(LEGACY_PUBLIC_ORG_SLUG);
   }
 
   private async resolveExcludedApiKeyIds(): Promise<Set<string>> {
@@ -237,6 +303,93 @@ export class PublicLiveSessionsService {
       .filter((row) => Date.parse(row.eventAtIso) >= Date.parse(historySince));
   }
 
+  private async loadRecentDirectAttempts(orgId: string, now: Date): Promise<SessionAttempt[]> {
+    const historySince = new Date(now.getTime() - TRANSCRIPT_HISTORY_WINDOW_MS).toISOString();
+    const sql = `
+      select
+        a.id as request_attempt_archive_id,
+        a.request_id,
+        a.attempt_no,
+        a.org_id,
+        a.api_key_id,
+        a.provider,
+        a.model,
+        a.started_at,
+        a.completed_at,
+        re.route_decision
+      from ${TABLES.requestAttemptArchives} a
+      left join ${TABLES.routingEvents} re
+        on re.org_id = a.org_id
+        and re.request_id = a.request_id
+        and re.attempt_no = a.attempt_no
+      left join ${TABLES.adminSessionAttempts} sa
+        on sa.request_attempt_archive_id = a.id
+      where a.org_id = $1
+        and sa.request_attempt_archive_id is null
+        and nullif(re.route_decision->>'request_source', '') = 'direct'
+        and coalesce(a.completed_at, a.started_at) >= $2::timestamptz
+      order by
+        coalesce(a.completed_at, a.started_at) desc,
+        a.request_id desc,
+        a.attempt_no desc
+      limit $3
+    `;
+    const result = await this.deps.sql.query<DirectAttemptRow>(sql, [orgId, historySince, MAX_DIRECT_ATTEMPTS]);
+    if (result.rows.length === 0) {
+      return [];
+    }
+
+    const rawBlobsByArchiveId = await this.loadRawRequestBlobs(result.rows.map((row) => row.request_attempt_archive_id));
+    const attempts: SessionAttempt[] = [];
+
+    for (const row of result.rows.slice().reverse()) {
+      const promptCacheKey = extractPromptCacheKey(rawBlobsByArchiveId.get(row.request_attempt_archive_id) ?? null);
+      if (!promptCacheKey) {
+        continue;
+      }
+
+      const eventAtIso = toIso(row.completed_at ?? row.started_at);
+      if (Date.parse(eventAtIso) < Date.parse(historySince)) {
+        continue;
+      }
+
+      attempts.push({
+        ...row,
+        session_key: `cli:prompt-cache:${promptCacheKey}`,
+        eventAtIso
+      });
+    }
+
+    return attempts;
+  }
+
+  private async loadRawRequestBlobs(archiveIds: string[]): Promise<Map<string, RawRequestBlobRow>> {
+    if (archiveIds.length === 0) {
+      return new Map();
+    }
+
+    const sql = `
+      select
+        rab.request_attempt_archive_id,
+        rb.encoding,
+        rb.payload
+      from ${TABLES.requestAttemptRawBlobs} rab
+      inner join ${TABLES.rawBlobs} rb
+        on rb.id = rab.raw_blob_id
+      where rab.request_attempt_archive_id = any($1::uuid[])
+        and rab.blob_role = 'request'
+      order by array_position($1::uuid[], rab.request_attempt_archive_id)
+    `;
+    const result = await this.deps.sql.query<RawRequestBlobRow>(sql, [archiveIds]);
+    const rows = new Map<string, RawRequestBlobRow>();
+    for (const row of result.rows) {
+      if (!rows.has(row.request_attempt_archive_id)) {
+        rows.set(row.request_attempt_archive_id, row);
+      }
+    }
+    return rows;
+  }
+
   private async loadMessages(archiveIds: string[]): Promise<MessageRow[]> {
     const sql = `
       select
@@ -248,11 +401,58 @@ export class PublicLiveSessionsService {
       from ${TABLES.requestAttemptMessages} ram
       inner join ${TABLES.messageBlobs} mb
         on mb.id = ram.message_blob_id
-      where ram.request_attempt_archive_id::text = any($1::text[])
+      where ram.request_attempt_archive_id = any($1::uuid[])
       order by
-        array_position($1::text[], ram.request_attempt_archive_id::text),
+        array_position($1::uuid[], ram.request_attempt_archive_id),
         case ram.side when 'request' then 0 when 'response' then 1 else 2 end asc,
         ram.ordinal asc
+    `;
+    const result = await this.deps.sql.query<MessageRow>(sql, [archiveIds]);
+    return result.rows;
+  }
+
+  private async loadDirectMessages(archiveIds: string[]): Promise<MessageRow[]> {
+    const sql = `
+      with latest_user_request as (
+        select distinct on (ram.request_attempt_archive_id)
+          ram.request_attempt_archive_id,
+          ram.side,
+          ram.ordinal,
+          ram.role,
+          mb.normalized_payload
+        from ${TABLES.requestAttemptMessages} ram
+        inner join ${TABLES.messageBlobs} mb
+          on mb.id = ram.message_blob_id
+        where ram.request_attempt_archive_id = any($1::uuid[])
+          and ram.side = 'request'
+          and ram.role = 'user'
+        order by
+          ram.request_attempt_archive_id,
+          ram.ordinal desc
+      ),
+      response_rows as (
+        select
+          ram.request_attempt_archive_id,
+          ram.side,
+          ram.ordinal,
+          ram.role,
+          mb.normalized_payload
+        from ${TABLES.requestAttemptMessages} ram
+        inner join ${TABLES.messageBlobs} mb
+          on mb.id = ram.message_blob_id
+        where ram.request_attempt_archive_id = any($1::uuid[])
+          and ram.side = 'response'
+      )
+      select *
+      from (
+        select * from latest_user_request
+        union all
+        select * from response_rows
+      ) rows
+      order by
+        array_position($1::uuid[], rows.request_attempt_archive_id),
+        case rows.side when 'request' then 0 when 'response' then 1 else 2 end asc,
+        rows.ordinal asc
     `;
     const result = await this.deps.sql.query<MessageRow>(sql, [archiveIds]);
     return result.rows;
@@ -262,48 +462,106 @@ export class PublicLiveSessionsService {
     attempts: SessionAttempt[],
     messagesByArchiveId: Map<string, MessageRow[]>
   ): PublicLiveSessionEntry[] {
-    const entries: PublicLiveSessionEntry[] = [];
+    const entries: EntryDraft[] = [];
     let previousProvider: string | null = null;
+    let previousModel: string | null = null;
 
     for (const attempt of attempts) {
       const currentProvider = readString(attempt.provider);
-      if (previousProvider && currentProvider && previousProvider !== currentProvider) {
+      const currentModel = readString(attempt.model);
+      if (
+        previousProvider
+        && currentProvider
+        && (previousProvider !== currentProvider || previousModel !== currentModel)
+      ) {
         const routeDecision = isRecord(attempt.route_decision) ? attempt.route_decision : null;
         entries.push({
+          archiveId: attempt.request_attempt_archive_id,
           kind: 'provider_switch',
           at: attempt.eventAtIso,
           fromProvider: sanitizeNullableString(readString(routeDecision?.provider_fallback_from) ?? previousProvider),
           toProvider: sanitizeString(currentProvider),
-          reason: sanitizeNullableString(readString(routeDecision?.provider_selection_reason))
+          fromModel: sanitizeNullableString(previousModel),
+          toModel: sanitizeString(currentModel ?? 'unknown')
         });
       }
       previousProvider = currentProvider ?? previousProvider;
+      previousModel = currentModel ?? previousModel;
 
       const messageRows = messagesByArchiveId.get(attempt.request_attempt_archive_id) ?? [];
       for (const row of messageRows) {
         entries.push(...shapeMessageEntries({
+          archiveId: attempt.request_attempt_archive_id,
           at: attempt.eventAtIso,
           row
         }));
       }
     }
 
-    return entries.length > MAX_SESSION_ENTRIES
+    const visibleEntries = entries.length > MAX_SESSION_ENTRIES
       ? entries.slice(-MAX_SESSION_ENTRIES)
       : entries;
+
+    return visibleEntries.map((entry, index) => finalizeEntry(entry, index));
+  }
+
+  private buildDirectSessions(input: {
+    attempts: SessionAttempt[];
+    messagesByArchiveId: Map<string, MessageRow[]>;
+    now: Date;
+  }): PublicLiveSession[] {
+    const activeSince = input.now.getTime() - ACTIVE_WINDOW_MS;
+    const attemptsBySession = new Map<string, SessionAttempt[]>();
+
+    for (const attempt of input.attempts) {
+      const existing = attemptsBySession.get(attempt.session_key) ?? [];
+      existing.push(attempt);
+      attemptsBySession.set(attempt.session_key, existing);
+    }
+
+    const sessions: PublicLiveSession[] = [];
+    for (const [sessionKey, attempts] of attemptsBySession.entries()) {
+      const sortedAttempts = sortSessionAttempts(attempts);
+      const lastActivityAt = sortedAttempts.at(-1)?.eventAtIso;
+      if (!lastActivityAt || Date.parse(lastActivityAt) < activeSince) {
+        continue;
+      }
+
+      const entries = this.buildSessionEntries(sortedAttempts, input.messagesByArchiveId);
+      if (entries.length === 0) {
+        continue;
+      }
+
+      sessions.push({
+        sessionKey: sanitizeString(sessionKey),
+        sessionType: 'cli',
+        displayTitle: buildDisplayTitle('cli', sessionKey),
+        startedAt: toIso(sortedAttempts[0]?.started_at ?? lastActivityAt),
+        endedAt: toIso(sortedAttempts.at(-1)?.completed_at ?? sortedAttempts.at(-1)?.started_at ?? lastActivityAt),
+        lastActivityAt,
+        currentProvider: findCurrentValue(sortedAttempts, 'provider'),
+        currentModel: findCurrentValue(sortedAttempts, 'model'),
+        providerSet: collectAttemptValues(sortedAttempts, 'provider'),
+        modelSet: collectAttemptValues(sortedAttempts, 'model'),
+        entries
+      });
+    }
+
+    return sessions;
   }
 }
 
 function shapeMessageEntries(input: {
+  archiveId: string;
   at: string;
   row: MessageRow;
-}): PublicLiveSessionEntry[] {
+}): EntryDraft[] {
   const payload = normalizePayload(input.row.normalized_payload, input.row.role);
   if (!payload || payload.role === 'system') {
     return [];
   }
 
-  const entries: PublicLiveSessionEntry[] = [];
+  const entries: EntryDraft[] = [];
   let textBuffer: string[] = [];
 
   const flushTextBuffer = (): void => {
@@ -318,6 +576,7 @@ function shapeMessageEntries(input: {
 
     if (payload.role === 'user') {
       entries.push({
+        archiveId: input.archiveId,
         kind: 'user',
         at: input.at,
         text
@@ -327,6 +586,7 @@ function shapeMessageEntries(input: {
 
     if (payload.role === 'assistant') {
       entries.push({
+        archiveId: input.archiveId,
         kind: 'assistant_final',
         at: input.at,
         text
@@ -355,11 +615,11 @@ function shapeMessageEntries(input: {
         continue;
       }
       entries.push({
+        archiveId: input.archiveId,
         kind: 'tool_call',
         at: input.at,
-        toolCallId: sanitizeNullableString(readString(part.id)),
-        toolName: sanitizeNullableString(readString(part.name)),
-        payloadText
+        toolName: sanitizeString(readString(part.name) ?? 'tool'),
+        argsText: payloadText
       });
       continue;
     }
@@ -370,10 +630,10 @@ function shapeMessageEntries(input: {
         continue;
       }
       entries.push({
+        archiveId: input.archiveId,
         kind: 'tool_result',
         at: input.at,
-        toolUseId: sanitizeNullableString(readString(part.toolUseId)),
-        payloadText
+        text: payloadText
       });
     }
   }
@@ -454,6 +714,98 @@ function readString(value: unknown): string | null {
 
 function isRecord(value: unknown): value is Record<string, any> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function finalizeEntry(entry: EntryDraft, index: number): PublicLiveSessionEntry {
+  const { archiveId, ...rest } = entry;
+  return {
+    ...rest,
+    entryId: `${archiveId}:${index}:${entry.kind}`
+  };
+}
+
+function buildDisplayTitle(sessionType: PublicLiveSession['sessionType'], sessionKey: string): string {
+  return `${sessionType} ${shortSessionLabel(sessionKey)}`;
+}
+
+function shortSessionLabel(sessionKey: string): string {
+  const lastSegment = sanitizeString(sessionKey.split(':').at(-1) ?? sessionKey);
+  if (lastSegment.length <= 16) {
+    return lastSegment;
+  }
+  return `${lastSegment.slice(0, 8)}...${lastSegment.slice(-4)}`;
+}
+
+function findCurrentValue(attempts: SessionAttempt[], field: 'provider' | 'model'): string | null {
+  for (let index = attempts.length - 1; index >= 0; index -= 1) {
+    const value = readString(attempts[index]?.[field]);
+    if (value) {
+      return sanitizeString(value);
+    }
+  }
+  return null;
+}
+
+function collectAttemptValues(attempts: SessionAttempt[], field: 'provider' | 'model'): string[] {
+  const values = new Set<string>();
+  for (const attempt of attempts) {
+    const value = readString(attempt[field]);
+    if (value) {
+      values.add(sanitizeString(value));
+    }
+  }
+  return [...values];
+}
+
+function sortSessionAttempts(attempts: SessionAttempt[]): SessionAttempt[] {
+  return [...attempts].sort((left, right) =>
+    Date.parse(left.eventAtIso) - Date.parse(right.eventAtIso)
+    || left.request_id.localeCompare(right.request_id)
+    || left.attempt_no - right.attempt_no
+  );
+}
+
+function selectVisibleDirectAttempts(attempts: SessionAttempt[], now: Date): SessionAttempt[] {
+  const activeSince = now.getTime() - ACTIVE_WINDOW_MS;
+  const attemptsBySession = new Map<string, SessionAttempt[]>();
+
+  for (const attempt of attempts) {
+    const existing = attemptsBySession.get(attempt.session_key) ?? [];
+    existing.push(attempt);
+    attemptsBySession.set(attempt.session_key, existing);
+  }
+
+  const visibleAttempts: SessionAttempt[] = [];
+  for (const sessionAttempts of attemptsBySession.values()) {
+    const sortedAttempts = sortSessionAttempts(sessionAttempts);
+    const lastActivityAt = sortedAttempts.at(-1)?.eventAtIso;
+    if (!lastActivityAt || Date.parse(lastActivityAt) < activeSince) {
+      continue;
+    }
+
+    visibleAttempts.push(...sortedAttempts.slice(-MAX_DIRECT_SESSION_ATTEMPTS));
+  }
+
+  return visibleAttempts;
+}
+
+function extractPromptCacheKey(rawBlob: RawRequestBlobRow | null): string | null {
+  if (!rawBlob) {
+    return null;
+  }
+
+  try {
+    const rawBuffer = rawBlob.encoding === 'gzip'
+      ? gunzipSync(rawBlob.payload)
+      : Buffer.from(rawBlob.payload);
+    const parsed = JSON.parse(rawBuffer.toString('utf8'));
+    if (!isRecord(parsed)) {
+      return null;
+    }
+    return sanitizeNullableString(readString(parsed.prompt_cache_key));
+  } catch {
+    return null;
+  }
 }
 
 function toIso(value: string | Date): string {
