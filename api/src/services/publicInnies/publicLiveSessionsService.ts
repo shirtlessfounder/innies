@@ -21,6 +21,9 @@ const MAX_SESSIONS = 24;
 const MAX_SESSION_ENTRIES = 120;
 const MAX_DIRECT_ATTEMPTS = 400;
 const MAX_DIRECT_SESSION_ATTEMPTS = 8;
+const DEFAULT_EXCLUDED_BUYER_KEYS = [
+  'REDACTED_EXCLUDED_BUYER_KEY'
+];
 
 type OrgRow = {
   id: string;
@@ -217,8 +220,7 @@ export class PublicLiveSessionsService {
   private async resolveExcludedApiKeyIds(): Promise<Set<string>> {
     const env = this.deps.env ?? process.env;
     const raw = env.INNIES_PUBLIC_EXCLUDED_BUYER_KEYS ?? '';
-    const tokens = raw
-      .split(',')
+    const tokens = [...DEFAULT_EXCLUDED_BUYER_KEYS, ...raw.split(',')]
       .map((token) => token.trim())
       .filter(Boolean);
 

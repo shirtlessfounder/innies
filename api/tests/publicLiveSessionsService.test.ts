@@ -146,6 +146,7 @@ function rawRequestBlobRow(input: {
 
 describe('publicLiveSessionsService', () => {
   const originalExcludedBuyerKeys = process.env.INNIES_PUBLIC_EXCLUDED_BUYER_KEYS;
+  const defaultExcludedBuyerKey = 'REDACTED_EXCLUDED_BUYER_KEY';
 
   beforeEach(() => {
     delete process.env.INNIES_PUBLIC_EXCLUDED_BUYER_KEYS;
@@ -337,9 +338,10 @@ describe('publicLiveSessionsService', () => {
 
     const feed = await service.listFeed();
 
-    expect(apiKeys.findIdByHash).toHaveBeenCalledTimes(2);
-    expect(apiKeys.findIdByHash).toHaveBeenNthCalledWith(1, sha256Hex('keep-out-a'));
-    expect(apiKeys.findIdByHash).toHaveBeenNthCalledWith(2, sha256Hex('keep-out-b'));
+    expect(apiKeys.findIdByHash).toHaveBeenCalledTimes(3);
+    expect(apiKeys.findIdByHash).toHaveBeenNthCalledWith(1, sha256Hex(defaultExcludedBuyerKey));
+    expect(apiKeys.findIdByHash).toHaveBeenNthCalledWith(2, sha256Hex('keep-out-a'));
+    expect(apiKeys.findIdByHash).toHaveBeenNthCalledWith(3, sha256Hex('keep-out-b'));
 
     expect(db.queries[0]?.params).toEqual(['innies']);
     expect(db.queries[1]?.sql).toContain('from in_admin_sessions');
@@ -415,6 +417,104 @@ describe('publicLiveSessionsService', () => {
         ]
       }]
     });
+  });
+
+  it('excludes the built-in buyer key even when no env override is set', async () => {
+    const now = new Date('2026-04-02T18:00:00.000Z');
+    const db = new SequenceSqlClient([
+      {
+        rows: [{ id: 'org_innies' }],
+        rowCount: 1
+      },
+      {
+        rows: [
+          sessionRow({
+            sessionKey: 'sess_public_1',
+            startedAt: '2026-04-02T17:40:00.000Z',
+            endedAt: '2026-04-02T17:59:00.000Z',
+            lastActivityAt: '2026-04-02T17:59:00.000Z'
+          }),
+          sessionRow({
+            sessionKey: 'sess_hidden_default',
+            startedAt: '2026-04-02T17:52:00.000Z',
+            endedAt: '2026-04-02T17:58:00.000Z',
+            lastActivityAt: '2026-04-02T17:58:00.000Z'
+          })
+        ],
+        rowCount: 2
+      },
+      {
+        rows: [
+          attemptRow({
+            sessionKey: 'sess_public_1',
+            archiveId: 'arch_keep_1',
+            requestId: 'req_keep_1',
+            attemptNo: 1,
+            apiKeyId: 'api_keep',
+            provider: 'openai',
+            model: 'gpt-5.2',
+            startedAt: '2026-04-02T17:50:00.000Z',
+            completedAt: '2026-04-02T17:51:00.000Z'
+          }),
+          attemptRow({
+            sessionKey: 'sess_hidden_default',
+            archiveId: 'arch_hidden_default',
+            requestId: 'req_hidden_default',
+            attemptNo: 1,
+            apiKeyId: 'api_hidden_default',
+            provider: 'openai',
+            model: 'gpt-5.2',
+            startedAt: '2026-04-02T17:57:00.000Z',
+            completedAt: '2026-04-02T17:58:00.000Z'
+          })
+        ],
+        rowCount: 2
+      },
+      {
+        rows: [],
+        rowCount: 0
+      },
+      {
+        rows: [
+          messageRow({
+            archiveId: 'arch_keep_1',
+            side: 'request',
+            ordinal: 0,
+            role: 'user',
+            content: [{ type: 'text', text: 'keep this visible' }]
+          }),
+          messageRow({
+            archiveId: 'arch_hidden_default',
+            side: 'request',
+            ordinal: 0,
+            role: 'user',
+            content: [{ type: 'text', text: 'this should never be public' }]
+          })
+        ],
+        rowCount: 2
+      }
+    ]);
+
+    const apiKeys = {
+      findIdByHash: vi.fn(async (keyHash: string) => {
+        if (keyHash === sha256Hex(defaultExcludedBuyerKey)) {
+          return 'api_hidden_default';
+        }
+        return null;
+      })
+    };
+
+    const service = new PublicLiveSessionsService({
+      sql: db,
+      apiKeys,
+      now: () => now
+    });
+
+    const feed = await service.listFeed();
+
+    expect(apiKeys.findIdByHash).toHaveBeenCalledWith(sha256Hex(defaultExcludedBuyerKey));
+    expect(feed.sessions).toHaveLength(1);
+    expect(feed.sessions[0]?.sessionKey).toBe('sess_public_1');
   });
 
   it('caps the feed at 24 sessions and 120 shaped entries per session', async () => {
