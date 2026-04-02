@@ -560,6 +560,53 @@ function selectSameProviderRetryCredentials(credentials: TokenCredential[]): Tok
   return credentials.slice(0, 2);
 }
 
+function shouldExpandSameProviderRetryBudget(failure: AttemptFailure): boolean {
+  return failure.kind === 'server_error' || failure.kind === 'network';
+}
+
+function buildTokenCredentialAttemptsExhaustedError(input: {
+  provider: string;
+  model: string;
+  compatTerminalResult?: ProxyRouteResult | null;
+  lastRetryableFailure?: AttemptFailure | null;
+  sawRateLimitFailure?: boolean;
+}): AppError {
+  const {
+    provider,
+    model,
+    compatTerminalResult,
+    lastRetryableFailure,
+    sawRateLimitFailure
+  } = input;
+  const baseDetails: Record<string, unknown> = {
+    provider,
+    model,
+    ...(compatTerminalResult ? { compatTerminalResult } : {})
+  };
+
+  if (lastRetryableFailure && !sawRateLimitFailure) {
+    const status = lastRetryableFailure.kind === 'server_error'
+      ? (lastRetryableFailure.statusCode && lastRetryableFailure.statusCode >= 500
+        ? lastRetryableFailure.statusCode
+        : 503)
+      : 502;
+    return new AppError(
+      'upstream_error',
+      status,
+      lastRetryableFailure.kind === 'network'
+        ? 'All token credential attempts exhausted after upstream network failures'
+        : 'All token credential attempts exhausted after upstream server errors',
+      {
+        ...baseDetails,
+        lastFailureKind: lastRetryableFailure.kind ?? null,
+        lastUpstreamStatus: lastRetryableFailure.statusCode ?? null
+      }
+    );
+  }
+
+  return new AppError('capacity_unavailable', 429, 'All token credential attempts exhausted', baseDetails);
+}
+
 function resolveProviderSelectionReason(input: {
   provider: string;
   preferredProvider: string;
@@ -2958,11 +3005,17 @@ async function executeTokenModeNonStreaming(input: {
   let terminalCompatAttemptNo = 0;
   let terminalNative400Result: ProxyRouteResult | null = null;
   let sawNonAuthNon400Failure = false;
-  for (const initialCredential of selectSameProviderRetryCredentials(credentials)) {
+  let sawRateLimitFailure = false;
+  let lastRetryableFailure: AttemptFailure | null = null;
+  const initialSameProviderRetryLimit = selectSameProviderRetryCredentials(credentials).length;
+  let allowExpandedSameProviderRetry = false;
+  for (let credentialIndex = 0; credentialIndex < credentials.length; credentialIndex += 1) {
+    if (credentialIndex >= initialSameProviderRetryLimit && !allowExpandedSameProviderRetry) break;
     attemptNo += 1;
-    let credential = initialCredential;
+    let credential = credentials[credentialIndex]!;
     let refreshed = false;
     let compat = createCompatNormalizationState(payload, anthropicBeta);
+    allowExpandedSameProviderRetry = false;
 
     while (true) {
       const targetUrl = resolveTokenModeTargetUrl({
@@ -3075,13 +3128,16 @@ async function executeTokenModeNonStreaming(input: {
         .finally(() => clearTimeout(timer));
 
       if (!upstreamResponse) {
+        const failure = { kind: 'network', message: 'network error' } satisfies AttemptFailure;
         rememberRescueFailure(rescueTracker, {
           provider,
           credential,
           attemptNo,
-          failure: { kind: 'network', message: 'network error' }
+          failure
         });
         sawNonAuthNon400Failure = true;
+        lastRetryableFailure = failure;
+        allowExpandedSameProviderRetry = shouldExpandSameProviderRetryBudget(failure);
         break;
       }
 
@@ -3351,11 +3407,13 @@ async function executeTokenModeNonStreaming(input: {
           attemptNo,
           failure: { kind: 'rate_limited', statusCode: 429, message: 'rate limited' }
         });
+        sawRateLimitFailure = true;
         sawNonAuthNon400Failure = true;
         break;
       }
 
       if (status >= 500) {
+        const failure = { kind: 'server_error', statusCode: status, message: 'upstream server error' } satisfies AttemptFailure;
         if (strictUpstreamPassthrough) {
           const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
           const data = contentType.includes('application/json')
@@ -3407,14 +3465,16 @@ async function executeTokenModeNonStreaming(input: {
           terminalCompatAttemptNo = attemptNo;
         }
 
-        await logAttemptFailure({ kind: 'server_error', statusCode: status, message: 'upstream server error' }, ttfbMs);
+        await logAttemptFailure(failure, ttfbMs);
         rememberRescueFailure(rescueTracker, {
           provider,
           credential,
           attemptNo,
-          failure: { kind: 'server_error', statusCode: status, message: 'upstream server error' }
+          failure
         });
         sawNonAuthNon400Failure = true;
+        lastRetryableFailure = failure;
+        allowExpandedSameProviderRetry = shouldExpandSameProviderRetryBudget(failure);
         break;
       }
 
@@ -3698,10 +3758,12 @@ async function executeTokenModeNonStreaming(input: {
     return terminalNative400Result;
   }
 
-  throw new AppError('capacity_unavailable', 429, 'All token credential attempts exhausted', {
+  throw buildTokenCredentialAttemptsExhaustedError({
     provider,
     model,
-    ...(compatTerminalResult ? { compatTerminalResult } : {})
+    compatTerminalResult,
+    lastRetryableFailure,
+    sawRateLimitFailure
   });
 }
 
@@ -3789,12 +3851,18 @@ async function executeTokenModeStreaming(input: {
   let terminalCompatAttemptNo = 0;
   let terminalNative400Result: ProxyRouteResult | null = null;
   let sawNonAuthNon400Failure = false;
+  let sawRateLimitFailure = false;
+  let lastRetryableFailure: AttemptFailure | null = null;
+  const initialSameProviderRetryLimit = selectSameProviderRetryCredentials(credentials).length;
+  let allowExpandedSameProviderRetry = false;
 
-  for (const initialCredential of selectSameProviderRetryCredentials(credentials)) {
+  for (let credentialIndex = 0; credentialIndex < credentials.length; credentialIndex += 1) {
+    if (credentialIndex >= initialSameProviderRetryLimit && !allowExpandedSameProviderRetry) break;
     attemptNo += 1;
-    let credential = initialCredential;
+    let credential = credentials[credentialIndex]!;
     let refreshed = false;
     let compat = createCompatNormalizationState(payload, anthropicBeta);
+    allowExpandedSameProviderRetry = false;
 
     while (true) {
       const attemptStartedAt = Date.now();
@@ -3904,13 +3972,16 @@ async function executeTokenModeStreaming(input: {
         .finally(() => clearTimeout(timer));
 
       if (!upstreamResponse) {
+        const failure = { kind: 'network', message: 'network error' } satisfies AttemptFailure;
         rememberRescueFailure(rescueTracker, {
           provider,
           credential,
           attemptNo,
-          failure: { kind: 'network', message: 'network error' }
+          failure
         });
         sawNonAuthNon400Failure = true;
+        lastRetryableFailure = failure;
+        allowExpandedSameProviderRetry = shouldExpandSameProviderRetryBudget(failure);
         break;
       }
 
@@ -4178,11 +4249,13 @@ async function executeTokenModeStreaming(input: {
           attemptNo,
           failure: { kind: 'rate_limited', statusCode: 429, message: 'rate limited' }
         });
+        sawRateLimitFailure = true;
         sawNonAuthNon400Failure = true;
         break;
       }
 
       if (status >= 500 && !strictUpstreamPassthrough) {
+        const failure = { kind: 'server_error', statusCode: status, message: 'upstream server error' } satisfies AttemptFailure;
         if (compatTranslation) {
           const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
           const upstreamErrorData = contentType.includes('application/json')
@@ -4192,14 +4265,16 @@ async function executeTokenModeStreaming(input: {
           terminalCompatCredentialId = credential.id;
           terminalCompatAttemptNo = attemptNo;
         }
-        await logAttemptFailure({ kind: 'server_error', statusCode: status, message: 'upstream server error' }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
+        await logAttemptFailure(failure, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
         rememberRescueFailure(rescueTracker, {
           provider,
           credential,
           attemptNo,
-          failure: { kind: 'server_error', statusCode: status, message: 'upstream server error' }
+          failure
         });
         sawNonAuthNon400Failure = true;
+        lastRetryableFailure = failure;
+        allowExpandedSameProviderRetry = shouldExpandSameProviderRetryBudget(failure);
         break;
       }
 
@@ -5190,10 +5265,12 @@ async function executeTokenModeStreaming(input: {
       });
   }
 
-  throw new AppError('capacity_unavailable', 429, 'All token credential attempts exhausted', {
+  throw buildTokenCredentialAttemptsExhaustedError({
     provider,
     model,
-    ...(compatTerminalResult ? { compatTerminalResult } : {})
+    compatTerminalResult,
+    lastRetryableFailure,
+    sawRateLimitFailure
   });
 }
 

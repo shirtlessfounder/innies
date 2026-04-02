@@ -7346,6 +7346,237 @@ describe('proxy token-mode route behavior', () => {
     upstreamSpy.mockRestore();
   });
 
+  it('continues pinned codex streaming requests onto later same-provider credentials after retryable 5xx failures', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const firstOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_pinned_stream_retry_first',
+      clientId: 'app_pinned_stream_retry_first'
+    });
+    const secondOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_pinned_stream_retry_second',
+      clientId: 'app_pinned_stream_retry_second'
+    });
+    const thirdOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_pinned_stream_retry_third',
+      clientId: 'app_pinned_stream_retry_third'
+    });
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      supports_streaming: true
+    } as any);
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([
+      createRoutingCredentialFixture({
+        id: 'pinned-stream-openai-first',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: firstOpenAiToken,
+        refreshToken: 'rt_pinned_stream_retry_first'
+      }),
+      createRoutingCredentialFixture({
+        id: 'pinned-stream-openai-second',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: secondOpenAiToken,
+        refreshToken: 'rt_pinned_stream_retry_second'
+      }),
+      createRoutingCredentialFixture({
+        id: 'pinned-stream-openai-third',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: thirdOpenAiToken,
+        refreshToken: 'rt_pinned_stream_retry_third'
+      })
+    ]);
+
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input: URL | RequestInfo, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      if (headers?.authorization === `Bearer ${firstOpenAiToken}` || headers?.authorization === `Bearer ${secondOpenAiToken}`) {
+        return new Response(JSON.stringify({
+          error: {
+            type: 'server_error',
+            message: 'temporary openai outage'
+          }
+        }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+
+      if (headers?.authorization === `Bearer ${thirdOpenAiToken}`) {
+        return new Response([
+          'data: {"type":"response.created","response":{"id":"resp_pinned_stream_retry_ok","status":"in_progress"}}\n\n',
+          'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_pinned_stream_retry_ok","role":"assistant","content":[],"status":"in_progress"}}\n\n',
+          'data: {"type":"response.output_text.delta","output_index":0,"item_id":"msg_pinned_stream_retry_ok","content_index":0,"delta":"recovered"}\n\n',
+          'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_pinned_stream_retry_ok","role":"assistant","content":[{"type":"output_text","text":"recovered"}],"status":"completed"}}\n\n',
+          'data: {"type":"response.completed","response":{"id":"resp_pinned_stream_retry_ok","status":"completed","usage":{"input_tokens":2,"output_tokens":1}}}\n\n',
+          'data: [DONE]\n\n'
+        ].join(''), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+        });
+      }
+
+      throw new Error(`unexpected pinned stream auth header: ${JSON.stringify(headers ?? {})}`);
+    });
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/responses',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-innies-provider-pin': 'true',
+        'x-request-id': 'req_pinned_stream_retry'
+      },
+      body: {
+        model: 'gpt-5.4',
+        stream: true,
+        input: 'hello'
+      }
+    });
+    const res = createRealWritableStreamingMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(String(res.body)).toContain('resp_pinned_stream_retry_ok');
+    expect(String(res.body)).toContain('recovered');
+    expect(listSpy.mock.calls.map((call) => call[1])).toEqual(['openai']);
+    expect(upstreamSpy).toHaveBeenCalledTimes(3);
+    const routeDecision = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls.at(-1)?.[0]?.routeDecision;
+    expect(routeDecision?.reason).toBe('cli_provider_pinned');
+    expect(routeDecision?.provider_effective).toBe('openai');
+    expect(routeDecision?.rescued).toBe(true);
+    expect(routeDecision?.rescue_scope).toBe('same_provider');
+    expect(routeDecision?.rescue_final_credential_id).toBe('pinned-stream-openai-third');
+    upstreamSpy.mockRestore();
+  });
+
+  it('surfaces upstream 5xx after exhausting later same-provider credentials on pinned codex requests', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const firstOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_pinned_retry_exhausted_first',
+      clientId: 'app_pinned_retry_exhausted_first'
+    });
+    const secondOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_pinned_retry_exhausted_second',
+      clientId: 'app_pinned_retry_exhausted_second'
+    });
+    const thirdOpenAiToken = createFakeOpenAiOauthToken({
+      accountId: 'acct_pinned_retry_exhausted_third',
+      clientId: 'app_pinned_retry_exhausted_third'
+    });
+
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      supports_streaming: false
+    } as any);
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([
+      createRoutingCredentialFixture({
+        id: 'pinned-exhausted-openai-first',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: firstOpenAiToken,
+        refreshToken: 'rt_pinned_retry_exhausted_first'
+      }),
+      createRoutingCredentialFixture({
+        id: 'pinned-exhausted-openai-second',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: secondOpenAiToken,
+        refreshToken: 'rt_pinned_retry_exhausted_second'
+      }),
+      createRoutingCredentialFixture({
+        id: 'pinned-exhausted-openai-third',
+        provider: 'openai',
+        authScheme: 'bearer',
+        accessToken: thirdOpenAiToken,
+        refreshToken: 'rt_pinned_retry_exhausted_third'
+      })
+    ]);
+    const archiveSpy = vi.spyOn(runtimeModule.runtime.services.requestArchive, 'archiveAttempt').mockResolvedValue({
+      archiveId: 'archive_pinned_retry_exhausted',
+      requestMessageCount: 1,
+      responseMessageCount: 0,
+      rawBlobRoles: ['request']
+    });
+
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input: URL | RequestInfo, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      if (
+        headers?.authorization === `Bearer ${firstOpenAiToken}`
+        || headers?.authorization === `Bearer ${secondOpenAiToken}`
+        || headers?.authorization === `Bearer ${thirdOpenAiToken}`
+      ) {
+        return new Response(JSON.stringify({
+          error: {
+            type: 'server_error',
+            message: 'temporary openai outage'
+          }
+        }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+
+      throw new Error(`unexpected pinned exhausted auth header: ${JSON.stringify(headers ?? {})}`);
+    });
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/responses',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-innies-provider-pin': 'true',
+        'x-request-id': 'req_pinned_retry_exhausted'
+      },
+      body: {
+        model: 'gpt-5.4',
+        input: 'hello',
+        stream: false
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toEqual(expect.objectContaining({
+      code: 'upstream_error'
+    }));
+    expect(listSpy.mock.calls.map((call) => call[1])).toEqual(['openai']);
+    expect(upstreamSpy).toHaveBeenCalledTimes(3);
+    expect(archiveSpy).toHaveBeenCalledTimes(3);
+    const routeEvents = (runtimeModule.runtime.repos.routingEvents.insert as any).mock.calls.map((call: any[]) => call[0]);
+    expect(routeEvents.map((entry: any) => entry.upstreamStatus)).toEqual([503, 503, 503]);
+    expect(routeEvents.map((entry: any) => entry.errorCode)).toEqual(['server_error', 'server_error', 'server_error']);
+    upstreamSpy.mockRestore();
+  });
+
   it('surfaces the final native provider 400 after every eligible non-stream retry path fails', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     const firstOpenAiToken = createFakeOpenAiOauthToken({
