@@ -381,35 +381,13 @@ describe('publicLiveSessionsService', () => {
             text: 'assistant update for [REDACTED_EMAIL]'
           },
           {
-            entryId: 'arch_keep_1:2:tool_call',
-            kind: 'tool_call',
-            at: '2026-04-02T17:51:00.000Z',
-            toolName: 'grep',
-            argsText: '{"authorization":"[REDACTED_CREDENTIAL]","file":"[REDACTED_PATH]"}'
-          },
-          {
-            entryId: 'arch_keep_1:3:tool_result',
-            kind: 'tool_result',
-            at: '2026-04-02T17:51:00.000Z',
-            text: '{"message":"result ready","token":"[REDACTED_TOKEN]"}'
-          },
-          {
-            entryId: 'arch_keep_2:4:provider_switch',
-            kind: 'provider_switch',
-            at: '2026-04-02T17:59:00.000Z',
-            fromProvider: 'anthropic',
-            fromModel: 'claude-sonnet-4-5',
-            toProvider: 'openai',
-            toModel: 'gpt-5.2'
-          },
-          {
-            entryId: 'arch_keep_2:5:user',
+            entryId: 'arch_keep_2:2:user',
             kind: 'user',
             at: '2026-04-02T17:59:00.000Z',
             text: 'retry with openai please'
           },
           {
-            entryId: 'arch_keep_2:6:assistant_final',
+            entryId: 'arch_keep_2:3:assistant_final',
             kind: 'assistant_final',
             at: '2026-04-02T17:59:00.000Z',
             text: 'done for [REDACTED_EMAIL]'

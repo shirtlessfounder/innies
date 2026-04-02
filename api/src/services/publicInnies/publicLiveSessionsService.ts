@@ -75,27 +75,11 @@ type SessionAttempt = AttemptRow & {
 };
 
 type EntryDraft =
-  | {
+  {
     archiveId: string;
-    kind: 'user' | 'assistant_final' | 'tool_result';
+    kind: 'user' | 'assistant_final';
     at: string;
     text: string;
-  }
-  | {
-    archiveId: string;
-    kind: 'tool_call';
-    at: string;
-    toolName: string;
-    argsText: string;
-  }
-  | {
-    archiveId: string;
-    kind: 'provider_switch';
-    at: string;
-    fromProvider: string | null;
-    toProvider: string;
-    fromModel: string | null;
-    toModel: string;
   };
 
 type NormalizedPayload = {
@@ -465,31 +449,8 @@ export class PublicLiveSessionsService {
     messagesByArchiveId: Map<string, MessageRow[]>
   ): PublicLiveSessionEntry[] {
     const entries: EntryDraft[] = [];
-    let previousProvider: string | null = null;
-    let previousModel: string | null = null;
 
     for (const attempt of attempts) {
-      const currentProvider = readString(attempt.provider);
-      const currentModel = readString(attempt.model);
-      if (
-        previousProvider
-        && currentProvider
-        && (previousProvider !== currentProvider || previousModel !== currentModel)
-      ) {
-        const routeDecision = isRecord(attempt.route_decision) ? attempt.route_decision : null;
-        entries.push({
-          archiveId: attempt.request_attempt_archive_id,
-          kind: 'provider_switch',
-          at: attempt.eventAtIso,
-          fromProvider: sanitizeNullableString(readString(routeDecision?.provider_fallback_from) ?? previousProvider),
-          toProvider: sanitizeString(currentProvider),
-          fromModel: sanitizeNullableString(previousModel),
-          toModel: sanitizeString(currentModel ?? 'unknown')
-        });
-      }
-      previousProvider = currentProvider ?? previousProvider;
-      previousModel = currentModel ?? previousModel;
-
       const messageRows = messagesByArchiveId.get(attempt.request_attempt_archive_id) ?? [];
       for (const row of messageRows) {
         entries.push(...shapeMessageEntries({
@@ -610,34 +571,6 @@ function shapeMessageEntries(input: {
     }
 
     flushTextBuffer();
-
-    if (part.type === 'tool_call') {
-      const payloadText = stringifyPublicToolPayload(part.arguments);
-      if (payloadText.length === 0) {
-        continue;
-      }
-      entries.push({
-        archiveId: input.archiveId,
-        kind: 'tool_call',
-        at: input.at,
-        toolName: sanitizeString(readString(part.name) ?? 'tool'),
-        argsText: payloadText
-      });
-      continue;
-    }
-
-    if (part.type === 'tool_result') {
-      const payloadText = stringifyPublicToolPayload(part.content);
-      if (payloadText.length === 0) {
-        continue;
-      }
-      entries.push({
-        archiveId: input.archiveId,
-        kind: 'tool_result',
-        at: input.at,
-        text: payloadText
-      });
-    }
   }
 
   flushTextBuffer();

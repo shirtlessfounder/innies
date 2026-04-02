@@ -7,28 +7,6 @@ export type PublicLiveSessionEntry =
     kind: 'user' | 'assistant_final';
     at: string;
     text: string;
-  }
-  | {
-    entryId: string;
-    kind: 'tool_call';
-    at: string;
-    toolName: string;
-    argsText: string;
-  }
-  | {
-    entryId: string;
-    kind: 'tool_result';
-    at: string;
-    text: string;
-  }
-  | {
-    entryId: string;
-    kind: 'provider_switch';
-    at: string;
-    fromProvider: string | null;
-    toProvider: string;
-    fromModel: string | null;
-    toModel: string;
   };
 
 export type PublicLiveSession = {
