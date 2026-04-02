@@ -171,6 +171,36 @@ describe('public innies routes', () => {
     expect(res.headers['cache-control']).toBe('public, max-age=5, stale-while-revalidate=25');
   });
 
+  it('allows the www production origin from the fallback public allowlist', async () => {
+    const { createPublicInniesRouter } = await loadRouteModule();
+    const liveSessions = {
+      listFeed: vi.fn().mockResolvedValue({
+        orgSlug: 'innies',
+        generatedAt: '2026-04-02T18:00:00.000Z',
+        sessions: []
+      })
+    };
+    const router = createPublicInniesRouter({
+      liveSessions,
+      env: {}
+    });
+    const handlers = getRouteHandlers(router, '/v1/public/innies/live-sessions', 'get');
+    const req = createMockReq({
+      method: 'GET',
+      path: '/v1/public/innies/live-sessions',
+      headers: { origin: 'https://www.innies.work' }
+    });
+    const res = createMockRes();
+
+    await invokeHandlers(handlers, req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBe('https://www.innies.work');
+    expect(res.headers['access-control-allow-methods']).toBe('GET, OPTIONS');
+    expect(res.headers['access-control-allow-headers']).toBe('Content-Type');
+    expect(res.headers.vary).toBe('Origin');
+  });
+
   it('answers preflight requests for explicitly configured public web origins', async () => {
     const { createPublicInniesRouter } = await loadRouteModule();
     const liveSessions = {

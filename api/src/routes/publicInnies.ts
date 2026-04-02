@@ -6,6 +6,7 @@ import { PublicLiveSessionsService } from '../services/publicInnies/publicLiveSe
 const PUBLIC_LIVE_SESSIONS_PATH = '/v1/public/innies/live-sessions';
 const FALLBACK_PUBLIC_WEB_ORIGINS = [
   'https://innies.work',
+  'https://www.innies.work',
   'http://localhost:3000'
 ];
 const PUBLIC_FEED_CACHE_CONTROL = 'public, max-age=5, stale-while-revalidate=25';
