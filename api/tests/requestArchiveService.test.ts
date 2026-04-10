@@ -455,7 +455,6 @@ function assertAttemptReplayMatches(existing: AttemptRecord, input: AttemptRecor
     existing.upstreamStatus === (input.upstreamStatus ?? null),
     existing.errorCode === (input.errorCode ?? null),
     existing.startedAt.toISOString() === input.startedAt.toISOString(),
-    (existing.completedAt?.toISOString() ?? null) === (input.completedAt?.toISOString() ?? null),
     existing.openclawRunId === (input.openclawRunId ?? null),
     existing.openclawSessionId === (input.openclawSessionId ?? null),
     existing.routingEventId === (input.routingEventId ?? null),
@@ -805,6 +804,30 @@ describe('RequestArchiveService', () => {
       orgId: 'org_1',
       apiKeyId: 'api_key_1'
     });
+  });
+
+  it('tolerates duplicate archive replays when only completedAt drifts', async () => {
+    const { service, state } = createService();
+
+    await service.archiveAttempt(baseAttempt({
+      requestId: 'req_completed_at_replay',
+      attemptNo: 4,
+      completedAt: new Date('2026-03-26T03:00:04Z')
+    }));
+    await service.archiveAttempt(baseAttempt({
+      requestId: 'req_completed_at_replay',
+      attemptNo: 4,
+      completedAt: new Date('2026-03-26T03:00:09Z')
+    }));
+
+    expect(state.attempts).toHaveLength(1);
+    expect(state.attempts[0]).toEqual(expect.objectContaining({
+      requestId: 'req_completed_at_replay',
+      attemptNo: 4,
+      completedAt: new Date('2026-03-26T03:00:04Z')
+    }));
+    expect(state.sessionProjectionOutbox).toHaveLength(1);
+    expect(state.analysisProjectionOutbox).toHaveLength(1);
   });
 
   it('rolls back archive rows when either projection outbox enqueue fails', async () => {

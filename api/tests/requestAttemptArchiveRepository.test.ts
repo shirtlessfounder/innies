@@ -96,6 +96,51 @@ describe('RequestAttemptArchiveRepository', () => {
     );
   });
 
+  it('reuses the stored archive row when only completedAt drifts on replay', async () => {
+    const db = new SequenceSqlClient([
+      { rows: [], rowCount: 0 },
+      {
+        rows: [{
+          id: 'archive_existing',
+          request_id: 'req_1',
+          attempt_no: 2,
+          org_id: 'org_1',
+          api_key_id: 'api_key_1',
+          route_kind: 'token_credential',
+          seller_key_id: null,
+          token_credential_id: 'cred_1',
+          provider: 'anthropic',
+          model: 'claude-opus-4-1',
+          streaming: true,
+          status: 'success',
+          upstream_status: 200,
+          error_code: null,
+          started_at: '2026-03-26T03:00:00Z',
+          completed_at: '2026-03-26T03:00:04Z',
+          openclaw_run_id: 'run_1',
+          openclaw_session_id: 'session_1',
+          routing_event_id: 'route_1',
+          usage_ledger_id: 'usage_1',
+          metering_event_id: 'meter_1',
+          created_at: '2026-03-26T03:00:05Z'
+        }],
+        rowCount: 1
+      }
+    ]);
+    const repo = new RequestAttemptArchiveRepository(db, () => 'archive_new');
+
+    const row = await repo.upsertArchive({
+      ...sampleAttempt,
+      completedAt: new Date('2026-03-26T03:00:06Z')
+    });
+
+    expect(row).toEqual(expect.objectContaining({
+      id: 'archive_existing',
+      request_id: 'req_1',
+      completed_at: '2026-03-26T03:00:04Z'
+    }));
+  });
+
   it('finds one archived attempt by request id and attempt number', async () => {
     const db = new MockSqlClient({
       rows: [{

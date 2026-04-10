@@ -202,7 +202,6 @@ function assertRequestAttemptArchiveReplayMatches(
     { field: 'upstreamStatus', expected: input.upstreamStatus ?? null, actual: row.upstream_status },
     { field: 'errorCode', expected: input.errorCode ?? null, actual: row.error_code },
     { field: 'startedAt', expected: normalizeTimestamp(input.startedAt), actual: normalizeTimestamp(row.started_at) },
-    { field: 'completedAt', expected: normalizeTimestamp(input.completedAt ?? null), actual: normalizeTimestamp(row.completed_at) },
     { field: 'openclawRunId', expected: input.openclawRunId ?? null, actual: row.openclaw_run_id },
     { field: 'openclawSessionId', expected: input.openclawSessionId ?? null, actual: row.openclaw_session_id },
     { field: 'routingEventId', expected: input.routingEventId ?? null, actual: row.routing_event_id },
