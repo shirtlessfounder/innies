@@ -110,6 +110,7 @@ Notes:
   - Codex OAuth streaming Responses requests force upstream `stream=true`
   - `ChatGPT-Account-Id` is derived from the OAuth access token when present
   - `POST /v1/messages` (compat mode) stays Anthropic-shaped at the client boundary, but can route to either provider under buyer-key preference
+  - native `POST /v1/responses` token-mode requests stay on the OpenAI lane even when the buyer-key default/preference is Anthropic
   - compat requests routed to `openai` are translated to `/v1/responses` and translated back into Anthropic-shaped JSON/SSE before returning to the client
   - provider-specific wrapper/CLI sessions are intentionally pinned and do not use cross-provider preference routing
   - session/CLI pinning is controlled by `x-innies-provider-pin: true` or request metadata `innies_provider_pin=true`

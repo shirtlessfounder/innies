@@ -3262,6 +3262,85 @@ describe('proxy token-mode route behavior', () => {
     upstreamSpy.mockRestore();
   });
 
+  it('keeps unpinned native codex/openai responses requests on the openai lane', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.OPENAI_UPSTREAM_BASE_URL = 'https://openai.internal.test';
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'anthropic'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      supports_streaming: false
+    } as any);
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'dddd0002-0000-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      authScheme: 'x_api_key',
+      accessToken: 'openai-key-native-unpinned',
+      refreshToken: null,
+      expiresAt: new Date('2026-03-02T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'resp_native_unpinned_ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/responses',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-request-id': 'req_native_codex_unpinned'
+      },
+      body: {
+        model: 'gpt-5.4',
+        input: 'hello from native codex without pin',
+        stream: false
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).id).toBe('resp_native_unpinned_ok');
+    expect(listSpy.mock.calls.map((call) => call[1])).toEqual(['openai']);
+    const [targetUrl, init] = upstreamSpy.mock.calls[0] as [URL, RequestInit];
+    const headers = (init.headers ?? {}) as Record<string, string>;
+    expect(String(targetUrl)).toBe('https://openai.internal.test/v1/responses');
+    expect(headers.authorization).toBe('Bearer openai-key-native-unpinned');
+    expect(runtimeModule.runtime.repos.routingEvents.insert).toHaveBeenCalledWith(expect.objectContaining({
+      routeDecision: expect.objectContaining({
+        reason: 'preferred_provider_selected',
+        provider_selection_reason: 'preferred_provider_selected',
+        provider_preferred: 'openai',
+        provider_effective: 'openai',
+        provider_plan: ['openai']
+      })
+    }));
+    upstreamSpy.mockRestore();
+  });
+
   it('keeps healthy legacy codex credentials eligible on native openai responses requests', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     const oauthToken = createFakeOpenAiOauthToken({ accountId: 'acct_native_codex_healthy' });

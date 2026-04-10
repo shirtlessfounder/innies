@@ -527,22 +527,33 @@ function isClaudeCliPinnedRequest(req: any, proxiedPath: string): boolean {
   return Boolean(userAgent && userAgent.trim().toLowerCase().startsWith('claude-cli/'));
 }
 
+function shouldLockTokenModeProviderPlanToRequestProvider(input: {
+  compatMode: boolean;
+  proxiedPath: string;
+  requestProvider: string;
+}): boolean {
+  if (input.compatMode) return false;
+  if (canonicalizeProvider(input.requestProvider) !== 'openai') return false;
+  return parseRelativeProxyUrl(input.proxiedPath).pathname === '/v1/responses';
+}
+
 function parseProviderPreferencePlan(input: {
   preferredProvider?: string | null;
   preferredProviderSource?: 'explicit' | 'default' | null;
   requestProvider: string;
   pinSelectionReason?: ProviderSelectionReason | null;
+  forceRequestProviderPlan?: boolean;
 }): {
   providerPlan: string[];
   preferredProvider: string;
   pinSelectionReason?: ProviderSelectionReason;
 } {
   const requestProvider = canonicalizeProvider(input.requestProvider);
-  if (input.pinSelectionReason) {
+  if (input.pinSelectionReason || input.forceRequestProviderPlan) {
     return {
       providerPlan: [requestProvider],
       preferredProvider: requestProvider,
-      pinSelectionReason: input.pinSelectionReason
+      ...(input.pinSelectionReason ? { pinSelectionReason: input.pinSelectionReason } : {})
     };
   }
 
@@ -5346,6 +5357,11 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
     const requestPinSelectionReason = (readProviderPinSignal(req) || isClaudeCliPinnedRequest(req, proxiedPath))
       ? 'cli_provider_pinned'
       : null;
+    const forceRequestProviderPlan = shouldLockTokenModeProviderPlanToRequestProvider({
+      compatMode,
+      proxiedPath,
+      requestProvider
+    });
     const nextPromptProviderOverride = requestPinSelectionReason
       ? null
       : consumeNextPromptProviderOverride({
@@ -5361,7 +5377,8 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
         preferredProvider: nextPromptProviderOverride?.preferredProvider ?? auth.preferredProvider,
         preferredProviderSource: auth.preferredProviderSource,
         requestProvider,
-        pinSelectionReason: requestPinSelectionReason
+        pinSelectionReason: requestPinSelectionReason,
+        forceRequestProviderPlan
       });
 
       let previousProvider: string | undefined;
