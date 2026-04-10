@@ -75,6 +75,8 @@ Behavior:
 - forwards all args to `codex`
 - exits with the same exit code as `codex`
 - prints actionable error if `codex` cannot start
+- runs Codex with a temporary isolated `CODEX_HOME` so wrapped sessions do not reuse stale local ChatGPT login state from `~/.codex/auth.json`
+- preserves stable local Codex config such as `config.toml`, but skips mutable auth/history/cache state when building that temporary home
 - prepends Codex config overrides for:
   - `model_provider="innies"` (custom Codex provider id; avoids the built-in `openai` provider path)
   - `model_providers.innies.base_url="<innies>/v1/proxy/v1"`

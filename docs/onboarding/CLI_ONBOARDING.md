@@ -47,6 +47,7 @@ Both wrappers inject a default `--model`:
 | Missing `claude`/`codex` binary | Install upstream CLI, rerun `innies doctor` |
 | `No active compatibility rule` | Model not in DB — add to `in_model_compatibility_rules` |
 | Codex "high demand" / reconnecting | Make sure you launched with `innies codex`, not raw `codex`; the wrapper injects Innies config and disables websockets automatically |
+| `Your access token could not be refreshed because your refresh token was already used` | Launch through `innies codex`. The wrapper now isolates Codex from stale local ChatGPT auth state in `~/.codex/auth.json` for wrapped sessions. |
 | Claude has active claude.ai login | Supported — `innies claude` uses a local bridge that injects buyer auth before forwarding to Innies |
 | `Stream disconnected` | Check server logs for `synthetic_output_item_count: 0` |
 

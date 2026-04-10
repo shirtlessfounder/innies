@@ -29,6 +29,7 @@ innies unlink claude
 - You need an Innies buyer token, not a raw Anthropic/OpenAI API key.
 - `innies login` stores config in `~/.innies/config.json`.
 - Wrapper commands pass through extra arguments after `--`.
+- `innies codex` isolates wrapped runs from stale local ChatGPT login state in `~/.codex/auth.json`, while still preserving normal Codex config like `config.toml`.
 - `innies doctor` shows the actual Claude binary `innies claude` will execute and whether plain `claude` is currently wrapper-linked through Innies.
 - `innies unlink claude` removes the managed `~/.local/bin/claude` takeover wrapper if you want plain `claude` to go back to the real local install.
 - Upgrade past `innies@0.1.3` if installed; that build used Claude credential shelving and has been replaced by the local bridge flow.

@@ -8,6 +8,7 @@ import {
   resolveWrappedBinary,
   shouldCaptureCommandOutput
 } from './wrapperRuntime.js';
+import { prepareCodexAuthOverlay } from './codexAuthOverlay.js';
 
 const CODEX_PROXY_PROVIDER = 'innies';
 
@@ -79,6 +80,10 @@ export async function runCodex(args) {
     displayName: 'Codex',
     overrideEnvVar: 'INNIES_CODEX_BIN'
   });
+  const authOverlay = await prepareCodexAuthOverlay({
+    buyerToken: config.token,
+    sourceCodexHome: process.env.CODEX_HOME
+  });
 
   printConnectionStatus({ model, proxyUrl, correlationId });
 
@@ -91,6 +96,7 @@ export async function runCodex(args) {
 
   const env = {
     ...inheritedEnv,
+    CODEX_HOME: authOverlay.codexHome,
     INNIES_CODEX_WRAPPED: '1',
     INNIES_TOKEN: config.token,
     INNIES_API_BASE_URL: config.apiBaseUrl,
@@ -124,11 +130,20 @@ export async function runCodex(args) {
     });
   }
 
+  let overlayCleaned = false;
+  function cleanupOverlay() {
+    if (overlayCleaned) return;
+    overlayCleaned = true;
+    authOverlay.cleanup();
+  }
+
   child.on('error', (error) => {
+    cleanupOverlay();
     fail(`Failed to run codex: ${error.message}`);
   });
 
-  child.on('exit', (code, signal) => {
+  child.on('close', (code, signal) => {
+    cleanupOverlay();
     if (signal) {
       process.kill(process.pid, signal);
       return;
