@@ -1,6 +1,7 @@
 import type { SqlClient, SqlValue, TransactionContext } from './sqlClient.js';
 import { type IdFactory, uuidV4 } from './idFactory.js';
 import { TABLES } from './tableNames.js';
+import { assertIdempotentReplayMatches } from './idempotentReplay.js';
 
 export type UsageEntryType = 'usage' | 'correction' | 'reversal';
 
@@ -123,11 +124,45 @@ export class UsageLedgerRepository {
     ];
 
     const result = await this.db.query<UsageLedgerRow>(sql, params);
-    if (result.rowCount !== 1) {
+    if (result.rowCount === 1) {
+      return result.rows[0];
+    }
+
+    const existing = entryType === 'usage'
+      ? await this.findExistingUsageRow({
+          requestId: input.requestId,
+          attemptNo: input.attemptNo,
+          orgId: input.orgId
+        })
+      : null;
+    if (!existing) {
       throw new Error('expected one usage_ledger row to be inserted');
     }
 
-    return result.rows[0];
+    assertUsageLedgerReplayMatches(input, existing);
+    return existing;
+  }
+
+  private async findExistingUsageRow(input: {
+    requestId: string;
+    attemptNo: number;
+    orgId: string;
+  }): Promise<UsageLedgerRow | null> {
+    const sql = `
+      select *
+      from ${TABLES.usageLedger}
+      where org_id = $1
+        and request_id = $2
+        and attempt_no = $3
+        and entry_type = 'usage'
+      limit 1
+    `;
+    const result = await this.db.query<UsageLedgerRow>(sql, [
+      input.orgId,
+      input.requestId,
+      input.attemptNo
+    ]);
+    return result.rowCount === 1 ? result.rows[0] : null;
   }
 }
 
@@ -136,4 +171,24 @@ function txClient(tx: TransactionContext): SqlClient {
     query: (sql, params) => tx.query(sql, params),
     transaction: async (run) => run(tx)
   };
+}
+
+function assertUsageLedgerReplayMatches(input: UsageLedgerWriteInput, row: UsageLedgerRow): void {
+  assertIdempotentReplayMatches('usage ledger', [
+    { field: 'entryType', expected: input.entryType ?? 'usage', actual: row.entry_type },
+    { field: 'requestId', expected: input.requestId, actual: row.request_id },
+    { field: 'attemptNo', expected: input.attemptNo, actual: row.attempt_no },
+    { field: 'orgId', expected: input.orgId, actual: row.org_id },
+    { field: 'apiKeyId', expected: input.apiKeyId ?? null, actual: row.api_key_id },
+    { field: 'sellerKeyId', expected: input.sellerKeyId ?? null, actual: row.seller_key_id },
+    { field: 'provider', expected: input.provider, actual: row.provider },
+    { field: 'model', expected: input.model, actual: row.model },
+    { field: 'inputTokens', expected: input.inputTokens, actual: row.input_tokens },
+    { field: 'outputTokens', expected: input.outputTokens, actual: row.output_tokens },
+    { field: 'usageUnits', expected: input.usageUnits, actual: row.usage_units },
+    { field: 'retailEquivalentMinor', expected: input.retailEquivalentMinor, actual: row.retail_equivalent_minor },
+    { field: 'currency', expected: input.currency ?? 'USD', actual: row.currency },
+    { field: 'sourceEventId', expected: input.sourceEventId ?? null, actual: row.source_event_id },
+    { field: 'note', expected: input.note ?? null, actual: row.note }
+  ]);
 }
