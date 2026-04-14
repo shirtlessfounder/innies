@@ -22,6 +22,11 @@ import {
   summarizeSyntheticOpenAiOutputItems
 } from '../utils/openaiSyntheticStream.js';
 import {
+  normalizeOpenAiResponsesInputForCodexBackend,
+  openAiChatCompletionsToResponses,
+  openAiResponsesToChatCompletions
+} from '../utils/openaiChatCompletions.js';
+import {
   collectTraceResponseHeaders,
   persistCompatTraceBody,
   sanitizeTraceHeaders
@@ -72,6 +77,12 @@ const nativeAnthropicProxyRequestSchema = z.object({
 
 const nativeOpenAiResponsesRequestSchema = z.object({
   model: z.string().min(1),
+  stream: z.boolean().optional()
+}).passthrough();
+
+const nativeOpenAiChatCompletionsRequestSchema = z.object({
+  model: z.string().min(1),
+  messages: z.array(z.unknown()).min(1),
   stream: z.boolean().optional()
 }).passthrough();
 
@@ -455,6 +466,16 @@ function parseProxyRequestBody(body: unknown, proxiedPath: string) {
       provider: 'openai',
       model: parsed.model,
       streaming: parsed.stream !== false,
+      payload: parsed
+    };
+  }
+
+  if (parsedPath.pathname === '/chat/completions') {
+    const parsed = nativeOpenAiChatCompletionsRequestSchema.parse(body);
+    return {
+      provider: 'openai',
+      model: parsed.model,
+      streaming: parsed.stream === true,
       payload: parsed
     };
   }
@@ -1821,6 +1842,10 @@ function parseRelativeProxyUrl(proxiedPath: string): URL {
   return new URL(proxiedPath, 'https://innies.invalid');
 }
 
+function isOpenAiChatCompletionsPath(proxiedPath: string): boolean {
+  return parseRelativeProxyUrl(proxiedPath).pathname === '/chat/completions';
+}
+
 function archivePayloadFormatForPath(proxiedPath: string): ArchivePayloadFormat {
   return parseRelativeProxyUrl(proxiedPath).pathname === '/v1/responses'
     ? 'openai_responses'
@@ -1969,7 +1994,7 @@ function resolveTokenModeTargetUrl(input: {
   const { provider, credential, proxiedPath } = input;
   if (isOpenAiOauthToken(credential, provider)) {
     const parsed = parseRelativeProxyUrl(proxiedPath);
-    const nextPath = parsed.pathname === '/v1/responses'
+    const nextPath = parsed.pathname === '/v1/responses' || parsed.pathname === '/chat/completions'
       ? '/backend-api/codex/responses'
       : parsed.pathname;
     return new URL(`${nextPath}${parsed.search}`, 'https://chatgpt.com');
@@ -2022,28 +2047,14 @@ function normalizeAnthropicOauthMessagesPayload(payload: Record<string, unknown>
   return normalized;
 }
 
-function normalizeTokenModeUpstreamPayload(input: {
-  provider: string;
-  credential: TokenCredential;
-  proxiedPath: string;
-  payload: unknown;
-  streaming?: boolean;
-}): unknown {
-  const { provider, credential, proxiedPath, payload, streaming } = input;
-  const parsed = parseRelativeProxyUrl(proxiedPath);
-  if (isAnthropicOauthToken(credential, provider)) {
-    if (parsed.pathname !== '/v1/messages') return payload;
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
-    return normalizeAnthropicOauthMessagesPayload(payload as Record<string, unknown>);
-  }
-  if (!isOpenAiOauthToken(credential, provider)) return payload;
-  if (parsed.pathname !== '/v1/responses') return payload;
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+function normalizeOpenAiOauthResponsesPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...payload };
+  normalized.input = normalizeOpenAiResponsesInputForCodexBackend(normalized.input);
 
-  const normalized = { ...(payload as Record<string, unknown>) };
   // ChatGPT Codex backend rejects OpenAI token-limit params on this path.
   delete normalized.max_output_tokens;
   delete normalized.max_tokens;
+  delete normalized.max_completion_tokens;
   if (typeof normalized.instructions !== 'string' || normalized.instructions.trim().length === 0) {
     normalized.instructions = 'You are a helpful assistant.';
   }
@@ -2079,6 +2090,39 @@ function normalizeTokenModeUpstreamPayload(input: {
     // Codex ChatGPT backend currently requires streaming on this path.
     stream: true
   };
+}
+
+function usesOpenAiChatCompletionsCompat(input: {
+  provider: string;
+  credential: TokenCredential;
+  proxiedPath: string;
+}): boolean {
+  return isOpenAiOauthToken(input.credential, input.provider)
+    && isOpenAiChatCompletionsPath(input.proxiedPath);
+}
+
+function normalizeTokenModeUpstreamPayload(input: {
+  provider: string;
+  credential: TokenCredential;
+  proxiedPath: string;
+  payload: unknown;
+  streaming?: boolean;
+}): unknown {
+  const { provider, credential, proxiedPath, payload, streaming } = input;
+  const parsed = parseRelativeProxyUrl(proxiedPath);
+  if (isAnthropicOauthToken(credential, provider)) {
+    if (parsed.pathname !== '/v1/messages') return payload;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+    return normalizeAnthropicOauthMessagesPayload(payload as Record<string, unknown>);
+  }
+  if (!isOpenAiOauthToken(credential, provider)) return payload;
+  if (parsed.pathname === '/chat/completions') {
+    return normalizeOpenAiOauthResponsesPayload(openAiChatCompletionsToResponses(payload));
+  }
+  if (parsed.pathname !== '/v1/responses') return payload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+
+  return normalizeOpenAiOauthResponsesPayload(payload as Record<string, unknown>);
 }
 
 function extractLastTokenCount(raw: string, field: 'input_tokens' | 'output_tokens'): number | null {
@@ -3557,6 +3601,11 @@ async function executeTokenModeNonStreaming(input: {
         : null;
       const extractedFailed = extractedStatus === 'failed';
       const effectiveStatus = extractedFailed ? 500 : status;
+      const chatCompletionsCompat = usesOpenAiChatCompletionsCompat({
+        provider,
+        credential,
+        proxiedPath
+      });
       // Map ALL error statuses on translated paths to Anthropic-shaped error envelopes.
       const downstreamMappedError = compatTranslation && (status >= 400 || extractedFailed)
         ? mapOpenAiErrorToAnthropic(effectiveStatus, data)
@@ -3593,19 +3642,24 @@ async function executeTokenModeNonStreaming(input: {
           failure: {
             kind: 'upstream_failed_stream',
             statusCode: effectiveStatus,
-            message: 'upstream responses stream reported failure'
+          message: 'upstream responses stream reported failure'
           }
         });
         sawNonAuthNon400Failure = true;
         break;
       }
+      const translatedChatCompletion = chatCompletionsCompat && status >= 200 && status < 300 && !extractedFailed
+        ? openAiResponsesToChatCompletions(data, model)
+        : null;
       const downstreamData = compatTranslation && status >= 200 && status < 300 && !extractedFailed
         ? translateOpenAiToAnthropic({
           data,
           model: compatTranslation.originalModel
         })
-        : (downstreamMappedError?.body ?? data);
-      const downstreamContentType = compatTranslation || extractedSseResponse ? 'application/json' : contentType;
+        : (translatedChatCompletion ?? (downstreamMappedError?.body ?? data));
+      const downstreamContentType = compatTranslation || extractedSseResponse || translatedChatCompletion
+        ? 'application/json'
+        : contentType;
       if (strictUpstreamPassthrough && status >= 400) {
         const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
         logCompatAudit({
@@ -5276,6 +5330,9 @@ async function executeTokenModeStreaming(input: {
       });
   }
 
+  if (allowCompatTerminalErrorResponse && terminalNative400Result && !sawNonAuthNon400Failure) {
+    return terminalNative400Result;
+  }
   throw buildTokenCredentialAttemptsExhaustedError({
     provider,
     model,

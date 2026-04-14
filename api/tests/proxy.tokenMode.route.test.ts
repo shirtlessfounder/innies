@@ -3341,6 +3341,132 @@ describe('proxy token-mode route behavior', () => {
     upstreamSpy.mockRestore();
   });
 
+  it('adapts native openai chat completions requests for legacy codex credentials and translates the response back', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    const oauthToken = createFakeOpenAiOauthToken({ accountId: 'acct_native_chat_codex' });
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-5.4-mini',
+      supports_streaming: false
+    } as any);
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([{
+      id: 'dddd0001-1111-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'openai',
+      authScheme: 'bearer',
+      accessToken: oauthToken,
+      refreshToken: 'rt_native_chat_codex',
+      expiresAt: new Date('2026-03-20T00:00:00Z'),
+      status: 'active',
+      rotationVersion: 1,
+      createdAt: new Date('2026-03-01T00:00:00Z'),
+      updatedAt: new Date('2026-03-01T00:00:00Z'),
+      revokedAt: null,
+      monthlyContributionLimitUnits: null,
+      monthlyContributionUsedUnits: 0,
+      monthlyWindowStartAt: new Date('2026-03-01T00:00:00Z')
+    } as any]);
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentialProviderUsage, 'listByTokenCredentialIds').mockResolvedValue([{
+      tokenCredentialId: 'dddd0001-1111-4000-8000-000000000000',
+      orgId: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      provider: 'codex',
+      usageSource: 'openai_wham_usage',
+      fiveHourUtilizationRatio: 0.22,
+      fiveHourResetsAt: new Date('2026-03-19T01:00:00.000Z'),
+      sevenDayUtilizationRatio: 0.08,
+      sevenDayResetsAt: new Date('2026-03-22T00:00:00.000Z'),
+      rawPayload: {
+        rate_limit: {
+          primary_window: { used_percent: 22, reset_at: 1760000400 },
+          secondary_window: { used_percent: 8, reset_at: 1760256000 }
+        }
+      },
+      fetchedAt: new Date(Date.now() - (60 * 1000)),
+      createdAt: new Date('2026-03-18T22:31:00.000Z'),
+      updatedAt: new Date('2026-03-18T22:31:00.000Z')
+    } as any]);
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        id: 'resp_native_chat_ok',
+        model: 'gpt-5.4-mini',
+        status: 'completed',
+        output: [{
+          type: 'message',
+          id: 'msg_native_chat_ok',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'hello there' }],
+          status: 'completed'
+        }],
+        usage: { input_tokens: 3, output_tokens: 2 }
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/chat/completions',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-request-id': 'req_native_chat_codex',
+        'x-innies-provider-pin': 'true'
+      },
+      body: {
+        model: 'gpt-5.4-mini',
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 5
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({
+      id: 'resp_native_chat_ok',
+      object: 'chat.completion',
+      model: 'gpt-5.4-mini',
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: 'hello there'
+        },
+        finish_reason: 'stop'
+      }],
+      usage: {
+        prompt_tokens: 3,
+        completion_tokens: 2,
+        total_tokens: 5
+      }
+    }));
+    expect(listSpy).toHaveBeenCalledWith('818d0cc7-7ed2-469f-b690-a977e72a921d', 'openai');
+    const [targetUrl, init] = upstreamSpy.mock.calls[0] as [URL, RequestInit];
+    const headers = (init.headers ?? {}) as Record<string, string>;
+    expect(String(targetUrl)).toBe('https://chatgpt.com/backend-api/codex/responses');
+    expect(headers['chatgpt-account-id']).toBe('acct_native_chat_codex');
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      model: 'gpt-5.4-mini',
+      input: [{ type: 'message', role: 'user', content: 'hi' }],
+      instructions: 'You are a helpful assistant.',
+      store: false,
+      stream: true
+    });
+    upstreamSpy.mockRestore();
+  });
+
   it('keeps healthy legacy codex credentials eligible on native openai responses requests', async () => {
     process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
     const oauthToken = createFakeOpenAiOauthToken({ accountId: 'acct_native_codex_healthy' });
@@ -3437,6 +3563,13 @@ describe('proxy token-mode route behavior', () => {
     const headers = (init.headers ?? {}) as Record<string, string>;
     expect(String(targetUrl)).toBe('https://chatgpt.com/backend-api/codex/responses');
     expect(headers['chatgpt-account-id']).toBe('acct_native_codex_healthy');
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      model: 'gpt-5.4',
+      input: [{ type: 'message', role: 'user', content: 'hello from native openai' }],
+      instructions: 'You are a helpful assistant.',
+      store: false,
+      stream: true
+    });
     upstreamSpy.mockRestore();
   });
 
@@ -3790,7 +3923,7 @@ describe('proxy token-mode route behavior', () => {
     expect(headers['chatgpt-account-id']).toBe('acct_codex_live');
     expect(JSON.parse(String(init.body))).toMatchObject({
       model: 'gpt-5.4',
-      input: 'hello',
+      input: [{ type: 'message', role: 'user', content: 'hello' }],
       instructions: 'You are a helpful assistant.',
       store: false,
       stream: true
@@ -5139,6 +5272,93 @@ describe('proxy token-mode route behavior', () => {
         max_tokens: 16,
         messages: [{ role: 'user', content: 'please fail' }]
       }
+    }));
+  });
+
+  it('archives raw upstream error bodies for failed native openai responses attempts', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.OPENAI_UPSTREAM_BASE_URL = 'https://openai.internal.test';
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      supports_streaming: false
+    } as any);
+    const archiveSpy = vi.spyOn(runtimeModule.runtime.services.requestArchive, 'archiveAttempt').mockResolvedValue({
+      archiveId: 'archive_openai_non_stream_failed',
+      requestMessageCount: 1,
+      responseMessageCount: 1,
+      rawBlobRoles: ['request', 'response']
+    });
+    vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([
+      createRoutingCredentialFixture({
+        id: 'cred_openai_archive_fail',
+        provider: 'openai',
+        authScheme: 'x_api_key',
+        accessToken: 'sk-openai-archive-fail'
+      })
+    ]);
+    const upstreamError = {
+      error: {
+        type: 'invalid_request_error',
+        message: 'responses payload rejected'
+      }
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(upstreamError), {
+      status: 400,
+      headers: { 'content-type': 'application/json' }
+    }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/responses',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123458',
+        'x-request-id': 'req_openai_archive_fail',
+        'x-innies-provider-pin': 'true'
+      },
+      body: {
+        model: 'gpt-5.4',
+        input: 'please fail',
+        stream: false
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(archiveSpy).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: 'req_openai_archive_fail',
+      attemptNo: 1,
+      routeKind: 'token_credential',
+      tokenCredentialId: 'cred_openai_archive_fail',
+      provider: 'openai',
+      model: 'gpt-5.4',
+      streaming: false,
+      status: 'failed',
+      upstreamStatus: 400,
+      errorCode: 'upstream_400',
+      request: {
+        format: 'openai_responses',
+        payload: {
+          model: 'gpt-5.4',
+          input: 'please fail',
+          stream: false
+        }
+      },
+      response: {
+        format: 'openai_responses',
+        payload: upstreamError
+      },
+      rawRequest: {
+        model: 'gpt-5.4',
+        input: 'please fail',
+        stream: false
+      },
+      rawResponse: upstreamError
     }));
   });
 
@@ -7805,6 +8025,73 @@ describe('proxy token-mode route behavior', () => {
     expect(routeDecision?.provider_fallback_from).toBe('openai');
     expect(routeDecision?.provider_fallback_reason).toBe('capacity_unavailable');
     upstreamSpy.mockRestore();
+  });
+
+  it('surfaces the final native provider 400 after every eligible streaming retry path fails', async () => {
+    process.env.TOKEN_MODE_ENABLED_ORGS = '818d0cc7-7ed2-469f-b690-a977e72a921d';
+    process.env.OPENAI_UPSTREAM_BASE_URL = 'https://openai.internal.test';
+    vi.spyOn(runtimeModule.runtime.repos.apiKeys, 'findActiveByHash').mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      org_id: '818d0cc7-7ed2-469f-b690-a977e72a921d',
+      scope: 'buyer_proxy',
+      is_active: true,
+      expires_at: null,
+      preferred_provider: 'openai'
+    } as any);
+    vi.spyOn(runtimeModule.runtime.repos.modelCompatibility, 'findActive').mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      supports_streaming: true
+    } as any);
+    const listSpy = vi.spyOn(runtimeModule.runtime.repos.tokenCredentials, 'listActiveForRouting').mockResolvedValue([
+      createRoutingCredentialFixture({
+        id: 'streaming-400-openai-first',
+        provider: 'openai',
+        authScheme: 'x_api_key',
+        accessToken: 'sk-openai-streaming-400-first'
+      }),
+      createRoutingCredentialFixture({
+        id: 'streaming-400-openai-second',
+        provider: 'openai',
+        authScheme: 'x_api_key',
+        accessToken: 'sk-openai-streaming-400-second'
+      })
+    ]);
+    const upstreamError = {
+      error: {
+        type: 'invalid_request_error',
+        message: 'plain responses request rejected'
+      }
+    };
+    const upstreamSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify(upstreamError), {
+      status: 400,
+      headers: { 'content-type': 'application/json' }
+    }));
+
+    const req = createMockReq({
+      method: 'POST',
+      path: '/v1/proxy/v1/responses',
+      headers: {
+        authorization: 'Bearer in_test_token',
+        'content-type': 'application/json',
+        'idempotency-key': 'abcdefghijklmnopqrstuvwxyz123456',
+        'x-request-id': 'req_streaming_terminal_400',
+        'x-innies-provider-pin': 'true'
+      },
+      body: {
+        model: 'gpt-5.4',
+        input: 'hello'
+      }
+    });
+    const res = createMockRes();
+
+    await invoke(handlers[0], req, res);
+    await invoke(handlers[1], req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual(upstreamError);
+    expect(listSpy).toHaveBeenCalledWith('818d0cc7-7ed2-469f-b690-a977e72a921d', 'openai');
+    expect(upstreamSpy).toHaveBeenCalledTimes(2);
   });
 
   it('emits one degraded_success summary log and same-provider rescue metadata on final non-stream success', async () => {
