@@ -174,10 +174,17 @@ export class RequestAttemptArchiveRepository {
     }
 
     const sql = `
-      select *
-      from ${TABLES.requestAttemptArchives}
-      where id::text = any($1::text[])
-      order by array_position($1::text[], id::text)
+      with ordered_ids as (
+        select
+          ids.id,
+          ids.ordinality as position
+        from unnest($1::uuid[]) with ordinality as ids(id, ordinality)
+      )
+      select a.*
+      from ordered_ids ids
+      inner join ${TABLES.requestAttemptArchives} a
+        on a.id = ids.id
+      order by ids.position
     `;
     return this.db.query<RequestAttemptArchiveRow>(sql, [ids]).then((result) => result.rows);
   }

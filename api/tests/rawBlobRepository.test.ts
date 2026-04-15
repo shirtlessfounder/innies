@@ -104,8 +104,9 @@ describe('RawBlobRepository', () => {
     const rows = await repo.findByIds(['raw_2', 'raw_1']);
 
     expect(rows).toHaveLength(2);
-    expect(db.queries[0].sql).toContain('where id::text = any($1::text[])');
-    expect(db.queries[0].sql).toContain('order by array_position($1::text[], id::text)');
+    expect(db.queries[0].sql).toContain('unnest($1::uuid[]) with ordinality');
+    expect(db.queries[0].sql).toContain('on rb.id = ids.id');
+    expect(db.queries[0].sql).toContain('order by ids.position');
     expect(db.queries[0].params).toEqual([['raw_2', 'raw_1']]);
   });
 

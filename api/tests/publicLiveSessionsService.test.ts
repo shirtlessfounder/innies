@@ -346,7 +346,8 @@ describe('publicLiveSessionsService', () => {
     expect(db.queries[0]?.params).toEqual(['innies']);
     expect(db.queries[1]?.sql).toContain('from in_admin_sessions');
     expect(db.queries[2]?.sql).toContain('from in_admin_session_attempts');
-    expect(db.queries[3]?.sql).toContain(`from ${TABLES.requestAttemptArchives}`);
+    expect(db.queries[3]?.sql).toContain(`from ${TABLES.routingEvents} re`);
+    expect(db.queries[3]?.sql).toContain(`inner join ${TABLES.requestAttemptArchives} a`);
     expect(db.queries[4]?.sql).toContain('from in_request_attempt_messages');
     expect(db.queries[4]?.params?.[0]).toEqual(['arch_keep_1', 'arch_keep_2']);
 
@@ -686,7 +687,8 @@ describe('publicLiveSessionsService', () => {
     expect(db.queries[0]?.params).toEqual(['innies']);
     expect(db.queries[1]?.params).toEqual(['team-seller']);
     expect(db.queries[2]?.sql).toContain('from in_admin_sessions');
-    expect(db.queries[3]?.sql).toContain(`from ${TABLES.requestAttemptArchives}`);
+    expect(db.queries[3]?.sql).toContain(`from ${TABLES.routingEvents} re`);
+    expect(db.queries[3]?.sql).toContain(`inner join ${TABLES.requestAttemptArchives} a`);
     expect(db.queries[4]?.sql).toContain(`from ${TABLES.requestAttemptRawBlobs}`);
     expect(db.queries[4]?.params?.[0]).toEqual(['arch_direct_1', 'arch_direct_2']);
     expect(db.queries[5]?.params?.[0]).toEqual(['arch_direct_1', 'arch_direct_2']);
@@ -822,7 +824,13 @@ describe('publicLiveSessionsService', () => {
 
     const feed = await service.listFeed();
 
-    expect(db.queries[2]?.params).toEqual(['org_innies', '2026-04-02T17:00:00.000Z', 400]);
+    expect(db.queries[2]?.params).toEqual([
+      'org_innies',
+      '2026-04-02T17:00:00.000Z',
+      2400,
+      '2026-04-02T17:00:00.000Z',
+      400
+    ]);
     expect(db.queries[3]?.params?.[0]).toEqual(['arch_direct_native_1', 'arch_direct_native_2']);
 
     expect(feed.sessions).toEqual([{
@@ -863,5 +871,44 @@ describe('publicLiveSessionsService', () => {
         }
       ]
     }]);
+  });
+
+  it('drives direct live-session discovery from recent routing events instead of scanning all archives in-window', async () => {
+    const now = new Date('2026-04-02T18:00:00.000Z');
+    const db = new SequenceSqlClient([
+      {
+        rows: [{ id: 'org_innies' }],
+        rowCount: 1
+      },
+      {
+        rows: [],
+        rowCount: 0
+      },
+      {
+        rows: [],
+        rowCount: 0
+      }
+    ]);
+
+    const service = new PublicLiveSessionsService({
+      sql: db,
+      apiKeys: { findIdByHash: vi.fn(async () => null) },
+      now: () => now
+    });
+
+    const feed = await service.listFeed();
+
+    expect(feed.sessions).toEqual([]);
+    expect(db.queries[2]?.sql).toContain(`from ${TABLES.routingEvents} re`);
+    expect(db.queries[2]?.sql).toContain("nullif(re.route_decision->>'request_source', '') = 'direct'");
+    expect(db.queries[2]?.sql).toContain('re.created_at >= $2::timestamptz');
+    expect(db.queries[2]?.sql).not.toContain('left join');
+    expect(db.queries[2]?.params).toEqual([
+      'org_innies',
+      '2026-04-02T17:00:00.000Z',
+      2400,
+      '2026-04-02T17:00:00.000Z',
+      400
+    ]);
   });
 });

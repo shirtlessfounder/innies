@@ -90,10 +90,17 @@ export class MessageBlobRepository {
     }
 
     const sql = `
-      select *
-      from ${TABLES.messageBlobs}
-      where id::text = any($1::text[])
-      order by array_position($1::text[], id::text)
+      with ordered_ids as (
+        select
+          ids.id,
+          ids.ordinality as position
+        from unnest($1::uuid[]) with ordinality as ids(id, ordinality)
+      )
+      select mb.*
+      from ordered_ids ids
+      inner join ${TABLES.messageBlobs} mb
+        on mb.id = ids.id
+      order by ids.position
     `;
     return this.db.query<MessageBlobRow>(sql, [ids]).then((result) => result.rows);
   }

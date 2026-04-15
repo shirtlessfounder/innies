@@ -21,6 +21,7 @@ const MAX_SESSIONS = 24;
 const MAX_SESSION_ENTRIES = 120;
 const MAX_DIRECT_ATTEMPTS = 400;
 const MAX_DIRECT_SESSION_ATTEMPTS = 8;
+const MAX_DIRECT_ROUTE_CANDIDATES = MAX_DIRECT_ATTEMPTS * 6;
 const DEFAULT_EXCLUDED_BUYER_KEYS = [
   'REDACTED_EXCLUDED_BUYER_KEY'
 ];
@@ -292,6 +293,22 @@ export class PublicLiveSessionsService {
   private async loadRecentDirectAttempts(orgId: string, now: Date): Promise<SessionAttempt[]> {
     const historySince = new Date(now.getTime() - TRANSCRIPT_HISTORY_WINDOW_MS).toISOString();
     const sql = `
+      with recent_direct_routing as materialized (
+        select
+          re.org_id,
+          re.request_id,
+          re.attempt_no,
+          re.route_decision
+        from ${TABLES.routingEvents} re
+        where re.org_id = $1
+          and re.created_at >= $2::timestamptz
+          and nullif(re.route_decision->>'request_source', '') = 'direct'
+        order by
+          re.created_at desc,
+          re.request_id desc,
+          re.attempt_no desc
+        limit $3
+      )
       select
         a.id as request_attempt_archive_id,
         a.request_id,
@@ -302,25 +319,31 @@ export class PublicLiveSessionsService {
         a.model,
         a.started_at,
         a.completed_at,
-        re.route_decision
-      from ${TABLES.requestAttemptArchives} a
-      left join ${TABLES.routingEvents} re
-        on re.org_id = a.org_id
-        and re.request_id = a.request_id
-        and re.attempt_no = a.attempt_no
-      left join ${TABLES.adminSessionAttempts} sa
-        on sa.request_attempt_archive_id = a.id
-      where a.org_id = $1
-        and sa.request_attempt_archive_id is null
-        and nullif(re.route_decision->>'request_source', '') = 'direct'
-        and coalesce(a.completed_at, a.started_at) >= $2::timestamptz
+        direct.route_decision
+      from recent_direct_routing direct
+      inner join ${TABLES.requestAttemptArchives} a
+        on a.org_id = direct.org_id
+        and a.request_id = direct.request_id
+        and a.attempt_no = direct.attempt_no
+      where not exists (
+        select 1
+        from ${TABLES.adminSessionAttempts} sa
+        where sa.request_attempt_archive_id = a.id
+      )
+        and coalesce(a.completed_at, a.started_at) >= $4::timestamptz
       order by
         coalesce(a.completed_at, a.started_at) desc,
         a.request_id desc,
         a.attempt_no desc
-      limit $3
+      limit $5
     `;
-    const result = await this.deps.sql.query<DirectAttemptRow>(sql, [orgId, historySince, MAX_DIRECT_ATTEMPTS]);
+    const result = await this.deps.sql.query<DirectAttemptRow>(sql, [
+      orgId,
+      historySince,
+      MAX_DIRECT_ROUTE_CANDIDATES,
+      historySince,
+      MAX_DIRECT_ATTEMPTS
+    ]);
     if (result.rows.length === 0) {
       return [];
     }

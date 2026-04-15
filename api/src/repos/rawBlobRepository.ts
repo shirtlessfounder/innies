@@ -92,10 +92,17 @@ export class RawBlobRepository {
     }
 
     const sql = `
-      select *
-      from ${TABLES.rawBlobs}
-      where id::text = any($1::text[])
-      order by array_position($1::text[], id::text)
+      with ordered_ids as (
+        select
+          ids.id,
+          ids.ordinality as position
+        from unnest($1::uuid[]) with ordinality as ids(id, ordinality)
+      )
+      select rb.*
+      from ordered_ids ids
+      inner join ${TABLES.rawBlobs} rb
+        on rb.id = ids.id
+      order by ids.position
     `;
     return this.db.query<RawBlobRow>(sql, [ids]).then((result) => result.rows);
   }
