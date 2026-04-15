@@ -330,7 +330,10 @@ export class PublicLiveSessionsService {
 
     for (const row of result.rows.slice().reverse()) {
       const promptCacheKey = extractPromptCacheKey(rawBlobsByArchiveId.get(row.request_attempt_archive_id) ?? null);
-      if (!promptCacheKey) {
+      const sessionKey = promptCacheKey
+        ? `cli:prompt-cache:${promptCacheKey}`
+        : buildPinnedDirectRequestSessionKey(row);
+      if (!sessionKey) {
         continue;
       }
 
@@ -341,7 +344,7 @@ export class PublicLiveSessionsService {
 
       attempts.push({
         ...row,
-        session_key: `cli:prompt-cache:${promptCacheKey}`,
+        session_key: sessionKey,
         eventAtIso
       });
     }
@@ -741,6 +744,17 @@ function extractPromptCacheKey(rawBlob: RawRequestBlobRow | null): string | null
   } catch {
     return null;
   }
+}
+
+function buildPinnedDirectRequestSessionKey(row: Pick<DirectAttemptRow, 'request_id' | 'route_decision'>): string | null {
+  const routeDecision = isRecord(row.route_decision) ? row.route_decision : null;
+  const selectionReason = readString(routeDecision?.provider_selection_reason);
+  if (selectionReason !== 'cli_provider_pinned') {
+    return null;
+  }
+
+  const requestId = sanitizeNullableString(readString(row.request_id));
+  return requestId ? `cli:request:${requestId}` : null;
 }
 
 function toIso(value: string | Date): string {

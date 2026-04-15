@@ -730,4 +730,138 @@ describe('publicLiveSessionsService', () => {
       ]
     }]);
   });
+
+  it('falls back to request id for pinned codex direct sessions when prompt_cache_key is missing', async () => {
+    const now = new Date('2026-04-02T18:00:00.000Z');
+    const db = new SequenceSqlClient([
+      {
+        rows: [{ id: 'org_innies' }],
+        rowCount: 1
+      },
+      {
+        rows: [],
+        rowCount: 0
+      },
+      {
+        rows: [
+          {
+            request_attempt_archive_id: 'arch_direct_native_1',
+            request_id: 'req_native_codex_session',
+            attempt_no: 1,
+            api_key_id: 'api_keep',
+            provider: 'openai',
+            model: 'gpt-5.4',
+            started_at: '2026-04-02T17:54:00.000Z',
+            completed_at: '2026-04-02T17:55:00.000Z',
+            route_decision: {
+              request_source: 'direct',
+              provider_selection_reason: 'cli_provider_pinned'
+            }
+          },
+          {
+            request_attempt_archive_id: 'arch_direct_native_2',
+            request_id: 'req_native_codex_session',
+            attempt_no: 1,
+            api_key_id: 'api_keep',
+            provider: 'openai',
+            model: 'gpt-5.4',
+            started_at: '2026-04-02T17:58:00.000Z',
+            completed_at: '2026-04-02T17:59:00.000Z',
+            route_decision: {
+              request_source: 'direct',
+              provider_selection_reason: 'cli_provider_pinned'
+            }
+          }
+        ],
+        rowCount: 2
+      },
+      {
+        rows: [],
+        rowCount: 0
+      },
+      {
+        rows: [
+          messageRow({
+            archiveId: 'arch_direct_native_1',
+            side: 'request',
+            ordinal: 0,
+            role: 'user',
+            content: [{ type: 'text', text: 'show my active codex session' }]
+          }),
+          messageRow({
+            archiveId: 'arch_direct_native_1',
+            side: 'response',
+            ordinal: 0,
+            role: 'assistant',
+            content: [{ type: 'text', text: 'surfacing the pinned session now' }]
+          }),
+          messageRow({
+            archiveId: 'arch_direct_native_2',
+            side: 'request',
+            ordinal: 0,
+            role: 'user',
+            content: [{ type: 'text', text: 'keep this pinned session visible' }]
+          }),
+          messageRow({
+            archiveId: 'arch_direct_native_2',
+            side: 'response',
+            ordinal: 0,
+            role: 'assistant',
+            content: [{ type: 'text', text: 'latest codex activity is still live' }]
+          })
+        ],
+        rowCount: 4
+      }
+    ]);
+
+    const service = new PublicLiveSessionsService({
+      sql: db,
+      apiKeys: { findIdByHash: vi.fn(async () => null) },
+      now: () => now
+    });
+
+    const feed = await service.listFeed();
+
+    expect(db.queries[2]?.params).toEqual(['org_innies', '2026-04-02T17:00:00.000Z', 400]);
+    expect(db.queries[3]?.params?.[0]).toEqual(['arch_direct_native_1', 'arch_direct_native_2']);
+
+    expect(feed.sessions).toEqual([{
+      sessionKey: 'cli:request:req_native_codex_session',
+      sessionType: 'cli',
+      displayTitle: 'cli req_nati...sion',
+      startedAt: '2026-04-02T17:54:00.000Z',
+      endedAt: '2026-04-02T17:59:00.000Z',
+      lastActivityAt: '2026-04-02T17:59:00.000Z',
+      currentProvider: 'openai',
+      currentModel: 'gpt-5.4',
+      providerSet: ['openai'],
+      modelSet: ['gpt-5.4'],
+      entries: [
+        {
+          entryId: 'arch_direct_native_1:0:user',
+          kind: 'user',
+          at: '2026-04-02T17:55:00.000Z',
+          text: 'show my active codex session'
+        },
+        {
+          entryId: 'arch_direct_native_1:1:assistant_final',
+          kind: 'assistant_final',
+          at: '2026-04-02T17:55:00.000Z',
+          text: 'surfacing the pinned session now'
+        },
+        {
+          entryId: 'arch_direct_native_2:2:user',
+          kind: 'user',
+          at: '2026-04-02T17:59:00.000Z',
+          text: 'keep this pinned session visible'
+        },
+        {
+          entryId: 'arch_direct_native_2:3:assistant_final',
+          kind: 'assistant_final',
+          at: '2026-04-02T17:59:00.000Z',
+          text: 'latest codex activity is still live'
+        }
+      ]
+    }]);
+  });
 });
