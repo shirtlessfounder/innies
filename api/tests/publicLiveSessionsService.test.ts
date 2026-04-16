@@ -911,4 +911,96 @@ describe('publicLiveSessionsService', () => {
       400
     ]);
   });
+
+  it('surfaces archived direct fallback requests even when prompt_cache_key is missing', async () => {
+    const now = new Date('2026-04-16T02:00:00.000Z');
+    const db = new SequenceSqlClient([
+      {
+        rows: [{ id: 'org_innies' }],
+        rowCount: 1
+      },
+      {
+        rows: [],
+        rowCount: 0
+      },
+      {
+        rows: [
+          {
+            request_attempt_archive_id: 'arch_direct_fallback_1',
+            request_id: 'req_direct_fallback_1',
+            attempt_no: 1,
+            api_key_id: 'api_keep',
+            provider: 'openai',
+            model: 'gpt-5.4-mini',
+            started_at: '2026-04-16T01:59:35.724Z',
+            completed_at: '2026-04-16T01:59:54.864Z',
+            route_decision: {
+              request_source: 'direct',
+              provider_selection_reason: 'fallback_provider_selected',
+              provider_fallback_from: 'anthropic'
+            }
+          }
+        ],
+        rowCount: 1
+      },
+      {
+        rows: [],
+        rowCount: 0
+      },
+      {
+        rows: [
+          messageRow({
+            archiveId: 'arch_direct_fallback_1',
+            side: 'request',
+            ordinal: 0,
+            role: 'user',
+            content: [{ type: 'text', text: 'show the live session anyway' }]
+          }),
+          messageRow({
+            archiveId: 'arch_direct_fallback_1',
+            side: 'response',
+            ordinal: 0,
+            role: 'assistant',
+            content: [{ type: 'text', text: 'visible despite missing prompt cache key' }]
+          })
+        ],
+        rowCount: 2
+      }
+    ]);
+
+    const service = new PublicLiveSessionsService({
+      sql: db,
+      apiKeys: { findIdByHash: vi.fn(async () => null) },
+      now: () => now
+    });
+
+    const feed = await service.listFeed();
+
+    expect(feed.sessions).toEqual([{
+      sessionKey: 'cli:request:req_direct_fallback_1',
+      sessionType: 'cli',
+      displayTitle: 'cli req_dire...ck_1',
+      startedAt: '2026-04-16T01:59:35.724Z',
+      endedAt: '2026-04-16T01:59:54.864Z',
+      lastActivityAt: '2026-04-16T01:59:54.864Z',
+      currentProvider: 'openai',
+      currentModel: 'gpt-5.4-mini',
+      providerSet: ['openai'],
+      modelSet: ['gpt-5.4-mini'],
+      entries: [
+        {
+          entryId: 'arch_direct_fallback_1:0:user',
+          kind: 'user',
+          at: '2026-04-16T01:59:54.864Z',
+          text: 'show the live session anyway'
+        },
+        {
+          entryId: 'arch_direct_fallback_1:1:assistant_final',
+          kind: 'assistant_final',
+          at: '2026-04-16T01:59:54.864Z',
+          text: 'visible despite missing prompt cache key'
+        }
+      ]
+    }]);
+  });
 });

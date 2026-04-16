@@ -355,7 +355,7 @@ export class PublicLiveSessionsService {
       const promptCacheKey = extractPromptCacheKey(rawBlobsByArchiveId.get(row.request_attempt_archive_id) ?? null);
       const sessionKey = promptCacheKey
         ? `cli:prompt-cache:${promptCacheKey}`
-        : buildPinnedDirectRequestSessionKey(row);
+        : buildDirectRequestSessionKey(row);
       if (!sessionKey) {
         continue;
       }
@@ -769,10 +769,10 @@ function extractPromptCacheKey(rawBlob: RawRequestBlobRow | null): string | null
   }
 }
 
-function buildPinnedDirectRequestSessionKey(row: Pick<DirectAttemptRow, 'request_id' | 'route_decision'>): string | null {
+function buildDirectRequestSessionKey(row: Pick<DirectAttemptRow, 'request_id' | 'route_decision'>): string | null {
   const routeDecision = isRecord(row.route_decision) ? row.route_decision : null;
-  const selectionReason = readString(routeDecision?.provider_selection_reason);
-  if (selectionReason !== 'cli_provider_pinned') {
+  const requestSource = readString(routeDecision?.request_source);
+  if (requestSource !== 'direct') {
     return null;
   }
 
