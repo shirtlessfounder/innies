@@ -105,19 +105,53 @@ export class LiveLaneProjectorService {
     failed: number;
   }> {
     const now = this.now();
-    const backfillRows = await this.outboxRepo.backfillJoinedAttempts({
-      availableAt: now,
-      limit: Math.max(1, input?.backfillLimit ?? this.backfillLimit)
-    });
+    const limit = Math.max(1, input?.limit ?? DEFAULT_BATCH_SIZE);
     const dueRows = await this.outboxRepo.listDueForProjection({
       now,
-      limit: Math.max(1, input?.limit ?? DEFAULT_BATCH_SIZE)
+      limit
     });
+    const initialAttempt = await this.projectRows(dueRows);
 
+    const remainingCapacity = Math.max(0, limit - dueRows.length);
+    let backfilled = 0;
+    let catchUpAttempt = { processed: 0, projected: 0, failed: 0 };
+
+    if (remainingCapacity > 0) {
+      const backfillRows = await this.outboxRepo.backfillJoinedAttempts({
+        availableAt: now,
+        limit: Math.min(
+          remainingCapacity,
+          Math.max(1, input?.backfillLimit ?? this.backfillLimit)
+        )
+      });
+      backfilled = backfillRows.length;
+
+      if (backfilled > 0) {
+        const catchUpRows = await this.outboxRepo.listDueForProjection({
+          now,
+          limit: remainingCapacity
+        });
+        catchUpAttempt = await this.projectRows(catchUpRows);
+      }
+    }
+
+    return {
+      backfilled,
+      processed: initialAttempt.processed + catchUpAttempt.processed,
+      projected: initialAttempt.projected + catchUpAttempt.projected,
+      failed: initialAttempt.failed + catchUpAttempt.failed
+    };
+  }
+
+  private async projectRows(rows: LiveLaneProjectionOutboxRow[]): Promise<{
+    processed: number;
+    projected: number;
+    failed: number;
+  }> {
     let projected = 0;
     let failed = 0;
 
-    for (const row of dueRows) {
+    for (const row of rows) {
       try {
         await this.projectRequestAttemptArchive(row.request_attempt_archive_id);
         projected += 1;
@@ -128,8 +162,7 @@ export class LiveLaneProjectorService {
     }
 
     return {
-      backfilled: backfillRows.length,
-      processed: dueRows.length,
+      processed: rows.length,
       projected,
       failed
     };

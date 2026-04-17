@@ -269,22 +269,10 @@ describe('LiveLaneProjectorService', () => {
   it('backfills missing joined rows and marks failed projections for retry', async () => {
     const backfillJoinedAttempts = vi.fn().mockResolvedValue([]);
     const listDueForProjection = vi.fn().mockResolvedValue([
-      {
+      buildOutboxRow({
         request_attempt_archive_id: '11111111-1111-4111-8111-111111111111',
-        request_id: 'req_missing',
-        attempt_no: 1,
-        state: 'pending_projection',
-        retry_count: 0,
-        available_at: '2026-04-16T03:04:05.000Z',
-        last_attempt_at: null,
-        next_retry_at: null,
-        projected_at: null,
-        last_error_code: null,
-        last_error_message: null,
-        projection_version: 1,
-        created_at: '2026-04-16T03:04:05.000Z',
-        updated_at: '2026-04-16T03:04:05.000Z'
-      }
+        request_id: 'req_missing'
+      })
     ]);
     const markPendingRetry = vi.fn().mockResolvedValue(undefined);
     const markNeedsOperatorCorrection = vi.fn().mockResolvedValue(undefined);
@@ -314,7 +302,7 @@ describe('LiveLaneProjectorService', () => {
     });
     expect(backfillJoinedAttempts).toHaveBeenCalledWith({
       availableAt: new Date('2026-04-16T03:05:00.000Z'),
-      limit: 20
+      limit: 9
     });
     expect(markPendingRetry).toHaveBeenCalledWith({
       requestAttemptArchiveId: '11111111-1111-4111-8111-111111111111',
@@ -325,6 +313,194 @@ describe('LiveLaneProjectorService', () => {
       lastErrorMessage: 'live lane projector input not found for request attempt archive 11111111-1111-4111-8111-111111111111'
     });
     expect(markNeedsOperatorCorrection).not.toHaveBeenCalled();
+  });
+
+  it('drains an already-full due backlog before backfilling more rows', async () => {
+    const backfillJoinedAttempts = vi.fn().mockResolvedValue([]);
+    const listDueForProjection = vi.fn().mockResolvedValue([
+      buildOutboxRow({
+        request_attempt_archive_id: '11111111-1111-4111-8111-111111111111',
+        request_id: 'req_due_1'
+      }),
+      buildOutboxRow({
+        request_attempt_archive_id: '22222222-2222-4222-8222-222222222222',
+        request_id: 'req_due_2'
+      })
+    ]);
+    const service = new LiveLaneProjectorService({
+      db: new MockSqlClient(),
+      requestLogRepo: {
+        findLiveLaneProjectorInput: vi.fn()
+      },
+      outboxRepo: {
+        backfillJoinedAttempts,
+        listDueForProjection,
+        markPendingRetry: vi.fn(),
+        markNeedsOperatorCorrection: vi.fn()
+      }
+    });
+    const projectRequestAttemptArchive = vi
+      .spyOn(service, 'projectRequestAttemptArchive')
+      .mockImplementation(async (requestAttemptArchiveId: string) => ({
+        requestAttemptArchiveId,
+        laneId: `lane:${requestAttemptArchiveId}`,
+        sessionKey: `session:${requestAttemptArchiveId}`,
+        laneEventIds: [],
+        projectedEventCount: 0
+      }));
+
+    const result = await service.retryBacklog({ limit: 2, backfillLimit: 100 });
+
+    expect(result).toEqual({
+      backfilled: 0,
+      processed: 2,
+      projected: 2,
+      failed: 0
+    });
+    expect(listDueForProjection).toHaveBeenCalledTimes(1);
+    expect(listDueForProjection).toHaveBeenCalledWith({
+      now: expect.any(Date),
+      limit: 2
+    });
+    expect(backfillJoinedAttempts).not.toHaveBeenCalled();
+    expect(projectRequestAttemptArchive.mock.calls).toEqual([
+      ['11111111-1111-4111-8111-111111111111'],
+      ['22222222-2222-4222-8222-222222222222']
+    ]);
+  });
+
+  it('only backfills into unused batch capacity after attempting existing due rows', async () => {
+    const backfillJoinedAttempts = vi.fn().mockResolvedValue([
+      buildOutboxRow({
+        request_attempt_archive_id: '22222222-2222-4222-8222-222222222222',
+        request_id: 'req_backfill_1'
+      }),
+      buildOutboxRow({
+        request_attempt_archive_id: '33333333-3333-4333-8333-333333333333',
+        request_id: 'req_backfill_2'
+      })
+    ]);
+    const listDueForProjection = vi.fn()
+      .mockResolvedValueOnce([
+        buildOutboxRow({
+          request_attempt_archive_id: '11111111-1111-4111-8111-111111111111',
+          request_id: 'req_existing_due'
+        })
+      ])
+      .mockResolvedValueOnce([
+        buildOutboxRow({
+          request_attempt_archive_id: '22222222-2222-4222-8222-222222222222',
+          request_id: 'req_backfill_1'
+        }),
+        buildOutboxRow({
+          request_attempt_archive_id: '33333333-3333-4333-8333-333333333333',
+          request_id: 'req_backfill_2'
+        })
+      ]);
+    const service = new LiveLaneProjectorService({
+      db: new MockSqlClient(),
+      requestLogRepo: {
+        findLiveLaneProjectorInput: vi.fn()
+      },
+      outboxRepo: {
+        backfillJoinedAttempts,
+        listDueForProjection,
+        markPendingRetry: vi.fn(),
+        markNeedsOperatorCorrection: vi.fn()
+      }
+    });
+    const projectRequestAttemptArchive = vi
+      .spyOn(service, 'projectRequestAttemptArchive')
+      .mockImplementation(async (requestAttemptArchiveId: string) => ({
+        requestAttemptArchiveId,
+        laneId: `lane:${requestAttemptArchiveId}`,
+        sessionKey: `session:${requestAttemptArchiveId}`,
+        laneEventIds: [],
+        projectedEventCount: 0
+      }));
+
+    const result = await service.retryBacklog({ limit: 3, backfillLimit: 100 });
+
+    expect(result).toEqual({
+      backfilled: 2,
+      processed: 3,
+      projected: 3,
+      failed: 0
+    });
+    expect(listDueForProjection).toHaveBeenNthCalledWith(1, {
+      now: expect.any(Date),
+      limit: 3
+    });
+    expect(backfillJoinedAttempts).toHaveBeenCalledWith({
+      availableAt: expect.any(Date),
+      limit: 2
+    });
+    expect(listDueForProjection).toHaveBeenNthCalledWith(2, {
+      now: expect.any(Date),
+      limit: 2
+    });
+    expect(projectRequestAttemptArchive.mock.calls).toEqual([
+      ['11111111-1111-4111-8111-111111111111'],
+      ['22222222-2222-4222-8222-222222222222'],
+      ['33333333-3333-4333-8333-333333333333']
+    ]);
+    expect(projectRequestAttemptArchive.mock.invocationCallOrder[0]).toBeLessThan(
+      backfillJoinedAttempts.mock.invocationCallOrder[0]
+    );
+  });
+
+  it('still backfills and projects historical joined attempts when the due backlog is empty', async () => {
+    const backfillJoinedAttempts = vi.fn().mockResolvedValue([
+      buildOutboxRow({
+        request_attempt_archive_id: '11111111-1111-4111-8111-111111111111',
+        request_id: 'req_backfill_only'
+      })
+    ]);
+    const listDueForProjection = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        buildOutboxRow({
+          request_attempt_archive_id: '11111111-1111-4111-8111-111111111111',
+          request_id: 'req_backfill_only'
+        })
+      ]);
+    const service = new LiveLaneProjectorService({
+      db: new MockSqlClient(),
+      requestLogRepo: {
+        findLiveLaneProjectorInput: vi.fn()
+      },
+      outboxRepo: {
+        backfillJoinedAttempts,
+        listDueForProjection,
+        markPendingRetry: vi.fn(),
+        markNeedsOperatorCorrection: vi.fn()
+      }
+    });
+    const projectRequestAttemptArchive = vi
+      .spyOn(service, 'projectRequestAttemptArchive')
+      .mockImplementation(async (requestAttemptArchiveId: string) => ({
+        requestAttemptArchiveId,
+        laneId: `lane:${requestAttemptArchiveId}`,
+        sessionKey: `session:${requestAttemptArchiveId}`,
+        laneEventIds: [],
+        projectedEventCount: 0
+      }));
+
+    const result = await service.retryBacklog({ limit: 4, backfillLimit: 20 });
+
+    expect(result).toEqual({
+      backfilled: 1,
+      processed: 1,
+      projected: 1,
+      failed: 0
+    });
+    expect(backfillJoinedAttempts).toHaveBeenCalledWith({
+      availableAt: expect.any(Date),
+      limit: 4
+    });
+    expect(projectRequestAttemptArchive).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111'
+    );
   });
 });
 
@@ -395,6 +571,43 @@ function buildProjectorInput(overrides: Partial<LiveLaneProjectorInput> = {}): L
     latencyMs: 812,
     ttfbMs: 144,
     routedAt: new Date('2026-04-16T03:04:06.000Z'),
+    ...overrides
+  };
+}
+
+function buildOutboxRow(
+  overrides: Partial<{
+    request_attempt_archive_id: string;
+    request_id: string;
+    attempt_no: number;
+    state: 'pending_projection' | 'projected' | 'needs_operator_correction';
+    retry_count: number;
+    available_at: string;
+    last_attempt_at: string | null;
+    next_retry_at: string | null;
+    projected_at: string | null;
+    last_error_code: string | null;
+    last_error_message: string | null;
+    projection_version: number;
+    created_at: string;
+    updated_at: string;
+  }> = {}
+) {
+  return {
+    request_attempt_archive_id: '11111111-1111-4111-8111-111111111111',
+    request_id: 'req_project_1',
+    attempt_no: 1,
+    state: 'pending_projection' as const,
+    retry_count: 0,
+    available_at: '2026-04-16T03:04:05.000Z',
+    last_attempt_at: null,
+    next_retry_at: null,
+    projected_at: null,
+    last_error_code: null,
+    last_error_message: null,
+    projection_version: 1,
+    created_at: '2026-04-16T03:04:05.000Z',
+    updated_at: '2026-04-16T03:04:05.000Z',
     ...overrides
   };
 }
