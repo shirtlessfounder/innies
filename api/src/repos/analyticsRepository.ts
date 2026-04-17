@@ -45,6 +45,41 @@ type SessionCursor = {
   sessionKey: string;
 };
 
+export type MonitorArchiveAttemptFilters = {
+  limit: number;
+  since?: Date;
+};
+
+type MonitorArchiveAttemptRow = {
+  request_attempt_archive_id: string;
+  request_id: string;
+  attempt_no: number;
+  provider: string;
+  model: string;
+  prompt_preview: string | null;
+  response_preview: string | null;
+  request_logged_at: string | Date;
+  routed_at: string | Date;
+  upstream_status: number | null;
+  error_code: string | null;
+  route_decision: Record<string, unknown> | string | null;
+};
+
+export type MonitorArchiveAttemptRecord = {
+  requestAttemptArchiveId: string;
+  requestId: string;
+  attemptNo: number;
+  provider: string;
+  model: string;
+  promptPreview: string | null;
+  responsePreview: string | null;
+  requestLoggedAt: string;
+  routedAt: string;
+  upstreamStatus: number | null;
+  errorCode: string | null;
+  routeDecision: Record<string, unknown> | null;
+};
+
 function windowSql(window: AnalyticsWindow, alias = 're'): string {
   switch (window) {
     case '5h':  return `${alias}.created_at >= now() - interval '5 hours'`;
@@ -291,6 +326,27 @@ function isMissingProviderUsageTable(error: unknown): boolean {
       || details.message?.includes('fetched_at') === true;
   }
   return false;
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> | null {
+  if (value == null) {
+    return null;
+  }
+
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  return typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 type TokenHealthSqlOptions = {
@@ -1875,6 +1931,70 @@ export class AnalyticsRepository implements AnalyticsRouteRepository {
         })
         : null
     };
+  }
+
+  async getMonitorArchiveAttempts(
+    filters: MonitorArchiveAttemptFilters
+  ): Promise<MonitorArchiveAttemptRecord[]> {
+    const params: SqlValue[] = [];
+    const where = [];
+
+    if (filters.since) {
+      params.push(filters.since.toISOString());
+      where.push(`
+        greatest(
+          coalesce(rl.created_at, re.created_at),
+          coalesce(re.created_at, rl.created_at)
+        ) >= $${params.length}::timestamptz
+      `);
+    }
+
+    params.push(Math.max(1, Math.min(200, filters.limit)));
+
+    const sql = `
+      select
+        rl.id as request_attempt_archive_id,
+        rl.request_id,
+        rl.attempt_no,
+        re.provider,
+        re.model,
+        rl.prompt_preview,
+        rl.response_preview,
+        rl.created_at as request_logged_at,
+        re.created_at as routed_at,
+        re.upstream_status,
+        re.error_code,
+        re.route_decision
+      from ${TABLES.requestLog} rl
+      join ${TABLES.routingEvents} re
+        on re.org_id = rl.org_id
+       and re.request_id = rl.request_id
+       and re.attempt_no = rl.attempt_no
+      ${where.length > 0 ? `where ${where.join(' and ')}` : ''}
+      order by
+        greatest(
+          coalesce(rl.created_at, re.created_at),
+          coalesce(re.created_at, rl.created_at)
+        ) desc,
+        rl.id desc
+      limit $${params.length}
+    `;
+
+    const result = await this.db.query<MonitorArchiveAttemptRow>(sql, params);
+    return result.rows.map((row) => ({
+      requestAttemptArchiveId: row.request_attempt_archive_id,
+      requestId: row.request_id,
+      attemptNo: Number(row.attempt_no),
+      provider: row.provider,
+      model: row.model,
+      promptPreview: row.prompt_preview,
+      responsePreview: row.response_preview,
+      requestLoggedAt: new Date(row.request_logged_at).toISOString(),
+      routedAt: new Date(row.routed_at).toISOString(),
+      upstreamStatus: row.upstream_status,
+      errorCode: row.error_code,
+      routeDecision: parseJsonRecord(row.route_decision)
+    }));
   }
 
   async getEvents(filters: EventFilters): Promise<unknown> {

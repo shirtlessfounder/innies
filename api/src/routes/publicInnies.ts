@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import type express from 'express';
 import { runtime } from '../services/runtime.js';
-import { PublicLiveSessionsService } from '../services/publicInnies/publicLiveSessionsService.js';
+import { LiveLaneReadService } from '../services/liveLanes/liveLaneReadService.js';
 
-const PUBLIC_LIVE_SESSIONS_PATH = '/v1/public/innies/live-sessions';
+export const PUBLIC_LIVE_SESSIONS_PATH = '/v1/public/innies/live-sessions';
+
 const FALLBACK_PUBLIC_WEB_ORIGINS = [
   'https://innies.work',
   'https://www.innies.work',
@@ -11,31 +12,29 @@ const FALLBACK_PUBLIC_WEB_ORIGINS = [
 ];
 const PUBLIC_FEED_CACHE_CONTROL = 'public, max-age=5, stale-while-revalidate=25';
 
-type PublicLiveSessionsRouteRuntimeDeps = {
+type PublicInniesRuntimeDeps = {
   sql: typeof runtime.sql;
-  orgAccess: typeof runtime.repos.orgAccess;
-  apiKeys: typeof runtime.repos.apiKeys;
 };
 
 type PublicInniesRouterDeps = {
-  liveSessions?: Pick<PublicLiveSessionsService, 'listFeed'>;
+  liveSessions?: Pick<LiveLaneReadService, 'listPublicLiveSessionsFeed'>;
   env?: NodeJS.ProcessEnv;
-  runtimeDeps?: PublicLiveSessionsRouteRuntimeDeps;
-  serviceFactory?: (deps: PublicLiveSessionsRouteRuntimeDeps) => Pick<PublicLiveSessionsService, 'listFeed'>;
+  runtimeDeps?: PublicInniesRuntimeDeps;
+  serviceFactory?: (deps: PublicInniesRuntimeDeps) => Pick<LiveLaneReadService, 'listPublicLiveSessionsFeed'>;
 };
 
-function createDefaultRuntimeDeps(): PublicLiveSessionsRouteRuntimeDeps {
+function createDefaultRuntimeDeps(): PublicInniesRuntimeDeps {
   return {
-    sql: runtime.sql,
-    orgAccess: runtime.repos.orgAccess,
-    apiKeys: runtime.repos.apiKeys
+    sql: runtime.sql
   };
 }
 
-function createDefaultPublicLiveSessionsService(
-  deps: PublicLiveSessionsRouteRuntimeDeps
-): Pick<PublicLiveSessionsService, 'listFeed'> {
-  return new PublicLiveSessionsService(deps);
+function createDefaultLiveSessionsService(
+  deps: PublicInniesRuntimeDeps
+): Pick<LiveLaneReadService, 'listPublicLiveSessionsFeed'> {
+  return new LiveLaneReadService({
+    db: deps.sql
+  });
 }
 
 function readAllowedOrigins(env: NodeJS.ProcessEnv | undefined): Set<string> {
@@ -86,7 +85,7 @@ export function createPublicInniesRouter(input?: PublicInniesRouterDeps) {
   const runtimeDeps = input?.runtimeDeps ?? createDefaultRuntimeDeps();
   const liveSessions = input?.liveSessions
     ?? input?.serviceFactory?.(runtimeDeps)
-    ?? createDefaultPublicLiveSessionsService(runtimeDeps);
+    ?? createDefaultLiveSessionsService(runtimeDeps);
   const router = Router();
 
   router.options(PUBLIC_LIVE_SESSIONS_PATH, (req, res) => {
@@ -98,7 +97,7 @@ export function createPublicInniesRouter(input?: PublicInniesRouterDeps) {
     try {
       applyRouteCors(req, res, env);
       applyPublicFeedCacheHeaders(res);
-      res.json(await liveSessions.listFeed());
+      res.json(await liveSessions.listPublicLiveSessionsFeed());
     } catch (error) {
       next(error);
     }

@@ -13,12 +13,14 @@ import { TokenCredentialRepository } from '../repos/tokenCredentialRepository.js
 import { TokenCredentialProviderUsageRepository } from '../repos/tokenCredentialProviderUsageRepository.js';
 import { CanonicalMeteringRepository } from '../repos/canonicalMeteringRepository.js';
 import { EarningsLedgerRepository } from '../repos/earningsLedgerRepository.js';
+import { LiveLaneProjectionOutboxRepository } from '../repos/liveLaneProjectionOutboxRepository.js';
 import { MeteringProjectorStateRepository } from '../repos/meteringProjectorStateRepository.js';
 import { WalletLedgerRepository } from '../repos/walletLedgerRepository.js';
 import type { SqlClient } from '../repos/sqlClient.js';
 import { AdminAnalysisProjectorService } from '../services/adminAnalysis/adminAnalysisProjectorService.js';
 import { EarningsProjectorService } from '../services/earnings/earningsProjectorService.js';
 import { AdminSessionProjectorService } from '../services/adminArchive/adminSessionProjectorService.js';
+import { LiveLaneProjectorService } from '../services/liveLanes/liveLaneProjectorService.js';
 import { WalletService } from '../services/wallet/walletService.js';
 import { C1ReconciliationDataSource } from './reconciliationDataSource.js';
 import { createAdminAnalysisProjectorJob } from './adminAnalysisProjectorJob.js';
@@ -30,7 +32,11 @@ import {
 import { createEarningsProjectorJob } from './earningsProjectorJob.js';
 import { createIdempotencyPurgeJob } from './idempotencyPurgeJob.js';
 import { createKeyHealthCheckJob } from './keyHealthJob.js';
-import { createRequestLogRetentionJob } from './requestLogRetentionJob.js';
+import { createLiveLaneProjectorJob } from './liveLaneProjectorJob.js';
+import {
+  createRequestLogRetentionJob,
+  readRequestLogRetentionDays
+} from './requestLogRetentionJob.js';
 import { createTokenCredentialHealthJob } from './tokenCredentialHealthJob.js';
 import { createTokenCredentialProviderUsageJob } from './tokenCredentialProviderUsageJob.js';
 import { createWalletProjectorJob } from './walletProjectorJob.js';
@@ -51,6 +57,7 @@ export function buildDefaultJobs(db: SqlClient, source: ReconciliationDataSource
   const meteringProjectorStateRepo = new MeteringProjectorStateRepository(db);
   const reconciliationRepo = new ReconciliationRepository(db);
   const requestLogRepo = new RequestLogRepository(db);
+  const liveLaneProjectionOutboxRepo = new LiveLaneProjectionOutboxRepository(db);
   const sellerKeysRepo = new SellerKeyRepository(db);
   const tokenCredentialsRepo = new TokenCredentialRepository(db);
   const tokenCredentialProviderUsageRepo = new TokenCredentialProviderUsageRepository(db);
@@ -78,11 +85,18 @@ export function buildDefaultJobs(db: SqlClient, source: ReconciliationDataSource
     sessionAttemptRepo: adminSessionAttemptRepo,
     adminSessionRepo
   });
+  const liveLaneProjector = new LiveLaneProjectorService({
+    db,
+    requestLogRepo,
+    outboxRepo: liveLaneProjectionOutboxRepo
+  });
+  const requestLogRetentionDays = readRequestLogRetentionDays();
 
-  return [
+  const jobs: JobDefinition[] = [
     createIdempotencyPurgeJob(idempotencyRepo),
     createEarningsProjectorJob(earningsProjector),
     createKeyHealthCheckJob(sellerKeysRepo),
+    createLiveLaneProjectorJob(liveLaneProjector),
     createTokenCredentialProviderUsageJob(tokenCredentialsRepo, tokenCredentialProviderUsageRepo),
     createAdminSessionProjectorJob({
       projectorService: adminSessionProjector,
@@ -99,7 +113,12 @@ export function buildDefaultJobs(db: SqlClient, source: ReconciliationDataSource
     createTokenCredentialHealthJob(tokenCredentialsRepo),
     createDailyAggregatesIncrementalJob(aggregatesRepo),
     createDailyAggregatesCompactionJob(aggregatesRepo),
-    createRequestLogRetentionJob(requestLogRepo),
     createReconciliationJob(reconciliationRepo, source)
   ];
+
+  if (requestLogRetentionDays !== null) {
+    jobs.push(createRequestLogRetentionJob(requestLogRepo, requestLogRetentionDays));
+  }
+
+  return jobs;
 }

@@ -27,6 +27,10 @@ import { TokenCredentialProviderUsageRepository } from '../repos/tokenCredential
 import { WalletLedgerRepository } from '../repos/walletLedgerRepository.js';
 import { AnalyticsRepository } from '../repos/analyticsRepository.js';
 import { AnalyticsDashboardSnapshotRepository } from '../repos/analyticsDashboardSnapshotRepository.js';
+import { LiveLaneAttemptRepository } from '../repos/liveLaneAttemptRepository.js';
+import { LiveLaneEventRepository } from '../repos/liveLaneEventRepository.js';
+import { LiveLaneProjectionOutboxRepository } from '../repos/liveLaneProjectionOutboxRepository.js';
+import { LiveLaneRepository } from '../repos/liveLaneRepository.js';
 import { RequestLogRepository } from '../repos/requestLogRepository.js';
 import { RequestAttemptArchiveRepository } from '../repos/requestAttemptArchiveRepository.js';
 import { MessageBlobRepository } from '../repos/messageBlobRepository.js';
@@ -53,6 +57,7 @@ import { RoutingService } from './routingService.js';
 import { IdempotencyService } from './idempotencyService.js';
 import { UsageMeteringWriter } from './metering/usageMeteringWriter.js';
 import { EarningsProjectorService } from './earnings/earningsProjectorService.js';
+import { LiveLaneProjectorService } from './liveLanes/liveLaneProjectorService.js';
 import { WithdrawalService } from './earnings/withdrawalService.js';
 import { TokenCredentialService } from './tokenCredentialService.js';
 import { RequestArchiveService } from './archive/requestArchiveService.js';
@@ -124,6 +129,10 @@ export const runtime = {
     analytics: new AnalyticsRepository(sql),
     analyticsDashboardSnapshots: new AnalyticsDashboardSnapshotRepository(sql),
     earningsLedger: new EarningsLedgerRepository(sql),
+    liveLaneAttempts: new LiveLaneAttemptRepository(sql),
+    liveLaneEvents: new LiveLaneEventRepository(sql),
+    liveLaneProjectionOutbox: new LiveLaneProjectionOutboxRepository(sql),
+    liveLanes: new LiveLaneRepository(sql),
     requestLog: new RequestLogRepository(sql),
     requestAttemptArchives: new RequestAttemptArchiveRepository(sql),
     messageBlobs: new MessageBlobRepository(sql),
@@ -152,6 +161,7 @@ export const runtime = {
     idempotency: undefined as unknown as IdempotencyService,
     jobs: undefined as unknown as JobScheduler,
     keyPool: new KeyPool(),
+    liveLaneProjector: undefined as unknown as LiveLaneProjectorService,
     metering: undefined as unknown as UsageMeteringWriter,
     orgGithubAuth: undefined as unknown as OrgGithubAuthService,
     orgMemberships: undefined as unknown as OrgMembershipService,
@@ -240,6 +250,11 @@ runtime.services.earningsProjector = new EarningsProjectorService({
   canonicalMeteringRepo: runtime.repos.canonicalMetering,
   earningsLedgerRepo: runtime.repos.earningsLedger,
   meteringProjectorStateRepo: runtime.repos.meteringProjectorStates
+});
+runtime.services.liveLaneProjector = new LiveLaneProjectorService({
+  db: runtime.sql,
+  requestLogRepo: runtime.repos.requestLog,
+  outboxRepo: runtime.repos.liveLaneProjectionOutbox
 });
 runtime.services.routingService = new RoutingService(
   runtime.services.keyPool,

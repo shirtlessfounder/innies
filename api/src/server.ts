@@ -5,6 +5,7 @@ import { z } from 'zod';
 import adminRoutes from './routes/admin.js';
 import adminAnalysisRoutes from './routes/adminAnalysis.js';
 import adminArchiveRoutes from './routes/adminArchive.js';
+import adminMonitorRoutes from './routes/adminMonitor.js';
 import adminOrgsRouter from './routes/adminOrgs.js';
 import analyticsRoutes from './routes/analytics.js';
 import anthropicCompatRoutes from './routes/anthropicCompat.js';
@@ -147,6 +148,7 @@ export function createApp(): express.Express {
   });
 
   app.use(publicInniesRoutes);
+  app.use(adminMonitorRoutes);
   app.use(adminRoutes);
   app.use(adminAnalysisRoutes);
   app.use(adminArchiveRoutes);

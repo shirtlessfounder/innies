@@ -31,7 +31,7 @@ import {
   persistCompatTraceBody,
   sanitizeTraceHeaders
 } from '../utils/compatTrace.js';
-import { extractRequestPreview, extractResponsePreview } from '../utils/requestLogPreview.js';
+import { extractRequestPreview, extractResponsePreview, serializeRequestLogBody } from '../utils/requestLogPreview.js';
 import {
   isOpenAiOauthAccessToken,
   resolveOpenAiOauthAccountId
@@ -117,7 +117,8 @@ type RetryReason =
   | 'blocked_403_compat_retry'
   | 'oauth_401_compat_retry'
   | 'credential_refresh_retry'
-  | 'rate_limited_backoff';
+  | 'rate_limited_backoff'
+  | 'anthropic_overloaded_same_provider_retry';
 
 type ProviderSelectionReason =
   | 'preferred_provider_selected'
@@ -190,6 +191,27 @@ type ProxyFailureArchiveInput = Omit<
   failure: AttemptFailure;
   status?: 'failed' | 'partial';
 };
+
+type ExplicitOpenClawCorrelation = {
+  runId?: string;
+  sessionId?: string;
+};
+
+type RequestAttemptArchiveInput = {
+  requestId: string;
+  attemptNo: number;
+  orgId: string;
+  provider: string;
+  model: string;
+  proxiedPath: string;
+  requestContentType?: string | null;
+  requestBody?: unknown;
+  responseContentType?: string | null;
+  responseBody?: unknown;
+  responsePreview?: string | null;
+};
+
+const UUID_LIKE_REQUEST_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function requestSeed(requestId: string): number {
   let seed = 0;
@@ -401,7 +423,7 @@ function readHeader(req: any, ...names: string[]): string | undefined {
   return undefined;
 }
 
-function resolveOpenClawCorrelation(req: any, requestId: string): OpenClawCorrelation {
+function readExplicitOpenClawCorrelation(req: any): ExplicitOpenClawCorrelation {
   const bodyObject = req.body && typeof req.body === 'object'
     ? (req.body as any)
     : undefined;
@@ -417,9 +439,70 @@ function resolveOpenClawCorrelation(req: any, requestId: string): OpenClawCorrel
   const explicitSessionId = readHeader(req, 'x-openclaw-session-id', 'openclaw-session-id', 'x-session-id')
     ?? (metadataSessionId && metadataSessionId.length > 0 ? metadataSessionId : undefined);
   return {
-    openclawRunId: explicitRunId ?? `run_${requestId}`,
-    openclawSessionId: explicitSessionId,
-    sourceExplicit: Boolean(explicitRunId || explicitSessionId)
+    runId: explicitRunId,
+    sessionId: explicitSessionId
+  };
+}
+
+function shouldRecoverPinnedCodexSessionId(input: {
+  provider: string;
+  pinSelectionReason: ProviderSelectionReason | null;
+  suppliedRequestId?: string;
+  explicitSessionId?: string;
+}): boolean {
+  return Boolean(
+    input.pinSelectionReason === 'cli_provider_pinned'
+    && canonicalizeProvider(input.provider) === 'openai'
+    && !input.explicitSessionId
+    && input.suppliedRequestId
+    && UUID_LIKE_REQUEST_ID_RE.test(input.suppliedRequestId)
+  );
+}
+
+function resolveRequestIdentity(input: {
+  req: any;
+  provider: string;
+  pinSelectionReason: ProviderSelectionReason | null;
+}): {
+  requestId: string;
+  recoveredSessionId?: string;
+} {
+  const suppliedRequestId = readHeader(input.req, 'x-request-id');
+  const explicitCorrelation = readExplicitOpenClawCorrelation(input.req);
+  if (shouldRecoverPinnedCodexSessionId({
+    provider: input.provider,
+    pinSelectionReason: input.pinSelectionReason,
+    suppliedRequestId,
+    explicitSessionId: explicitCorrelation.sessionId
+  })) {
+    const requestId = buildRequestId(undefined);
+    console.warn('[recovered_pinned_codex_request_identity]', {
+      supplied_request_id: suppliedRequestId,
+      recovered_session_id: suppliedRequestId,
+      request_id: requestId,
+      provider: canonicalizeProvider(input.provider)
+    });
+    return {
+      requestId,
+      recoveredSessionId: suppliedRequestId
+    };
+  }
+
+  return {
+    requestId: buildRequestId(suppliedRequestId)
+  };
+}
+
+function resolveOpenClawCorrelation(
+  req: any,
+  requestId: string,
+  recoveredSessionId?: string
+): OpenClawCorrelation {
+  const explicitCorrelation = readExplicitOpenClawCorrelation(req);
+  return {
+    openclawRunId: explicitCorrelation.runId ?? `run_${requestId}`,
+    openclawSessionId: explicitCorrelation.sessionId ?? recoveredSessionId,
+    sourceExplicit: Boolean(explicitCorrelation.runId || explicitCorrelation.sessionId || recoveredSessionId)
   };
 }
 
@@ -708,6 +791,24 @@ function providerFallbackReasonForError(error: unknown): string | null {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function sameProviderOverloadRetryBackoffMs(attemptNo: number): number {
+  return 125 * (2 ** Math.max(0, attemptNo - 1)) + Math.floor(Math.random() * 100);
+}
+
+function shouldRetryAnthropicCompatOverload(input: {
+  provider: string;
+  strictUpstreamPassthrough?: boolean;
+  upstreamStatus: number;
+  errorType?: string;
+}): boolean {
+  return Boolean(
+    input.strictUpstreamPassthrough
+    && canonicalizeProvider(input.provider) === 'anthropic'
+    && input.upstreamStatus >= 500
+    && input.errorType === 'overloaded_error'
+  );
 }
 
 function upstreamTimeoutMs(): number {
@@ -1580,6 +1681,43 @@ function buildSellerRouteDecision(input: {
     openclaw_run_id: input.correlation.openclawRunId,
     openclaw_session_id: input.correlation.openclawSessionId ?? null
   };
+}
+
+async function persistRequestAttemptArchive(input: RequestAttemptArchiveInput): Promise<void> {
+  await runtime.repos.requestLog.insert({
+    requestId: input.requestId,
+    attemptNo: input.attemptNo,
+    orgId: input.orgId,
+    provider: input.provider,
+    model: input.model,
+    proxiedPath: input.proxiedPath,
+    requestContentType: input.requestContentType ?? 'application/json',
+    responseContentType: input.responseContentType ?? null,
+    promptPreview: input.requestBody === undefined
+      ? null
+      : extractRequestPreview(input.requestBody, input.proxiedPath),
+    responsePreview: input.responsePreview ?? (
+      input.responseBody === undefined
+        ? null
+        : extractResponsePreview(input.responseBody)
+    ),
+    fullPrompt: input.requestBody === undefined ? null : serializeRequestLogBody(input.requestBody),
+    fullResponse: input.responseBody === undefined ? null : serializeRequestLogBody(input.responseBody)
+  });
+}
+
+async function persistRequestAttemptArchiveBestEffort(input: RequestAttemptArchiveInput): Promise<void> {
+  try {
+    await persistRequestAttemptArchive(input);
+  } catch (error) {
+    console.warn('[request-log-archive] persist_failed', {
+      request_id: input.requestId,
+      attempt_no: input.attemptNo,
+      provider: input.provider,
+      model: input.model,
+      message: error instanceof Error ? error.message : String(error)
+    });
+  }
 }
 
 function buildCompatTerminalErrorResult(input: {
@@ -2995,6 +3133,7 @@ async function executeTokenModeNonStreaming(input: {
   proxiedPath: string;
   archiveRequestPayload: unknown;
   archiveRequestPath: string;
+  requestContentType: string;
   anthropicVersion: string;
   anthropicBeta?: string;
   startedAt: number;
@@ -3016,6 +3155,7 @@ async function executeTokenModeNonStreaming(input: {
     proxiedPath,
     archiveRequestPayload,
     archiveRequestPath,
+    requestContentType,
     anthropicVersion,
     anthropicBeta,
     startedAt,
@@ -3059,6 +3199,7 @@ async function executeTokenModeNonStreaming(input: {
   let terminalCompatCredentialId: string | null = null;
   let terminalCompatAttemptNo = 0;
   let terminalNative400Result: ProxyRouteResult | null = null;
+  let terminalStrictPassthroughResult: ProxyRouteResult | null = null;
   let sawNonAuthNon400Failure = false;
   let sawRateLimitFailure = false;
   let lastRetryableFailure: AttemptFailure | null = null;
@@ -3122,7 +3263,12 @@ async function executeTokenModeNonStreaming(input: {
       const logAttemptFailure = async (
         failure: AttemptFailure,
         ttfb?: number | null,
-        options?: { archive?: boolean }
+        options?: {
+          archive?: boolean;
+          responseBody?: unknown;
+          responseContentType?: string | null;
+          responsePreview?: string | null;
+        }
       ) => {
         await runtime.repos.routingEvents.insert({
           requestId,
@@ -3165,6 +3311,19 @@ async function executeTokenModeNonStreaming(input: {
             startedAtMs: startedAt,
             correlation,
             failure
+          });
+          await persistRequestAttemptArchive({
+            requestId,
+            attemptNo,
+            orgId,
+            provider,
+            model,
+            proxiedPath,
+            requestContentType,
+            requestBody: compat.payload,
+            responseContentType: options?.responseContentType ?? null,
+            responseBody: options?.responseBody,
+            responsePreview: options?.responsePreview ?? failure.message ?? null
           });
         }
       };
@@ -3280,6 +3439,18 @@ async function executeTokenModeNonStreaming(input: {
             latencyMs: Date.now() - startedAt,
             ttfbMs
           });
+          await persistRequestAttemptArchive({
+            requestId,
+            attemptNo,
+            orgId,
+            provider,
+            model,
+            proxiedPath,
+            requestContentType,
+            requestBody: compat.payload,
+            responseContentType: contentType,
+            responseBody: data
+          });
           logCompatAudit({
             orgId,
             provider,
@@ -3319,12 +3490,10 @@ async function executeTokenModeNonStreaming(input: {
         });
         let statusErrorType: string | undefined;
         let statusErrorMessage: string | undefined;
+        const statusContentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
         let statusData: unknown = null;
-        if (strictUpstreamPassthrough || compatTranslation) {
-          const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
-          statusData = contentType.includes('application/json')
-            ? await upstreamResponse.json().catch(() => ({}))
-            : await upstreamResponse.text();
+        if (strictUpstreamPassthrough || compatTranslation || statusContentType.length > 0) {
+          statusData = await readUpstreamErrorPayload(upstreamResponse);
           const details = extractUpstreamErrorDetails(statusData);
           statusErrorType = details.errorType;
           statusErrorMessage = details.errorMessage;
@@ -3400,7 +3569,14 @@ async function executeTokenModeNonStreaming(input: {
           errorType: statusErrorType,
           errorMessage: statusErrorMessage
         };
-        await logAttemptFailure({ kind: 'auth', statusCode: status, message: 'token auth failed' }, ttfbMs);
+        await logAttemptFailure(
+          { kind: 'auth', statusCode: status, message: 'token auth failed' },
+          ttfbMs,
+          {
+            responseBody: statusData,
+            responseContentType: statusContentType
+          }
+        );
         rememberRescueFailure(rescueTracker, {
           provider,
           credential,
@@ -3426,6 +3602,7 @@ async function executeTokenModeNonStreaming(input: {
       }
 
       if (status === 429) {
+        const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
         const rateLimitData = await readUpstreamErrorPayload(upstreamResponse);
         if (compatTranslation) {
           terminalCompatError = mapOpenAiErrorToAnthropic(status, rateLimitData);
@@ -3440,7 +3617,14 @@ async function executeTokenModeNonStreaming(input: {
           model,
           upstreamStatus: status
         });
-        await logAttemptFailure({ kind: 'rate_limited', statusCode: 429, message: 'rate limited' }, ttfbMs);
+        await logAttemptFailure(
+          { kind: 'rate_limited', statusCode: 429, message: 'rate limited' },
+          ttfbMs,
+          {
+            responseBody: rateLimitData,
+            responseContentType: contentType
+          }
+        );
         logRetryAudit({
           orgId,
           provider,
@@ -3474,6 +3658,58 @@ async function executeTokenModeNonStreaming(input: {
           const data = contentType.includes('application/json')
             ? await upstreamResponse.json().catch(() => ({}))
             : await upstreamResponse.text();
+          const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
+
+          if (shouldRetryAnthropicCompatOverload({
+            provider,
+            strictUpstreamPassthrough,
+            upstreamStatus: status,
+            errorType
+          })) {
+            terminalStrictPassthroughResult = {
+              requestId,
+              keyId: credential.id,
+              attemptNo,
+              upstreamStatus: status,
+              usageUnits: 0,
+              contentType,
+              data,
+              routeKind: 'token_credential',
+              alreadyRecorded: true
+            };
+            await logAttemptFailure({
+              statusCode: status,
+              message: errorMessage ?? 'Anthropic overloaded'
+            }, ttfbMs, {
+              responseBody: data,
+              responseContentType: contentType
+            });
+            logRetryAudit({
+              orgId,
+              provider,
+              model,
+              requestId,
+              openclawRunId: correlation.openclawRunId,
+              openclawSessionId: correlation.openclawSessionId,
+              attemptNo,
+              credentialId: credential.id,
+              credentialLabel: credential.debugLabel,
+              upstreamStatus: status,
+              retryReason: 'anthropic_overloaded_same_provider_retry'
+            });
+            await sleep(sameProviderOverloadRetryBackoffMs(attemptNo));
+            rememberRescueFailure(rescueTracker, {
+              provider,
+              credential,
+              attemptNo,
+              failure: {
+                statusCode: status,
+                message: errorMessage ?? 'Anthropic overloaded'
+              }
+            });
+            sawNonAuthNon400Failure = true;
+            break;
+          }
 
           await runtime.repos.routingEvents.insert({
             requestId,
@@ -3495,6 +3731,18 @@ async function executeTokenModeNonStreaming(input: {
             errorCode: 'upstream_5xx_passthrough',
             latencyMs: Date.now() - startedAt,
             ttfbMs
+          });
+          await persistRequestAttemptArchive({
+            requestId,
+            attemptNo,
+            orgId,
+            provider,
+            model,
+            proxiedPath,
+            requestContentType,
+            requestBody: compat.payload,
+            responseContentType: contentType,
+            responseBody: data
           });
 
           return {
@@ -3520,7 +3768,16 @@ async function executeTokenModeNonStreaming(input: {
           terminalCompatAttemptNo = attemptNo;
         }
 
-        await logAttemptFailure(failure, ttfbMs);
+        const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+        const upstreamErrorData = await readUpstreamErrorPayload(upstreamResponse);
+        await logAttemptFailure(
+          failure,
+          ttfbMs,
+          {
+            responseBody: upstreamErrorData,
+            responseContentType: contentType
+          }
+        );
         rememberRescueFailure(rescueTracker, {
           provider,
           credential,
@@ -3577,7 +3834,14 @@ async function executeTokenModeNonStreaming(input: {
             errorMessage
           });
         }
-        await logAttemptFailure({ statusCode: status, message: 'upstream provider rejected request' }, ttfbMs);
+        await logAttemptFailure(
+          { statusCode: status, message: 'upstream provider rejected request' },
+          ttfbMs,
+          {
+            responseBody: upstreamErrorData,
+            responseContentType: contentType
+          }
+        );
         rememberRescueFailure(rescueTracker, {
           provider,
           credential,
@@ -3634,7 +3898,10 @@ async function executeTokenModeNonStreaming(input: {
           kind: 'upstream_failed_stream',
           statusCode: effectiveStatus,
           message: 'upstream responses stream reported failure'
-        }, ttfbMs);
+        }, ttfbMs, {
+          responseBody: compatTranslation ? (downstreamMappedError?.body ?? data) : data,
+          responseContentType: compatTranslation || extractedSseResponse ? 'application/json' : contentType
+        });
         rememberRescueFailure(rescueTracker, {
           provider,
           credential,
@@ -3745,15 +4012,19 @@ async function executeTokenModeNonStreaming(input: {
       }
 
       if (status >= 200 && status < 300) {
-        runtime.repos.requestLog.insert({
+        await persistRequestAttemptArchive({
           requestId,
           attemptNo,
           orgId,
           provider,
           model,
-          promptPreview: extractRequestPreview(compat.payload, proxiedPath),
+          proxiedPath,
+          requestContentType,
+          requestBody: compat.payload,
+          responseContentType: downstreamContentType,
+          responseBody: downstreamData,
           responsePreview: extractResponsePreview(data)
-        }).catch(() => {});
+        });
       }
 
       logDegradedSuccess({
@@ -3792,6 +4063,10 @@ async function executeTokenModeNonStreaming(input: {
 
   if (allowCompatTerminalErrorResponse && compatTerminalResult) {
     return compatTerminalResult;
+  }
+
+  if (terminalStrictPassthroughResult) {
+    return terminalStrictPassthroughResult;
   }
 
   if (sawAuthFailure) {
@@ -3844,6 +4119,7 @@ async function executeTokenModeStreaming(input: {
   proxiedPath: string;
   archiveRequestPayload: unknown;
   archiveRequestPath: string;
+  requestContentType: string;
   anthropicVersion: string;
   anthropicBeta?: string;
   startedAt: number;
@@ -3868,6 +4144,7 @@ async function executeTokenModeStreaming(input: {
     proxiedPath,
     archiveRequestPayload,
     archiveRequestPath,
+    requestContentType,
     anthropicVersion,
     anthropicBeta,
     startedAt,
@@ -3915,6 +4192,7 @@ async function executeTokenModeStreaming(input: {
   let terminalCompatCredentialId: string | null = null;
   let terminalCompatAttemptNo = 0;
   let terminalNative400Result: ProxyRouteResult | null = null;
+  let terminalStrictPassthroughResult: ProxyRouteResult | null = null;
   let sawNonAuthNon400Failure = false;
   let sawRateLimitFailure = false;
   let lastRetryableFailure: AttemptFailure | null = null;
@@ -3980,7 +4258,12 @@ async function executeTokenModeStreaming(input: {
       const logAttemptFailure = async (
         failure: AttemptFailure,
         ttfb?: number | null,
-        options?: { archive?: boolean }
+        options?: {
+          archive?: boolean;
+          responseBody?: unknown;
+          responseContentType?: string | null;
+          responsePreview?: string | null;
+        }
       ) => {
         await runtime.repos.routingEvents.insert({
           requestId,
@@ -4019,6 +4302,19 @@ async function executeTokenModeStreaming(input: {
             startedAtMs: startedAt,
             correlation,
             failure
+          });
+          await persistRequestAttemptArchive({
+            requestId,
+            attemptNo,
+            orgId,
+            provider,
+            model,
+            proxiedPath,
+            requestContentType,
+            requestBody: compat.payload,
+            responseContentType: options?.responseContentType ?? null,
+            responseBody: options?.responseBody,
+            responsePreview: options?.responsePreview ?? failure.message ?? null
           });
         }
       };
@@ -4133,6 +4429,18 @@ async function executeTokenModeStreaming(input: {
             latencyMs: Date.now() - startedAt,
             ttfbMs: Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt))
           });
+          await persistRequestAttemptArchive({
+            requestId,
+            attemptNo,
+            orgId,
+            provider,
+            model,
+            proxiedPath,
+            requestContentType,
+            requestBody: compat.payload,
+            responseContentType: contentType,
+            responseBody: data
+          });
           logCompatAudit({
             orgId,
             provider,
@@ -4172,11 +4480,10 @@ async function executeTokenModeStreaming(input: {
         });
         let statusErrorType: string | undefined;
         let statusErrorMessage: string | undefined;
-        if (strictUpstreamPassthrough || compatTranslation) {
-          const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
-          const statusData = contentType.includes('application/json')
-            ? await upstreamResponse.json().catch(() => ({}))
-            : await upstreamResponse.text();
+        const statusContentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+        let statusData: unknown = null;
+        if (strictUpstreamPassthrough || compatTranslation || statusContentType.length > 0) {
+          statusData = await readUpstreamErrorPayload(upstreamResponse);
           const details = extractUpstreamErrorDetails(statusData);
           statusErrorType = details.errorType;
           statusErrorMessage = details.errorMessage;
@@ -4252,7 +4559,14 @@ async function executeTokenModeStreaming(input: {
           errorType: statusErrorType,
           errorMessage: statusErrorMessage
         };
-        await logAttemptFailure({ kind: 'auth', statusCode: status, message: 'token auth failed' }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
+        await logAttemptFailure(
+          { kind: 'auth', statusCode: status, message: 'token auth failed' },
+          Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)),
+          {
+            responseBody: statusData,
+            responseContentType: statusContentType
+          }
+        );
         rememberRescueFailure(rescueTracker, {
           provider,
           credential,
@@ -4278,6 +4592,7 @@ async function executeTokenModeStreaming(input: {
       }
 
       if (status === 429) {
+        const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
         const rateLimitData = await readUpstreamErrorPayload(upstreamResponse);
         if (compatTranslation) {
           terminalCompatError = mapOpenAiErrorToAnthropic(status, rateLimitData);
@@ -4292,7 +4607,14 @@ async function executeTokenModeStreaming(input: {
           model,
           upstreamStatus: status
         });
-        await logAttemptFailure({ kind: 'rate_limited', statusCode: 429, message: 'rate limited' }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
+        await logAttemptFailure(
+          { kind: 'rate_limited', statusCode: 429, message: 'rate limited' },
+          Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)),
+          {
+            responseBody: rateLimitData,
+            responseContentType: contentType
+          }
+        );
         logRetryAudit({
           orgId,
           provider,
@@ -4321,16 +4643,21 @@ async function executeTokenModeStreaming(input: {
 
       if (status >= 500 && !strictUpstreamPassthrough) {
         const failure = { kind: 'server_error', statusCode: status, message: 'upstream server error' } satisfies AttemptFailure;
+        const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+        const upstreamErrorData = await readUpstreamErrorPayload(upstreamResponse);
         if (compatTranslation) {
-          const contentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
-          const upstreamErrorData = contentType.includes('application/json')
-            ? await upstreamResponse.json().catch(() => ({}))
-            : await upstreamResponse.text();
           terminalCompatError = mapOpenAiErrorToAnthropic(status, upstreamErrorData);
           terminalCompatCredentialId = credential.id;
           terminalCompatAttemptNo = attemptNo;
         }
-        await logAttemptFailure(failure, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
+        await logAttemptFailure(
+          failure,
+          Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)),
+          {
+            responseBody: upstreamErrorData,
+            responseContentType: contentType
+          }
+        );
         rememberRescueFailure(rescueTracker, {
           provider,
           credential,
@@ -4387,7 +4714,14 @@ async function executeTokenModeStreaming(input: {
             errorMessage
           });
         }
-        await logAttemptFailure({ statusCode: status, message: 'upstream provider rejected request' }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
+        await logAttemptFailure(
+          { statusCode: status, message: 'upstream provider rejected request' },
+          Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)),
+          {
+            responseBody: upstreamErrorData,
+            responseContentType: contentType
+          }
+        );
         rememberRescueFailure(rescueTracker, {
           provider,
           credential,
@@ -4447,7 +4781,10 @@ async function executeTokenModeStreaming(input: {
             kind: 'upstream_failed_stream',
             statusCode: effectiveStatus,
             message: 'upstream responses stream reported failure'
-          }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)));
+          }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)), {
+            responseBody: compatTranslation ? (downstreamMappedError?.body ?? data) : data,
+            responseContentType: compatTranslation ? 'application/json' : contentType
+          });
           rememberRescueFailure(rescueTracker, {
             provider,
             credential,
@@ -4467,8 +4804,71 @@ async function executeTokenModeStreaming(input: {
             model: compatTranslation.originalModel
           })
           : (downstreamMappedError?.body ?? data);
+        const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
+        if (shouldRetryAnthropicCompatOverload({
+          provider,
+          strictUpstreamPassthrough,
+          upstreamStatus: status,
+          errorType
+        })) {
+          terminalStrictPassthroughResult = {
+            requestId,
+            keyId: credential.id,
+            attemptNo,
+            upstreamStatus: downstreamMappedError?.status ?? effectiveStatus,
+            usageUnits: 0,
+            contentType: compatTranslation ? 'application/json' : contentType,
+            data: downstreamData,
+            routeKind: 'token_credential',
+            alreadyRecorded: true
+          };
+          logCompatAudit({
+            orgId,
+            provider,
+            model,
+            requestId,
+            credentialId: credential.id,
+            attemptNo,
+            upstreamStatus: status,
+            openclawRunId: correlation.openclawRunId,
+            openclawSessionId: correlation.openclawSessionId,
+            errorType,
+            errorMessage
+          });
+          await logAttemptFailure({
+            statusCode: status,
+            message: errorMessage ?? 'Anthropic overloaded'
+          }, Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt)), {
+            responseBody: downstreamData,
+            responseContentType: compatTranslation ? 'application/json' : contentType
+          });
+          logRetryAudit({
+            orgId,
+            provider,
+            model,
+            requestId,
+            openclawRunId: correlation.openclawRunId,
+            openclawSessionId: correlation.openclawSessionId,
+            attemptNo,
+            credentialId: credential.id,
+            credentialLabel: credential.debugLabel,
+            upstreamStatus: status,
+            retryReason: 'anthropic_overloaded_same_provider_retry'
+          });
+          await sleep(sameProviderOverloadRetryBackoffMs(attemptNo));
+          rememberRescueFailure(rescueTracker, {
+            provider,
+            credential,
+            attemptNo,
+            failure: {
+              statusCode: status,
+              message: errorMessage ?? 'Anthropic overloaded'
+            }
+          });
+          sawNonAuthNon400Failure = true;
+          break;
+        }
         if (strictUpstreamPassthrough && status >= 400) {
-          const { errorType, errorMessage } = extractUpstreamErrorDetails(data);
           logCompatAudit({
             orgId,
             provider,
@@ -4678,17 +5078,19 @@ async function executeTokenModeStreaming(input: {
                 ? Math.max(0, streamEndedAt - firstDownstreamWriteAt)
                 : null
             });
-            if (status >= 200 && status < 300) {
-              runtime.repos.requestLog.insert({
-                requestId,
-                attemptNo,
-                orgId,
-                provider,
-                model,
-                promptPreview: extractRequestPreview(compat.payload, proxiedPath),
-                responsePreview: extractResponsePreview(rawText)
-              }).catch(() => {});
-            }
+            await persistRequestAttemptArchiveBestEffort({
+              requestId,
+              attemptNo,
+              orgId,
+              provider,
+              model,
+              proxiedPath,
+              requestContentType,
+              requestBody: compat.payload,
+              responseContentType: 'text/event-stream; charset=utf-8',
+              responseBody: rawText,
+              responsePreview: extractResponsePreview(rawText)
+            });
             logDegradedSuccess({
               tracker: rescueTracker,
               requestId,
@@ -4722,12 +5124,13 @@ async function executeTokenModeStreaming(input: {
           const openAiSummary = useAnthropicSse
             ? null
             : summarizeSyntheticOpenAiOutputItems(syntheticMessage);
-          const syntheticPayload = useAnthropicSse
-            ? `: keepalive\n\n${buildSyntheticAnthropicSse(
+          const archivedSyntheticPayload = useAnthropicSse
+            ? buildSyntheticAnthropicSse(
               compatTranslation ? downstreamMessage : syntheticMessage,
               compatTranslation ? compatTranslation.originalModel : model
-            )}`
-            : `: keepalive\n\n${buildSyntheticOpenAiResponsesSse(syntheticMessage)}`;
+            )
+            : buildSyntheticOpenAiResponsesSse(syntheticMessage);
+          const syntheticPayload = `: keepalive\n\n${archivedSyntheticPayload}`;
           const streamMode = useAnthropicSse ? 'synthetic_bridge' : 'synthetic_openai_responses_bridge';
           const syntheticFormat = useAnthropicSse ? 'anthropic' : 'openai_responses';
           await archiveProxyAttempt({
@@ -4841,17 +5244,19 @@ async function executeTokenModeStreaming(input: {
               ? Math.max(0, streamEndedAt - firstDownstreamWriteAt)
               : null
           });
-          if (status >= 200 && status < 300 && !extractedFailed) {
-            runtime.repos.requestLog.insert({
-              requestId,
-              attemptNo,
-              orgId,
-              provider,
-              model,
-              promptPreview: extractRequestPreview(compat.payload, proxiedPath),
-              responsePreview: extractResponsePreview(data)
-            }).catch(() => {});
-          }
+          await persistRequestAttemptArchiveBestEffort({
+            requestId,
+            attemptNo,
+            orgId,
+            provider,
+            model,
+            proxiedPath,
+            requestContentType,
+            requestBody: compat.payload,
+            responseContentType: 'text/event-stream; charset=utf-8',
+            responseBody: archivedSyntheticPayload,
+            responsePreview: extractResponsePreview(data)
+          });
           if (status >= 200 && status < 300 && !extractedFailed) {
             logDegradedSuccess({
               tracker: rescueTracker,
@@ -4876,6 +5281,20 @@ async function executeTokenModeStreaming(input: {
             alreadyRecorded: true
           };
         }
+
+        await persistRequestAttemptArchive({
+          requestId,
+          attemptNo,
+          orgId,
+          provider,
+          model,
+          proxiedPath,
+          requestContentType,
+          requestBody: compat.payload,
+          responseContentType: compatTranslation ? 'application/json' : contentType,
+          responseBody: downstreamData,
+          responsePreview: extractResponsePreview(data)
+        });
 
         return {
           requestId,
@@ -4949,6 +5368,7 @@ async function executeTokenModeStreaming(input: {
       let totalBytes = 0;
       let totalChunks = 0;
       let sampled = '';
+      let archivedResponse = '';
       let firstByteAt: number | null = null;
       let firstDownstreamWriteAt: number | null = null;
       let streamEndedAt: number | null = null;
@@ -4993,7 +5413,9 @@ async function executeTokenModeStreaming(input: {
             }
             totalBytes += buffer.length;
             totalChunks += 1;
-            sampled = (sampled + buffer.toString('utf8')).slice(-200_000);
+            const chunkText = buffer.toString('utf8');
+            sampled = (sampled + chunkText).slice(-200_000);
+            archivedResponse += chunkText;
           },
           onDownstreamWrite: () => {
             if (firstDownstreamWriteAt === null) {
@@ -5039,6 +5461,7 @@ async function executeTokenModeStreaming(input: {
           }
           (res as any).end();
           sampled = `${sampled}${terminalSse}`.slice(-200_000);
+          archivedResponse += terminalSse;
         }
       } finally {
         clearInterval(keepaliveTimer);
@@ -5067,6 +5490,7 @@ async function executeTokenModeStreaming(input: {
         }
         (res as any).end();
         sampled = `${sampled}${terminalSse}`.slice(-200_000);
+        archivedResponse += terminalSse;
       }
       if (!(res as any).destroyed && !(res as any).writableEnded) {
         (res as any).end();
@@ -5237,17 +5661,19 @@ async function executeTokenModeStreaming(input: {
           : null
       });
 
-      if (status >= 200 && status < 300 && shouldRecordUsage) {
-        runtime.repos.requestLog.insert({
-          requestId,
-          attemptNo,
-          orgId,
-          provider,
-          model,
-          promptPreview: extractRequestPreview(compat.payload, proxiedPath),
-          responsePreview: extractResponsePreview(sampled)
-        }).catch(() => {});
-      }
+      await persistRequestAttemptArchiveBestEffort({
+        requestId,
+        attemptNo,
+        orgId,
+        provider,
+        model,
+        proxiedPath,
+        requestContentType,
+        requestBody: compat.payload,
+        responseContentType: downstreamContentType,
+        responseBody: archivedResponse,
+        responsePreview: extractResponsePreview(sampled)
+      });
       if (status >= 200 && status < 300 && shouldRecordUsage) {
         logDegradedSuccess({
           tracker: rescueTracker,
@@ -5305,6 +5731,10 @@ async function executeTokenModeStreaming(input: {
     return compatTerminalResult;
   }
 
+  if (terminalStrictPassthroughResult) {
+    return terminalStrictPassthroughResult;
+  }
+
   if (sawAuthFailure) {
     if (lastAuthFailure) {
       logAuthFailureAudit({
@@ -5355,10 +5785,19 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
     const orgId = auth.orgId;
 
     const proxiedPath = req.inniesProxiedPath ?? extractProxyPath(req.originalUrl);
+    const requestContentType = req.header('content-type') ?? 'application/json';
     const parsed = parseProxyRequestBody(req.body, proxiedPath);
     const requestProvider = canonicalizeProvider(parsed.provider);
-    const requestId = buildRequestId(req.header('x-request-id') ?? undefined);
-    const correlation = resolveOpenClawCorrelation(req, requestId);
+    const requestPinSelectionReason = (readProviderPinSignal(req) || isClaudeCliPinnedRequest(req, proxiedPath))
+      ? 'cli_provider_pinned'
+      : null;
+    const requestIdentity = resolveRequestIdentity({
+      req,
+      provider: requestProvider,
+      pinSelectionReason: requestPinSelectionReason
+    });
+    const requestId = requestIdentity.requestId;
+    const correlation = resolveOpenClawCorrelation(req, requestId, requestIdentity.recoveredSessionId);
     const rawIdempotencyKey = req.header('idempotency-key') ?? undefined;
     const shouldPersistIdempotency = Boolean(rawIdempotencyKey);
     const idempotencyKey = shouldPersistIdempotency
@@ -5485,6 +5924,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               proxiedPath: upstreamRequest.proxiedPath,
               archiveRequestPayload: parsed.payload ?? {},
               archiveRequestPath: proxiedPath,
+              requestContentType,
               anthropicVersion,
               anthropicBeta,
               startedAt,
@@ -5512,6 +5952,7 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               proxiedPath: upstreamRequest.proxiedPath,
               archiveRequestPayload: parsed.payload ?? {},
               archiveRequestPath: proxiedPath,
+              requestContentType,
               anthropicVersion,
               anthropicBeta,
               startedAt,
@@ -5585,10 +6026,16 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
             correlation,
             pinSelectionReason: requestPinSelectionReason
           });
+          const payload = parsed.payload ?? {};
           const logAttemptFailure = async (
             failure: AttemptFailure,
             ttfb?: number | null,
-            options?: { archive?: boolean }
+            options?: {
+              archive?: boolean;
+              responseBody?: unknown;
+              responseContentType?: string | null;
+              responsePreview?: string | null;
+            }
           ) => {
             await runtime.repos.routingEvents.insert({
               requestId,
@@ -5622,6 +6069,19 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
                 correlation,
                 failure
               });
+              await persistRequestAttemptArchive({
+                requestId,
+                attemptNo: decision.attemptNo,
+                orgId,
+                provider: requestProvider,
+                model: parsed.model,
+                proxiedPath,
+                requestContentType,
+                requestBody: payload,
+                responseContentType: options?.responseContentType ?? null,
+                responseBody: options?.responseBody,
+                responsePreview: options?.responsePreview ?? failure.message ?? null
+              });
             }
           };
 
@@ -5636,8 +6096,6 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
           const timeoutMs = upstreamTimeoutMs();
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-          const payload = parsed.payload ?? {};
           const dispatchStartedAt = Date.now();
           const upstreamResponse = await fetch(targetUrl, {
             method: 'POST',
@@ -5660,17 +6118,44 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
           const ttfbMs = Math.max(0, Math.round(upstreamHeadersAt - dispatchStartedAt));
 
           if (upstreamResponse.status === 429) {
-            await logAttemptFailure({ kind: 'rate_limited', statusCode: 429, message: 'rate limited' }, ttfbMs);
+            const errorContentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+            const errorBody = await readUpstreamErrorPayload(upstreamResponse);
+            await logAttemptFailure(
+              { kind: 'rate_limited', statusCode: 429, message: 'rate limited' },
+              ttfbMs,
+              {
+                responseBody: errorBody,
+                responseContentType: errorContentType
+              }
+            );
             throw Object.assign(new Error('rate limited'), { kind: 'rate_limited', statusCode: 429 });
           }
 
           if (upstreamResponse.status === 401 || upstreamResponse.status === 403) {
-            await logAttemptFailure({ kind: 'auth', statusCode: upstreamResponse.status, message: 'auth failed' }, ttfbMs);
+            const errorContentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+            const errorBody = await readUpstreamErrorPayload(upstreamResponse);
+            await logAttemptFailure(
+              { kind: 'auth', statusCode: upstreamResponse.status, message: 'auth failed' },
+              ttfbMs,
+              {
+                responseBody: errorBody,
+                responseContentType: errorContentType
+              }
+            );
             throw Object.assign(new Error('auth failed'), { kind: 'auth', keySpecific: true, statusCode: upstreamResponse.status });
           }
 
           if (upstreamResponse.status >= 500) {
-            await logAttemptFailure({ kind: 'server_error', statusCode: upstreamResponse.status, message: 'upstream server error' }, ttfbMs);
+            const errorContentType = upstreamResponse.headers.get('content-type') ?? 'application/json';
+            const errorBody = await readUpstreamErrorPayload(upstreamResponse);
+            await logAttemptFailure(
+              { kind: 'server_error', statusCode: upstreamResponse.status, message: 'upstream server error' },
+              ttfbMs,
+              {
+                responseBody: errorBody,
+                responseContentType: errorContentType
+              }
+            );
             throw Object.assign(new Error('upstream server error'), { kind: 'server_error', statusCode: upstreamResponse.status });
           }
 
@@ -5690,12 +6175,15 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
             let totalBytes = 0;
             let totalChunks = 0;
             let sampled = '';
+            let archivedResponse = '';
             const meter = new Transform({
               transform(chunk, _encoding, callback) {
                 const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
                 totalBytes += buffer.length;
                 totalChunks += 1;
-                sampled = (sampled + buffer.toString('utf8')).slice(-200_000);
+                const chunkText = buffer.toString('utf8');
+                sampled = (sampled + chunkText).slice(-200_000);
+                archivedResponse += chunkText;
                 callback(null, chunk);
               }
             });
@@ -5745,6 +6233,19 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
               upstreamStatus: upstreamResponse.status,
               latencyMs: Date.now() - startedAt,
               ttfbMs
+            });
+            await persistRequestAttemptArchiveBestEffort({
+              requestId,
+              attemptNo: decision.attemptNo,
+              orgId,
+              provider: requestProvider,
+              model: parsed.model,
+              proxiedPath,
+              requestContentType,
+              requestBody: payload,
+              responseContentType: contentType,
+              responseBody: archivedResponse,
+              responsePreview: extractResponsePreview(sampled)
             });
             if (shouldRecordServedStream) {
               await runtime.services.metering.recordUsage({
@@ -5859,6 +6360,18 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
         upstreamStatus: result.upstreamStatus,
         latencyMs,
         ttfbMs: result.ttfbMs ?? null
+      });
+      await persistRequestAttemptArchive({
+        requestId,
+        attemptNo: result.attemptNo,
+        orgId,
+        provider: requestProvider,
+        model: parsed.model,
+        proxiedPath,
+        requestContentType,
+        requestBody: parsed.payload ?? {},
+        responseContentType: result.contentType ?? 'application/json',
+        responseBody: result.data
       });
       if (result.upstreamStatus >= 200 && result.upstreamStatus < 300) {
         await runtime.services.metering.recordUsage({
