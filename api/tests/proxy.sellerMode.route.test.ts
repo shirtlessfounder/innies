@@ -219,6 +219,7 @@ describe('proxy seller-mode route behavior', () => {
     } as any);
     vi.spyOn(runtimeModule.runtime.repos.sellerKeys, 'addCapacityUsage').mockResolvedValue(undefined);
     vi.spyOn(runtimeModule.runtime.repos.routingEvents, 'insert').mockResolvedValue(undefined);
+    vi.spyOn(runtimeModule.runtime.repos.requestLog, 'insert').mockResolvedValue('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
     vi.spyOn(runtimeModule.runtime.services.metering, 'recordUsage').mockResolvedValue({
       id: 'usage_1',
       entry_type: 'usage'

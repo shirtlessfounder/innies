@@ -5850,9 +5850,6 @@ export async function proxyPostHandler(req: any, res: Response, next: any): Prom
     const anthropicVersion = req.header('anthropic-version') ?? '2023-06-01';
     const anthropicBeta = req.header('anthropic-beta') ?? undefined;
     let result: ProxyRouteResult | null = null;
-    const requestPinSelectionReason = (readProviderPinSignal(req) || isClaudeCliPinnedRequest(req, proxiedPath))
-      ? 'cli_provider_pinned'
-      : null;
     const forceRequestProviderPlan = shouldLockTokenModeProviderPlanToRequestProvider({
       compatMode,
       proxiedPath,
