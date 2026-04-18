@@ -75,4 +75,10 @@ describe('jobs', () => {
 
     expect(jobs.map((job) => job.name)).toContain('admin-analysis-projector');
   });
+
+  it('registers the request archive retention job by default', () => {
+    const jobs = buildDefaultJobs(new MockSqlClient());
+
+    expect(jobs.map((job) => job.name)).toContain('request-archive-retention-hourly');
+  });
 });

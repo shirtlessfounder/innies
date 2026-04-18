@@ -169,10 +169,18 @@ export class RequestArchiveService {
   }
 }
 
+function isRawRequestArchivingEnabled(): boolean {
+  // Opt-in: raw_request is the cumulative conversation on multi-turn agent
+  // traffic and blows up storage (no cross-turn dedup). The structured
+  // request content is already captured per-message in in_message_blobs
+  // with content-hash dedup, so keep raw_request off by default.
+  return process.env.ARCHIVE_RAW_REQUEST_ENABLED === 'true';
+}
+
 function prepareRawBlobs(input: ArchiveAttemptInput): ArchivePreparedRawBlob[] {
   const rawBlobs: ArchivePreparedRawBlob[] = [];
 
-  if (input.rawRequest != null) {
+  if (isRawRequestArchivingEnabled() && input.rawRequest != null) {
     const encoded = encodeArchiveRawBlob(input.rawRequest);
     rawBlobs.push({
       blobRole: 'request',
