@@ -1073,53 +1073,96 @@ describe('RequestArchiveService', () => {
     ]);
   });
 
-  it('gzip-compresses raw request, response, and stream payloads and records exact blob metadata', async () => {
-    const { service, state } = createService();
-    const rawRequest = JSON.stringify({ kind: 'request', body: 'x'.repeat(512) });
-    const rawResponse = JSON.stringify({ kind: 'response', body: 'y'.repeat(512) });
-    const rawStream = [
-      'data: {"type":"response.output_text.delta","delta":"working"}',
-      '',
-      'data: [DONE]',
-      ''
-    ].join('\n');
+  it('skips raw_request archiving by default (opt-in via ARCHIVE_RAW_REQUEST_ENABLED)', async () => {
+    const prev = process.env.ARCHIVE_RAW_REQUEST_ENABLED;
+    delete process.env.ARCHIVE_RAW_REQUEST_ENABLED;
+    try {
+      const { service, state } = createService();
+      const rawRequest = JSON.stringify({ kind: 'request', body: 'x'.repeat(512) });
+      const rawResponse = JSON.stringify({ kind: 'response', body: 'y'.repeat(512) });
+      const rawStream = [
+        'data: {"type":"response.output_text.delta","delta":"working"}',
+        '',
+        'data: [DONE]',
+        ''
+      ].join('\n');
 
-    await service.archiveAttempt(baseAttempt({
-      rawRequest,
-      rawResponse,
-      rawStream
-    }));
+      await service.archiveAttempt(baseAttempt({ rawRequest, rawResponse, rawStream }));
 
-    expect(state.rawBlobs).toHaveLength(3);
-    expect(state.attemptRawBlobs).toEqual([
-      { requestAttemptArchiveId: 'archive_1', blobRole: 'request', rawBlobId: 'raw_1' },
-      { requestAttemptArchiveId: 'archive_1', blobRole: 'response', rawBlobId: 'raw_2' },
-      { requestAttemptArchiveId: 'archive_1', blobRole: 'stream', rawBlobId: 'raw_3' }
-    ]);
+      const kinds = state.rawBlobs.map((record) => record.blobKind).sort();
+      expect(kinds).toEqual(['raw_response', 'raw_stream']);
+      expect(state.attemptRawBlobs.map((record) => record.blobRole).sort()).toEqual(['response', 'stream']);
 
-    const byKind = Object.fromEntries(state.rawBlobs.map((record) => [record.blobKind, record]));
+      const byKind = Object.fromEntries(state.rawBlobs.map((record) => [record.blobKind, record]));
+      expect(byKind.raw_request).toBeUndefined();
+      expect(byKind.raw_response.encoding).toBe('gzip');
+      expect(byKind.raw_stream.encoding).toBe('gzip');
+    } finally {
+      if (prev === undefined) {
+        delete process.env.ARCHIVE_RAW_REQUEST_ENABLED;
+      } else {
+        process.env.ARCHIVE_RAW_REQUEST_ENABLED = prev;
+      }
+    }
+  });
 
-    expect(byKind.raw_request).toEqual(expect.objectContaining({
-      encoding: 'gzip',
-      bytesCompressed: byKind.raw_request.payload.length,
-      bytesUncompressed: Buffer.byteLength(rawRequest)
-    }));
-    expect(byKind.raw_response).toEqual(expect.objectContaining({
-      encoding: 'gzip',
-      bytesCompressed: byKind.raw_response.payload.length,
-      bytesUncompressed: Buffer.byteLength(rawResponse)
-    }));
-    expect(byKind.raw_stream).toEqual(expect.objectContaining({
-      encoding: 'gzip',
-      bytesCompressed: byKind.raw_stream.payload.length,
-      bytesUncompressed: Buffer.byteLength(rawStream)
-    }));
+  it('gzip-compresses raw request, response, and stream payloads when ARCHIVE_RAW_REQUEST_ENABLED=true', async () => {
+    const prev = process.env.ARCHIVE_RAW_REQUEST_ENABLED;
+    process.env.ARCHIVE_RAW_REQUEST_ENABLED = 'true';
+    try {
+      const { service, state } = createService();
+      const rawRequest = JSON.stringify({ kind: 'request', body: 'x'.repeat(512) });
+      const rawResponse = JSON.stringify({ kind: 'response', body: 'y'.repeat(512) });
+      const rawStream = [
+        'data: {"type":"response.output_text.delta","delta":"working"}',
+        '',
+        'data: [DONE]',
+        ''
+      ].join('\n');
 
-    expect(byKind.raw_request.bytesCompressed).toBeLessThan(byKind.raw_request.bytesUncompressed);
-    expect(byKind.raw_response.bytesCompressed).toBeLessThan(byKind.raw_response.bytesUncompressed);
-    expect(decodeBuffer(byKind.raw_request.payload)).toBe(rawRequest);
-    expect(decodeBuffer(byKind.raw_response.payload)).toBe(rawResponse);
-    expect(decodeBuffer(byKind.raw_stream.payload)).toBe(rawStream);
+      await service.archiveAttempt(baseAttempt({
+        rawRequest,
+        rawResponse,
+        rawStream
+      }));
+
+      expect(state.rawBlobs).toHaveLength(3);
+      expect(state.attemptRawBlobs).toEqual([
+        { requestAttemptArchiveId: 'archive_1', blobRole: 'request', rawBlobId: 'raw_1' },
+        { requestAttemptArchiveId: 'archive_1', blobRole: 'response', rawBlobId: 'raw_2' },
+        { requestAttemptArchiveId: 'archive_1', blobRole: 'stream', rawBlobId: 'raw_3' }
+      ]);
+
+      const byKind = Object.fromEntries(state.rawBlobs.map((record) => [record.blobKind, record]));
+
+      expect(byKind.raw_request).toEqual(expect.objectContaining({
+        encoding: 'gzip',
+        bytesCompressed: byKind.raw_request.payload.length,
+        bytesUncompressed: Buffer.byteLength(rawRequest)
+      }));
+      expect(byKind.raw_response).toEqual(expect.objectContaining({
+        encoding: 'gzip',
+        bytesCompressed: byKind.raw_response.payload.length,
+        bytesUncompressed: Buffer.byteLength(rawResponse)
+      }));
+      expect(byKind.raw_stream).toEqual(expect.objectContaining({
+        encoding: 'gzip',
+        bytesCompressed: byKind.raw_stream.payload.length,
+        bytesUncompressed: Buffer.byteLength(rawStream)
+      }));
+
+      expect(byKind.raw_request.bytesCompressed).toBeLessThan(byKind.raw_request.bytesUncompressed);
+      expect(byKind.raw_response.bytesCompressed).toBeLessThan(byKind.raw_response.bytesUncompressed);
+      expect(decodeBuffer(byKind.raw_request.payload)).toBe(rawRequest);
+      expect(decodeBuffer(byKind.raw_response.payload)).toBe(rawResponse);
+      expect(decodeBuffer(byKind.raw_stream.payload)).toBe(rawStream);
+    } finally {
+      if (prev === undefined) {
+        delete process.env.ARCHIVE_RAW_REQUEST_ENABLED;
+      } else {
+        process.env.ARCHIVE_RAW_REQUEST_ENABLED = prev;
+      }
+    }
   });
 
   it('rolls back the archive transaction without orphaned rows when a raw blob write fails', async () => {
@@ -1176,8 +1219,9 @@ describe('RequestArchiveService', () => {
     }));
 
     expect(state.attemptMessages.filter((record) => record.side === 'response')).toHaveLength(1);
-    expect(state.rawBlobs).toHaveLength(2);
-    expect(state.attemptRawBlobs.map((record) => record.blobRole).sort()).toEqual(['request', 'stream']);
+    // raw_request is opt-in (ARCHIVE_RAW_REQUEST_ENABLED); rawResponse is null here.
+    expect(state.rawBlobs).toHaveLength(1);
+    expect(state.attemptRawBlobs.map((record) => record.blobRole).sort()).toEqual(['stream']);
     expect(state.messageBlobs.find((record) => record.role === 'assistant')?.normalizedPayload).toEqual({
       role: 'assistant',
       content: [{ type: 'text', text: 'working' }]

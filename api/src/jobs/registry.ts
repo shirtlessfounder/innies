@@ -7,6 +7,7 @@ import { AdminSessionProjectionOutboxRepository } from '../repos/adminSessionPro
 import { AdminSessionRepository } from '../repos/adminSessionRepository.js';
 import { IdempotencyRepository } from '../repos/idempotencyRepository.js';
 import { ReconciliationRepository } from '../repos/reconciliationRepository.js';
+import { RequestArchiveRetentionRepository } from '../repos/requestArchiveRetentionRepository.js';
 import { RequestLogRepository } from '../repos/requestLogRepository.js';
 import { SellerKeyRepository } from '../repos/sellerKeyRepository.js';
 import { TokenCredentialRepository } from '../repos/tokenCredentialRepository.js';
@@ -33,6 +34,7 @@ import { createEarningsProjectorJob } from './earningsProjectorJob.js';
 import { createIdempotencyPurgeJob } from './idempotencyPurgeJob.js';
 import { createKeyHealthCheckJob } from './keyHealthJob.js';
 import { createLiveLaneProjectorJob } from './liveLaneProjectorJob.js';
+import { createRequestArchiveRetentionJob } from './requestArchiveRetentionJob.js';
 import {
   createRequestLogRetentionJob,
   readRequestLogRetentionDays
@@ -57,6 +59,7 @@ export function buildDefaultJobs(db: SqlClient, source: ReconciliationDataSource
   const meteringProjectorStateRepo = new MeteringProjectorStateRepository(db);
   const reconciliationRepo = new ReconciliationRepository(db);
   const requestLogRepo = new RequestLogRepository(db);
+  const requestArchiveRetentionRepo = new RequestArchiveRetentionRepository(db);
   const liveLaneProjectionOutboxRepo = new LiveLaneProjectionOutboxRepository(db);
   const sellerKeysRepo = new SellerKeyRepository(db);
   const tokenCredentialsRepo = new TokenCredentialRepository(db);
@@ -113,6 +116,7 @@ export function buildDefaultJobs(db: SqlClient, source: ReconciliationDataSource
     createTokenCredentialHealthJob(tokenCredentialsRepo),
     createDailyAggregatesIncrementalJob(aggregatesRepo),
     createDailyAggregatesCompactionJob(aggregatesRepo),
+    createRequestArchiveRetentionJob(requestArchiveRetentionRepo),
     createReconciliationJob(reconciliationRepo, source)
   ];
 
