@@ -2,6 +2,14 @@
 
 Repo-local instructions for agents working in `innies`.
 
+## Infrastructure & Connection Points
+
+Where prod runs, how to SSH in, how to query the database, how to restart the service, where secrets live:
+
+- Read [`docs/ops/INFRASTRUCTURE.md`](docs/ops/INFRASTRUCTURE.md) **first** before trying to connect to prod or run SQL.
+- Prod is: exe.dev VM `innies-api.exe.xyz` (nyc) → Supabase Postgres 17 (us-east-1, project ref `rcxokzsblffykipiljqv`) → public HTTPS at `https://innies-api.exe.xyz`.
+- Secrets are **not** in git. The VM's `/etc/innies/prod.env` is the source of truth; the infra doc tells you how to read it.
+
 ## Diagnosis Workflow
 
 For Innies incident response, prod debugging, compat work, routing failures, auth failures, streaming failures, or Anthropic `/v1/messages` regressions:
