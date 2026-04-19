@@ -27,7 +27,7 @@ test('applies anthropic model hints without rewriting openai defaults', () => {
 
 test('applies openai model hints without rewriting anthropic defaults', () => {
   assert.deepEqual(providerDefaultsFromModelHint('gpt-5.5'), {
-    anthropic: 'claude-opus-4-6',
+    anthropic: 'claude-opus-4-7',
     openai: 'gpt-5.5'
   });
 });

@@ -1,5 +1,5 @@
 const DEFAULT_MODELS = Object.freeze({
-  anthropic: 'claude-opus-4-6',
+  anthropic: 'claude-opus-4-7',
   openai: 'gpt-5.4'
 });
 
