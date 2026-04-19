@@ -9,6 +9,7 @@ import {
   shouldCaptureCommandOutput
 } from './wrapperRuntime.js';
 import { prepareCodexAuthOverlay } from './codexAuthOverlay.js';
+import { startCodexProxy } from './codexProxy.js';
 
 const CODEX_PROXY_PROVIDER = 'innies';
 
@@ -28,6 +29,11 @@ export function hasExplicitModelArg(args) {
 export function buildCodexArgs(input) {
   const { args, model, proxyUrl } = input;
   const providerPath = `model_providers.${CODEX_PROXY_PROVIDER}`;
+  // Headers (x-request-id, x-innies-provider-pin, x-openclaw-session-id)
+  // are stamped by the local HTTP bridge (codexProxy.js) on every forwarded
+  // request — this guarantees injection regardless of whether the codex
+  // binary honors env_http_headers for our header names. Keep the codex
+  // config minimal.
   const forcedArgs = [
     '--config', `model_provider="${CODEX_PROXY_PROVIDER}"`,
     '--config', `${providerPath}.name="${CODEX_PROXY_PROVIDER}"`,
@@ -36,13 +42,7 @@ export function buildCodexArgs(input) {
     '--config', `${providerPath}.wire_api="responses"`,
     '--config', `${providerPath}.requires_openai_auth=false`,
     '--config', `${providerPath}.supports_websockets=false`,
-    '--config', 'responses_websockets_v2=false',
-    '--config', `${providerPath}.env_http_headers."x-request-id"="INNIES_CORRELATION_ID"`,
-    '--config', `${providerPath}.env_http_headers."x-innies-provider-pin"="INNIES_PROVIDER_PIN"`,
-    // Propagate the CLI-invocation session id so the Innies API can group
-    // every turn of this `innies codex` run under one session. Read by
-    // resolveOpenClawCorrelation in api/src/routes/proxy.ts.
-    '--config', `${providerPath}.env_http_headers."x-openclaw-session-id"="INNIES_SESSION_ID"`
+    '--config', 'responses_websockets_v2=false'
   ];
 
   if (!hasExplicitModelArg(args)) {
@@ -77,9 +77,17 @@ export async function runCodex(args) {
   }
 
   const model = resolveProviderDefaultModel(config, 'openai');
-  const proxyUrl = proxyBase(config.apiBaseUrl);
+  const upstreamProxyUrl = proxyBase(config.apiBaseUrl);
   const correlationId = buildCorrelationId();
   const sessionId = buildSessionId();
+  // Start a local HTTP bridge that stamps x-openclaw-session-id on every
+  // request before forwarding to Innies. Point codex at the bridge URL.
+  const codexBridge = await startCodexProxy({
+    upstreamBaseUrl: config.apiBaseUrl,
+    correlationId,
+    sessionId
+  });
+  const bridgeProxyUrl = `${codexBridge.baseUrl}/v1/proxy/v1`;
   const codexBinary = resolveWrappedBinary({
     binaryName: 'codex',
     displayName: 'Codex',
@@ -90,7 +98,9 @@ export async function runCodex(args) {
     sourceCodexHome: process.env.CODEX_HOME
   });
 
-  printConnectionStatus({ model, proxyUrl, correlationId });
+  // Display the user-visible upstream URL in the banner, not the local bridge
+  // port (which changes per invocation and is an implementation detail).
+  printConnectionStatus({ model, proxyUrl: upstreamProxyUrl, correlationId });
 
   const {
     OPENAI_BASE_URL: _deprecatedOpenAiBaseUrl,
@@ -105,7 +115,7 @@ export async function runCodex(args) {
     INNIES_CODEX_WRAPPED: '1',
     INNIES_TOKEN: config.token,
     INNIES_API_BASE_URL: config.apiBaseUrl,
-    INNIES_PROXY_URL: proxyUrl,
+    INNIES_PROXY_URL: upstreamProxyUrl,
     INNIES_MODEL: model,
     INNIES_ROUTE_MODE: 'token',
     INNIES_CORRELATION_ID: correlationId,
@@ -117,7 +127,7 @@ export async function runCodex(args) {
   const captureOutput = shouldCaptureCommandOutput('INNIES_CAPTURE_CODEX_OUTPUT');
   let combinedOutput = '';
   const stdio = captureOutput ? ['inherit', 'pipe', 'pipe'] : 'inherit';
-  const child = spawn(codexBinary, buildCodexArgs({ args, model, proxyUrl }), {
+  const child = spawn(codexBinary, buildCodexArgs({ args, model, proxyUrl: bridgeProxyUrl }), {
     stdio,
     env
   });
@@ -143,13 +153,21 @@ export async function runCodex(args) {
     authOverlay.cleanup();
   }
 
-  child.on('error', (error) => {
+  async function closeBridge() {
+    try {
+      await codexBridge.close();
+    } catch {}
+  }
+
+  child.on('error', async (error) => {
     cleanupOverlay();
+    await closeBridge();
     fail(`Failed to run codex: ${error.message}`);
   });
 
-  child.on('close', (code, signal) => {
+  child.on('close', async (code, signal) => {
     cleanupOverlay();
+    await closeBridge();
     if (signal) {
       process.kill(process.pid, signal);
       return;
@@ -162,4 +180,7 @@ export async function runCodex(args) {
 
     process.exit(code ?? 0);
   });
+
+  process.on('SIGINT', () => { void closeBridge(); process.exit(130); });
+  process.on('SIGTERM', () => { void closeBridge(); process.exit(143); });
 }
