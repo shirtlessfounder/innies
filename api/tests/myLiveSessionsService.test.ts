@@ -256,6 +256,59 @@ describe('MyLiveSessionsService.listFeed', () => {
     expect(feed.sessions[0].modelSet.sort()).toEqual(['claude-opus-4-6', 'gpt-5.4', 'gpt-5.4-mini']);
   });
 
+  it('sanitizes secrets/paths/emails from normalizedPayload before returning', async () => {
+    const archives = [
+      makeArchiveRow({
+        id: 'archive_secretful',
+        openclaw_session_id: 'sess_scrub'
+      })
+    ];
+    const messages = [
+      makeMessageRow({
+        request_attempt_archive_id: 'archive_secretful',
+        side: 'request',
+        ordinal: 0,
+        normalized_payload: {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: [
+                'my key is sk-proj-abc123XYZ_tokenhere',
+                'also bearer eyJhbGciOiJIUzI1NiJ.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
+                'file at /Users/dylan/.ssh/id_ed25519',
+                'email me at dylan@innies.work'
+              ].join('\n')
+            }
+          ]
+        }
+      })
+    ];
+    const db = new MultiQueryClient((sql) => {
+      if (sql.includes('from in_request_attempt_archives')) {
+        return { rows: archives, rowCount: archives.length };
+      }
+      if (sql.includes('from in_request_attempt_messages')) {
+        return { rows: messages, rowCount: messages.length };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+    const svc = new MyLiveSessionsService({ sql: db });
+
+    const feed = await svc.listFeed({ apiKeyIds: ['key_mine'] });
+
+    const text = (feed.sessions[0].turns[0].messages[0].normalizedPayload.content as Array<Record<string, unknown>>)[0]
+      .text as string;
+    // Anything the public sanitizer redacts must also be scrubbed here.
+    expect(text).not.toContain('sk-proj-abc123XYZ_tokenhere');
+    expect(text).not.toContain('eyJhbGciOiJIUzI1NiJ');
+    expect(text).not.toContain('/Users/dylan/.ssh/id_ed25519');
+    expect(text).not.toContain('dylan@innies.work');
+    expect(text).toContain('[REDACTED_TOKEN]');
+    expect(text).toContain('[REDACTED_PATH]');
+    expect(text).toContain('[REDACTED_EMAIL]');
+  });
+
   it('does not load messages when no archives match', async () => {
     const db = new MultiQueryClient(() => ({ rows: [], rowCount: 0 }));
     const svc = new MyLiveSessionsService({ sql: db });

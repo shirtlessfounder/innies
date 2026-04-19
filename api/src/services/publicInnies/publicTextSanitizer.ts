@@ -120,3 +120,39 @@ export function stringifyPublicToolPayload(input: unknown): string {
 
   return capText(sanitizePublicText(stringified));
 }
+
+/**
+ * Walk an arbitrary JSON-shaped value and return a deep copy where every
+ * string has been passed through `sanitizePublicText`. Arrays and plain
+ * objects are reconstructed; non-string scalars pass through unchanged.
+ *
+ * Use this when you need to scrub a normalized payload (e.g. the admin
+ * `/v1/admin/me/live-sessions` endpoint) that contains user/assistant
+ * content before handing it to a client that might leak to the public
+ * internet (e.g. innies.work rendering via a server-side proxy route).
+ */
+export function sanitizePublicDeep<T>(value: T, seen: WeakSet<object> = new WeakSet()): T {
+  if (typeof value === 'string') {
+    return sanitizePublicText(value) as unknown as T;
+  }
+
+  if (value == null || typeof value !== 'object') {
+    return value;
+  }
+
+  if (seen.has(value as object)) {
+    return value;
+  }
+  seen.add(value as object);
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizePublicDeep(item, seen)) as unknown as T;
+  }
+
+  const source = value as Record<string, unknown>;
+  const next: Record<string, unknown> = {};
+  for (const key of Object.keys(source)) {
+    next[key] = sanitizePublicDeep(source[key], seen);
+  }
+  return next as unknown as T;
+}
