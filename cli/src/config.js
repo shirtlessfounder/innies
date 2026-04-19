@@ -7,6 +7,8 @@ import {
   defaultOpenAiModel,
   defaultProviderModels as defaultProviderModelsBase,
   inferModelProvider,
+  isStaleProviderDefault,
+  migrateStaleProviderDefaults,
   normalizeLegacyFallbackModel,
   normalizeModel,
   normalizeProviderDefaults,
@@ -55,7 +57,11 @@ export async function loadConfig(required = true) {
       fail(`Invalid config at ${PRIMARY_CONFIG_PATH}. Run: innies login --token <in_token>`);
     }
 
-    return config;
+    // Auto-upgrade provider defaults that were previously hardcoded in an
+    // older CLI version (e.g. `claude-opus-4-6` → `claude-opus-4-7`).
+    // Rewrites the config to disk so the migration only happens once.
+    const migrated = await migrateConfigIfStale(config);
+    return migrated;
   } catch (error) {
     if (!required) {
       return null;
@@ -64,6 +70,45 @@ export async function loadConfig(required = true) {
     const message = error instanceof Error ? error.message : String(error);
     fail(`Missing or unreadable config (${PRIMARY_CONFIG_PATH}): ${message}`);
   }
+}
+
+/**
+ * Walk a loaded config, upgrade any provider defaults that match a known
+ * previously-hardcoded value to the current default, and persist the
+ * result. `defaultModel` is upgraded in lock-step with `providerDefaults.anthropic`
+ * so the two stay coherent. Returns the (possibly-migrated) config.
+ */
+async function migrateConfigIfStale(config) {
+  const { providerDefaults: nextProviderDefaults, migrated: providerMigrated } =
+    migrateStaleProviderDefaults(config.providerDefaults);
+
+  const defaultModelIsStale = isStaleProviderDefault('anthropic', config.defaultModel);
+  const nextDefaultModel = defaultModelIsStale
+    ? nextProviderDefaults.anthropic
+    : config.defaultModel;
+
+  if (!providerMigrated && !defaultModelIsStale) {
+    return config;
+  }
+
+  const nextConfig = {
+    ...config,
+    defaultModel: nextDefaultModel,
+    providerDefaults: nextProviderDefaults,
+    updatedAt: new Date().toISOString()
+  };
+
+  try {
+    const file = configPath();
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, `${JSON.stringify(nextConfig, null, 2)}\n`, { mode: 0o600 });
+  } catch {
+    // Non-fatal: even if we couldn't persist the migration, returning the
+    // upgraded config lets this session use the new defaults. Next load
+    // will retry the rewrite.
+  }
+
+  return nextConfig;
 }
 
 export async function saveConfig(token, apiBaseUrl, defaultModel) {
