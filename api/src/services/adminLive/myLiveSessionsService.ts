@@ -61,6 +61,9 @@ function sessionKeyForArchive(row: ArchiveRow): string {
 // Strip content blocks the watch-me-work panel never renders:
 //   - anthropic thinking / redacted_thinking (opaque, often huge)
 //   - tool_use / tool_result (panel hides tool activity — SessionPanel.tsx)
+//   - image (base64 blobs — can be hundreds of KB each; panel doesn't render
+//     them. The `[Image #N]` reference text lives in a separate text part and
+//     is preserved.)
 // The archive normalizer either emits these at top level (`{type: "thinking"}`)
 // or wraps them (`{type: "json", value: {type: "thinking"}}`), so handle both.
 // Tool-use/result blocks are the dominant size driver — a single file-read
@@ -70,7 +73,8 @@ const HIDDEN_PART_TYPES = new Set([
   'thinking',
   'redacted_thinking',
   'tool_use',
-  'tool_result'
+  'tool_result',
+  'image'
 ]);
 
 function stripHiddenParts(payload: Record<string, unknown>): Record<string, unknown> {
@@ -306,12 +310,12 @@ export class MyLiveSessionsService {
                     with ordinality as t(part, idx)
                   where not (
                     part->>'type' in (
-                      'thinking','redacted_thinking','tool_use','tool_result'
+                      'thinking','redacted_thinking','tool_use','tool_result','image'
                     )
                     or (
                       part->>'type' = 'json'
                       and part->'value'->>'type' in (
-                        'thinking','redacted_thinking','tool_use','tool_result'
+                        'thinking','redacted_thinking','tool_use','tool_result','image'
                       )
                     )
                   )

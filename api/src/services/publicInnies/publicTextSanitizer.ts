@@ -60,6 +60,20 @@ const SCAFFOLD_TAG_PATTERN = new RegExp(
 const EXTERNAL_UNTRUSTED_CONTENT_PATTERN =
   /<EXTERNAL_UNTRUSTED_CONTENT\b[^>]*>[\s\S]*?<<<END_EXTERNAL_UNTRUSTED_CONTENT[^>]*>>>\s*/gi;
 
+// Claude Code ships an `x-anthropic-billing-header: cc_version=...` line with
+// every turn. It's pure telemetry — strip it line-by-line.
+const BILLING_HEADER_PATTERN = /^x-anthropic-billing-header:[^\n]*\n?/gim;
+
+// When a coding-assistant CLI's system prompt bleeds into a visible message
+// (the archive normalizer flattens `system` + user turns together), strip from
+// the signature phrase to end-of-string. Over-strips if someone literally
+// pastes the CLI prompt into a conversation, but that's the right call for
+// a public feed. Tighten the codex signature when we have a real sample.
+const CLAUDE_CODE_SYSTEM_PROMPT_PATTERN =
+  /You are Claude Code, Anthropic's official CLI for Claude\.[\s\S]*/g;
+const CODEX_SYSTEM_PROMPT_PATTERN =
+  /You are a coding agent running in the Codex CLI[\s\S]*/gi;
+
 function capText(value: string, maxChars = TOOL_PAYLOAD_MAX_CHARS): string {
   const safeMaxChars = Number.isFinite(maxChars) ? Math.max(1, Math.floor(maxChars)) : TOOL_PAYLOAD_MAX_CHARS;
   if (value.length <= safeMaxChars) {
@@ -140,6 +154,9 @@ export function sanitizePublicText(input: string): string {
   // count drops before we run the rest of the regexes.
   text = text.replace(SCAFFOLD_TAG_PATTERN, '');
   text = text.replace(EXTERNAL_UNTRUSTED_CONTENT_PATTERN, '');
+  text = text.replace(BILLING_HEADER_PATTERN, '');
+  text = text.replace(CLAUDE_CODE_SYSTEM_PROMPT_PATTERN, '');
+  text = text.replace(CODEX_SYSTEM_PROMPT_PATTERN, '');
 
   text = text.replace(AUTH_HEADER_QUOTED_PATTERN, (_match, prefix: string, _value: string, suffix: string) =>
     `${prefix}${REDACTED_CREDENTIAL}${suffix}`
