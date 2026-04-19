@@ -51,6 +51,40 @@ describe('publicTextSanitizer', () => {
     expect(result.length).toBeLessThanOrEqual(4_000);
   });
 
+  it('strips <system-reminder> blocks injected by the Claude Code CLI', () => {
+    const input = [
+      'help me refactor this',
+      '<system-reminder>',
+      'The task tools haven\'t been used recently. You have a persistent memory at /Users/dylan/.claude/memory',
+      '</system-reminder>',
+      'here is the code'
+    ].join('\n');
+
+    const result = sanitizePublicText(input);
+    expect(result).not.toContain('<system-reminder>');
+    expect(result).not.toContain('persistent memory');
+    expect(result).toContain('help me refactor this');
+    expect(result).toContain('here is the code');
+  });
+
+  it('strips slash-command scaffolding tags', () => {
+    const input = [
+      '<command-name>/memorize</command-name>',
+      '<command-args>use twitter api</command-args>',
+      'actual message'
+    ].join('\n');
+
+    const result = sanitizePublicText(input);
+    expect(result).not.toContain('<command-name>');
+    expect(result).not.toContain('<command-args>');
+    expect(result).toContain('actual message');
+  });
+
+  it('handles multiple reminder blocks in a single text', () => {
+    const input = '<system-reminder>one</system-reminder>between<system-reminder>two</system-reminder>end';
+    expect(sanitizePublicText(input)).toBe('betweenend');
+  });
+
   it('handles circular tool payloads without throwing', () => {
     const payload: Record<string, unknown> = {
       name: 'tool'
