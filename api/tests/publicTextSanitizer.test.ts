@@ -166,6 +166,51 @@ describe('publicTextSanitizer', () => {
     expect(sanitizePublicText(input)).toBe('after');
   });
 
+  it('strips the Claude Code x-anthropic-billing-header telemetry line', () => {
+    const input = [
+      'hello',
+      'x-anthropic-billing-header: cc_version=2.1.114.eb4; cc_entrypoint=cli; cch=4b1b1;',
+      'world'
+    ].join('\n');
+
+    const result = sanitizePublicText(input);
+    expect(result).not.toContain('x-anthropic-billing-header');
+    expect(result).not.toContain('cc_version');
+    expect(result).toContain('hello');
+    expect(result).toContain('world');
+  });
+
+  it('strips the Claude Code system prompt when it leaks into a visible message', () => {
+    const input = [
+      'here is what i was asked:',
+      "You are Claude Code, Anthropic's official CLI for Claude.",
+      'You are an interactive agent that helps users with software engineering tasks.',
+      '# System',
+      '- All text you output outside of tool use is displayed to the user.',
+      '# Doing tasks',
+      'Do them carefully.'
+    ].join('\n');
+
+    const result = sanitizePublicText(input);
+    expect(result).not.toContain("You are Claude Code, Anthropic's official CLI");
+    expect(result).not.toContain('# System');
+    expect(result).not.toContain('# Doing tasks');
+    expect(result).toContain('here is what i was asked:');
+  });
+
+  it('strips a codex CLI system prompt when it leaks into a visible message', () => {
+    const input = [
+      'user ask:',
+      'You are a coding agent running in the Codex CLI.',
+      'Be terse, follow AGENTS.md, ask before running destructive commands.'
+    ].join('\n');
+
+    const result = sanitizePublicText(input);
+    expect(result).not.toContain('You are a coding agent running in the Codex CLI');
+    expect(result).not.toContain('AGENTS.md');
+    expect(result).toContain('user ask:');
+  });
+
   it('handles circular tool payloads without throwing', () => {
     const payload: Record<string, unknown> = {
       name: 'tool'
