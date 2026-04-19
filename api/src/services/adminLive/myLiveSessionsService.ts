@@ -58,6 +58,29 @@ function sessionKeyForArchive(row: ArchiveRow): string {
   return row.openclaw_session_id ? row.openclaw_session_id : `archive:${row.id}`;
 }
 
+// Anthropic responses include `{type: "thinking"|"redacted_thinking", ...}`
+// blocks that the archive normalizer preserves as `{type: "json", value: <block>}`.
+// They carry opaque encrypted signatures meant for provider round-tripping, are
+// huge on the wire, and render as noisy JSON blobs in the public watch-me-work
+// tab. Strip them from the content array before serializing.
+function stripThinkingParts(payload: Record<string, unknown>): Record<string, unknown> {
+  const content = payload.content;
+  if (!Array.isArray(content)) return payload;
+
+  const filtered = content.filter((part) => {
+    if (!part || typeof part !== 'object') return true;
+    const record = part as Record<string, unknown>;
+    if (record.type !== 'json') return true;
+    const inner = record.value;
+    if (!inner || typeof inner !== 'object') return true;
+    const innerRecord = inner as Record<string, unknown>;
+    return innerRecord.type !== 'thinking' && innerRecord.type !== 'redacted_thinking';
+  });
+
+  if (filtered.length === content.length) return payload;
+  return { ...payload, content: filtered };
+}
+
 export class MyLiveSessionsService {
   constructor(private readonly deps: MyLiveSessionsServiceDeps) {}
 
@@ -208,7 +231,7 @@ export class MyLiveSessionsService {
         // makes this payload publicly readable for anyone who hits
         // innies.work — so we scrub the same secret/credential/PII
         // patterns as the public landing feed before returning.
-        normalizedPayload: sanitizePublicDeep(row.normalized_payload ?? {})
+        normalizedPayload: stripThinkingParts(sanitizePublicDeep(row.normalized_payload ?? {}))
       }));
 
     return {

@@ -309,6 +309,38 @@ describe('MyLiveSessionsService.listFeed', () => {
     expect(text).toContain('[REDACTED_EMAIL]');
   });
 
+  it('strips anthropic thinking blocks from normalizedPayload content', async () => {
+    const archives = [makeArchiveRow({ id: 'archive_thinky', openclaw_session_id: 'sess_thinky' })];
+    const messages = [
+      makeMessageRow({
+        request_attempt_archive_id: 'archive_thinky',
+        side: 'response',
+        ordinal: 0,
+        role: 'assistant',
+        normalized_payload: {
+          role: 'assistant',
+          content: [
+            { type: 'json', value: { type: 'thinking', thinking: '', signature: 'ErQEClk...' } },
+            { type: 'json', value: { type: 'redacted_thinking', data: 'opaque' } },
+            { type: 'text', text: 'hello world' }
+          ]
+        }
+      })
+    ];
+    const db = new MultiQueryClient((sql) => {
+      if (sql.includes('from in_request_attempt_archives')) return { rows: archives, rowCount: archives.length };
+      if (sql.includes('from in_request_attempt_messages')) return { rows: messages, rowCount: messages.length };
+      return { rows: [], rowCount: 0 };
+    });
+    const svc = new MyLiveSessionsService({ sql: db });
+
+    const feed = await svc.listFeed({ apiKeyIds: ['key_mine'] });
+
+    const parts = feed.sessions[0].turns[0].messages[0].normalizedPayload.content as Array<Record<string, unknown>>;
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toEqual({ type: 'text', text: 'hello world' });
+  });
+
   it('does not load messages when no archives match', async () => {
     const db = new MultiQueryClient(() => ({ rows: [], rowCount: 0 }));
     const svc = new MyLiveSessionsService({ sql: db });
