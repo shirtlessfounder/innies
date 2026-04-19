@@ -4,7 +4,7 @@ import { runDoctor } from './commands/doctor.js';
 import { runClaude } from './commands/claude.js';
 import { runCodex } from './commands/codex.js';
 import { runLinkClaude, runUnlinkClaude } from './commands/link.js';
-import { fail, printUsage } from './utils.js';
+import { fail, printUsage, readPackageVersion } from './utils.js';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -12,6 +12,12 @@ async function main() {
 
   if (!command || command === '-h' || command === '--help') {
     printUsage();
+    return;
+  }
+
+  if (command === '-v' || command === '--version' || command === 'version') {
+    const version = await readPackageVersion();
+    console.log(version);
     return;
   }
 

@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export function printUsage() {
   console.log(
@@ -14,6 +16,7 @@ export function printUsage() {
       '  innies codex [-- <codex args...>]',
       '  innies link claude',
       '  innies unlink claude',
+      '  innies --version',
       ''
     ].join('\n')
   );
@@ -55,6 +58,27 @@ export function parseFlag(args, name) {
 
 export function buildCorrelationId() {
   return randomUUID();
+}
+
+/**
+ * Read the `version` field from the CLI package.json that ships alongside
+ * the installed module. Resolves relative to this source file so it works
+ * from both the source tree (ESM imports) and a globally-installed node
+ * package (symlinked bin → lib/node_modules/innies/bin).
+ */
+export async function readPackageVersion() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const pkgPath = resolve(here, '..', 'package.json');
+  try {
+    const raw = await readFile(pkgPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.version !== 'string' || parsed.version.length === 0) {
+      return 'unknown';
+    }
+    return parsed.version;
+  } catch {
+    return 'unknown';
+  }
 }
 
 /**
