@@ -350,6 +350,105 @@ describe('MyLiveSessionsService.listFeed', () => {
     expect(parts[0]).toEqual({ type: 'text', text: 'hello world' });
   });
 
+  it('dedupes cumulative messages across turns by (side, ordinal)', async () => {
+    // Claude/Codex sessions re-send the full history each turn. The panel
+    // only renders newly-appended (side, ordinal) pairs, so the server
+    // should drop the duplicates before shipping them.
+    const archives = [
+      makeArchiveRow({
+        id: 'archive_t1',
+        openclaw_session_id: 'sess_dedup',
+        started_at: new Date('2026-04-19T00:00:10Z'),
+        completed_at: new Date('2026-04-19T00:00:11Z')
+      }),
+      makeArchiveRow({
+        id: 'archive_t2',
+        openclaw_session_id: 'sess_dedup',
+        started_at: new Date('2026-04-19T00:00:20Z'),
+        completed_at: new Date('2026-04-19T00:00:21Z')
+      }),
+      makeArchiveRow({
+        id: 'archive_t3',
+        openclaw_session_id: 'sess_dedup',
+        started_at: new Date('2026-04-19T00:00:30Z'),
+        completed_at: new Date('2026-04-19T00:00:31Z')
+      })
+    ];
+    const messages = [
+      // turn 1: user q1, assistant a1
+      makeMessageRow({ request_attempt_archive_id: 'archive_t1', side: 'request', ordinal: 0 }),
+      makeMessageRow({
+        request_attempt_archive_id: 'archive_t1',
+        side: 'response',
+        ordinal: 0,
+        role: 'assistant'
+      }),
+      // turn 2: re-sends turn 1 history + new user q2, new assistant a2
+      makeMessageRow({ request_attempt_archive_id: 'archive_t2', side: 'request', ordinal: 0 }),
+      makeMessageRow({ request_attempt_archive_id: 'archive_t2', side: 'request', ordinal: 1 }),
+      makeMessageRow({
+        request_attempt_archive_id: 'archive_t2',
+        side: 'response',
+        ordinal: 0,
+        role: 'assistant'
+      }),
+      makeMessageRow({
+        request_attempt_archive_id: 'archive_t2',
+        side: 'response',
+        ordinal: 1,
+        role: 'assistant'
+      }),
+      // turn 3: re-sends turns 1+2 history + new user q3
+      makeMessageRow({ request_attempt_archive_id: 'archive_t3', side: 'request', ordinal: 0 }),
+      makeMessageRow({ request_attempt_archive_id: 'archive_t3', side: 'request', ordinal: 1 }),
+      makeMessageRow({ request_attempt_archive_id: 'archive_t3', side: 'request', ordinal: 2 }),
+      makeMessageRow({
+        request_attempt_archive_id: 'archive_t3',
+        side: 'response',
+        ordinal: 0,
+        role: 'assistant'
+      }),
+      makeMessageRow({
+        request_attempt_archive_id: 'archive_t3',
+        side: 'response',
+        ordinal: 1,
+        role: 'assistant'
+      })
+    ];
+    const db = new MultiQueryClient((sql) => {
+      if (sql.includes('from in_request_attempt_archives')) {
+        return { rows: archives, rowCount: archives.length };
+      }
+      if (sql.includes('from in_request_attempt_messages')) {
+        return { rows: messages, rowCount: messages.length };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+    const svc = new MyLiveSessionsService({ sql: db });
+
+    const feed = await svc.listFeed({
+      apiKeyIds: ['key_mine'],
+      now: new Date('2026-04-19T01:00:00Z')
+    });
+
+    const session = feed.sessions[0];
+    expect(session.sessionKey).toBe('sess_dedup');
+    // turn 1 keeps everything (it's the first in the slice).
+    expect(session.turns[0].messages.map((m) => [m.side, m.ordinal])).toEqual([
+      ['request', 0],
+      ['response', 0]
+    ]);
+    // turn 2 drops the duplicates (request/response ordinal 0) and keeps only the new ones.
+    expect(session.turns[1].messages.map((m) => [m.side, m.ordinal])).toEqual([
+      ['request', 1],
+      ['response', 1]
+    ]);
+    // turn 3 drops everything <= max seen so far; only request ordinal 2 is new.
+    expect(session.turns[2].messages.map((m) => [m.side, m.ordinal])).toEqual([
+      ['request', 2]
+    ]);
+  });
+
   it('does not load messages when no archives match', async () => {
     const db = new MultiQueryClient(() => ({ rows: [], rowCount: 0 }));
     const svc = new MyLiveSessionsService({ sql: db });
