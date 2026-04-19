@@ -17,6 +17,7 @@ import pilotRoutes from './routes/pilot.js';
 import proxyRoutes from './routes/proxy.js';
 import sellerKeysRoutes from './routes/sellerKeys.js';
 import usageRoutes from './routes/usage.js';
+import v2NotesRoutes from './routes/v2Notes.js';
 import { startBackgroundJobs } from './services/runtime.js';
 import {
   captureCompatRawBody,
@@ -162,6 +163,7 @@ export function createApp(): express.Express {
   app.use(pilotRoutes);
   app.use(sellerKeysRoutes);
   app.use(usageRoutes);
+  app.use(v2NotesRoutes);
   app.use(proxyRoutes);
 
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
