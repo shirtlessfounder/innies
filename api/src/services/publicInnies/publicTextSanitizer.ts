@@ -23,14 +23,42 @@ const UNIX_PATH_PATTERN = /(^|[\s("'=])(~\/[^\s"'`,;)\]}]+|\/(?:Users|home|tmp|p
 const WINDOWS_PATH_PATTERN = /(^|[\s("'=])([A-Za-z]:\\(?:Users|Documents and Settings|Temp|Windows|Program Files(?: \(x86\))?)[^ \t\r\n"'`,;)\]}]*)/g;
 const JWT_TOKEN_PATTERN = /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9._-]{10,}\.[A-Za-z0-9._-]{10,}\b/g;
 const PREFIXED_TOKEN_PATTERN = /\b(?:sk(?:-proj)?|rk|pk|pat|tok|ghp|gho|ghu|ghs|ghr|xox[baprs])[-_][A-Za-z0-9_-]{8,}\b/gi;
-// Claude Code injects <system-reminder> blocks into user turns ("The task tools
-// haven't been used recently...", "You have a persistent memory system at..."
-// etc). They're CLI-side scaffolding, not part of the human conversation —
-// strip them before rendering on the public watch-me-work panel. Also handles
-// the rarer <command-name>/<command-message>/<command-args> trio that surfaces
-// when a user runs a slash command.
-const SYSTEM_REMINDER_PATTERN = /<system-reminder>[\s\S]*?<\/system-reminder>\s*/gi;
-const COMMAND_TAG_PATTERN = /<(command-name|command-message|command-args|local-command-stdout|user-prompt-submit-hook)>[\s\S]*?<\/\1>\s*/gi;
+// Coding-assistant CLIs (Claude Code, OpenAI codex, etc) wrap user/developer
+// turns in scaffolding tags: project instructions, environment context,
+// memory reminders, permission specs, slash-command metadata. They're
+// protocol noise, not part of the human conversation, and dominate the
+// byte count on the watch-me-work panel when shown verbatim.
+//
+// Two shapes exist:
+//   1. Balanced <tag>...</tag>  — Claude Code + most codex blocks.
+//      The opening may carry attributes (`<permissions instructions>`,
+//      `<EXTERNAL_UNTRUSTED_CONTENT id="...">`) so we tolerate `[^>]*`
+//      after the tag name and rely on a backreference to pair the closer.
+//   2. Codex's untrusted-content envelope uses an asymmetric closer
+//      (`<<<END_EXTERNAL_UNTRUSTED_CONTENT id="...">>>`) — handled separately.
+const SCAFFOLD_TAG_NAMES = [
+  // Claude Code
+  'system-reminder',
+  'command-name',
+  'command-message',
+  'command-args',
+  'local-command-stdout',
+  'user-prompt-submit-hook',
+  // OpenAI codex
+  'environment_context',
+  'user_instructions',
+  'INSTRUCTIONS',
+  'permissions',
+  'personality_spec',
+  'turn_aborted',
+  'user-message-id'
+];
+const SCAFFOLD_TAG_PATTERN = new RegExp(
+  `<(${SCAFFOLD_TAG_NAMES.join('|')})\\b[^>]*>[\\s\\S]*?<\\/\\1>\\s*`,
+  'gi'
+);
+const EXTERNAL_UNTRUSTED_CONTENT_PATTERN =
+  /<EXTERNAL_UNTRUSTED_CONTENT\b[^>]*>[\s\S]*?<<<END_EXTERNAL_UNTRUSTED_CONTENT[^>]*>>>\s*/gi;
 
 function capText(value: string, maxChars = TOOL_PAYLOAD_MAX_CHARS): string {
   const safeMaxChars = Number.isFinite(maxChars) ? Math.max(1, Math.floor(maxChars)) : TOOL_PAYLOAD_MAX_CHARS;
@@ -106,11 +134,12 @@ export function sanitizePublicText(input: string): string {
 
   let text = input;
 
-  // Strip the CLI-injected tag blocks first so their internal auth headers,
-  // paths, etc. don't get redacted-into-place (which would leave orphan
-  // "[REDACTED_TOKEN]" lines with no surrounding context).
-  text = text.replace(SYSTEM_REMINDER_PATTERN, '');
-  text = text.replace(COMMAND_TAG_PATTERN, '');
+  // Strip the CLI-injected scaffolding first so secrets/paths nested inside
+  // those blocks don't get redacted-in-place (which would leave orphan
+  // "[REDACTED_TOKEN]" lines with no surrounding context), and so the byte
+  // count drops before we run the rest of the regexes.
+  text = text.replace(SCAFFOLD_TAG_PATTERN, '');
+  text = text.replace(EXTERNAL_UNTRUSTED_CONTENT_PATTERN, '');
 
   text = text.replace(AUTH_HEADER_QUOTED_PATTERN, (_match, prefix: string, _value: string, suffix: string) =>
     `${prefix}${REDACTED_CREDENTIAL}${suffix}`
