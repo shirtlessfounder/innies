@@ -31,11 +31,15 @@ test('injects a custom codex provider config that points at the innies proxy', (
   assert.ok(args.includes('responses_websockets_v2=false'));
 });
 
-test('forwards INNIES_SESSION_ID into the codex env_http_headers config', () => {
-  const args = buildCodexArgs({ args: [], model: 'gpt-5.4', proxyUrl: 'https://api.innies.computer/v1/proxy/v1' });
+test('does not inject env_http_headers — headers are stamped by the local bridge', () => {
+  const args = buildCodexArgs({ args: [], model: 'gpt-5.4', proxyUrl: 'https://bridge.local/v1/proxy/v1' });
 
-  assert.ok(
-    args.includes('model_providers.innies.env_http_headers."x-openclaw-session-id"="INNIES_SESSION_ID"'),
-    'expected codex config to inject x-openclaw-session-id from INNIES_SESSION_ID'
+  // Header injection now happens in codexProxy.js on every forwarded request.
+  // Emitting env_http_headers here was redundant and unreliable (codex does
+  // not propagate them for our header names), so buildCodexArgs no longer
+  // emits any env_http_headers entries.
+  assert.equal(
+    args.some((entry) => typeof entry === 'string' && entry.includes('env_http_headers')),
+    false
   );
 });
