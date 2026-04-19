@@ -309,7 +309,7 @@ describe('MyLiveSessionsService.listFeed', () => {
     expect(text).toContain('[REDACTED_EMAIL]');
   });
 
-  it('strips anthropic thinking blocks from normalizedPayload content', async () => {
+  it('strips hidden parts (thinking, tool_use, tool_result) from normalizedPayload content', async () => {
     const archives = [makeArchiveRow({ id: 'archive_thinky', openclaw_session_id: 'sess_thinky' })];
     const messages = [
       makeMessageRow({
@@ -320,8 +320,17 @@ describe('MyLiveSessionsService.listFeed', () => {
         normalized_payload: {
           role: 'assistant',
           content: [
+            // wrapped-json thinking (anthropic via normalizer)
             { type: 'json', value: { type: 'thinking', thinking: '', signature: 'ErQEClk...' } },
             { type: 'json', value: { type: 'redacted_thinking', data: 'opaque' } },
+            // top-level thinking (should also be dropped)
+            { type: 'thinking', thinking: 'reasoning', signature: 'sig' },
+            // tool activity — dominant size driver, UI hides it
+            { type: 'tool_use', id: 'call_1', name: 'read_file', input: { path: '/huge/file' } },
+            { type: 'tool_result', tool_use_id: 'call_1', content: 'x'.repeat(50000) },
+            { type: 'json', value: { type: 'tool_use', id: 'call_2', name: 'grep' } },
+            { type: 'json', value: { type: 'tool_result', content: 'y'.repeat(50000) } },
+            // kept
             { type: 'text', text: 'hello world' }
           ]
         }
