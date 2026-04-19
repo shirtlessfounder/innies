@@ -122,8 +122,42 @@ export class MyLiveSessionsService {
       return emptyFeed;
     }
 
-    const archiveIds = archives.map((row) => row.id);
-    const messageRows = await this.loadMessages(archiveIds);
+    // Group archives by session and sort each bucket by started_at asc up
+    // front. Session-level metadata (startedAt, lastActivityAt, providerSet,
+    // modelSet) is computed from the full bucket so long-running sessions
+    // still show their true start time and full provider/model footprint.
+    const archivesBySessionKey = new Map<string, ArchiveRow[]>();
+    for (const row of archives) {
+      const key = sessionKeyForArchive(row);
+      const bucket = archivesBySessionKey.get(key) ?? [];
+      bucket.push(row);
+      archivesBySessionKey.set(key, bucket);
+    }
+    for (const bucket of archivesBySessionKey.values()) {
+      bucket.sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime());
+    }
+
+    // Slice each bucket to the last N archives BEFORE calling loadMessages.
+    // The SQL dedup in loadMessages attributes each logical (side, ordinal)
+    // pair to the earliest archive that carried it. For long-running sessions
+    // where the first 100+ archives already cover every ordinal, slicing to
+    // the last 20 turns after-the-fact leaves the visible archives owning
+    // nothing — the UI renders "no transcript rows yet" even though the
+    // session is actively producing messages. Slicing first guarantees dedup
+    // happens within the displayed window, and shrinks the message query to
+    // boot.
+    const visibleArchiveIds: string[] = [];
+    const visibleBySessionKey = new Map<string, ArchiveRow[]>();
+    for (const [key, bucket] of archivesBySessionKey) {
+      const visible =
+        bucket.length > MY_LIVE_SESSIONS_MAX_TURNS_PER_SESSION
+          ? bucket.slice(-MY_LIVE_SESSIONS_MAX_TURNS_PER_SESSION)
+          : bucket;
+      visibleBySessionKey.set(key, visible);
+      for (const row of visible) visibleArchiveIds.push(row.id);
+    }
+
+    const messageRows = await this.loadMessages(visibleArchiveIds);
     const messagesByArchiveId = new Map<string, MessageRow[]>();
     for (const row of messageRows) {
       const existing = messagesByArchiveId.get(row.request_attempt_archive_id) ?? [];
@@ -132,47 +166,44 @@ export class MyLiveSessionsService {
     }
 
     const sessionsByKey = new Map<string, MyLiveSession>();
-    for (const row of archives) {
-      const sessionKey = sessionKeyForArchive(row);
-      const existing = sessionsByKey.get(sessionKey);
-      const turn = this.buildTurn(row, messagesByArchiveId.get(row.id) ?? []);
-
-      if (!existing) {
-        sessionsByKey.set(sessionKey, {
-          sessionKey,
-          apiKeyId: row.api_key_id,
-          startedAt: toIso(row.started_at),
-          lastActivityAt: toIso(row.completed_at ?? row.started_at),
-          turnCount: 1,
-          providerSet: [row.provider],
-          modelSet: [row.model],
-          turns: [turn]
-        });
-        continue;
+    for (const [sessionKey, fullBucket] of archivesBySessionKey) {
+      const visibleBucket = visibleBySessionKey.get(sessionKey) ?? fullBucket;
+      const first = fullBucket[0];
+      let startedAtMs = Infinity;
+      let lastActivityMs = -Infinity;
+      const providerSet: string[] = [];
+      const modelSet: string[] = [];
+      for (const row of fullBucket) {
+        const startMs = new Date(row.started_at).getTime();
+        const endMs = new Date(row.completed_at ?? row.started_at).getTime();
+        if (startMs < startedAtMs) startedAtMs = startMs;
+        if (endMs > lastActivityMs) lastActivityMs = endMs;
+        if (!providerSet.includes(row.provider)) providerSet.push(row.provider);
+        if (!modelSet.includes(row.model)) modelSet.push(row.model);
       }
 
-      existing.turns.push(turn);
-      existing.turnCount = existing.turns.length;
-      existing.startedAt = earlier(existing.startedAt, toIso(row.started_at));
-      existing.lastActivityAt = later(existing.lastActivityAt, toIso(row.completed_at ?? row.started_at));
-      if (!existing.providerSet.includes(row.provider)) existing.providerSet.push(row.provider);
-      if (!existing.modelSet.includes(row.model)) existing.modelSet.push(row.model);
-    }
+      const turns = visibleBucket.map((row) =>
+        this.buildTurn(row, messagesByArchiveId.get(row.id) ?? [])
+      );
 
-    // Sort turns within each session by startedAt ascending, then trim to cap.
-    for (const session of sessionsByKey.values()) {
-      session.turns.sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt));
-      if (session.turns.length > MY_LIVE_SESSIONS_MAX_TURNS_PER_SESSION) {
-        session.turns = session.turns.slice(-MY_LIVE_SESSIONS_MAX_TURNS_PER_SESSION);
-        session.turnCount = session.turns.length;
-      }
       // Claude/Codex archive turns are cumulative: turn N's messages include
-      // every prior turn's messages re-sent as context. Shipping that verbatim
-      // is a quadratic blow-up (we measured 20 turns × ~220 messages × ~230KB
-      // ≈ 23MB per session). SessionPanel.tsx's flattenSession already strips
-      // these client-side by tracking max (side, ordinal) — mirror that here
-      // so the wire payload matches what the UI actually renders.
-      dedupCumulativeMessages(session.turns);
+      // every prior turn's messages re-sent as context. SessionPanel.tsx's
+      // flattenSession already strips these client-side by tracking max
+      // (side, ordinal) — mirror that here so the wire payload matches what
+      // the UI actually renders. Belt-and-suspenders for rows that slip past
+      // the SQL-side DISTINCT ON.
+      dedupCumulativeMessages(turns);
+
+      sessionsByKey.set(sessionKey, {
+        sessionKey,
+        apiKeyId: first.api_key_id,
+        startedAt: new Date(startedAtMs).toISOString(),
+        lastActivityAt: new Date(lastActivityMs).toISOString(),
+        turnCount: turns.length,
+        providerSet,
+        modelSet,
+        turns
+      });
     }
 
     const sessions = Array.from(sessionsByKey.values())
@@ -336,14 +367,6 @@ export class MyLiveSessionsService {
       messages
     };
   }
-}
-
-function earlier(a: string, b: string): string {
-  return Date.parse(a) <= Date.parse(b) ? a : b;
-}
-
-function later(a: string, b: string): string {
-  return Date.parse(a) >= Date.parse(b) ? a : b;
 }
 
 function dedupCumulativeMessages(turns: MyLiveSessionTurn[]): void {

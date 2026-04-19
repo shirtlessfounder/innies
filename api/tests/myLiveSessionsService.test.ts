@@ -449,6 +449,69 @@ describe('MyLiveSessionsService.listFeed', () => {
     ]);
   });
 
+  it('slices archives to last N per session BEFORE loading messages, so ownership lands in the visible window', async () => {
+    // A long-running session with 25 archives — only the last 20 should reach
+    // loadMessages, and the session metadata should still reflect the full
+    // window (earliest start, latest completion).
+    const archives: Record<string, unknown>[] = [];
+    for (let i = 0; i < 25; i++) {
+      archives.push(
+        makeArchiveRow({
+          id: `archive_long_${i}`,
+          request_id: `req_long_${i}`,
+          openclaw_session_id: 'sess_long',
+          started_at: new Date(Date.parse('2026-04-19T00:00:00Z') + i * 60_000),
+          completed_at: new Date(Date.parse('2026-04-19T00:00:00Z') + i * 60_000 + 5_000)
+        })
+      );
+    }
+    // Each archive owns one message when loadMessages is called for it.
+    const db = new MultiQueryClient((sql, params) => {
+      if (sql.includes('from in_request_attempt_archives')) {
+        return { rows: archives, rowCount: archives.length };
+      }
+      if (sql.includes('from in_request_attempt_messages')) {
+        const ids = params[0] as string[];
+        const rows = ids.map((id) =>
+          makeMessageRow({
+            request_attempt_archive_id: id,
+            side: 'request',
+            ordinal: 0,
+            normalized_payload: { role: 'user', content: [{ type: 'text', text: id }] }
+          })
+        );
+        return { rows, rowCount: rows.length };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+    const svc = new MyLiveSessionsService({ sql: db });
+
+    const feed = await svc.listFeed({
+      apiKeyIds: ['key_mine'],
+      now: new Date('2026-04-19T02:00:00Z')
+    });
+
+    const messagesQuery = db.queries.find((q) => q.sql.includes('from in_request_attempt_messages'));
+    expect(messagesQuery).toBeDefined();
+    const loadedIds = messagesQuery!.params[0] as string[];
+    // Only the last 20 archives' IDs should have been queried.
+    expect(loadedIds).toHaveLength(20);
+    expect(loadedIds).toContain('archive_long_24');
+    expect(loadedIds).toContain('archive_long_5');
+    expect(loadedIds).not.toContain('archive_long_4');
+    expect(loadedIds).not.toContain('archive_long_0');
+
+    // Session metadata still covers the full 25-archive window.
+    const session = feed.sessions[0];
+    expect(session.sessionKey).toBe('sess_long');
+    expect(session.startedAt).toBe('2026-04-19T00:00:00.000Z');
+    expect(session.lastActivityAt).toBe('2026-04-19T00:24:05.000Z');
+    expect(session.turnCount).toBe(20);
+    expect(session.turns).toHaveLength(20);
+    expect(session.turns[0].archiveId).toBe('archive_long_5');
+    expect(session.turns[19].archiveId).toBe('archive_long_24');
+  });
+
   it('does not load messages when no archives match', async () => {
     const db = new MultiQueryClient(() => ({ rows: [], rowCount: 0 }));
     const svc = new MyLiveSessionsService({ sql: db });
