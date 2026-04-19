@@ -29,12 +29,12 @@ test('sentinel config falls back to provider defaults for both lanes', async () 
   const configModule = await importConfigModuleForHome(home);
   const config = await configModule.loadConfig(true);
 
-  assert.equal(config.defaultModel, 'claude-opus-4-6');
+  assert.equal(config.defaultModel, 'claude-opus-4-7');
   assert.deepEqual(config.providerDefaults, {
-    anthropic: 'claude-opus-4-6',
+    anthropic: 'claude-opus-4-7',
     openai: 'gpt-5.4'
   });
-  assert.equal(configModule.resolveProviderDefaultModel(config, 'anthropic'), 'claude-opus-4-6');
+  assert.equal(configModule.resolveProviderDefaultModel(config, 'anthropic'), 'claude-opus-4-7');
   assert.equal(configModule.resolveProviderDefaultModel(config, 'openai'), 'gpt-5.4');
 });
 
@@ -59,9 +59,9 @@ test('saveConfig with unknown model preserves fallback but leaves provider defau
 
   assert.equal(saved.defaultModel, 'future-model-x');
   assert.deepEqual(saved.providerDefaults, {
-    anthropic: 'claude-opus-4-6',
+    anthropic: 'claude-opus-4-7',
     openai: 'gpt-5.4'
   });
-  assert.equal(configModule.resolveProviderDefaultModel(saved, 'anthropic'), 'claude-opus-4-6');
+  assert.equal(configModule.resolveProviderDefaultModel(saved, 'anthropic'), 'claude-opus-4-7');
   assert.equal(configModule.resolveProviderDefaultModel(saved, 'openai'), 'gpt-5.4');
 });
