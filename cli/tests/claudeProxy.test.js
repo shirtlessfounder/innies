@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import http from 'node:http';
 import test from 'node:test';
-import { startClaudeProxy } from '../src/commands/claudeProxy.js';
+import { buildClaudeProxyHeaders, startClaudeProxy } from '../src/commands/claudeProxy.js';
 
 function closeServer(server) {
   return new Promise((resolve, reject) => {
@@ -76,6 +76,50 @@ test('claude proxy injects buyer auth and strips claude oauth auth', async () =>
 
   await proxy.close();
   await closeServer(upstream);
+});
+
+test('claude proxy forwards x-openclaw-session-id when a sessionId is provided', async () => {
+  let capturedRequest = null;
+  const upstream = http.createServer((req, res) => {
+    capturedRequest = { headers: req.headers };
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+  });
+
+  upstream.listen(0, '127.0.0.1');
+  await once(upstream, 'listening');
+
+  const upstreamAddress = upstream.address();
+  const upstreamBaseUrl = `http://127.0.0.1:${upstreamAddress.port}`;
+  const proxy = await startClaudeProxy({
+    upstreamBaseUrl,
+    buyerToken: 'in_live_test',
+    correlationId: 'req_sid_xyz',
+    sessionId: 'sess_abc_uuid',
+    sessionModel: 'claude-opus-4-6'
+  });
+
+  const response = await fetch(`${proxy.baseUrl}/v1/messages`, {
+    method: 'GET',
+    headers: { 'content-type': 'application/json' }
+  });
+
+  assert.equal(response.status, 200);
+  assert.ok(capturedRequest);
+  assert.equal(capturedRequest.headers['x-openclaw-session-id'], 'sess_abc_uuid');
+
+  await proxy.close();
+  await closeServer(upstream);
+});
+
+test('buildClaudeProxyHeaders omits x-openclaw-session-id when no sessionId is provided', () => {
+  const headers = buildClaudeProxyHeaders({
+    headers: {},
+    buyerToken: 'in_live_test',
+    requestId: 'req_no_session'
+  });
+
+  assert.equal(Object.prototype.hasOwnProperty.call(headers, 'x-openclaw-session-id'), false);
 });
 
 test('claude proxy rewrites compat request model to the wrapped session model', async () => {

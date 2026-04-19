@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { loadConfig, resolveProviderDefaultModel } from '../config.js';
-import { buildCorrelationId, fail } from '../utils.js';
+import { buildCorrelationId, buildSessionId, fail } from '../utils.js';
 import {
   classifyRuntimeFailure,
   printConnectionStatus,
@@ -81,10 +81,12 @@ export async function runClaude(args) {
   const model = resolveClaudeSessionModel(args, defaultModel);
   const proxyUrl = proxyBase(config.apiBaseUrl);
   const correlationId = buildCorrelationId();
+  const sessionId = buildSessionId();
   const claudeBridge = await startClaudeProxy({
     upstreamBaseUrl: config.apiBaseUrl,
     buyerToken: config.token,
     correlationId,
+    sessionId,
     sessionModel: model
   });
   const claudeBinary = resolveWrappedBinary({
@@ -110,6 +112,7 @@ export async function runClaude(args) {
     INNIES_MODEL: model,
     INNIES_ROUTE_MODE: 'token',
     INNIES_CORRELATION_ID: correlationId,
+    INNIES_SESSION_ID: sessionId,
     ANTHROPIC_API_KEY: config.token,
     ANTHROPIC_BASE_URL: claudeBridge.baseUrl,
     OPENAI_API_KEY: config.token,
