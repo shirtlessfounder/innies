@@ -213,21 +213,87 @@ export class MyLiveSessionsService {
 
   private async loadMessages(archiveIds: string[]): Promise<MessageRow[]> {
     if (archiveIds.length === 0) return [];
+    // Two read-side optimizations happen at the SQL boundary so the rows
+    // never have to cross the DB → app network:
+    //
+    // 1) DEDUP. Claude/Codex turns are cumulative — turn N re-ships every
+    //    prior turn's messages as context. `DISTINCT ON (session, side,
+    //    ordinal)` keeps only the earliest archive's copy of each logical
+    //    message. For heavy sessions this is where most of the savings
+    //    come from (we measured ~14× on payload size already when doing
+    //    it in JS; moving it here saves the supabase → VM transfer too).
+    //
+    // 2) CONTENT-BLOCK STRIP. The watch-me-work panel hides thinking /
+    //    redacted_thinking / tool_use / tool_result parts (SessionPanel.tsx),
+    //    yet a single tool_result can be hundreds of KB. Rebuilding the
+    //    content array with `jsonb_agg` over only the visible parts lets
+    //    Postgres drop the big blobs before serializing to the wire.
+    //
+    // The app still runs `dedupCumulativeMessages` and `stripHiddenParts`
+    // after the query — belt-and-suspenders for rows that predate this
+    // optimization or edge cases the SQL doesn't cover.
     const sql = `
+      with deduped as (
+        select distinct on (
+          coalesce(ar.openclaw_session_id::text, ar.id::text),
+          rm.side,
+          rm.ordinal
+        )
+          rm.request_attempt_archive_id,
+          rm.side,
+          rm.ordinal,
+          rm.role,
+          rm.content_type,
+          mb.normalized_payload
+        from ${TABLES.requestAttemptMessages} rm
+        inner join ${TABLES.messageBlobs} mb
+          on mb.id = rm.message_blob_id
+        inner join ${TABLES.requestAttemptArchives} ar
+          on ar.id = rm.request_attempt_archive_id
+        where rm.request_attempt_archive_id = any($1::uuid[])
+        order by
+          coalesce(ar.openclaw_session_id::text, ar.id::text),
+          rm.side,
+          rm.ordinal,
+          ar.started_at asc
+      )
       select
-        rm.request_attempt_archive_id,
-        rm.side,
-        rm.ordinal,
-        rm.role,
-        rm.content_type,
-        mb.normalized_payload
-      from ${TABLES.requestAttemptMessages} rm
-      inner join ${TABLES.messageBlobs} mb
-        on mb.id = rm.message_blob_id
-      where rm.request_attempt_archive_id = any($1::uuid[])
-      order by rm.request_attempt_archive_id asc,
-               rm.side desc,
-               rm.ordinal asc
+        request_attempt_archive_id,
+        side,
+        ordinal,
+        role,
+        content_type,
+        case
+          when jsonb_typeof(normalized_payload->'content') = 'array' then
+            jsonb_set(
+              normalized_payload,
+              '{content}',
+              coalesce(
+                (
+                  select jsonb_agg(part order by idx)
+                  from jsonb_array_elements(normalized_payload->'content')
+                    with ordinality as t(part, idx)
+                  where not (
+                    part->>'type' in (
+                      'thinking','redacted_thinking','tool_use','tool_result'
+                    )
+                    or (
+                      part->>'type' = 'json'
+                      and part->'value'->>'type' in (
+                        'thinking','redacted_thinking','tool_use','tool_result'
+                      )
+                    )
+                  )
+                ),
+                '[]'::jsonb
+              )
+            )
+          else normalized_payload
+        end as normalized_payload
+      from deduped
+      order by request_attempt_archive_id asc,
+               side desc,
+               ordinal asc
     `;
     const params: SqlValue[] = [archiveIds];
     const result = await this.deps.sql.query<MessageRow>(sql, params);
