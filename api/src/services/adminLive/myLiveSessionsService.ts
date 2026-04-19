@@ -58,23 +58,38 @@ function sessionKeyForArchive(row: ArchiveRow): string {
   return row.openclaw_session_id ? row.openclaw_session_id : `archive:${row.id}`;
 }
 
-// Anthropic responses include `{type: "thinking"|"redacted_thinking", ...}`
-// blocks that the archive normalizer preserves as `{type: "json", value: <block>}`.
-// They carry opaque encrypted signatures meant for provider round-tripping, are
-// huge on the wire, and render as noisy JSON blobs in the public watch-me-work
-// tab. Strip them from the content array before serializing.
-function stripThinkingParts(payload: Record<string, unknown>): Record<string, unknown> {
+// Strip content blocks the watch-me-work panel never renders:
+//   - anthropic thinking / redacted_thinking (opaque, often huge)
+//   - tool_use / tool_result (panel hides tool activity — SessionPanel.tsx)
+// The archive normalizer either emits these at top level (`{type: "thinking"}`)
+// or wraps them (`{type: "json", value: {type: "thinking"}}`), so handle both.
+// Tool-use/result blocks are the dominant size driver — a single file-read
+// tool_result can be hundreds of KB, and we were shipping thousands of them
+// per session just for the browser to drop them on the floor.
+const HIDDEN_PART_TYPES = new Set([
+  'thinking',
+  'redacted_thinking',
+  'tool_use',
+  'tool_result'
+]);
+
+function stripHiddenParts(payload: Record<string, unknown>): Record<string, unknown> {
   const content = payload.content;
   if (!Array.isArray(content)) return payload;
 
   const filtered = content.filter((part) => {
     if (!part || typeof part !== 'object') return true;
     const record = part as Record<string, unknown>;
-    if (record.type !== 'json') return true;
-    const inner = record.value;
-    if (!inner || typeof inner !== 'object') return true;
-    const innerRecord = inner as Record<string, unknown>;
-    return innerRecord.type !== 'thinking' && innerRecord.type !== 'redacted_thinking';
+    const type = record.type;
+    if (typeof type === 'string' && HIDDEN_PART_TYPES.has(type)) return false;
+    if (type === 'json') {
+      const inner = record.value;
+      if (inner && typeof inner === 'object') {
+        const innerType = (inner as Record<string, unknown>).type;
+        if (typeof innerType === 'string' && HIDDEN_PART_TYPES.has(innerType)) return false;
+      }
+    }
+    return true;
   });
 
   if (filtered.length === content.length) return payload;
@@ -231,7 +246,7 @@ export class MyLiveSessionsService {
         // makes this payload publicly readable for anyone who hits
         // innies.work — so we scrub the same secret/credential/PII
         // patterns as the public landing feed before returning.
-        normalizedPayload: stripThinkingParts(sanitizePublicDeep(row.normalized_payload ?? {}))
+        normalizedPayload: stripHiddenParts(sanitizePublicDeep(row.normalized_payload ?? {}))
       }));
 
     return {
