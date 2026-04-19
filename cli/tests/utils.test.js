@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildCorrelationId, buildSessionId } from '../src/utils.js';
+import { readFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { buildCorrelationId, buildSessionId, readPackageVersion } from '../src/utils.js';
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -24,4 +27,17 @@ test('buildSessionId and buildCorrelationId produce independent ids', () => {
   const correlation = buildCorrelationId();
   const session = buildSessionId();
   assert.notEqual(correlation, session);
+});
+
+test('readPackageVersion returns the version from the cli package.json', async () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const pkgPath = resolve(here, '..', 'package.json');
+  const pkg = JSON.parse(await readFile(pkgPath, 'utf8'));
+
+  const version = await readPackageVersion();
+
+  assert.equal(typeof version, 'string');
+  assert.notEqual(version, 'unknown');
+  assert.equal(version, pkg.version);
+  assert.match(version, /^\d+\.\d+\.\d+/);
 });
