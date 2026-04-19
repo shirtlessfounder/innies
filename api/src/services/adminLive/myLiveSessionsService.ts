@@ -1,5 +1,6 @@
 import { TABLES } from '../../repos/tableNames.js';
 import type { SqlValue } from '../../repos/sqlClient.js';
+import { sanitizePublicDeep } from '../publicInnies/publicTextSanitizer.js';
 import {
   MY_LIVE_SESSIONS_DEFAULT_WINDOW_HOURS,
   MY_LIVE_SESSIONS_MAX_SESSIONS,
@@ -200,7 +201,14 @@ export class MyLiveSessionsService {
         ordinal: row.ordinal,
         role: row.role,
         contentType: row.content_type,
-        normalizedPayload: row.normalized_payload ?? {}
+        // The /v1/admin/me/live-sessions response is relayed to the
+        // innies.work `watch-me-work.md` tab via a server-side proxy
+        // route (`INNIES_ADMIN_API_KEY` is injected on the Next.js
+        // side, so the browser-facing endpoint needs no auth). That
+        // makes this payload publicly readable for anyone who hits
+        // innies.work — so we scrub the same secret/credential/PII
+        // patterns as the public landing feed before returning.
+        normalizedPayload: sanitizePublicDeep(row.normalized_payload ?? {})
       }));
 
     return {
