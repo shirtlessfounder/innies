@@ -350,6 +350,79 @@ describe('MyLiveSessionsService.listFeed', () => {
     expect(parts[0]).toEqual({ type: 'text', text: 'hello world' });
   });
 
+  it('strips image parts nested inside tool_result content (claude shape)', async () => {
+    const archives = [makeArchiveRow({ id: 'archive_img', openclaw_session_id: 'sess_img' })];
+    const messages = [
+      makeMessageRow({
+        request_attempt_archive_id: 'archive_img',
+        side: 'request',
+        ordinal: 0,
+        role: 'user',
+        normalized_payload: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'call_img',
+              content: [
+                { type: 'image', source: { type: 'base64', data: 'iVBORw0KGgo' + 'A'.repeat(10_000) } },
+                { type: 'text', text: 'screenshot captured' }
+              ]
+            },
+            { type: 'image', source: { type: 'base64', data: 'iVBORw0KGgo' + 'B'.repeat(10_000) } },
+            { type: 'text', text: 'what do you see' }
+          ]
+        }
+      })
+    ];
+    const db = new MultiQueryClient((sql) => {
+      if (sql.includes('from in_request_attempt_archives')) return { rows: archives, rowCount: archives.length };
+      if (sql.includes('from in_request_attempt_messages')) return { rows: messages, rowCount: messages.length };
+      return { rows: [], rowCount: 0 };
+    });
+    const svc = new MyLiveSessionsService({ sql: db });
+
+    const feed = await svc.listFeed({ apiKeyIds: ['key_mine'] });
+
+    const parts = feed.sessions[0].turns[0].messages[0].normalizedPayload.content as Array<Record<string, unknown>>;
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toEqual({ type: 'text', text: 'what do you see' });
+    expect(JSON.stringify(feed)).not.toContain('iVBORw0KGgo');
+  });
+
+  it('drops messages with role=system (title generators, CLI system prompts)', async () => {
+    const archives = [makeArchiveRow({ id: 'archive_sys', openclaw_session_id: 'sess_sys' })];
+    const messages = [
+      makeMessageRow({
+        request_attempt_archive_id: 'archive_sys',
+        side: 'request',
+        ordinal: 0,
+        role: 'system',
+        normalized_payload: { role: 'system', content: [{ type: 'text', text: 'Generate a concise title...' }] }
+      }),
+      makeMessageRow({
+        request_attempt_archive_id: 'archive_sys',
+        side: 'request',
+        ordinal: 1,
+        role: 'user',
+        normalized_payload: { role: 'user', content: [{ type: 'text', text: 'the actual user question' }] }
+      })
+    ];
+    const db = new MultiQueryClient((sql) => {
+      if (sql.includes('from in_request_attempt_archives')) return { rows: archives, rowCount: archives.length };
+      if (sql.includes('from in_request_attempt_messages')) return { rows: messages, rowCount: messages.length };
+      return { rows: [], rowCount: 0 };
+    });
+    const svc = new MyLiveSessionsService({ sql: db });
+
+    const feed = await svc.listFeed({ apiKeyIds: ['key_mine'] });
+
+    const turnMessages = feed.sessions[0].turns[0].messages;
+    expect(turnMessages).toHaveLength(1);
+    expect(turnMessages[0].role).toBe('user');
+    expect(JSON.stringify(feed)).not.toContain('Generate a concise title');
+  });
+
   it('dedupes cumulative messages across turns by (side, ordinal)', async () => {
     // Claude/Codex sessions re-send the full history each turn. The panel
     // only renders newly-appended (side, ordinal) pairs, so the server

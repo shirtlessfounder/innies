@@ -77,27 +77,45 @@ const HIDDEN_PART_TYPES = new Set([
   'image'
 ]);
 
-function stripHiddenParts(payload: Record<string, unknown>): Record<string, unknown> {
-  const content = payload.content;
-  if (!Array.isArray(content)) return payload;
-
-  const filtered = content.filter((part) => {
-    if (!part || typeof part !== 'object') return true;
-    const record = part as Record<string, unknown>;
-    const type = record.type;
-    if (typeof type === 'string' && HIDDEN_PART_TYPES.has(type)) return false;
-    if (type === 'json') {
-      const inner = record.value;
-      if (inner && typeof inner === 'object') {
-        const innerType = (inner as Record<string, unknown>).type;
-        if (typeof innerType === 'string' && HIDDEN_PART_TYPES.has(innerType)) return false;
-      }
+function isHiddenPart(item: unknown): boolean {
+  if (!item || typeof item !== 'object') return false;
+  const record = item as Record<string, unknown>;
+  const type = record.type;
+  if (typeof type === 'string' && HIDDEN_PART_TYPES.has(type)) return true;
+  if (type === 'json') {
+    const inner = record.value;
+    if (inner && typeof inner === 'object') {
+      const innerType = (inner as Record<string, unknown>).type;
+      if (typeof innerType === 'string' && HIDDEN_PART_TYPES.has(innerType)) return true;
     }
-    return true;
-  });
+  }
+  return false;
+}
 
-  if (filtered.length === content.length) return payload;
-  return { ...payload, content: filtered };
+// Recursively walk the payload and drop hidden parts from ANY array, not just
+// the top-level `content`. Claude wraps image blobs inside `tool_result.content`
+// (and future providers may nest even deeper), so the filter has to be depth-
+// agnostic to actually kill the bytes.
+function stripHiddenPartsValue(value: unknown): unknown {
+  if (value == null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) {
+    const filtered: unknown[] = [];
+    for (const item of value) {
+      if (isHiddenPart(item)) continue;
+      filtered.push(stripHiddenPartsValue(item));
+    }
+    return filtered;
+  }
+  const record = value as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+  for (const [key, v] of Object.entries(record)) {
+    result[key] = stripHiddenPartsValue(v);
+  }
+  return result;
+}
+
+function stripHiddenParts(payload: Record<string, unknown>): Record<string, unknown> {
+  return stripHiddenPartsValue(payload) as Record<string, unknown>;
 }
 
 export class MyLiveSessionsService {
@@ -286,6 +304,7 @@ export class MyLiveSessionsService {
         inner join ${TABLES.requestAttemptArchives} ar
           on ar.id = rm.request_attempt_archive_id
         where rm.request_attempt_archive_id = any($1::uuid[])
+          and rm.role is distinct from 'system'
         order by
           coalesce(ar.openclaw_session_id::text, ar.id::text),
           rm.side,
@@ -337,7 +356,7 @@ export class MyLiveSessionsService {
 
   private buildTurn(archive: ArchiveRow, messageRows: MessageRow[]): MyLiveSessionTurn {
     const messages: MyLiveSessionTurnMessage[] = messageRows
-      .slice()
+      .filter((row) => row.role !== 'system')
       .sort((left, right) => {
         if (left.side !== right.side) return left.side === 'request' ? -1 : 1;
         return left.ordinal - right.ordinal;
