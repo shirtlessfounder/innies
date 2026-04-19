@@ -166,6 +166,13 @@ export class MyLiveSessionsService {
         session.turns = session.turns.slice(-MY_LIVE_SESSIONS_MAX_TURNS_PER_SESSION);
         session.turnCount = session.turns.length;
       }
+      // Claude/Codex archive turns are cumulative: turn N's messages include
+      // every prior turn's messages re-sent as context. Shipping that verbatim
+      // is a quadratic blow-up (we measured 20 turns × ~220 messages × ~230KB
+      // ≈ 23MB per session). SessionPanel.tsx's flattenSession already strips
+      // these client-side by tracking max (side, ordinal) — mirror that here
+      // so the wire payload matches what the UI actually renders.
+      dedupCumulativeMessages(session.turns);
     }
 
     const sessions = Array.from(sessionsByKey.values())
@@ -271,4 +278,25 @@ function earlier(a: string, b: string): string {
 
 function later(a: string, b: string): string {
   return Date.parse(a) >= Date.parse(b) ? a : b;
+}
+
+function dedupCumulativeMessages(turns: MyLiveSessionTurn[]): void {
+  let priorMaxRequest = -1;
+  let priorMaxResponse = -1;
+  for (let i = 0; i < turns.length; i++) {
+    const turn = turns[i];
+    if (i > 0) {
+      turn.messages = turn.messages.filter((m) => {
+        const priorMax = m.side === 'request' ? priorMaxRequest : priorMaxResponse;
+        return m.ordinal > priorMax;
+      });
+    }
+    for (const m of turn.messages) {
+      if (m.side === 'request') {
+        if (m.ordinal > priorMaxRequest) priorMaxRequest = m.ordinal;
+      } else if (m.ordinal > priorMaxResponse) {
+        priorMaxResponse = m.ordinal;
+      }
+    }
+  }
 }
