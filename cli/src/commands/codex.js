@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { loadConfig, resolveProviderDefaultModel } from '../config.js';
-import { buildCorrelationId, fail } from '../utils.js';
+import { buildCorrelationId, buildSessionId, fail } from '../utils.js';
 import {
   classifyRuntimeFailure,
   printConnectionStatus,
@@ -38,7 +38,11 @@ export function buildCodexArgs(input) {
     '--config', `${providerPath}.supports_websockets=false`,
     '--config', 'responses_websockets_v2=false',
     '--config', `${providerPath}.env_http_headers."x-request-id"="INNIES_CORRELATION_ID"`,
-    '--config', `${providerPath}.env_http_headers."x-innies-provider-pin"="INNIES_PROVIDER_PIN"`
+    '--config', `${providerPath}.env_http_headers."x-innies-provider-pin"="INNIES_PROVIDER_PIN"`,
+    // Propagate the CLI-invocation session id so the Innies API can group
+    // every turn of this `innies codex` run under one session. Read by
+    // resolveOpenClawCorrelation in api/src/routes/proxy.ts.
+    '--config', `${providerPath}.env_http_headers."x-openclaw-session-id"="INNIES_SESSION_ID"`
   ];
 
   if (!hasExplicitModelArg(args)) {
@@ -75,6 +79,7 @@ export async function runCodex(args) {
   const model = resolveProviderDefaultModel(config, 'openai');
   const proxyUrl = proxyBase(config.apiBaseUrl);
   const correlationId = buildCorrelationId();
+  const sessionId = buildSessionId();
   const codexBinary = resolveWrappedBinary({
     binaryName: 'codex',
     displayName: 'Codex',
@@ -104,6 +109,7 @@ export async function runCodex(args) {
     INNIES_MODEL: model,
     INNIES_ROUTE_MODE: 'token',
     INNIES_CORRELATION_ID: correlationId,
+    INNIES_SESSION_ID: sessionId,
     INNIES_PROVIDER_PIN: 'true',
     OPENAI_API_KEY: config.token
   };

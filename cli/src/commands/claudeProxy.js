@@ -31,6 +31,11 @@ export function buildClaudeProxyHeaders(input) {
   headers['x-api-key'] = input.buyerToken;
   headers['x-request-id'] = input.requestId;
   headers['x-innies-provider-pin'] = 'true';
+  // Propagate the CLI-invocation session id so every turn of this
+  // `innies claude` run groups under one session on the API side.
+  if (typeof input.sessionId === 'string' && input.sessionId.length > 0) {
+    headers['x-openclaw-session-id'] = input.sessionId;
+  }
 
   return headers;
 }
@@ -105,7 +110,8 @@ export async function startClaudeProxy(input) {
         headers: buildClaudeProxyHeaders({
           headers: req.headers,
           buyerToken: input.buyerToken,
-          requestId
+          requestId,
+          sessionId: input.sessionId
         })
       };
 

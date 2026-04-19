@@ -30,3 +30,12 @@ test('injects a custom codex provider config that points at the innies proxy', (
   assert.ok(args.includes('model_providers.innies.supports_websockets=false'));
   assert.ok(args.includes('responses_websockets_v2=false'));
 });
+
+test('forwards INNIES_SESSION_ID into the codex env_http_headers config', () => {
+  const args = buildCodexArgs({ args: [], model: 'gpt-5.4', proxyUrl: 'https://api.innies.computer/v1/proxy/v1' });
+
+  assert.ok(
+    args.includes('model_providers.innies.env_http_headers."x-openclaw-session-id"="INNIES_SESSION_ID"'),
+    'expected codex config to inject x-openclaw-session-id from INNIES_SESSION_ID'
+  );
+});

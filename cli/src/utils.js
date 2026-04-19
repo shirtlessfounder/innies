@@ -57,6 +57,21 @@ export function buildCorrelationId() {
   return randomUUID();
 }
 
+/**
+ * Per-CLI-invocation session id.
+ *
+ * Propagated to upstream requests as the `x-openclaw-session-id` header so the
+ * Innies API can group every turn of a single `innies codex` / `innies claude`
+ * run under one session. Read by `resolveOpenClawCorrelation` in
+ * api/src/routes/proxy.ts.
+ *
+ * Must be stable for the lifetime of one CLI invocation and unique across
+ * invocations. UUID v4 meets both.
+ */
+export function buildSessionId() {
+  return randomUUID();
+}
+
 export async function fileExists(path) {
   try {
     await access(path, constants.F_OK);
