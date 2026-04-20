@@ -2,6 +2,8 @@ const REDACTED_CREDENTIAL = '[REDACTED_CREDENTIAL]';
 const REDACTED_TOKEN = '[REDACTED_TOKEN]';
 const REDACTED_EMAIL = '[REDACTED_EMAIL]';
 const REDACTED_PATH = '[REDACTED_PATH]';
+const REDACTED_URL = '[REDACTED_URL]';
+const REDACTED_NAME = '[REDACTED_NAME]';
 
 const TOOL_PAYLOAD_MAX_CHARS = 4_000;
 
@@ -19,10 +21,38 @@ const AUTH_HEADER_PATTERN = new RegExp(
 );
 
 const EMAIL_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
-const UNIX_PATH_PATTERN = /(^|[\s("'=])(~\/[^\s"'`,;)\]}]+|\/(?:Users|home|tmp|private|var\/folders|Volumes)\/[^\s"'`,;)\]}]+)/g;
-const WINDOWS_PATH_PATTERN = /(^|[\s("'=])([A-Za-z]:\\(?:Users|Documents and Settings|Temp|Windows|Program Files(?: \(x86\))?)[^ \t\r\n"'`,;)\]}]*)/g;
+// Paths match anywhere in text (no leading-boundary requirement). Earlier
+// version required `[\s("'=]` before the path which missed cases like
+// `cwd:/Users/x`, `key=/Users/x`, bare paths in markdown list items, etc.
+const UNIX_PATH_PATTERN = /(?:~\/|\/(?:Users|home|tmp|private|var\/folders|Volumes)\/)[^\s"'`,;)\]}]+/g;
+const WINDOWS_PATH_PATTERN = /[A-Za-z]:\\(?:Users|Documents and Settings|Temp|Windows|Program Files(?: \(x86\))?)[^ \t\r\n"'`,;)\]}]*/g;
 const JWT_TOKEN_PATTERN = /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9._-]{10,}\.[A-Za-z0-9._-]{10,}\b/g;
 const PREFIXED_TOKEN_PATTERN = /\b(?:sk(?:-proj)?|rk|pk|pat|tok|ghp|gho|ghu|ghs|ghr|xox[baprs])[-_][A-Za-z0-9_-]{8,}\b/gi;
+
+// Any URL with a scheme + ://. Catches postgres://, https://, mysql://,
+// mongodb://, redis://, ws://, etc — the connection strings often carry
+// embedded credentials, so the whole URL gets nuked.
+const URL_PATTERN = /\b[a-z][a-z0-9+.-]{0,30}:\/\/[^\s"'`<>\\]+/gi;
+// Base64 data URIs (images, fonts) — can be huge and sometimes encode
+// user-provided content.
+const DATA_URI_PATTERN = /\bdata:[a-z]+\/[a-z0-9+.\-]+;base64,[A-Za-z0-9+/=]+/gi;
+
+// Dotenv-style / JSON-style secret assignments. Matches keys whose name
+// implies a secret value (KEY, SECRET, TOKEN, PASSWORD, AUTH, CREDENTIAL,
+// DATABASE_URL/DB_URL, API_KEY, etc) and redacts the value.
+// Prefix must be zero-or-more (not one-or-more) so literal `DATABASE_URL` /
+// `API_KEY` match — otherwise the mandatory leading `[A-Z]` eats the first
+// char the alternative needs.
+const ENV_SECRET_KEY =
+  '[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASS|KEY|AUTH|CREDENTIAL|PRIVATE|DATABASE_?URL|DB_?URL|API_?KEY)[A-Z0-9_]*';
+const ENV_SECRET_PATTERN = new RegExp(
+  `(\\b${ENV_SECRET_KEY}\\b\\s*[:=]\\s*)["']?([^\\s"'\\n,;)\\]}]+)["']?`,
+  'g'
+);
+
+// Personal name scrub — explicit user request. Order matters: longest first
+// in the alternation so `dylanvu` binds before `dylan`/`vu` alone.
+const NAME_PATTERN = /\b(?:dylanvu|dylan|vu)\b/gi;
 // Coding-assistant CLIs (Claude Code, OpenAI codex, etc) wrap user/developer
 // turns in scaffolding tags: project instructions, environment context,
 // memory reminders, permission specs, slash-command metadata. They're
@@ -158,16 +188,33 @@ export function sanitizePublicText(input: string): string {
   text = text.replace(CLAUDE_CODE_SYSTEM_PROMPT_PATTERN, '');
   text = text.replace(CODEX_SYSTEM_PROMPT_PATTERN, '');
 
+  // Env-style secret assignments first: `API_KEY=sk-proj-xxx` — we want the
+  // whole value redacted as a credential, not later as a bare token (which
+  // would leave the `API_KEY=` label dangling).
+  text = text.replace(ENV_SECRET_PATTERN, (_match, prefix: string) => `${prefix}${REDACTED_CREDENTIAL}`);
+
+  // Data URIs before the generic URL pattern so the base64 payload doesn't
+  // leak through as a "url".
+  text = text.replace(DATA_URI_PATTERN, REDACTED_URL);
+  // URLs before auth/email/paths so `postgres://user:pass@host/db`,
+  // `https://example.com/?token=abc`, etc. get wholesale-redacted rather
+  // than piecewise-mangled.
+  text = text.replace(URL_PATTERN, REDACTED_URL);
+
   text = text.replace(AUTH_HEADER_QUOTED_PATTERN, (_match, prefix: string, _value: string, suffix: string) =>
     `${prefix}${REDACTED_CREDENTIAL}${suffix}`
   );
 
   text = text.replace(AUTH_HEADER_PATTERN, (_match, prefix: string) => `${prefix}${REDACTED_CREDENTIAL}`);
   text = text.replace(EMAIL_PATTERN, REDACTED_EMAIL);
-  text = text.replace(UNIX_PATH_PATTERN, (_match, prefix: string) => `${prefix}${REDACTED_PATH}`);
-  text = text.replace(WINDOWS_PATH_PATTERN, (_match, prefix: string) => `${prefix}${REDACTED_PATH}`);
+  text = text.replace(UNIX_PATH_PATTERN, REDACTED_PATH);
+  text = text.replace(WINDOWS_PATH_PATTERN, REDACTED_PATH);
   text = text.replace(JWT_TOKEN_PATTERN, REDACTED_TOKEN);
   text = text.replace(PREFIXED_TOKEN_PATTERN, REDACTED_TOKEN);
+  // Names last: paths/URLs/emails that embed `dylanvu` have already been
+  // wholesale-redacted by now, so this only catches bare occurrences in
+  // free-form prose.
+  text = text.replace(NAME_PATTERN, REDACTED_NAME);
 
   return text;
 }

@@ -211,6 +211,64 @@ describe('publicTextSanitizer', () => {
     expect(result).toContain('user ask:');
   });
 
+  it('redacts all three name variants (dylanvu, dylan, vu) in prose', () => {
+    const input = 'talked to dylan earlier, vu said lgtm — thanks dylanvu!';
+    expect(sanitizePublicText(input)).toBe(
+      'talked to [REDACTED_NAME] earlier, [REDACTED_NAME] said lgtm — thanks [REDACTED_NAME]!'
+    );
+  });
+
+  it('redacts a unix path that appears without a leading boundary char', () => {
+    // Previously the pattern required `[\s("'=]` before the path, so cases
+    // like `cwd:/Users/...` or a path jammed into prose slipped through.
+    const input = 'cwd:/Users/dylanvu/innies/api/te and also key=/Users/dylanvu/foo';
+    const result = sanitizePublicText(input);
+    expect(result).not.toContain('/Users/dylanvu');
+    expect(result).toContain('[REDACTED_PATH]');
+  });
+
+  it('redacts env-style secret assignments', () => {
+    const input = [
+      'API_KEY=sk-proj-AbCdEf1234567890',
+      'DATABASE_URL=postgres://user:pass@host:5432/db',
+      'MY_SECRET: "supersecret123"',
+      'GITHUB_TOKEN=ghp_AbCdEf1234567890abcdef'
+    ].join('\n');
+
+    const result = sanitizePublicText(input);
+    expect(result).not.toContain('sk-proj-AbCdEf1234567890');
+    expect(result).not.toContain('supersecret123');
+    expect(result).not.toContain('ghp_AbCdEf1234567890abcdef');
+    expect(result).not.toContain('postgres://user:pass');
+    expect(result).toContain('API_KEY=[REDACTED_CREDENTIAL]');
+    expect(result).toContain('DATABASE_URL=[REDACTED_CREDENTIAL]');
+    expect(result).toContain('GITHUB_TOKEN=[REDACTED_CREDENTIAL]');
+  });
+
+  it('redacts urls of all schemes (https, postgres, mysql, ws)', () => {
+    const input = [
+      'docs at https://innies.dev/guide',
+      'prod db postgres://admin:hunter2@db.internal:5432/prod',
+      'mysql://root@localhost/test',
+      'ws://realtime.example.com/socket'
+    ].join('\n');
+
+    const result = sanitizePublicText(input);
+    expect(result).not.toContain('innies.dev/guide');
+    expect(result).not.toContain('hunter2');
+    expect(result).not.toContain('db.internal');
+    expect(result).not.toContain('realtime.example.com');
+    expect(result.match(/\[REDACTED_URL\]/g)?.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('redacts base64 data URIs', () => {
+    const input = 'avatar: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAA+deadbeef== rest';
+    const result = sanitizePublicText(input);
+    expect(result).not.toContain('iVBORw');
+    expect(result).toContain('[REDACTED_URL]');
+    expect(result).toContain('rest');
+  });
+
   it('handles circular tool payloads without throwing', () => {
     const payload: Record<string, unknown> = {
       name: 'tool'
