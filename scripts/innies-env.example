@@ -19,4 +19,4 @@ DEVOPS_JOURNAL_PASSWORD=replace_me
 # Required by innies-buyer-preference-check
 INNIES_IDEMPOTENCY_PREFIX=prefdemo
 INNIES_MODEL_ANTHROPIC=claude-opus-4-6
-INNIES_MODEL_CODEX=gpt-5.4
+INNIES_MODEL_CODEX=gpt-5.5

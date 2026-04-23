@@ -1,6 +1,6 @@
 const DEFAULT_MODELS = Object.freeze({
   anthropic: 'claude-opus-4-7',
-  openai: 'gpt-5.4'
+  openai: 'gpt-5.5'
 });
 
 const LEGACY_DEFAULT_MODEL = DEFAULT_MODELS.anthropic;
@@ -16,7 +16,9 @@ const STALE_PROVIDER_DEFAULTS = Object.freeze({
   anthropic: new Set([
     'claude-opus-4-6'
   ]),
-  openai: new Set([])
+  openai: new Set([
+    'gpt-5.4'
+  ])
 });
 
 export function defaultProviderModels() {

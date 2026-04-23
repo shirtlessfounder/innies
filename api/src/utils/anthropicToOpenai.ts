@@ -1,4 +1,4 @@
-const COMPAT_CODEX_DEFAULT_MODEL_FALLBACK = 'gpt-5.4';
+const COMPAT_CODEX_DEFAULT_MODEL_FALLBACK = 'gpt-5.5';
 const COMPAT_CODEX_DEFAULT_INSTRUCTIONS_FALLBACK = 'You are a helpful assistant.';
 
 type AnthropicContentBlock = Record<string, unknown>;

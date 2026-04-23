@@ -32,10 +32,10 @@ test('sentinel config falls back to provider defaults for both lanes', async () 
   assert.equal(config.defaultModel, 'claude-opus-4-7');
   assert.deepEqual(config.providerDefaults, {
     anthropic: 'claude-opus-4-7',
-    openai: 'gpt-5.4'
+    openai: 'gpt-5.5'
   });
   assert.equal(configModule.resolveProviderDefaultModel(config, 'anthropic'), 'claude-opus-4-7');
-  assert.equal(configModule.resolveProviderDefaultModel(config, 'openai'), 'gpt-5.4');
+  assert.equal(configModule.resolveProviderDefaultModel(config, 'openai'), 'gpt-5.5');
 });
 
 test('saveConfig with anthropic model keeps codex lane on openai default', async () => {
@@ -46,10 +46,10 @@ test('saveConfig with anthropic model keeps codex lane on openai default', async
   assert.equal(saved.defaultModel, 'claude-opus-4-6');
   assert.deepEqual(saved.providerDefaults, {
     anthropic: 'claude-opus-4-6',
-    openai: 'gpt-5.4'
+    openai: 'gpt-5.5'
   });
   assert.equal(configModule.resolveProviderDefaultModel(saved, 'anthropic'), 'claude-opus-4-6');
-  assert.equal(configModule.resolveProviderDefaultModel(saved, 'openai'), 'gpt-5.4');
+  assert.equal(configModule.resolveProviderDefaultModel(saved, 'openai'), 'gpt-5.5');
 });
 
 test('saveConfig with unknown model preserves fallback but leaves provider defaults unchanged', async () => {
@@ -60,10 +60,10 @@ test('saveConfig with unknown model preserves fallback but leaves provider defau
   assert.equal(saved.defaultModel, 'future-model-x');
   assert.deepEqual(saved.providerDefaults, {
     anthropic: 'claude-opus-4-7',
-    openai: 'gpt-5.4'
+    openai: 'gpt-5.5'
   });
   assert.equal(configModule.resolveProviderDefaultModel(saved, 'anthropic'), 'claude-opus-4-7');
-  assert.equal(configModule.resolveProviderDefaultModel(saved, 'openai'), 'gpt-5.4');
+  assert.equal(configModule.resolveProviderDefaultModel(saved, 'openai'), 'gpt-5.5');
 });
 
 test('loadConfig auto-upgrades stale anthropic default from a previous CLI version', async () => {
@@ -92,7 +92,7 @@ test('loadConfig auto-upgrades stale anthropic default from a previous CLI versi
   assert.equal(config.defaultModel, 'claude-opus-4-7');
   assert.deepEqual(config.providerDefaults, {
     anthropic: 'claude-opus-4-7',
-    openai: 'gpt-5.4'
+    openai: 'gpt-5.5'
   });
 
   // Config file on disk is rewritten so subsequent loads don't need
@@ -117,7 +117,7 @@ test('loadConfig leaves an explicit non-stale anthropic default alone', async ()
     defaultModel: 'claude-sonnet-4-6',
     providerDefaults: {
       anthropic: 'claude-sonnet-4-6',
-      openai: 'gpt-5.4'
+      openai: 'gpt-5.5'
     },
     updatedAt: '2026-04-18T00:00:00.000Z'
   }));

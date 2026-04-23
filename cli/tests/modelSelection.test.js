@@ -21,14 +21,14 @@ test('infers known model families and leaves unknown models unassigned', () => {
 test('applies anthropic model hints without rewriting openai defaults', () => {
   assert.deepEqual(providerDefaultsFromModelHint('claude-opus-4-6'), {
     anthropic: 'claude-opus-4-6',
-    openai: 'gpt-5.4'
+    openai: 'gpt-5.5'
   });
 });
 
 test('applies openai model hints without rewriting anthropic defaults', () => {
-  assert.deepEqual(providerDefaultsFromModelHint('gpt-5.5'), {
+  assert.deepEqual(providerDefaultsFromModelHint('gpt-5.4'), {
     anthropic: 'claude-opus-4-7',
-    openai: 'gpt-5.5'
+    openai: 'gpt-5.4'
   });
 });
 

@@ -238,7 +238,7 @@ if ! grep -q 'arg:model_providers.innies.env_http_headers."x-innies-provider-pin
   exit 1
 fi
 
-if ! grep -q 'arg:gpt-5.4' "$FAKE_CODEX_LOG"; then
+if ! grep -q 'arg:gpt-5.5' "$FAKE_CODEX_LOG"; then
   echo "smoke: missing codex default model injection"
   exit 1
 fi
