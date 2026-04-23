@@ -181,6 +181,7 @@ export async function runCodex(args) {
     process.exit(code ?? 0);
   });
 
-  process.on('SIGINT', () => { void closeBridge(); process.exit(130); });
-  process.on('SIGTERM', () => { void closeBridge(); process.exit(143); });
+  process.on('SIGINT', () => { cleanupOverlay(); void closeBridge(); process.exit(130); });
+  process.on('SIGTERM', () => { cleanupOverlay(); void closeBridge(); process.exit(143); });
+  process.on('exit', cleanupOverlay);
 }

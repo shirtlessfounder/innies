@@ -9,7 +9,13 @@ const SKIPPED_CODEX_HOME_ENTRIES = new Set([
   'history.jsonl',
   'log',
   'sessions',
-  'shell_snapshots'
+  'shell_snapshots',
+  'logs_2.sqlite',
+  'logs_2.sqlite-shm',
+  'logs_2.sqlite-wal',
+  'state_5.sqlite',
+  'state_5.sqlite-shm',
+  'state_5.sqlite-wal'
 ]);
 
 async function mirrorCodexHomeState(sourceCodexHome, overlayCodexHome) {
