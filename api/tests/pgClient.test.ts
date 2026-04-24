@@ -1,5 +1,29 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PgSqlClient } from '../src/repos/pgClient.js';
+import { PgSqlClient, buildPgClient } from '../src/repos/pgClient.js';
+
+const poolConstructorCalls: Array<Record<string, unknown>> = [];
+
+vi.mock('pg', () => {
+  class FakePool {
+    constructor(options: Record<string, unknown>) {
+      poolConstructorCalls.push(options);
+    }
+    async connect() {
+      return {
+        query: async () => ({ rows: [], rowCount: 0 }),
+        release: () => undefined
+      };
+    }
+    async query() {
+      return { rows: [], rowCount: 0 };
+    }
+    async end() {
+      return undefined;
+    }
+  }
+
+  return { Pool: FakePool };
+});
 
 type ExecutedQuery = { sql: string; params?: unknown[] };
 
@@ -127,5 +151,89 @@ describe('PgSqlClient.transaction', () => {
     ).rejects.toThrow('tx body failed');
 
     expect(releases).toEqual(['release']);
+  });
+});
+
+describe('buildPgClient', () => {
+  const envKeys = [
+    'INNIES_DB_POOL_MAX',
+    'INNIES_DB_POOL_STATEMENT_TIMEOUT_MS',
+    'INNIES_DB_POOL_QUERY_TIMEOUT_MS',
+    'INNIES_DB_POOL_IDLE_IN_TX_TIMEOUT_MS'
+  ] as const;
+  const originals: Partial<Record<(typeof envKeys)[number], string | undefined>> = {};
+
+  for (const key of envKeys) {
+    originals[key] = process.env[key];
+  }
+
+  afterEach(() => {
+    poolConstructorCalls.length = 0;
+    for (const key of envKeys) {
+      if (originals[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = originals[key];
+      }
+    }
+  });
+
+  it('constructs the Pool with server-side safety timeouts by default', () => {
+    for (const key of envKeys) delete process.env[key];
+
+    buildPgClient('postgres://example/db');
+
+    expect(poolConstructorCalls).toHaveLength(1);
+    expect(poolConstructorCalls[0]).toMatchObject({
+      connectionString: 'postgres://example/db',
+      max: 20,
+      statement_timeout: 60_000,
+      query_timeout: 65_000,
+      idle_in_transaction_session_timeout: 30_000
+    });
+  });
+
+  it('query_timeout is strictly greater than statement_timeout so the server-side cap fires first', () => {
+    for (const key of envKeys) delete process.env[key];
+
+    buildPgClient('postgres://example/db');
+
+    const opts = poolConstructorCalls[0] as {
+      statement_timeout: number;
+      query_timeout: number;
+    };
+    expect(opts.query_timeout).toBeGreaterThan(opts.statement_timeout);
+  });
+
+  it('honors env overrides for all four pool knobs', () => {
+    process.env.INNIES_DB_POOL_MAX = '7';
+    process.env.INNIES_DB_POOL_STATEMENT_TIMEOUT_MS = '15000';
+    process.env.INNIES_DB_POOL_QUERY_TIMEOUT_MS = '16000';
+    process.env.INNIES_DB_POOL_IDLE_IN_TX_TIMEOUT_MS = '9000';
+
+    buildPgClient('postgres://example/db');
+
+    expect(poolConstructorCalls[0]).toMatchObject({
+      max: 7,
+      statement_timeout: 15_000,
+      query_timeout: 16_000,
+      idle_in_transaction_session_timeout: 9_000
+    });
+  });
+
+  it('falls back to defaults when env values are non-positive or non-numeric', () => {
+    process.env.INNIES_DB_POOL_MAX = '-3';
+    process.env.INNIES_DB_POOL_STATEMENT_TIMEOUT_MS = 'banana';
+    process.env.INNIES_DB_POOL_QUERY_TIMEOUT_MS = '0';
+    process.env.INNIES_DB_POOL_IDLE_IN_TX_TIMEOUT_MS = '';
+
+    buildPgClient('postgres://example/db');
+
+    expect(poolConstructorCalls[0]).toMatchObject({
+      max: 20,
+      statement_timeout: 60_000,
+      query_timeout: 65_000,
+      idle_in_transaction_session_timeout: 30_000
+    });
   });
 });
