@@ -3,6 +3,10 @@ import type { SqlClient, SqlQueryResult, SqlValue, TransactionContext } from './
 
 const DEFAULT_IDLE_IN_TX_TIMEOUT_MS = 30_000;
 const DEFAULT_STATEMENT_TIMEOUT_MS = 180_000;
+const DEFAULT_POOL_STATEMENT_TIMEOUT_MS = 60_000;
+const DEFAULT_POOL_QUERY_TIMEOUT_MS = 65_000;
+const DEFAULT_POOL_IDLE_IN_TX_TIMEOUT_MS = 30_000;
+const DEFAULT_POOL_MAX = 20;
 
 function readPositiveIntEnv(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -89,7 +93,50 @@ export class PgSqlClient implements SqlClient {
   }
 }
 
+/**
+ * Build a pg pool with safety timeouts applied at the connection level.
+ *
+ * Non-transactional queries (`pool.query` via `PgSqlClient.query`) do NOT go
+ * through `PgSqlClient.transaction`, so the SET LOCAL timeouts installed
+ * there don't protect them. Without a server-side `statement_timeout` on the
+ * pool, a single hung `pool.query()` waits forever — which is what wedged
+ * `buildDashboardSnapshotPayload` on 2026-04-23 when its 7 parallel
+ * `Promise.all` reads stalled on a saturated pool.
+ *
+ * Defaults:
+ * - `statement_timeout` 60s — caps any single query server-side. Bigger than
+ *   observed hot-window rollups (dashboard window=1m worst case ~8.5s) but
+ *   tight enough to kill true hangs.
+ * - `query_timeout` 65s — client-side cancel, 5s after statement_timeout so
+ *   pg-node aborts the query if the server somehow doesn't.
+ * - `idle_in_transaction_session_timeout` 30s — same scope and reasoning as
+ *   the SET LOCAL fallback in `transaction()`, applied here so it also
+ *   covers any caller that opens a tx without going through our wrapper
+ *   (e.g. direct `pool.connect()` use, should any ever appear).
+ *
+ * All three are overridable per-env so batch backfills can opt out.
+ */
 export function buildPgClient(connectionString: string): PgSqlClient {
-  const pool = new Pool({ connectionString, max: 20 });
+  const poolMax = readPositiveIntEnv('INNIES_DB_POOL_MAX', DEFAULT_POOL_MAX);
+  const statementTimeoutMs = readPositiveIntEnv(
+    'INNIES_DB_POOL_STATEMENT_TIMEOUT_MS',
+    DEFAULT_POOL_STATEMENT_TIMEOUT_MS
+  );
+  const queryTimeoutMs = readPositiveIntEnv(
+    'INNIES_DB_POOL_QUERY_TIMEOUT_MS',
+    DEFAULT_POOL_QUERY_TIMEOUT_MS
+  );
+  const idleInTxTimeoutMs = readPositiveIntEnv(
+    'INNIES_DB_POOL_IDLE_IN_TX_TIMEOUT_MS',
+    DEFAULT_POOL_IDLE_IN_TX_TIMEOUT_MS
+  );
+
+  const pool = new Pool({
+    connectionString,
+    max: poolMax,
+    statement_timeout: statementTimeoutMs,
+    query_timeout: queryTimeoutMs,
+    idle_in_transaction_session_timeout: idleInTxTimeoutMs
+  });
   return new PgSqlClient(pool);
 }
