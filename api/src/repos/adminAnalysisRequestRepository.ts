@@ -43,6 +43,29 @@ export type AdminAnalysisRequestRow = {
   updated_at: string;
 };
 
+export type AdminAnalysisSessionRollupRow = {
+  session_key: string;
+  org_id: string;
+  session_type: AdminAnalysisRequestRow['session_type'];
+  grouping_basis: AdminAnalysisRequestRow['grouping_basis'];
+  started_at: string;
+  ended_at: string;
+  last_activity_at: string;
+  request_count: number | string;
+  attempt_count: number | string;
+  input_tokens: number | string;
+  output_tokens: number | string;
+  primary_task_category: AdminAnalysisTaskCategory;
+  task_category_breakdown: Record<string, unknown>;
+  task_tag_set: string[];
+  is_long_session: boolean;
+  is_high_token_session: boolean;
+  is_retry_heavy_session: boolean;
+  is_cross_provider_session: boolean;
+  is_multi_model_session: boolean;
+  interestingness_score: number | string;
+};
+
 export class AdminAnalysisRequestRepository {
   constructor(private readonly db: SqlClient) {}
 
@@ -191,6 +214,86 @@ export class AdminAnalysisRequestRepository {
       order by started_at asc, request_id asc, attempt_no asc
     `;
     return this.db.query<AdminAnalysisRequestRow>(sql, [sessionKey]).then((result) => result.rows);
+  }
+
+  async loadSessionRollup(sessionKey: string): Promise<AdminAnalysisSessionRollupRow | null> {
+    const sql = `
+      with scoped as (
+        select *
+        from ${TABLES.adminAnalysisRequests}
+        where session_key = $1
+      ),
+      category_stats as (
+        select
+          task_category,
+          count(*)::int as request_count,
+          min(started_at) as first_started_at,
+          min(request_attempt_archive_id::text) as first_archive_id
+        from scoped
+        group by task_category
+      ),
+      tag_set as (
+        select coalesce(array_agg(distinct tag order by tag), '{}'::text[]) as tags
+        from scoped
+        cross join lateral unnest(task_tags) as tag
+      ),
+      rollup as (
+        select
+          $1::text as session_key,
+          (array_agg(org_id order by started_at asc, request_attempt_archive_id asc))[1] as org_id,
+          (array_agg(session_type order by started_at asc, request_attempt_archive_id asc))[1] as session_type,
+          (array_agg(grouping_basis order by started_at asc, request_attempt_archive_id asc))[1] as grouping_basis,
+          min(started_at) as started_at,
+          max(coalesce(completed_at, started_at)) as ended_at,
+          max(coalesce(completed_at, started_at)) as last_activity_at,
+          count(distinct request_id)::int as request_count,
+          count(*)::int as attempt_count,
+          coalesce(sum(input_tokens), 0) as input_tokens,
+          coalesce(sum(output_tokens), 0) as output_tokens,
+          coalesce(sum(interestingness_score), 0) as interestingness_score,
+          bool_or(is_retry) as is_retry_heavy_session,
+          count(distinct provider) > 1 as is_cross_provider_session,
+          count(distinct model) > 1 as is_multi_model_session
+        from scoped
+      )
+      select
+        rollup.session_key,
+        rollup.org_id,
+        rollup.session_type,
+        rollup.grouping_basis,
+        rollup.started_at,
+        rollup.ended_at,
+        rollup.last_activity_at,
+        rollup.request_count,
+        rollup.attempt_count,
+        rollup.input_tokens,
+        rollup.output_tokens,
+        (
+          select task_category
+          from category_stats
+          order by request_count desc, first_started_at asc, first_archive_id asc
+          limit 1
+        ) as primary_task_category,
+        coalesce(
+          (
+            select jsonb_object_agg(task_category, request_count)
+            from category_stats
+          ),
+          '{}'::jsonb
+        ) as task_category_breakdown,
+        tag_set.tags as task_tag_set,
+        extract(epoch from (rollup.ended_at - rollup.started_at)) * 1000 >= 1800000 as is_long_session,
+        rollup.input_tokens + rollup.output_tokens >= 40000 as is_high_token_session,
+        rollup.is_retry_heavy_session,
+        rollup.is_cross_provider_session,
+        rollup.is_multi_model_session,
+        rollup.interestingness_score
+      from rollup
+      cross join tag_set
+      where rollup.attempt_count > 0
+    `;
+    const result = await this.db.query<AdminAnalysisSessionRollupRow>(sql, [sessionKey]);
+    return result.rows[0] ?? null;
   }
 
   private async expectOne(sql: string, params: SqlValue[]): Promise<AdminAnalysisRequestRow> {

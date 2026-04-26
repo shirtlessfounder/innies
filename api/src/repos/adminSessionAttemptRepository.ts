@@ -94,6 +94,18 @@ export class AdminSessionAttemptRepository {
     return result.rows[0] ?? null;
   }
 
+  async hasRequestInSession(sessionKey: string, requestId: string): Promise<boolean> {
+    const sql = `
+      select 1
+      from ${TABLES.adminSessionAttempts}
+      where session_key = $1
+        and request_id = $2
+      limit 1
+    `;
+    const result = await this.db.query<{ '?column?': number }>(sql, [sessionKey, requestId]);
+    return (result.rowCount ?? result.rows.length) > 0;
+  }
+
   private async expectOne(sql: string, params: SqlValue[]): Promise<AdminSessionAttemptRow> {
     const result = await this.db.query<AdminSessionAttemptRow>(sql, params);
     if (result.rowCount !== 1) {

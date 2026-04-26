@@ -93,6 +93,17 @@ function createHarness(options?: {
       }
     },
     sessionAttemptRepo: {
+      async findByArchiveId(requestAttemptArchiveId) {
+        return state.attempts.find((candidate) =>
+          candidate.request_attempt_archive_id === requestAttemptArchiveId
+        ) ?? null;
+      },
+      async hasRequestInSession(sessionKey, requestId) {
+        return state.attempts.some((candidate) =>
+          candidate.session_key === sessionKey
+          && candidate.request_id === requestId
+        );
+      },
       async upsertAttemptLink(input) {
         const row: AdminSessionAttemptRow = {
           session_key: input.sessionKey,
@@ -322,6 +333,12 @@ describe('AdminSessionProjectorService', () => {
         }
       },
       sessionAttemptRepo: {
+        async findByArchiveId() {
+          return null;
+        },
+        async hasRequestInSession() {
+          return false;
+        },
         async upsertAttemptLink() {
           calls.push('attempt');
           expect(sessionWritten).toBe(true);
@@ -346,110 +363,60 @@ describe('AdminSessionProjectorService', () => {
     expect(calls).toEqual(['session', 'attempt']);
   });
 
-  it('repairs a corrupted stored aggregate from linked attempts before appending a new attempt', async () => {
-    const upsertCalls: Array<Record<string, unknown>> = [];
+  it('updates an existing session without loading the full prior session', async () => {
     const sessionKey = 'cli:idle:org_1:api_1:req_old';
+    const existingSession: AdminSessionRow = {
+      session_key: sessionKey,
+      session_type: 'cli',
+      grouping_basis: 'idle_gap',
+      org_id: 'org_1',
+      api_key_id: 'api_1',
+      source_session_id: null,
+      source_run_id: null,
+      started_at: '2026-03-31T22:00:00.000Z',
+      ended_at: '2026-03-31T22:05:00.000Z',
+      last_activity_at: '2026-03-31T22:05:00.000Z',
+      request_count: 79,
+      attempt_count: 83,
+      input_tokens: 5587,
+      output_tokens: 27495,
+      provider_set: ['anthropic', 'openai'],
+      model_set: ['claude-opus-4-6', 'gpt-5.4'],
+      status_summary: { success: 80, failed: 3 },
+      preview_sample: {
+        promptPreview: 'prior prompt',
+        responsePreview: 'prior response',
+        latestRequestId: 'req_prev',
+        latestAttemptNo: 3
+      },
+      created_at: '2026-03-31T22:00:00.000Z',
+      updated_at: '2026-03-31T22:05:00.000Z'
+    };
+    const upsertCalls: Array<Record<string, unknown>> = [];
     const service = new AdminSessionProjectorService({
       sessionRepo: {
         async upsertSession(input) {
           upsertCalls.push(input as unknown as Record<string, unknown>);
-          return {} as AdminSessionRow;
+          return existingSession;
         },
         async findBySessionKey() {
-          return {
-            session_key: sessionKey,
-            session_type: 'cli',
-            grouping_basis: 'idle_gap',
-            org_id: 'org_1',
-            api_key_id: 'api_1',
-            source_session_id: null,
-            source_run_id: null,
-            started_at: '2026-03-31T22:00:00.000Z',
-            ended_at: '2026-03-31T22:05:00.000Z',
-            last_activity_at: '2026-03-31T22:05:00.000Z',
-            request_count: 7,
-            attempt_count: 7,
-            input_tokens: '111112330',
-            output_tokens: '2572292072151771400',
-            provider_set: ['anthropic'],
-            model_set: ['claude-opus-4-6'],
-            status_summary: { success: 7 },
-            preview_sample: {
-              promptPreview: 'bad prompt',
-              responsePreview: 'bad response',
-              latestRequestId: 'req_bad',
-              latestAttemptNo: 1
-            },
-            created_at: '2026-03-31T22:00:00.000Z',
-            updated_at: '2026-03-31T22:05:00.000Z'
-          } as unknown as AdminSessionRow;
+          return existingSession;
         },
         async findLatestInLane() {
-          return {
-            session_key: sessionKey,
-            session_type: 'cli',
-            grouping_basis: 'idle_gap',
-            org_id: 'org_1',
-            api_key_id: 'api_1',
-            source_session_id: null,
-            source_run_id: null,
-            started_at: '2026-03-31T22:00:00.000Z',
-            ended_at: '2026-03-31T22:05:00.000Z',
-            last_activity_at: '2026-03-31T22:05:00.000Z',
-            request_count: 7,
-            attempt_count: 7,
-            input_tokens: '111112330',
-            output_tokens: '2572292072151771400',
-            provider_set: ['anthropic'],
-            model_set: ['claude-opus-4-6'],
-            status_summary: { success: 7 },
-            preview_sample: null,
-            created_at: '2026-03-31T22:00:00.000Z',
-            updated_at: '2026-03-31T22:05:00.000Z'
-          } as unknown as AdminSessionRow;
-        },
-        async loadProjectionRollup() {
-          return {
-            session_key: sessionKey,
-            started_at: '2026-03-31T22:00:00.000Z',
-            ended_at: '2026-03-31T22:05:00.000Z',
-            last_activity_at: '2026-03-31T22:05:00.000Z',
-            request_count: 79,
-            attempt_count: 83,
-            input_tokens: 5587,
-            output_tokens: 27495,
-            provider_set: ['anthropic', 'openai'],
-            model_set: ['claude-opus-4-6', 'gpt-5.4'],
-            status_summary: { success: 80, failed: 3 },
-            preview_sample: {
-              promptPreview: 'prior prompt',
-              responsePreview: 'prior response',
-              latestRequestId: 'req_prev',
-              latestAttemptNo: 3
-            }
-          };
+          return existingSession;
         }
       } as any,
       sessionAttemptRepo: {
+        async findByArchiveId() {
+          return null;
+        },
+        async hasRequestInSession() {
+          return false;
+        },
         async upsertAttemptLink() {
           return {} as AdminSessionAttemptRow;
-        },
-        async listAttemptsBySessionKey() {
-          return [{
-            session_key: sessionKey,
-            request_attempt_archive_id: 'archive_prev',
-            request_id: 'req_prev',
-            attempt_no: 3,
-            event_time: '2026-03-31T22:05:00.000Z',
-            sequence_no: 2,
-            provider: 'anthropic',
-            model: 'claude-opus-4-6',
-            streaming: false,
-            status: 'success',
-            created_at: '2026-03-31T22:05:00.000Z'
-          }];
         }
-      }
+      } as any
     });
 
     await service.projectAttempt(candidate({

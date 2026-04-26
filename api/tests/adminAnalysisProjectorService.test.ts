@@ -83,6 +83,17 @@ function createHarness() {
             || left.request_id.localeCompare(right.request_id)
             || left.attempt_no - right.attempt_no
           );
+      },
+      async loadSessionRollup(sessionKey) {
+        const session = adminSessions.find((candidate) => candidate.session_key === sessionKey);
+        const rows = requestRows
+          .filter((candidate) => candidate.session_key === sessionKey)
+          .sort((left, right) =>
+            new Date(left.started_at).getTime() - new Date(right.started_at).getTime()
+            || left.request_id.localeCompare(right.request_id)
+            || left.attempt_no - right.attempt_no
+          );
+        return session && rows.length > 0 ? buildAnalysisSessionRollup(session, rows) : null;
       }
     },
     sessionAnalysisRepo: {
@@ -216,6 +227,74 @@ function sessionLink(input?: Partial<AdminSessionAttemptRow>): AdminSessionAttem
   };
 }
 
+function buildAnalysisSessionRollup(session: AdminSessionRow, rows: AdminAnalysisRequestRow[]) {
+  const requestIds = new Set<string>();
+  const providers = new Set<string>();
+  const models = new Set<string>();
+  const tags = new Set<string>();
+  const categoryBreakdown = new Map<string, number>();
+  let startedAt = new Date(rows[0]?.started_at ?? session.started_at);
+  let endedAt = new Date(rows[0]?.completed_at ?? rows[0]?.started_at ?? session.ended_at);
+  let lastActivityAt = endedAt;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let retryCount = 0;
+  let interestingnessScore = 0;
+
+  for (const row of rows) {
+    requestIds.add(row.request_id);
+    providers.add(row.provider);
+    models.add(row.model);
+    row.task_tags.forEach((tag) => tags.add(tag));
+    categoryBreakdown.set(row.task_category, (categoryBreakdown.get(row.task_category) ?? 0) + 1);
+    inputTokens += Number(row.input_tokens ?? 0);
+    outputTokens += Number(row.output_tokens ?? 0);
+    interestingnessScore += Number(row.interestingness_score ?? 0);
+    if (row.is_retry) retryCount += 1;
+
+    const rowStart = new Date(row.started_at);
+    const rowEnd = new Date(row.completed_at ?? row.started_at);
+    if (rowStart < startedAt) startedAt = rowStart;
+    if (rowEnd > endedAt) endedAt = rowEnd;
+    if (rowEnd > lastActivityAt) lastActivityAt = rowEnd;
+  }
+
+  return {
+    session_key: session.session_key,
+    org_id: session.org_id,
+    session_type: session.session_type,
+    grouping_basis: session.grouping_basis,
+    started_at: startedAt.toISOString(),
+    ended_at: endedAt.toISOString(),
+    last_activity_at: lastActivityAt.toISOString(),
+    request_count: requestIds.size,
+    attempt_count: rows.length,
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    primary_task_category: selectPrimaryCategory(categoryBreakdown),
+    task_category_breakdown: Object.fromEntries(categoryBreakdown),
+    task_tag_set: Array.from(tags),
+    is_long_session: endedAt.getTime() - startedAt.getTime() >= 30 * 60 * 1000,
+    is_high_token_session: inputTokens + outputTokens >= 40_000,
+    is_retry_heavy_session: retryCount > 0,
+    is_cross_provider_session: providers.size > 1,
+    is_multi_model_session: models.size > 1,
+    interestingness_score: interestingnessScore
+  };
+}
+
+function selectPrimaryCategory(categoryBreakdown: Map<string, number>) {
+  let winner = 'other';
+  let maxCount = -1;
+  for (const [category, count] of categoryBreakdown.entries()) {
+    if (count > maxCount) {
+      winner = category;
+      maxCount = count;
+    }
+  }
+  return winner;
+}
+
 describe('AdminAnalysisProjectorService', () => {
   it('ignores direct-source attempts instead of retrying a missing session dependency', async () => {
     const harness = createHarness();
@@ -245,6 +324,107 @@ describe('AdminAnalysisProjectorService', () => {
     await expect(harness.service.projectQueuedAttempt({
       request_attempt_archive_id: 'archive_1'
     })).rejects.toBeInstanceOf(RetryableProjectionDependencyError);
+  });
+
+  it('rolls up the session without loading every request row into the app', async () => {
+    const upsertedSessions: Array<Record<string, unknown>> = [];
+    const requestRow: AdminAnalysisRequestRow = {
+      request_attempt_archive_id: 'archive_1',
+      request_id: 'req_1',
+      attempt_no: 1,
+      session_key: 'openclaw:session:sess_1',
+      org_id: 'org_1',
+      api_key_id: 'api_1',
+      session_type: 'openclaw',
+      grouping_basis: 'explicit_session_id',
+      source: 'openclaw',
+      provider: 'openai',
+      model: 'gpt-5.4',
+      status: 'success',
+      started_at: '2026-03-31T22:00:00.000Z',
+      completed_at: '2026-03-31T22:05:00.000Z',
+      input_tokens: 300,
+      output_tokens: 500,
+      user_message_preview: 'build the new analysis endpoint',
+      assistant_text_preview: 'working on it',
+      task_category: 'feature_building',
+      task_tags: ['api'],
+      is_retry: false,
+      is_failure: false,
+      is_partial: false,
+      is_high_token: false,
+      is_cross_provider_rescue: false,
+      has_tool_use: false,
+      interestingness_score: 1,
+      created_at: '2026-03-31T00:00:00.000Z',
+      updated_at: '2026-03-31T00:00:00.000Z'
+    };
+    const service = new AdminAnalysisProjectorService({
+      candidateLoader: {
+        async loadCandidateByArchiveId() {
+          return candidate();
+        }
+      },
+      requestRepo: {
+        async upsertRequest() {
+          return requestRow;
+        },
+        async loadSessionRollup() {
+          return {
+            session_key: 'openclaw:session:sess_1',
+            org_id: 'org_1',
+            session_type: 'openclaw',
+            grouping_basis: 'explicit_session_id',
+            started_at: '2026-03-31T22:00:00.000Z',
+            ended_at: '2026-03-31T22:05:00.000Z',
+            last_activity_at: '2026-03-31T22:05:00.000Z',
+            request_count: 1,
+            attempt_count: 1,
+            input_tokens: 300,
+            output_tokens: 500,
+            primary_task_category: 'feature_building',
+            task_category_breakdown: { feature_building: 1 },
+            task_tag_set: ['api'],
+            is_long_session: false,
+            is_high_token_session: false,
+            is_retry_heavy_session: false,
+            is_cross_provider_session: false,
+            is_multi_model_session: false,
+            interestingness_score: 1
+          };
+        },
+        async listBySessionKey() {
+          throw new Error('full request rows should not be loaded for session rollup');
+        }
+      } as any,
+      sessionAnalysisRepo: {
+        async upsertSession(input) {
+          upsertedSessions.push(input as unknown as Record<string, unknown>);
+          return {} as AdminAnalysisSessionRow;
+        }
+      },
+      sessionAttemptRepo: {
+        async findByArchiveId() {
+          return sessionLink();
+        }
+      },
+      adminSessionRepo: {
+        async findBySessionKey() {
+          return adminSession();
+        }
+      }
+    });
+
+    await service.projectQueuedAttempt({ request_attempt_archive_id: 'archive_1' });
+
+    expect(upsertedSessions).toEqual([
+      expect.objectContaining({
+        sessionKey: 'openclaw:session:sess_1',
+        requestCount: 1,
+        attemptCount: 1,
+        primaryTaskCategory: 'feature_building'
+      })
+    ]);
   });
 
   it('uses the default SQL candidate loader when no custom loader is provided', async () => {
@@ -324,8 +504,17 @@ describe('AdminAnalysisProjectorService', () => {
           requestRows.push(row);
           return row;
         },
-        async listBySessionKey() {
-          return requestRows;
+        async loadSessionRollup(sessionKey) {
+          return buildAnalysisSessionRollup(
+            adminSession({
+              session_key: sessionKey,
+              session_type: 'openclaw',
+              grouping_basis: 'explicit_run_id',
+              source_session_id: null,
+              source_run_id: 'run_1'
+            }),
+            requestRows
+          );
         }
       },
       sessionAnalysisRepo: {

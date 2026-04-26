@@ -93,4 +93,29 @@ describe('AdminAnalysisRequestRepository', () => {
 
     await expect(repo.findByArchiveId('missing')).resolves.toBeNull();
   });
+
+  it('loads session analysis rollup as one aggregate row', async () => {
+    const db = new MockSqlClient({
+      rows: [{
+        session_key: sampleRequest.sessionKey,
+        request_count: 2,
+        attempt_count: 3,
+        primary_task_category: 'feature_building'
+      }],
+      rowCount: 1
+    });
+    const repo = new AdminAnalysisRequestRepository(db);
+
+    const row = await repo.loadSessionRollup(sampleRequest.sessionKey);
+
+    expect(row).toEqual(expect.objectContaining({
+      session_key: sampleRequest.sessionKey,
+      request_count: 2,
+      attempt_count: 3
+    }));
+    expect(db.queries[0].sql).toContain('with scoped as');
+    expect(db.queries[0].sql).toContain('where session_key = $1');
+    expect(db.queries[0].sql).toContain('jsonb_object_agg(task_category, request_count)');
+    expect(db.queries[0].params).toEqual([sampleRequest.sessionKey]);
+  });
 });

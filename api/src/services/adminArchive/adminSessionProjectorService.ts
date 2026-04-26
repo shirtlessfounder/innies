@@ -1,6 +1,10 @@
 import type { AdminSessionAttemptRepository } from '../../repos/adminSessionAttemptRepository.js';
 import type { AdminSessionProjectionOutboxRow } from '../../repos/adminSessionProjectionOutboxRepository.js';
-import type { AdminSessionRepository, AdminSessionRow } from '../../repos/adminSessionRepository.js';
+import type {
+  AdminSessionProjectionRollupRow,
+  AdminSessionRepository,
+  AdminSessionRow
+} from '../../repos/adminSessionRepository.js';
 import type { SqlClient } from '../../repos/sqlClient.js';
 import { TABLES } from '../../repos/tableNames.js';
 import type {
@@ -41,8 +45,8 @@ export class AdminSessionProjectorService {
   private readonly candidateLoader: CandidateLoader;
 
   constructor(private readonly deps: {
-    sessionRepo: Pick<AdminSessionRepository, 'findBySessionKey' | 'findLatestInLane' | 'loadProjectionRollup' | 'upsertSession'>;
-    sessionAttemptRepo: Pick<AdminSessionAttemptRepository, 'listAttemptsBySessionKey' | 'upsertAttemptLink'>;
+    sessionRepo: Pick<AdminSessionRepository, 'findBySessionKey' | 'findLatestInLane' | 'upsertSession'>;
+    sessionAttemptRepo: Pick<AdminSessionAttemptRepository, 'findByArchiveId' | 'hasRequestInSession' | 'upsertAttemptLink'>;
     sql?: Pick<SqlClient, 'query'>;
     candidateLoader?: CandidateLoader;
     idleGapMs?: number;
@@ -76,12 +80,15 @@ export class AdminSessionProjectorService {
       };
     }
 
-    const existingRollup = await this.deps.sessionRepo.loadProjectionRollup(grouping.sessionKey);
-    const existingAttempts = await this.deps.sessionAttemptRepo.listAttemptsBySessionKey(grouping.sessionKey);
-    const wasNewAttempt = existingAttempts.every((attempt) =>
-      attempt.request_attempt_archive_id !== candidate.requestAttemptArchiveId
-    );
-    const wasNewRequest = existingAttempts.every((attempt) => attempt.request_id !== candidate.requestId);
+    const existingSession = latestInLane?.session_key === grouping.sessionKey
+      ? latestInLane
+      : await this.deps.sessionRepo.findBySessionKey(grouping.sessionKey);
+    const existingRollup = rollupFromSession(existingSession);
+    const existingAttempt = await this.deps.sessionAttemptRepo.findByArchiveId(candidate.requestAttemptArchiveId);
+    const wasNewAttempt = !existingAttempt;
+    const wasNewRequest = wasNewAttempt
+      ? !(await this.deps.sessionAttemptRepo.hasRequestInSession(grouping.sessionKey, candidate.requestId))
+      : false;
     const eventTime = projectionEventTime(candidate);
 
     await this.deps.sessionRepo.upsertSession({
@@ -239,6 +246,46 @@ function appendUnique(values: string[], next: string, includeNext: boolean): str
     return [...values];
   }
   return Array.from(new Set([...values, next]));
+}
+
+function rollupFromSession(row: AdminSessionRow | null): AdminSessionProjectionRollupRow | null {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    session_key: row.session_key,
+    started_at: row.started_at,
+    ended_at: row.ended_at,
+    last_activity_at: row.last_activity_at,
+    request_count: parseIntegerLike(row.request_count, 'request_count'),
+    attempt_count: parseIntegerLike(row.attempt_count, 'attempt_count'),
+    input_tokens: parseIntegerLike(row.input_tokens, 'input_tokens'),
+    output_tokens: parseIntegerLike(row.output_tokens, 'output_tokens'),
+    provider_set: [...row.provider_set],
+    model_set: [...row.model_set],
+    status_summary: normalizeStatusSummary(row.status_summary),
+    preview_sample: row.preview_sample ?? null
+  };
+}
+
+function normalizeStatusSummary(current: Record<string, unknown> | null | undefined): Record<string, number> {
+  const summary: Record<string, number> = {};
+  for (const [key, value] of Object.entries(current ?? {})) {
+    const count = Number(value);
+    if (Number.isFinite(count) && count > 0) {
+      summary[key] = count;
+    }
+  }
+  return summary;
+}
+
+function parseIntegerLike(value: number | string, field: string): number {
+  const parsed = typeof value === 'number' ? value : Number.parseInt(value, 10);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`expected ${field} to be a safe integer`);
+  }
+  return parsed;
 }
 
 function incrementStatusSummary(

@@ -1,4 +1,7 @@
-import type { AdminAnalysisRequestRepository, AdminAnalysisRequestRow } from '../../repos/adminAnalysisRequestRepository.js';
+import type {
+  AdminAnalysisRequestRepository,
+  AdminAnalysisSessionRollupRow
+} from '../../repos/adminAnalysisRequestRepository.js';
 import type { AdminAnalysisSessionRepository } from '../../repos/adminAnalysisSessionRepository.js';
 import type { AdminSessionAttemptRepository, AdminSessionAttemptRow } from '../../repos/adminSessionAttemptRepository.js';
 import type { AdminSessionRepository, AdminSessionRow } from '../../repos/adminSessionRepository.js';
@@ -7,7 +10,7 @@ import { TABLES } from '../../repos/tableNames.js';
 import type { NormalizedArchiveMessage } from '../archive/archiveTypes.js';
 import { decodeArchiveRawBlob } from '../archive/archiveCodec.js';
 import { classifyAnalyticsSource } from '../../utils/analytics.js';
-import type { AdminAnalysisProjectionCandidate, AdminAnalysisTaskCategory } from './adminAnalysisTypes.js';
+import type { AdminAnalysisProjectionCandidate } from './adminAnalysisTypes.js';
 import {
   classifyTaskCategory,
   deriveAssistantTextPreview,
@@ -39,7 +42,7 @@ export class AdminAnalysisProjectorService {
   constructor(private readonly deps: {
     candidateLoader?: CandidateLoader;
     sql?: Pick<SqlClient, 'query'>;
-    requestRepo: Pick<AdminAnalysisRequestRepository, 'upsertRequest' | 'listBySessionKey'>;
+    requestRepo: Pick<AdminAnalysisRequestRepository, 'upsertRequest' | 'loadSessionRollup'>;
     sessionAnalysisRepo: Pick<AdminAnalysisSessionRepository, 'upsertSession'>;
     sessionAttemptRepo: Pick<AdminSessionAttemptRepository, 'findByArchiveId'>;
     adminSessionRepo: Pick<AdminSessionRepository, 'findBySessionKey'>;
@@ -80,8 +83,11 @@ export class AdminAnalysisProjectorService {
     }
 
     const requestRow = await this.projectRequest(candidate, sessionAttempt, session);
-    const sessionRows = await this.deps.requestRepo.listBySessionKey(session.session_key);
-    await this.deps.sessionAnalysisRepo.upsertSession(buildSessionRollup(session, sessionRows));
+    const rollup = await this.deps.requestRepo.loadSessionRollup(session.session_key);
+    if (!rollup) {
+      throw new Error(`admin analysis rollup not found after projecting request: ${session.session_key}`);
+    }
+    await this.deps.sessionAnalysisRepo.upsertSession(mapSessionRollup(rollup));
 
     return {
       outcome: 'projected',
@@ -172,82 +178,37 @@ type RawResponseRow = {
   payload: Buffer;
 };
 
-function buildSessionRollup(
-  session: Pick<AdminSessionRow, 'session_key' | 'org_id' | 'session_type' | 'grouping_basis'>,
-  requests: AdminAnalysisRequestRow[]
-) {
-  const requestIds = new Set<string>();
-  const providers = new Set<string>();
-  const models = new Set<string>();
-  const tags = new Set<string>();
-  const categoryBreakdown = new Map<AdminAnalysisTaskCategory, number>();
-  let startedAt = new Date(requests[0]?.started_at ?? new Date().toISOString());
-  let endedAt = eventTime(requests[0]);
-  let lastActivityAt = endedAt;
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let retryCount = 0;
-  let interestingnessScore = 0;
-
-  for (const request of requests) {
-    requestIds.add(request.request_id);
-    providers.add(request.provider);
-    models.add(request.model);
-    request.task_tags.forEach((tag) => tags.add(tag));
-    categoryBreakdown.set(request.task_category, (categoryBreakdown.get(request.task_category) ?? 0) + 1);
-    inputTokens += Number(request.input_tokens ?? 0);
-    outputTokens += Number(request.output_tokens ?? 0);
-    interestingnessScore += Number(request.interestingness_score ?? 0);
-    if (request.is_retry) retryCount += 1;
-
-    const requestStart = new Date(request.started_at);
-    const requestEnd = eventTime(request);
-    if (requestStart < startedAt) startedAt = requestStart;
-    if (requestEnd > endedAt) endedAt = requestEnd;
-    if (requestEnd > lastActivityAt) lastActivityAt = requestEnd;
-  }
-
-  const primaryTaskCategory = selectPrimaryCategory(categoryBreakdown);
-  const durationMs = Math.max(0, endedAt.getTime() - startedAt.getTime());
-
+function mapSessionRollup(row: AdminAnalysisSessionRollupRow) {
   return {
-    sessionKey: session.session_key,
-    orgId: session.org_id,
-    sessionType: session.session_type,
-    groupingBasis: session.grouping_basis,
-    startedAt,
-    endedAt,
-    lastActivityAt,
-    requestCount: requestIds.size,
-    attemptCount: requests.length,
-    inputTokens,
-    outputTokens,
-    primaryTaskCategory,
-    taskCategoryBreakdown: Object.fromEntries(categoryBreakdown),
-    taskTagSet: Array.from(tags),
-    isLongSession: durationMs >= 30 * 60 * 1000,
-    isHighTokenSession: inputTokens + outputTokens >= 40_000,
-    isRetryHeavySession: retryCount > 0,
-    isCrossProviderSession: providers.size > 1,
-    isMultiModelSession: models.size > 1,
-    interestingnessScore
+    sessionKey: row.session_key,
+    orgId: row.org_id,
+    sessionType: row.session_type,
+    groupingBasis: row.grouping_basis,
+    startedAt: new Date(row.started_at),
+    endedAt: new Date(row.ended_at),
+    lastActivityAt: new Date(row.last_activity_at),
+    requestCount: parseIntegerLike(row.request_count, 'request_count'),
+    attemptCount: parseIntegerLike(row.attempt_count, 'attempt_count'),
+    inputTokens: parseIntegerLike(row.input_tokens, 'input_tokens'),
+    outputTokens: parseIntegerLike(row.output_tokens, 'output_tokens'),
+    primaryTaskCategory: row.primary_task_category,
+    taskCategoryBreakdown: row.task_category_breakdown,
+    taskTagSet: [...row.task_tag_set],
+    isLongSession: row.is_long_session,
+    isHighTokenSession: row.is_high_token_session,
+    isRetryHeavySession: row.is_retry_heavy_session,
+    isCrossProviderSession: row.is_cross_provider_session,
+    isMultiModelSession: row.is_multi_model_session,
+    interestingnessScore: parseIntegerLike(row.interestingness_score, 'interestingness_score')
   };
 }
 
-function selectPrimaryCategory(categoryBreakdown: Map<AdminAnalysisTaskCategory, number>): AdminAnalysisTaskCategory {
-  let winner: AdminAnalysisTaskCategory = 'other';
-  let maxCount = -1;
-  for (const [category, count] of categoryBreakdown.entries()) {
-    if (count > maxCount) {
-      winner = category;
-      maxCount = count;
-    }
+function parseIntegerLike(value: number | string, field: string): number {
+  const parsed = typeof value === 'number' ? value : Number.parseInt(value, 10);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`expected ${field} to be a safe integer`);
   }
-  return winner;
-}
-
-function eventTime(request: Pick<AdminAnalysisRequestRow, 'completed_at' | 'started_at'>): Date {
-  return new Date(request.completed_at ?? request.started_at);
+  return parsed;
 }
 
 function createSqlCandidateLoader(sql: Pick<SqlClient, 'query'> | undefined): CandidateLoader {

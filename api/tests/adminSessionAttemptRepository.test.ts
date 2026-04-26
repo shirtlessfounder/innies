@@ -72,4 +72,20 @@ describe('AdminSessionAttemptRepository', () => {
     expect(db.queries[0].sql).toContain('where request_attempt_archive_id = $1');
     expect(db.queries[0].sql).toContain('limit 1');
   });
+
+  it('checks whether a request is already linked to a session without loading the session', async () => {
+    const db = new MockSqlClient({
+      rows: [{ '?column?': 1 }],
+      rowCount: 1
+    });
+    const repo = new AdminSessionAttemptRepository(db);
+
+    await expect(repo.hasRequestInSession('openclaw:run:run_1', 'req_1')).resolves.toBe(true);
+
+    expect(db.queries[0].sql).toContain('select 1');
+    expect(db.queries[0].sql).toContain('where session_key = $1');
+    expect(db.queries[0].sql).toContain('and request_id = $2');
+    expect(db.queries[0].sql).toContain('limit 1');
+    expect(db.queries[0].params).toEqual(['openclaw:run:run_1', 'req_1']);
+  });
 });
