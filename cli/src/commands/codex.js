@@ -72,7 +72,7 @@ export async function runCodex(args) {
     fail('Not logged in. Run: innies login --token <in_token>');
   }
   if (inlineToken) {
-    config = config || { apiBaseUrl: 'https://api.innies.computer', providerDefaults: {} };
+    config = config || { apiBaseUrl: 'https://innies-api.exe.xyz', providerDefaults: {} };
     config.token = inlineToken;
   }
 
